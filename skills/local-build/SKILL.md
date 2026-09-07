@@ -82,7 +82,7 @@ inside a boundary with no network and none of the host's environment (measured: 
 ## Optional: persistent agent guidance
 
 `CONSTITUTION_SNIPPET.md` beside this file is a twelve-line reminder for an agent that will use this seat repeatedly:
-when to use it, the two profiles, the call, the hard rules. The skill works without it. If you want it, add it to your
+when to use it, the three profiles, the call, the hard rules. The skill works without it. If you want it, add it to your
 own constitution file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md` in your home) between its `<!-- local-build:begin/end -->`
 markers so a later version can replace it. Nothing modifies your agent configuration for you.
 

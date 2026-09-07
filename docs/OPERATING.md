@@ -1,6 +1,6 @@
 # Operating the seat
 
-This document is about running the seat day to day: how a run works, the two profiles and what they were measured at,
+This document is about running the seat day to day: how a run works, the three profiles and what they were measured at,
 every knob, where the models go, the card's constraints and what each file is. The README covers what this is, why it
 exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) covers the boundary.
 
