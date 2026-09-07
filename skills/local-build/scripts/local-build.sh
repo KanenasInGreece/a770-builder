@@ -104,7 +104,8 @@ case "${1:-}" in
     case "$brc" in 2|3) echo "⛔ build refused (exit $brc) — no capture, no reset" >&2; exit "$brc";; esac
     BL=$(cat "$A770B_DATA/logs/last-build.log.path" 2>/dev/null || true)
     [ -f "$BL" ] || die "build log path missing — capture skipped"
-    bash "$CAPTURE" "$label" "$WT" "$BL" | tail -2
+    bash "$CAPTURE" "$label" "$WT" "$BL" | tail -2; crc=${PIPESTATUS[0]}
+    [ "$crc" = 0 ] || { echo "⛔ the capture failed (exit $crc) and the seat was NOT reset: read $A770B_DATA/results/$label.task.md, then run: local-build.sh reset $WT" >&2; exit "$crc"; }
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean." ;;
   verify)
     # Re-apply what a run produced (<label>.patch beside the capture) to a CLEAN seat and run the tests inside the same

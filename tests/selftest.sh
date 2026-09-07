@@ -35,6 +35,10 @@ reset_worktree "$r" >/dev/null; [ ! -L "$r/Local_Documentation/briefs" ] && [ -d
 # the capture on a run that made no file, and on one whose only new file is a symlink: it must finish and never read through the link
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"; : > "$A770B_DATA/logs/llamacpp-a770.log"; echo "no pytest here" > "$t/build.log"
 A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" selftest-empty "$r" "$t/build.log" >/dev/null 2>&1 && [ -f "$A770B_DATA/results/selftest-empty.task.md" ] && echo "ok   capture: a run with no new file still writes its report" || { echo "FAIL capture aborted on an empty new-file list"; fail=1; }
+# a tracked change longer than the 400 lines the report shows must not abort the capture (it did: head closed the pipe, git died, pipefail stopped the script before the reset)
+seq 1 600 > "$r/big.txt"; ( cd "$r" && git add big.txt && git -c user.name=t -c user.email=t@t commit -q -m big ); seq 1 600 | sed 's/$/ changed/' > "$r/big.txt"
+A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" selftest-big "$r" "$t/build.log" >/dev/null 2>&1; bc=$?
+if [ "$bc" = 0 ] && grep -q '## server-side timings' "$A770B_DATA/results/selftest-big.task.md" && [ "$(seat_dirty "$r" | wc -l)" = 0 ]; then echo "ok   capture: a change over 400 lines is captured whole and the seat is reset"; else echo "FAIL capture aborted on a long diff (exit $bc) or left the seat dirty"; fail=1; fi
 echo "MARKER-$$" > "$t/secret"; ln -s "$t/secret" "$r/leak"
 A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" selftest-link "$r" "$t/build.log" >/dev/null 2>&1
 if grep -q "MARKER-$$" "$A770B_DATA/results/selftest-link.task.md" "$A770B_DATA/results/selftest-link.patch" 2>/dev/null; then echo "FAIL capture read through a symlink"; fail=1; else echo "ok   capture: a symlink is named, never read"; fi

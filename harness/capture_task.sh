@@ -18,10 +18,13 @@ OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patc
     [ -L "$WT/$f" ] && continue                                   # a symlink is named in the report, never followed or applied
     safe_git_diff "$WT" --no-index -- /dev/null "$f" || true; done
 } > "$PATCH"
+# the diff is taken into a file first: piping it into head made git die of SIGPIPE on a diff over 400 lines, and under
+# pipefail that aborted the capture before the reset, leaving the seat dirty while the skill reported it clean
+DIFF="$A770B_DATA/logs/capture-$LABEL.diff"; safe_git_diff "$WT" > "$DIFF"
 {
 echo "# Task capture — $LABEL — $(date -Is)"
 echo; echo "## git status (worktree)"; safe_git "$WT" status --porcelain
-echo; echo "## diff (tracked)"; echo '```diff'; safe_git_diff "$WT" | head -400; echo '```'
+echo; echo "## diff (tracked, first 400 lines; the complete change is the patch)"; echo '```diff'; head -400 -- "$DIFF"; echo '```'
 echo; echo "## new files"
 safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
   echo; if [ -L "$WT/$f" ]; then echo "### $f — SYMLINK to $(readlink -- "$WT/$f"), not read, not in the patch (the host never follows a link the model made)"; continue; fi
@@ -48,5 +51,6 @@ print(f"TPOT ms: median={q(tpot,.5):.1f} p90={q(tpot,.9):.1f}   decode tok/s med
 print(f"prefill tok/s over all prompts={pt/ (sum(p[0] for p in P)/1000) if P else 0:.0f}")
 PY
 } > "$OUT" 2>&1
+rm -f -- "$DIFF"
 echo "captured → $OUT ($(wc -l < "$OUT") lines) · patch $PATCH ($(wc -l < "$PATCH") lines)"
 reset_worktree "$WT"
