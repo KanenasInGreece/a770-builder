@@ -38,6 +38,7 @@ for the run and restored after; the skill does that.)
 #    linked worktree — the script refuses both. Default: A770B_SEAT (~/local-ai/seat).
 # 2. a brief: a Markdown file that names the files, the exact test command, and the stop condition
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md>                       # fast, on the default seat
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>    # with a run specification (below)
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --serious      # serious, on a given seat
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --long                # long: the 131k window, for the read
 bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>                       # re-run a capture's tests in a fresh sandbox
@@ -56,6 +57,29 @@ TTFT/TPOT distribution) and writes the complete change beside it as `<label>.pat
 (no model, no key), and writes `<label>.verify.md` with the exit code as its verdict. The model's own pytest line is a
 claim; the verify file proves the model's tests pass. Whether they are the right tests is what the review of the
 capture decides. A cheap reviewer prompt for it lives at `~/local-ai/A770_Builder/briefs/REVIEW-prompt.md`.
+
+## The run specification — what you, the caller, decide for one run
+
+The brief is prose. Beside it you may pass `--spec <spec.json>`, every key optional:
+
+```json
+{ "profile": "fast", "timeout": 1500,
+  "card": "Local_Documentation/BUILDER_CARD.md",
+  "scope": { "edit": ["src/foo.py", "tests/test_foo.py"] },
+  "bash_allow": ["make check"],
+  "context": { "definitions_of": ["src/foo.py"] },
+  "verify": { "test": "uv run --with pytest python -m pytest -q tests/test_foo.py", "hidden": ["test_foo_hidden.py"] } }
+```
+
+`card` (a file inside the seat, or `{"text": "…"}`, at most 8,000 characters) becomes the model's standing instructions
+for the run: the repository's conventions, the idiom to copy. `scope.edit` limits edits to the listed paths. `bash_allow`
+adds commands the profile's allow-list lacks; a bare wildcard, or anything beginning with a wrapper or interpreter, is
+refused, and the profile's deny block is rendered after every addition. `context.definitions_of` names files whose
+definitions the harness greps into the brief copy (at most 8 files, 400 lines each, 1,200 in all), so the model reads
+an index instead of paging. `verify.test` is what `verify` runs when you give no `--test`; `verify.hidden` names
+acceptance tests the model never saw, kept under `A770B_HIDDEN_ROOT` and copied in only after the patch applies. The
+specification is checked against the seat before any server starts; the capture keeps it as `<label>.spec.json` and
+an echo of what was rendered as `<label>.echo.json`. A flag on the command line wins over a key.
 
 ## Rules the card and the harness enforce (do not override)
 

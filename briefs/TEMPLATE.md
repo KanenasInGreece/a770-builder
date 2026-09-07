@@ -44,3 +44,17 @@ No docker, no systemctl, no network. Keep every edit on one physical line; never
 
 <the observable condition: the files grep as stated, the summary line reads as expected, EXIT=0>. Then print the list of
 files you changed.
+
+## A run specification beside this brief (optional)
+
+Save as `<brief>.spec.json` and pass `--spec`. Every key optional; paths are relative to the seat.
+
+```json
+{
+  "card": "Local_Documentation/BUILDER_CARD.md",
+  "scope": { "edit": ["<path>", "<path>"] },
+  "bash_allow": ["make check"],
+  "context": { "definitions_of": ["<path>"] },
+  "verify": { "test": "<the verify line above, the runner alone>", "hidden": ["<basename under A770B_HIDDEN_ROOT>"] }
+}
+```

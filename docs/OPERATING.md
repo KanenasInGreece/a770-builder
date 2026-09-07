@@ -8,6 +8,7 @@ exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) 
 
 ```bash
 bash skills/local-build/scripts/local-build.sh run <brief.md>                            # fast profile, on the default seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>         # with a run specification (below)
 bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --serious  # serious profile, on a named seat
 bash skills/local-build/scripts/local-build.sh run <brief.md> --long                     # long profile: the 131k window
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
@@ -33,6 +34,23 @@ on every `tests/*.py` file the patch touches, passing the names as arguments and
 `--test "<command>"` runs something else instead, inside the same boundary; the verdict is the exit status of that
 whole command, so give it the test runner alone, never followed by an `echo` or anything else that would end it with
 zero. It refuses an empty patch, a seat that is not clean (ignored files included), and a patch that does not apply.
+
+**The run specification.** A brief is prose the harness cannot enforce. Beside it the caller may pass a small JSON
+file, `--spec <spec.json>`, that sets for that one run what the calling agent has decided: `card`, a file inside the seat
+or inline text that becomes the model's standing instructions for the run (the repository's conventions, the idiom to
+copy); `scope.edit`, the paths the model may edit, everything else refused; `bash_allow`, extra commands the profile
+lets it run (a test runner the allow-list lacks); `context.definitions_of`, files whose definitions the harness greps
+and appends to the brief copy, so the model reads an index instead of paging; `verify.test`, the command `verify` runs
+when `--test` is not given; and `verify.hidden`, acceptance tests the model never saw, kept under `A770B_HIDDEN_ROOT`
+and copied into the seat only after the patch has applied. `profile` and `timeout` may be set too; a flag on the
+command line wins. Every key is optional and an unknown one is refused. The specification is checked against the seat
+before the run lock is taken and before any server starts, then snapshotted, so nothing re-reads the caller's file
+later; the capture keeps the snapshot as `<label>.spec.json` and an echo of what was actually rendered, with the
+profile's hash, as `<label>.echo.json`, and prints the echo in its *run specification* section. What a specification
+cannot do is lower the floor: the sandbox, the unshared network, the read-only `.git`, the secret-file denials and the
+deny block at the end of the profile's bash rules (git state verbs, docker, systemctl, sudo, package installs, network
+clients) are rendered after everything the caller adds, and a bash pattern that is a bare wildcard or begins with a
+wrapper or interpreter is refused outright. An example specification is at the end of `briefs/TEMPLATE.md`.
 
 The test command a brief names runs in the model's own shell tool, which cuts a command at 120 seconds unless the model
 asks for longer, and inside the boundary, which has no network and none of the host's environment. So a brief names the
@@ -84,6 +102,12 @@ stay up past the cap after load. No speculative decoding on this card: draft mod
 file is created on the first serve, one line, mode 600; the rendered profile carries the key into the sandbox, and every
 harness script that talks to the server reads it from the file. Delete the file to rotate: the next `serve` creates a
 new key, notices the running server no longer accepts it, and restarts the server.
+
+**Hidden tests.** `A770B_HIDDEN_ROOT` (default `$A770B_DATA/hidden`) is the only place a specification's
+`verify.hidden` names may resolve to: plain basenames, regular files, at most 64 KiB each. They are copied into the seat
+as `tests/_hidden_<name>` after the patch applies, refused if the patched seat already has that path, run with the rest,
+and removed by the reset. A hidden test guards against a model that wrote tests to its own reading of the brief; it
+does not guard against a hostile patch, which can print it into the verify file.
 
 **Other services on the host.** `A770B_FRAMEWORK_PORTS` lists ports the model server must never bind. `A770B_HEALTH_URL`,
 when set, is read with one GET before a server starts, and the gate prints the status word the answer carries, "no
@@ -173,17 +197,18 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 
 | path | role |
 |---|---|
-| `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`, `check-update`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
+| `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run` with an optional `--spec`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`, `check-update`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
 | `render_readme.sh` | regenerates `README.html` from `README.md`; run after every README edit, the Markdown is the source |
 | `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (13 GiB after load on a display card), `-ub 512`, the API key, model marker |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
 | `harness/sandbox_run.sh` | the bubblewrap boundary: only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |
 | `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation; the key and profile helpers |
+| `harness/render_profile.py` | renders the opencode profile from the template (`render`), checks a run specification against the seat (`check`) and prepares its context into the brief copy (`context`); the echo of what was rendered lands beside the profile; `tests/test_render_profile.py` proves it |
 | `harness/guard.sh` | canonical seat guard, verified pids, the run lock, `safe_git`, the seat reset, the built-in budget gate |
 | `harness/capture_task.sh` | diff + new files + the model's pytest line + server-side TTFT/TPOT distribution, the `.patch` for `verify`, then the seat reset |
 | `harness/bench_model.sh` · `run_one.sh` · `measure_overhead.sh` | the qualification row: probes → gate → task → capture; opencode opening-request cost (testing only, run by the operator) |
 | `harness/cancel_repro.sh` · `ctx_sweep.sh` · `depth_probe.sh` | the long-context qualification: a cancelled request while the slot is held; prefill, decode and VRAM against position; correct answers from 85% of the way into a large prompt (run by the operator against a server that is up) |
-| `config/opencode.profile.template.jsonc` | the ONLY opencode config the sandbox sees, rendered per run with the server URL, the key, the profile's window and a default-deny bash allow-list |
+| `config/opencode.profile.template.jsonc` | the ONLY opencode config the sandbox sees, rendered per run with the server URL, the key, the profile's window, a default-deny bash allow-list, the run specification's card, scope and additions, and a floor of deny rules rendered after every allow |
 | `harness/warm_cache.sh` | pre-fills the read-only uv cache the sandbox mounts (it has no network) |
 | `SECURITY.md` · `SANDBOX-PLAN.md` | the boundary as it stands; the problem, the plan and what was done |
 | `VERSION` | the project's version; the installed skill carries the same number, and `local-build.sh --version` reports both, the release the checkout stands on, and warns when they differ; `check-update` asks GitHub for the latest release, only when asked, and works from a copy on a machine that has no checkout |

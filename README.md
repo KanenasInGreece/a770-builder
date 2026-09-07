@@ -36,7 +36,9 @@ those. **long** is Gemma 4 E4B with flash attention off, a 131k-token window for
 and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
 is a capacity, not the depth a model works reliably at, and each profile's row says which depth was measured. No
 profile indexes a large file, which stays a `grep`: where a deterministic tool answers exactly, the seat is not asked to
-approximate it. Every profile's output is judged the same way, by its capture and by `verify`.
+approximate it. A run specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the
+paths it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
+Every profile's output is judged the same way, by its capture and by `verify`.
 
 ```text
 your coding agent ── the context, the judgement, the plan
