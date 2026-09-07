@@ -67,7 +67,8 @@ the Intel Arc A770 16 GB; llama.cpp b10805 (Vulkan); opencode 1.18.29; bubblewra
 nvtop 3.3.2; git 2.55.0; Python 3.14.7; Node 24.15.0 with `skills` CLI 1.5.24. Newer versions of the tools should work;
 a different llama.cpp build or model quantisation is a different measurement, and its numbers should be re-taken with
 `harness/run_one.sh` before being believed. The project and the installed skill carry the same version number
-(`VERSION`, `local-build.sh --version`), so an installed copy can tell when the project moved on.
+(`VERSION`, `local-build.sh --version`), so an installed copy can tell when the project moved on, and
+`local-build.sh check-update` asks GitHub for the latest release when you want to know; nothing else in the skill calls out.
 
 ### Steps
 

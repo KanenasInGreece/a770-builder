@@ -11,7 +11,7 @@ bash skills/local-build/scripts/local-build.sh run <brief.md>                   
 bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --serious  # serious profile, on a named seat
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
-bash skills/local-build/scripts/local-build.sh serve fast|serious · status · stop · --version
+bash skills/local-build/scripts/local-build.sh serve fast|serious · status · stop · --version · check-update
 ```
 
 `run` refuses anything but the root of a standalone clone that is not a live checkout, refuses a seat that is not clean
@@ -149,7 +149,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 
 | path | role |
 |---|---|
-| `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
+| `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`, `check-update`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
 | `render_readme.sh` | regenerates `README.html` from `README.md`; run after every README edit, the Markdown is the source |
 | `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (13 GiB after load on a display card), `-ub 512`, the API key, model marker |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
@@ -161,7 +161,8 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `config/opencode.profile.template.jsonc` | the ONLY opencode config the sandbox sees, rendered per run with the server URL, the key, the profile's window and a default-deny bash allow-list |
 | `harness/warm_cache.sh` | pre-fills the read-only uv cache the sandbox mounts (it has no network) |
 | `SECURITY.md` · `SANDBOX-PLAN.md` | the boundary as it stands; the problem, the plan and what was done |
-| `VERSION` | the project's version; the installed skill carries the same number and `local-build.sh --version` warns when they differ. Releases are tags of this number |
+| `VERSION` | the project's version; the installed skill carries the same number, and `local-build.sh --version` reports both, the release the checkout stands on, and warns when they differ; `check-update` asks GitHub for the latest release, only when asked, and works from a copy on a machine that has no checkout |
+| `release.sh` | cuts a release: moves the number in its three places (`VERSION`, the skill's `SKILL_VERSION`, the tag) in one commit, pushes, publishes the GitHub Release from a notes file. The first release is 0.1.0; each one after adds 0.0.1, the minor number moves when the patch would pass 99, and a major bump takes `--major` |
 | `LICENSE` | MIT |
 | `briefs/` | the qualification task (`T1-…`), the cheap-reviewer prompt, the smoke brief |
 

@@ -4,6 +4,7 @@
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve fast|serious | status | stop | version (--version)
+#   check-update      ask GitHub for the latest release and compare it with this copy (on demand only; nothing else ever calls out)
 # The installed copy finds the project through A770B_PROJECT: the environment, then
 # ${XDG_CONFIG_HOME:-~/.config}/a770-builder/builder.env, then the default ~/local-ai/A770_Builder. Every other path
 # and knob comes from the project's harness/env.sh (see config/builder.env.example).
@@ -13,14 +14,33 @@ die(){ echo "⛔ $*" >&2; exit 2; }
 _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/builder.env"
 if [ -z "${A770B_PROJECT:-}" ] && [ -f "$_cfg" ]; then A770B_PROJECT=$(sed -nE 's/^[[:space:]]*A770B_PROJECT=([^#]*).*/\1/p' "$_cfg" | tail -1 | tr -d '"' | sed "s#^~#$HOME#"); fi
 A770B_PROJECT="${A770B_PROJECT:-$HOME/local-ai/A770_Builder}"; export A770B_PROJECT
-version(){ local pv sha
-  echo "local-build skill $SKILL_VERSION · installed at $(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+version(){ local pv sha rel n
+  echo "local-build skill release $SKILL_VERSION · installed at $(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   if [ -r "$A770B_PROJECT/VERSION" ]; then pv=$(head -1 "$A770B_PROJECT/VERSION"); sha=$(git -c core.hooksPath=/dev/null -C "$A770B_PROJECT" rev-parse --short HEAD 2>/dev/null || true)
-    echo "a770-builder project $pv${sha:+ ($sha)} · $A770B_PROJECT"
+    # the release this checkout stands on: the nearest tag, and how many commits it has moved since
+    rel=$(git -c core.hooksPath=/dev/null -C "$A770B_PROJECT" describe --tags --match 'v[0-9]*' --long 2>/dev/null || true)
+    case "$rel" in "") rel="no release tag reachable";; *-0-g*) rel="release ${rel%%-*}";; *) n=${rel#*-}; n=${n%%-*}; rel="$n commit(s) after release ${rel%%-*}";; esac
+    echo "a770-builder project $pv${sha:+ ($sha)} · $rel · $A770B_PROJECT"
     [ "$pv" = "$SKILL_VERSION" ] || echo "⚠ installed skill $SKILL_VERSION ≠ project $pv — reinstall the skill from the project (npx skills add … --copy, or copy skills/local-build by hand)" >&2
   else echo "a770-builder project: not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)" >&2; fi
 }
-case "${1:-}" in version|--version|-V) version; exit 0;; esac
+# check_update — one conditional request, only when asked. Compares this copy's release number with the VERSION file on the
+# repository's main branch, which release.sh moves only at a release, so it reads as the latest release. Works without the
+# project checkout: an installed copy on a machine that has only the skill can still ask. Exit 0 up to date, 1 newer
+# release available, 2 could not ask.
+check_update(){ local url latest pv
+  url="${A770B_UPDATE_URL:-https://raw.githubusercontent.com/KanenasInGreece/a770-builder/main/VERSION}"
+  latest=$(curl -fsS --max-time 5 "$url" 2>/dev/null | head -1 | tr -d '[:space:]') || true
+  case "$latest" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "⚠ could not read the latest release from $url (offline, or the URL moved)" >&2; return 2;; esac
+  [ -r "$A770B_PROJECT/VERSION" ] && pv=$(head -1 "$A770B_PROJECT/VERSION") || pv=""
+  if [ "$(printf '%s\n%s\n' "$latest" "$SKILL_VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" = "$SKILL_VERSION" ]; then
+    echo "✓ this copy is release $SKILL_VERSION, the latest on GitHub${pv:+ · project checkout $pv}"; return 0
+  fi
+  echo "↑ release $latest is out; this copy is $SKILL_VERSION${pv:+ · project checkout $pv}"
+  echo "  update: git -C ${A770B_PROJECT} pull  (the project), then  npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy  (this copy; or copy skills/local-build by hand)"
+  return 1
+}
+case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh"; . "$A770B_PROJECT/harness/guard.sh"
 SERVE="$A770B_PROJECT/harness/serve_a770_llamacpp.sh"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
@@ -124,5 +144,5 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--serious] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious | status | stop | version" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--serious] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious | status | stop | version | check-update" >&2; exit 2 ;;
 esac

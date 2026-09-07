@@ -135,7 +135,8 @@ the Intel Arc A770 16 GB; llama.cpp b10805 (Vulkan); opencode 1.18.29; bubblewra
 nvtop 3.3.2; git 2.55.0; Python 3.14.7; Node 24.15.0 with <code>skills</code> CLI 1.5.24. Newer versions of the tools should work;
 a different llama.cpp build or model quantisation is a different measurement, and its numbers should be re-taken with
 <code>harness/run_one.sh</code> before being believed. The project and the installed skill carry the same version number
-(<code>VERSION</code>, <code>local-build.sh --version</code>), so an installed copy can tell when the project moved on.</p>
+(<code>VERSION</code>, <code>local-build.sh --version</code>), so an installed copy can tell when the project moved on, and
+<code>local-build.sh check-update</code> asks GitHub for the latest release when you want to know; nothing else in the skill calls out.</p>
 <h3 id="steps">Steps</h3>
 <pre><code class="language-bash">git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builder   # 1. the project (A770B_PROJECT)
 cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env

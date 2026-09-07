@@ -42,6 +42,7 @@ bash ~/.claude/skills/local-build/scripts/local-build.sh status               # 
 bash ~/.claude/skills/local-build/scripts/local-build.sh stop                 # free the card
 bash ~/.claude/skills/local-build/scripts/local-build.sh reset                # discard everything uncommitted in the seat, ignored files too
 bash ~/.claude/skills/local-build/scripts/local-build.sh --version            # this copy's version vs the project's; warns on mismatch
+bash ~/.claude/skills/local-build/scripts/local-build.sh check-update        # asks GitHub for the latest release, on demand; nothing else calls out
 ```
 (From another agent's install, replace `~/.claude` with that agent's skill directory; the script is identical.)
 
