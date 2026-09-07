@@ -32,8 +32,8 @@ On the host side, every git command that touches the seat goes through `safe_git
 code paths on the command line: hooks, fsmonitor, pagers, filters, credential helpers, and, on every diff it takes, the
 external diff and textconv programs. The capture executes nothing the model wrote; it records the diff, the new files,
 the names of any ignored files the run left, the pytest line the model reported, and writes the complete change as a
-patch. The reset that follows removes everything the run produced, ignored files included, so nothing a run planted
-waits for the next one. When a reviewer wants proof rather than a claim, `verify` re-applies that patch to a clean seat
+patch. The reset that follows removes everything the run produced, ignored files included, keeping only the briefs
+directory the harness itself writes, so nothing a run planted waits for the next one. When a reviewer wants proof rather than a claim, `verify` re-applies that patch to a clean seat
 and runs the tests inside a fresh sandbox with no model, no bridge and no key; its verdict is the exit code of the test
 command, never a line the tests printed, and file names taken from the patch are passed as arguments, never through a
 shell. What `verify` proves is that the model's own tests pass inside the boundary; whether those tests are the right

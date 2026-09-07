@@ -22,7 +22,7 @@ echo; echo "## diff (tracked)"; echo '```diff'; safe_git_diff "$WT" | head -400;
 echo; echo "## new files"
 safe_git "$WT" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do echo; echo "### $f"; echo '```'; head -200 -- "$WT/$f"; echo '```'; done
 echo; echo "## ignored files the run left behind (names only; removed by the reset, never applied by verify)"
-safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/' || echo "none"
+safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/' || echo "none"
 echo; echo "## pytest summary as reported by the model inside the run (NOT re-executed here)"
 grep -E '[0-9]+ (passed|failed|error)' "$BLOG" | tail -3 || echo "no pytest summary line in the transcript"
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'

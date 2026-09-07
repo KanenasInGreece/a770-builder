@@ -39,14 +39,17 @@ safe_git(){ local wt="$1"; shift; GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=
 safe_git_diff(){ local wt="$1"; shift; safe_git "$wt" diff --no-ext-diff --no-textconv "$@"; }
 
 # seat_dirty <worktree> — lists everything in the seat that is not committed, INCLUDING ignored files (a model can plant
-# a .venv, a CLAUDE.md or an agent settings file that the plain status never shows); only the top-level briefs dir is exempt.
-seat_dirty(){ safe_git "$1" status --porcelain --ignored 2>/dev/null | grep -vE '^!! Local_Documentation/' || true; }
+# a .venv, a CLAUDE.md or an agent settings file that the plain status never shows). Ignored files are listed one by one
+# (status would collapse an ignored directory), and only Local_Documentation/briefs/, the one path the harness itself
+# writes, is exempt.
+seat_dirty(){ { safe_git "$1" status --porcelain 2>/dev/null; safe_git "$1" ls-files --others --ignored --exclude-standard 2>/dev/null | grep -vE '^Local_Documentation/briefs/' | sed 's/^/!! /'; } || true; }
 
 # reset_worktree <worktree> — discard everything the model did in the seat: tracked changes, untracked AND ignored files
-# (-x), keeping only the top-level Local_Documentation (the briefs). Every call is safe_git because the model owned the tree.
+# (-x; an operator's own ignored files in the seat go too — keep no state there), keeping only Local_Documentation/briefs.
+# Every call is safe_git because the model owned the tree.
 reset_worktree(){ local wt="$1"
   safe_git "$wt" checkout -- . 2>/dev/null || true
-  safe_git "$wt" clean -fdxq -e /Local_Documentation 2>/dev/null || true
+  safe_git "$wt" clean -fdxq -e /Local_Documentation/briefs 2>/dev/null || true
   echo "worktree reset: $(seat_dirty "$wt" | wc -l) entries remain"
 }
 

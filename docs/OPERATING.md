@@ -21,6 +21,10 @@ sandbox with `< /dev/null`, captures the diff, the model's own pytest line and t
 model wrote, writes the complete change as `~/local-ai/results/<label>.patch`, and resets the seat. Judge by the capture
 in `~/local-ai/results/`, never by exit code.
 
+The reset after every run removes every uncommitted file in the seat, ignored ones included, and keeps only
+`Local_Documentation/briefs/`, where the harness copies each brief. Keep no state of your own in the seat: a hand-made
+`.env` or `.venv` there does not survive a run, by design.
+
 `verify <label>` is how a reviewer turns the model's claim into proof. It re-applies the patch to the clean seat, runs
 the tests inside a fresh sandbox with no model, no bridge and no key, writes `<label>.verify.md` with the command, the
 output and a verdict taken from the command's exit code, and resets the seat whatever happens. By default it runs pytest
