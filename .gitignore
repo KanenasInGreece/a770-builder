@@ -1,0 +1,6 @@
+results/
+logs/
+*.log
+__pycache__/
+.pytest_cache/
+config/builder.env

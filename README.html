@@ -1,0 +1,260 @@
+<title>A770_Builder</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{--ground:#F6F7F9;--surface:#FFFFFF;--surface-2:#EEF1F5;--ink:#141922;--ink-2:#4A5361;--ink-3:#6E7785;--rule:#D6DBE3;--accent:#0B5FBF;--code-bg:#1B222D;--code-ink:#E7ECF3}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--ground:#0F141B;--surface:#161C25;--surface-2:#1E2631;--ink:#E6EAF0;--ink-2:#AEB7C4;--ink-3:#8791A0;--rule:#2A3441;--accent:#5AA9FF;--code-bg:#0B1017;--code-ink:#DCE3EC}}
+:root[data-theme="dark"]{--ground:#0F141B;--surface:#161C25;--surface-2:#1E2631;--ink:#E6EAF0;--ink-2:#AEB7C4;--ink-3:#8791A0;--rule:#2A3441;--accent:#5AA9FF;--code-bg:#0B1017;--code-ink:#DCE3EC}
+*{box-sizing:border-box}body{margin:0;background:var(--ground);color:var(--ink);font-family:"Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:16px;line-height:1.55}
+.wrap{max-width:72rem;margin:0 auto;padding:2.5rem 1.5rem 4rem}
+h1,h2,h3{font-family:"Barlow Semi Condensed","Arial Narrow",sans-serif;text-wrap:balance;line-height:1.1}
+h1{font-size:2.6rem;font-weight:700;letter-spacing:-.01em;margin:0 0 .5rem}h2{font-size:1.45rem;font-weight:700;margin:2.75rem 0 .5rem;padding-top:1.1rem;border-top:2px solid var(--ink)}h3{font-size:1.1rem;font-weight:600;margin:1.5rem 0 .4rem}
+p,li{max-width:72ch}p{margin:.75rem 0}ul,ol{padding-left:1.3rem}li{margin:.3rem 0}
+a{color:var(--accent)}a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+code{font-family:"JetBrains Mono",monospace;font-size:.88em;background:var(--surface-2);padding:.05em .35em;border-radius:2px}
+pre{background:var(--code-bg);color:var(--code-ink);font-family:"JetBrains Mono",monospace;font-size:.8rem;line-height:1.5;padding:1rem 1.1rem;overflow-x:auto;margin:.75rem 0;border-left:3px solid var(--accent)}pre code{background:none;padding:0;font-size:inherit;color:inherit}
+table{border-collapse:collapse;width:100%;font-size:.9rem;font-variant-numeric:tabular-nums;display:block;overflow-x:auto;border:1px solid var(--rule);background:var(--surface);margin:1rem 0}
+th,td{padding:.55rem .7rem;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule)}
+th{font-family:"JetBrains Mono",monospace;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);background:var(--surface-2);white-space:nowrap}
+tr:last-child td{border-bottom:none}blockquote{border-left:3px solid var(--rule);margin:1rem 0;padding:.2rem 1rem;color:var(--ink-2)}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+<div class="wrap">
+<h1 id="a770_builder">A770_Builder</h1>
+<p>This repository is about one card, the Intel Arc A770 16 GB, used as a local code builder. It holds the two models that
+earned the role by passing a real test-writing task on a live codebase, with the llama.cpp flags that keep the card stable
+and the context each one gives you; and it holds <code>local-build</code>, an Agent Skills-standard skill any CLI agent can install,
+which serves the chosen model, runs the brief inside a network-isolated sandbox that can only see the seat, and hands back
+a capture for review instead of trusting the run.</p>
+<p>Built and measured on 2026-09-06 and 07 on a card that also drives the desktop; reviewed adversarially twice and contained
+the same day. The measured report (matrix, serving lines, method) lives beside the weights: <code>~/LLM/tested/README.html</code>.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<p><code>llama.cpp</code> built with the Vulkan backend (<code>llama-server</code>), <code>bubblewrap</code> (<code>bwrap</code>), <code>socat</code>, <code>uv</code>, <code>python3</code>, <code>git</code>, <code>curl</code>,
+<code>nvtop</code> (the VRAM readings the cap depends on — the harness refuses to start without them unless you accept the risk with
+<code>A770B_ALLOW_NO_NVTOP=1</code>), <code>flock</code> and <code>ss</code> (util-linux / iproute2), and opencode (the executor inside the sandbox). Node is
+only needed for the skills CLI route.</p>
+<h2 id="first-run-five-steps">First run (five steps)</h2>
+<pre><code class="language-bash">git clone &lt;this repo&gt; ~/local-ai/A770_Builder                      # 1. the project (A770B_PROJECT)
+cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env
+#    2. edit it: A770B_REFUSE = your live checkouts (required), A770B_MODELS, A770B_DEVICE/GPU_MATCH if not an A770
+git clone &lt;your target repo&gt; ~/local-ai/seat                        # 3. the seat: a plain clone, never a linked worktree
+#    4. put the GGUFs named in the profiles into A770B_MODELS (see Models)
+bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
+bash ~/local-ai/A770_Builder/sync_local_build.sh                    #    install the skill; then a smoke run:
+bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md
+</code></pre>
+<h2 id="install-how-an-agent-acquires-this-skill">Install — how an agent acquires this skill</h2>
+<p>The skill follows the <a href="https://agentskills.io">Agent Skills</a> open standard: a folder <code>skills/local-build/</code> holding
+<code>SKILL.md</code> (name + description in the front matter, instructions in the body), <code>scripts/</code> and a constitution snippet.
+Tested here on 2026-09-07, all three routes:</p>
+<p><strong>1. The open skills CLI</strong> — detects the agents you have installed and copies the skill into each of them.</p>
+<pre><code class="language-bash">npx skills add &lt;owner&gt;/A770_Builder --skill local-build -g --copy      # from GitHub, user-level, real copies
+npx skills add /path/to/A770_Builder --skill local-build -g --copy     # from a local clone (tested)
+npx skills add /path/to/A770_Builder --list                            # browse first (tested: finds local-build)
+</code></pre>
+<p><code>-g</code> installs under your home (<code>~/.claude/skills</code>, <code>~/.codex/skills</code>, …); without it the CLI installs into the current
+project's <code>.claude/skills</code>. <code>--copy</code> matters: the default is a symlink, and a skill that carries scripts should be a copy.</p>
+<p><strong>2. The project's own installer</strong> — the same thing without Node, for the five agents on this workstation:</p>
+<pre><code class="language-bash">bash sync_local_build.sh          # real copies into ~/.claude, ~/.grok, ~/.codex, ~/.gemini, ~/.config/opencode skills dirs
+</code></pre>
+<p><strong>3. By hand</strong> — copy <code>skills/local-build/</code> into your agent's skill directory.</p>
+<p>Whichever route: the skill is a front door; it needs this project (<code>harness/</code>, <code>config/</code>) reachable at <code>A770B_PROJECT</code>
+(default <code>~/local-ai/A770_Builder</code>, see <em>Configure</em>), a llama.cpp build with the Vulkan backend, <code>bubblewrap</code>, <code>uv</code> and
+opencode on the host, and the model files in <code>A770B_MODELS</code>.</p>
+<h3 id="per-agent-as-tested-on-this-workstation">Per agent, as tested on this workstation</h3>
+<table>
+<thead>
+<tr>
+<th>agent</th>
+<th>skill directory</th>
+<th>how it shows up</th>
+<th>note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claude Code</td>
+<td><code>~/.claude/skills/local-build</code></td>
+<td><code>claude skills</code> lists <code>local-build</code>; invoke as <code>/local-build</code> or run the script</td>
+<td>the whole matrix was driven this way</td>
+</tr>
+<tr>
+<td>opencode</td>
+<td><code>~/.config/opencode/skills/local-build</code></td>
+<td>loaded only if allowed by name: add <code>"local-build": "allow"</code> under <code>permission.skill</code> (its policy is deny-all)</td>
+<td>opencode is also the executor inside the sandbox</td>
+</tr>
+<tr>
+<td>Gemini CLI</td>
+<td><code>~/.gemini/skills/local-build</code></td>
+<td><code>gemini skills list</code> shows the SKILL.md under <em>Discovered Agent Skills</em></td>
+<td></td>
+</tr>
+<tr>
+<td>Codex CLI</td>
+<td><code>~/.codex/skills/local-build</code></td>
+<td>present in its skills directory</td>
+<td>Codex cannot use the local model as its own brain (Responses API), it dispatches the seat</td>
+</tr>
+<tr>
+<td>grok CLI</td>
+<td><code>~/.grok/skills/local-build</code></td>
+<td>present in its skills directory</td>
+<td>grok is x.ai-bound; it dispatches the seat through the script</td>
+</tr>
+</tbody>
+</table>
+<p>Every agent adds <code>CONSTITUTION_SNIPPET.md</code> to its own constitution file itself (<code>SKILL.md</code> says how); nothing writes
+into another agent's home. Licence: MIT (<code>LICENSE</code>).</p>
+<h2 id="run-it">Run it</h2>
+<pre><code class="language-bash">bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat &lt;brief.md&gt;            # fast profile
+bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat &lt;brief.md&gt; --serious  # serious profile
+bash skills/local-build/scripts/local-build.sh serve fast|serious · status · stop
+bash sync_local_build.sh                                                               # after editing the skill
+</code></pre>
+<p>The run refuses anything but a git worktree root that is not the live checkout, takes a run lock, starts or switches
+the server, sets the seat's <code>AGENTS.md</code> aside for the call and restores it under a trap, runs opencode inside the
+sandbox with <code>&lt; /dev/null</code>, captures the diff, the model's own pytest line and the timings without executing anything
+the model wrote, and resets the seat. Judge by the capture in <code>~/local-ai/results/</code>, never by exit code.</p>
+<h2 id="what-is-in-here">What is in here</h2>
+<table>
+<thead>
+<tr>
+<th>path</th>
+<th>role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>skills/local-build/</code></td>
+<td>the agent skill: <code>SKILL.md</code>, <code>scripts/local-build.sh</code> (profiles <code>fast</code> / <code>--serious</code>), <code>CONSTITUTION_SNIPPET.md</code> (agents add it to their own constitution)</td>
+</tr>
+<tr>
+<td><code>render_readme.sh</code></td>
+<td>regenerates <code>README.html</code> from this file — run after every README edit; the Markdown is the source</td>
+</tr>
+<tr>
+<td><code>sync_local_build.sh</code></td>
+<td>installs the skill as real copies into every agent's skill directory (Claude Code, grok, Codex, Gemini, opencode)</td>
+</tr>
+<tr>
+<td><code>harness/serve_a770_llamacpp.sh</code></td>
+<td>the only way a server starts: budget gate, VRAM cap (13 GiB after load on a display card), <code>-ub 512</code>, model marker</td>
+</tr>
+<tr>
+<td><code>harness/build_local.sh</code></td>
+<td>dispatch a brief through opencode in a git worktree (never the live main checkout), <code>&lt; /dev/null</code>, inside the sandbox</td>
+</tr>
+<tr>
+<td><code>harness/sandbox_run.sh</code></td>
+<td>the bubblewrap boundary: only the seat read-write, no credentials, no main checkout, no harness source</td>
+</tr>
+<tr>
+<td><code>harness/env.sh</code> · <code>config/builder.env.example</code></td>
+<td>every path and knob, one place; defaults = this workstation</td>
+</tr>
+<tr>
+<td><code>harness/guard.sh</code></td>
+<td>canonical worktree guard, verified pids, the run lock, the built-in budget gate (review <code>fact:2087</code>)</td>
+</tr>
+<tr>
+<td><code>SANDBOX-PLAN.md</code></td>
+<td>the sequenced security work from the adversarial review, with a done log</td>
+</tr>
+<tr>
+<td><code>harness/capture_task.sh</code></td>
+<td>diff + new files + pytest line + server-side TTFT/TPOT distribution, then worktree reset</td>
+</tr>
+<tr>
+<td><code>harness/bench_model.sh</code> · <code>run_one.sh</code> · <code>measure_overhead.sh</code></td>
+<td>the qualification row: probes → gate → task → capture; opencode opening-request cost</td>
+</tr>
+<tr>
+<td><code>config/opencode.profile.template.jsonc</code></td>
+<td>the ONLY opencode config the sandbox sees, rendered per run with the server URL, the profile's window and a default-deny bash allow-list</td>
+</tr>
+<tr>
+<td><code>harness/warm_cache.sh</code></td>
+<td>pre-fills the read-only uv cache the sandbox mounts (it has no network)</td>
+</tr>
+<tr>
+<td><code>LICENSE</code></td>
+<td>MIT</td>
+</tr>
+<tr>
+<td><code>briefs/</code></td>
+<td>the matrix task (<code>T1-…</code>), the cheap-reviewer prompt, the smoke brief</td>
+</tr>
+</tbody>
+</table>
+<p>Data stays outside this folder on purpose: models in <code>~/LLM/tested</code> and <code>~/LLM/next-card</code>; the seat (<code>~/local-ai/seat</code>,
+a plain clone of the target repository with no link to its live checkout), results, logs and the uv cache in
+<code>~/local-ai/</code>. Nothing here is a git worktree of another project.</p>
+<h2 id="profiles-measured-on-the-a770-llamacpp-b10805-vulkan">Profiles (measured on the A770, llama.cpp b10805 Vulkan)</h2>
+<table>
+<thead>
+<tr>
+<th>profile</th>
+<th>model</th>
+<th>window · KV</th>
+<th>VRAM</th>
+<th>decode / prefill</th>
+<th>small task</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fast</code> (default)</td>
+<td>Qwen3.5-9B Q4_K_M</td>
+<td>81,920 · q8_0</td>
+<td>6.9 GiB</td>
+<td>45 tok/s / 464 tok/s</td>
+<td>2–3 min</td>
+</tr>
+<tr>
+<td><code>--serious</code></td>
+<td>Qwen3.8-27B GSQ-RCO IQ2_XS</td>
+<td>158,000 · q4_0</td>
+<td>11.5 GiB</td>
+<td>8.1 tok/s / 70 tok/s</td>
+<td>10–25 min</td>
+</tr>
+</tbody>
+</table>
+<h2 id="configure">Configure</h2>
+<p>Everything comes from one env file, loaded by <code>harness/env.sh</code> with these precedences: defaults → <code>&lt;project&gt;/config/builder.env</code>
+→ <code>~/.config/a770-builder/builder.env</code> → the calling environment. Copy <code>config/builder.env.example</code> to one of those and
+edit only what differs. The defaults are the workstation the seat was qualified on (Arc A770 as <code>Vulkan0</code>, models in
+<code>~/LLM/tested</code>, data in <code>~/local-ai</code>). The installed skill copy finds the project via <code>A770B_PROJECT</code>.</p>
+<h2 id="models-where-to-put-them-how-the-skill-reaches-them">Models — where to put them, how the skill reaches them</h2>
+<ol>
+<li>Download GGUFs into <code>A770B_MODELS</code> (default <code>~/LLM/tested</code>); keep a README there saying why each earned its place.</li>
+<li>Name the two profiles' files: <code>A770B_FAST_MODEL</code>, <code>A770B_SERIOUS_MODEL</code> (bare name = looked up in <code>A770B_MODELS</code>;
+   absolute paths work). Set the context and KV type per profile (<code>A770B_*_CTX</code>, <code>A770B_*_KV</code>); reasoning models take
+   <code>A770B_*_REASONING=on</code> plus their template kwargs in <code>A770B_*_EXTRA</code>.</li>
+<li>The llama-server process on the host reads the weights and answers on <code>A770B_HOST:A770B_PORT</code> under the alias
+   <code>local-builder</code>. The model's own process runs inside the sandbox and never sees <code>A770B_MODELS</code> — it only talks to the
+   server over loopback. So the weights can live anywhere the server can read, including a read-only share.</li>
+<li>Before trusting a new model, qualify it: <code>harness/run_one.sh &lt;label&gt; &lt;gguf&gt; &lt;ctx&gt;</code> runs the probes, the coding task and
+   the capture (method <code>fact:2076</code>); a cheap reviewer grades the capture; it lands in <code>A770B_MODELS</code> only on green.</li>
+</ol>
+<h2 id="what-is-hardcoded-now">What is hardcoded now</h2>
+<p>Nothing that matters. Two conventions remain: the opencode alias <code>local-builder</code> (the provider files depend on it) and the
+sandbox's use of <code>bubblewrap</code>, <code>uv</code> and the opencode binary from <code>A770B_OPENCODE_BIN</code>. Private project names appear only in
+the shared-memory record ids cited in comments.</p>
+<h2 id="security-state">Security state</h2>
+<p>Two adversarial reviews (Opus, read-only): <code>fact:2087</code> on the first version, and a public-readiness pass on this one. What
+holds now, all mutation-checked: canonical refusal of protected checkouts (<code>A770B_REFUSE</code>, required), of linked worktrees,
+symlinks, subdirectories and agent homes; a run lock and pids verified before any kill; the model's process inside bubblewrap
+with a private home, no credentials, no other tree, <strong>no network except a loopback bridge to the model server</strong> (socat over a
+unix socket; the LAN, the internet and every other host service are unreachable), <code>.git/config</code>, <code>.git/hooks</code> and <code>.git/info</code>
+mounted read-only so the model cannot plant config-driven code; every host-side git call neutralises config-driven code paths
+(<code>safe_git</code>); the uv cache read-only and pre-warmed; the only opencode config inside is a rendered per-run profile with a
+default-deny bash allow-list and no MCP, web or skills; capture executes nothing the model wrote; VRAM readings that refuse to
+fail open. Still open (<code>SANDBOX-PLAN.md</code>): a sandboxed <code>verify</code> command for reviewers, a checksum on the sync, an API key on the
+model server, a third adversarial pass from another model family, a retrospective on <code>decision:2084</code>.</p>
+<h2 id="records">Records</h2>
+<p>The <code>fact:</code>/<code>decision:</code>/<code>retro:</code> ids cited in comments and here point into the author's private shared-memory store; they are
+kept as provenance and resolve to nothing outside it. Project <code>shared-memory-GitHub</code>, domain <code>inference</code>, entity <code>A770</code>: method <code>fact:2076</code>, matrix
+<code>fact:2062–2082</code>, seat <code>decision:2084</code>, skill <code>fact:2085</code>, containment <code>fact:2087–2089</code> / <code>decision:2090</code> / <code>retro:2091</code>,
+latest handoff <code>fact:2092</code>.</p>
+</div>

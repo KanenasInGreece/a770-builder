@@ -1,0 +1,44 @@
+{
+  // opencode profile TEMPLATE for the local builder seat. build_local.sh renders it per run into
+  // $A770B_DATA/logs/opencode.<profile>.jsonc, replacing __BASEURL__ __CTX__ __OUTPUT__ __NAME__ from env.sh.
+  // It is the ONLY opencode config inside the sandbox (the global config never enters), so the policy below is
+  // the whole policy: bash is DEFAULT-DENY with an explicit allow-list; edits stay inside the project (the sandbox
+  // enforces that anyway); no MCP, no skills, no web.
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "local-a770": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local builder (__NAME__)",
+      "options": { "baseURL": "__BASEURL__", "apiKey": "local-no-auth" },
+      "models": { "local-builder": { "name": "local-builder (__NAME__)", "limit": { "context": __CTX__, "output": __OUTPUT__ } } }
+    }
+  },
+  "mcp": {},
+  "permission": {
+    "skill": { "*": "deny" },
+    "webfetch": "deny",
+    "doom_loop": "allow",
+    "edit": { "*": "allow" },
+    "read": { "*": "allow", "**/.env": "deny", "**/.env.*": "deny", "**/*.pem": "deny", "**/*.key": "deny", "**/id_*": "deny" },
+    "bash": {
+      "*": "deny",
+      "ls *": "allow", "ls": "allow", "pwd": "allow", "cat *": "allow", "head *": "allow", "tail *": "allow", "wc *": "allow",
+      "grep *": "allow", "rg *": "allow", "find *": "allow", "tree *": "allow", "diff *": "allow", "stat *": "allow", "file *": "allow",
+      "echo *": "allow", "printf *": "allow", "true": "allow", "sed -n *": "allow", "awk *": "allow", "sort *": "allow", "uniq *": "allow",
+      "mkdir *": "allow", "touch *": "allow", "cp *": "allow", "mv *": "allow",
+      "python3 *": "allow", "python *": "allow", "pytest *": "allow", "python3 -m pytest *": "allow",
+      "uv run *": "allow", "uv pip *": "deny", "uv tool *": "deny",
+      "git status*": "allow", "git diff*": "allow", "git log*": "allow", "git show*": "allow", "git ls-files*": "allow", "git grep*": "allow", "git blame*": "allow"
+    }
+  },
+  "agent": {
+    "local-builder": {
+      "description": "Lean coding agent for the local builder seat",
+      "mode": "primary",
+      "prompt": "You are a coding agent working inside a git worktree of a Python project. Use the tools to read, search (grep/glob), edit and run commands. Read the brief you are pointed at, locate code with grep before reading whole files, make the change, run the exact test command given, and report the result. Be concise; do not narrate plans.",
+      "tools": { "webfetch": false, "todowrite": false, "todoread": false, "task": false, "skill": false }
+    }
+  },
+  "model": "local-a770/local-builder",
+  "small_model": "local-a770/local-builder"
+}
