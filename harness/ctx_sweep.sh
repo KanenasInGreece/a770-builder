@@ -12,7 +12,7 @@ for want in ${SIZES[@]}; do
   b0=$(journalctl -k --since '-1min' 2>/dev/null | grep -ciE 'engine reset|timedout')
   vmax=0; ( while :; do u=$(gpu_used_gib); echo "$u"; sleep 2; done ) > "$CORPUS.vram" & VP=$!
   t0=$(date +%s.%N)
-  R=$(curl -s --max-time 900 -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$CORPUS.body" "$URL/v1/chat/completions")
+  R=$(curl -s --max-time "${A770B_SWEEP_MAX_TIME:-900}" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$CORPUS.body" "$URL/v1/chat/completions")
   t1=$(date +%s.%N); kill $VP 2>/dev/null; wait $VP 2>/dev/null
   vmax=$(sort -n "$CORPUS.vram" | tail -1)
   read -r toks pms pps dps <<<"$(python3 -c '
