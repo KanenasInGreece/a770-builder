@@ -4,3 +4,4 @@ logs/
 __pycache__/
 .pytest_cache/
 config/builder.env
+CLAUDE.md
