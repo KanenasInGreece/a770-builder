@@ -334,3 +334,143 @@ def test_spec_symlink_refused(tmp_path):
     result = run_check(link_spec, seat)
     assert result.returncode == 2
     assert "spec" in result.stderr
+
+
+def test_context_appends_definitions(tmp_path):
+    """Test 18: context subcommand appends definitions from the specified files."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    a_py = seat / "a.py"
+    a_py.write_text("import os\ndef alpha():\n    return 1\nclass Beta:\n    def gamma(self):\n        pass", encoding="utf-8")
+    b_js = seat / "b.js"
+    b_js.write_text("function delta() {\n}\nhelper() {", encoding="utf-8")
+    brief = tmp_path / "brief.md"
+    brief.write_text("# brief", encoding="utf-8")
+
+    spec = write_spec(tmp_path / "spec.json", {"context": {"definitions_of": ["a.py", "b.js"]}})
+
+    result = subprocess.run(
+        [sys.executable, str(RENDERER), "context", "--spec", str(spec), "--seat", str(seat),
+         "--brief-copy", str(brief)],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"context failed: {result.stderr}"
+
+    brief_text = brief.read_text()
+    assert "2: def alpha():" in brief_text
+    assert "4: class Beta:" in brief_text
+    assert "5:     def gamma(self):" in brief_text
+    assert "### b.js" in brief_text
+    assert "1: function delta() {" in brief_text
+    assert "3: helper() {" in brief_text
+    assert "import os" not in brief_text
+
+
+def test_context_echo_lists_files(tmp_path):
+    """Test 19: context subcommand writes the echo with the correct context entries."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    a_py = seat / "a.py"
+    a_py.write_text("def alpha():\n    return 1\nclass Beta:\n    def gamma(self):\n        pass", encoding="utf-8")
+    brief = tmp_path / "brief.md"
+    brief.write_text("# brief", encoding="utf-8")
+
+    spec = write_spec(tmp_path / "spec.json", {"context": {"definitions_of": ["a.py"]}})
+
+    echo = tmp_path / "echo.json"
+    result = subprocess.run(
+        [sys.executable, str(RENDERER), "context", "--spec", str(spec), "--seat", str(seat),
+         "--brief-copy", str(brief), "--echo", str(echo)],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"context failed: {result.stderr}"
+
+    echo_data = json.loads(echo.read_text())
+    assert echo_data["context"] == [{"path": "a.py", "lines": 3}]
+
+
+def test_context_without_key_leaves_brief(tmp_path):
+    """Test 20: context subcommand with spec lacking context key leaves brief unchanged."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    brief = tmp_path / "brief.md"
+    brief.write_text("# brief", encoding="utf-8")
+
+    spec = write_spec(tmp_path / "spec.json", {})
+
+    result = subprocess.run(
+        [sys.executable, str(RENDERER), "context", "--spec", str(spec), "--seat", str(seat),
+         "--brief-copy", str(brief)],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"context failed: {result.stderr}"
+
+    brief_text = brief.read_text()
+    assert brief_text == "# brief"
+
+
+def test_context_refuses_outside_and_symlink(tmp_path):
+    """Test 21: context subcommand refuses paths outside --seat and symlinks."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    a_py = seat / "a.py"
+    a_py.write_text("def alpha():\n    return 1", encoding="utf-8")
+
+    spec = write_spec(tmp_path / "spec.json", {"context": {"definitions_of": ["../brief.md"]}})
+
+    result = subprocess.run(
+        [sys.executable, str(RENDERER), "context", "--spec", str(spec), "--seat", str(seat),
+         "--brief-copy", str(tmp_path / "brief.md")],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 2
+    assert "context.definitions_of" in result.stderr
+
+    link_py = seat / "link.py"
+    link_py.symlink_to(a_py)
+
+    spec2 = write_spec(tmp_path / "spec2.json", {"context": {"definitions_of": ["link.py"]}})
+
+    result2 = subprocess.run(
+        [sys.executable, str(RENDERER), "context", "--spec", str(spec2), "--seat", str(seat),
+         "--brief-copy", str(tmp_path / "brief.md")],
+        capture_output=True, text=True
+    )
+    assert result2.returncode == 2
+    assert "context.definitions_of" in result2.stderr
+
+
+def test_context_caps_per_file(tmp_path):
+    """Test 22: context subcommand caps per-file lines at 400 and truncates."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    a_py = seat / "a.py"
+    lines = "\n".join(f"def f{i}():" for i in range(1, 451))
+    a_py.write_text(lines, encoding="utf-8")
+    brief = tmp_path / "brief.md"
+    brief.write_text("# brief", encoding="utf-8")
+
+    spec = write_spec(tmp_path / "spec.json", {"context": {"definitions_of": ["a.py"]}})
+
+    result = subprocess.run(
+        [sys.executable, str(RENDERER), "context", "--spec", str(spec), "--seat", str(seat),
+         "--brief-copy", str(brief)],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"context failed: {result.stderr}"
+
+    brief_text = brief.read_text()
+    assert brief_text.count(": ") == 400
+    assert "(truncated at 400 lines)" in brief_text
+
+
+def test_check_validates_context_paths(tmp_path):
+    """Test 23: check subcommand validates context paths."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    spec = write_spec(tmp_path / "spec.json", {"context": {"definitions_of": ["missing.py"]}})
+
+    result = run_check(spec, seat)
+    assert result.returncode == 2
+    assert "context.definitions_of" in result.stderr
