@@ -29,8 +29,9 @@ The reset after every run removes every uncommitted file in the seat, ignored on
 the tests inside a fresh sandbox with no model, no bridge and no key, writes `<label>.verify.md` with the command, the
 output and a verdict taken from the command's exit code, and resets the seat whatever happens. By default it runs pytest
 on every `tests/*.py` file the patch touches, passing the names as arguments and refusing any name that is not plain;
-`--test "<command>"` runs something else instead, inside the same boundary. It refuses an empty patch, a seat that is
-not clean (ignored files included), and a patch that does not apply.
+`--test "<command>"` runs something else instead, inside the same boundary; the verdict is the exit status of that
+whole command, so give it the test runner alone, never followed by an `echo` or anything else that would end it with
+zero. It refuses an empty patch, a seat that is not clean (ignored files included), and a patch that does not apply.
 
 The test command a brief names runs in the model's own shell tool, which cuts a command at 120 seconds unless the model
 asks for longer, and inside the boundary, which has no network and none of the host's environment. So a brief names the
