@@ -3,9 +3,10 @@
 # except a loopback route to the model server.
 #   sandbox_run.sh <worktree> <profile-config.jsonc> -- <command…>
 # Inside: /usr,/etc read-only; a private empty $HOME on tmpfs with exactly these mounts:
-#   <worktree>                          read-write   (the only writable tree) — EXCEPT .git/config, .git/hooks and
-#                                                    .git/info, which are mounted read-only so the model cannot plant
-#                                                    config-driven code that host-side git would later execute
+#   <worktree>                          read-write   (the only writable tree) — EXCEPT its whole .git directory,
+#                                                    mounted read-only: the model reads history and status but can plant
+#                                                    nothing there, neither config-driven code for host-side git nor a
+#                                                    file that would survive the reset unseen (git clean never enters .git)
 #   <opencode binary dir>               read-only
 #   <profile-config.jsonc>              read-only at ~/.config/opencode/local-profile.jsonc (the ONLY opencode config inside;
 #                                                    the global config is never mounted — it may hold provider keys)
@@ -34,14 +35,13 @@ if [ "${A770B_NO_BRIDGE:-0}" != 1 ]; then
   trap 'kill $BRIDGE 2>/dev/null; rm -f "$SOCK"' EXIT
   for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.2; done
 fi
-mkdir -p "$WT/.git/hooks" "$WT/.git/info"
 ARGS=(
   --ro-bind /usr /usr --ro-bind /etc /etc
   --symlink usr/lib64 /lib64 --symlink usr/lib /lib --symlink usr/bin /bin --symlink usr/sbin /sbin
   --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run
   --tmpfs "$HOME"
   --bind "$WT" "$WT"
-  --ro-bind "$WT/.git/config" "$WT/.git/config" --ro-bind "$WT/.git/hooks" "$WT/.git/hooks" --ro-bind "$WT/.git/info" "$WT/.git/info"
+  --ro-bind "$WT/.git" "$WT/.git"
   --ro-bind "$OC_BIN" "$OC_BIN"
   --ro-bind "$CFG" "$HOME/.config/opencode/local-profile.jsonc"
   --dir "$HOME/.local/share/opencode" --dir "$HOME/.cache/opencode"

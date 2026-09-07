@@ -40,9 +40,9 @@ safe_git_diff(){ local wt="$1"; shift; safe_git "$wt" diff --no-ext-diff --no-te
 
 # seat_dirty <worktree> — lists everything in the seat that is not committed, INCLUDING ignored files (a model can plant
 # a .venv, a CLAUDE.md or an agent settings file that the plain status never shows). Ignored files are listed one by one
-# (status would collapse an ignored directory), and only Local_Documentation/briefs/, the one path the harness itself
-# writes, is exempt — in the status output too, for a repository that does not ignore that directory.
-seat_dirty(){ { safe_git "$1" status --porcelain --untracked-files=all 2>/dev/null | grep -vE '^\?\? Local_Documentation/briefs/'; safe_git "$1" ls-files --others --ignored --exclude-standard 2>/dev/null | grep -vE '^Local_Documentation/briefs/' | sed 's/^/!! /'; } || true; }
+# (status would collapse an ignored directory), and only the harness's own brief copies, Local_Documentation/briefs/brief-<stamp>.md,
+# are exempt — by exact name, in the status output and among ignored files alike, so nothing else can hide in that directory.
+seat_dirty(){ { safe_git "$1" status --porcelain --untracked-files=all 2>/dev/null | grep -vE '^\?\? Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$'; safe_git "$1" ls-files --others --ignored --exclude-standard 2>/dev/null | grep -vE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' | sed 's/^/!! /'; } || true; }
 
 # reset_worktree <worktree> — discard everything the model did in the seat: tracked changes, untracked AND ignored files
 # (-x; an operator's own ignored files in the seat go too — keep no state there), keeping only Local_Documentation/briefs.
@@ -50,6 +50,8 @@ seat_dirty(){ { safe_git "$1" status --porcelain --untracked-files=all 2>/dev/nu
 reset_worktree(){ local wt="$1"
   safe_git "$wt" checkout -- . 2>/dev/null || true
   safe_git "$wt" clean -fdxq -e /Local_Documentation/briefs 2>/dev/null || true
+  # the briefs directory keeps only the harness's own copies; anything else planted there goes with the rest
+  [ -d "$wt/Local_Documentation/briefs" ] && find "$wt/Local_Documentation/briefs" -mindepth 1 -regextype posix-extended ! -regex '.*/brief-[0-9]{8}-[0-9]{6}\.md' -exec rm -rf -- {} + 2>/dev/null
   echo "worktree reset: $(seat_dirty "$wt" | wc -l) entries remain"
 }
 
@@ -64,10 +66,11 @@ llama_pid_alive(){
   printf '%s\n' "$pid"
 }
 
-# run_lock — take the exclusive run lock for the rest of this shell; refuses if another run holds it.
+# run_lock — take the exclusive run lock for the rest of this shell; refuses if another run holds it (one retry, so a
+# status probe holding it for a moment never refuses a run).
 run_lock(){
   exec 9>"$A770B_DATA/logs/local-build.lock"
-  flock -n 9 || { echo "⛔ another local-build run holds the lock ($A770B_DATA/logs/local-build.lock) — one run at a time on this card" >&2; exit 2; }
+  flock -n 9 || { sleep 0.3; flock -n 9; } || { echo "⛔ another local-build run holds the lock ($A770B_DATA/logs/local-build.lock) — one run at a time on this card" >&2; exit 2; }
 }
 
 # VRAM on the builder card via nvtop. Refuses to fail open: without nvtop the caller must have set A770B_ALLOW_NO_NVTOP=1.
@@ -83,9 +86,11 @@ gpu_free_mb(){  local f; f=$(_nvtop_field mem_free); [ "$f" -ge 0 ] && echo $((f
 # health_status <url> — one GET, and the status word the answer carries; "no answer" when nothing comes back. It informs
 # the operator reading the log and never refuses: another service's health says nothing about this host or this card.
 health_status(){ local body word
-  body=$(curl -s --max-time 5 "$1" 2>/dev/null) || body=""
+  body=$(curl -s --max-time 5 --max-filesize 65536 "$1" 2>/dev/null) || body=""
   [ -n "$body" ] || { echo "no answer"; return 0; }
-  word=$(printf '%s' "$body" | grep -oE '"status": ?"[^"]*"' | head -1 | sed -E 's/.*"([^"]*)"$/\1/')
+  # the first "status" field in the body, printable characters only, at most 40 of them: the answer is another service's
+  # text and lands on the operator's terminal, so control characters never pass
+  word=$(printf '%s' "$body" | tr -d '[:cntrl:]' | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*"([^"]*)"$/\1/' | cut -c1-40)
   [ -n "$word" ] && echo "$word" || echo "answered, no status field"
 }
 
