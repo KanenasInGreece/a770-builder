@@ -47,6 +47,18 @@ briefs directory the harness writes keeps only the harness's own copies across a
 reported and removed. The health line the budget gate prints from an optional URL is stripped of control characters
 and cut short, so a hostile service cannot write to your terminal through it.
 
+A run may carry a specification, a JSON file the calling agent writes, which sets the model's standing instructions,
+the paths it may edit, extra commands it may run, files whose definitions are prepared for it, and how the result is
+verified. The specification widens nothing beneath the profile: it is read on the host, checked against the seat
+before the run lock and before any server starts, never read from inside the seat, and its card and context files must
+be regular files inside the seat, so it cannot make the harness read a host file into the model's prompt. Its bash
+additions are refused when they are a bare wildcard, a path, or begin with a wrapper or interpreter (a first word
+that runs another command, case-folded), and the profile's deny
+block, the floor, is rendered after them. That floor is defence in depth and nothing more: the profile already lets the
+model run python, so a model that wants a git verb has one; what stops it is the read-only `.git` mount, the unshared
+network and the reset, which are not the specification's to touch. The capture keeps the snapshot and an echo of what
+was rendered, hash included, so a reviewer sees what the run was allowed as well as what it did.
+
 | surface | inside the sandbox |
 |---|---|
 | filesystem | the seat read-write; a private empty home; the pre-warmed uv cache read-only; nothing else of yours |
@@ -55,6 +67,7 @@ and cut short, so a hostile service cannot write to your terminal through it.
 | tools | one rendered profile: default-deny shell allow-list, no MCP, no web fetch, no skills; `.env` and key files unreadable |
 | the model server | reachable with the key the rendered profile carries; the key unlocks nothing else |
 | the host afterwards | the capture is taken with `safe_git` and executes nothing the model wrote; the reset removes ignored files too; `verify` runs the tests in a fresh sandbox without the key |
+| a run specification | read on the host, checked before the server starts, snapshotted; card and context files inside the seat only; hidden tests under one root, copied in after the patch applies; bash additions rendered before the floor, wildcards and wrappers refused; the sandbox, the network and `.git` untouched by it |
 
 ## What it touches on your machine
 
@@ -62,7 +75,9 @@ The harness runs as you, outside the sandbox, and this is the complete list of w
 starts one `llama-server` process on the port you configure, writes under the data directory (the seat, the results, the
 logs, the rendered profile and the uv cache), creates the API key file under your config directory with mode 600, and
 reads the seat's git metadata through `safe_git`. It makes no network call of its own except to that server on loopback;
-the model files and the skill are fetched by you, with the commands in the install section. It needs no database, no
+the model files
+and the skill are fetched by you, with the commands in the install section. When a run names hidden tests, it reads
+them from `A770B_HIDDEN_ROOT` and nowhere else. It needs no database, no
 account and no memory system.
 
 If you run other services on the same host, the seat is built not to meet them. Inside the sandbox the network namespace
@@ -99,6 +114,10 @@ read-only adversarial review by a model that did not write it, and the mutation 
 ## What is still open
 
 - A third adversarial pass, by a model family that has not yet read this boundary.
+- A hidden acceptance test is anti-mistake, not anti-adversary: it is copied into the seat only after the patch has
+  applied, so the model never sees it while building, but a hostile patch can print it into the verify file.
+- Skills mounted into the seat from a run specification are deferred: both adversarial reads of the design found the
+  copy-and-mount channel the most attackable part, and it is not built.
 - The API key is readable by the model inside a build run, because the rendered profile carries it. That is accepted:
   the key unlocks only the server the sandbox already reaches; `verify` runs without it. Rotate by deleting the key
   file; the next `serve` notices the running server no longer accepts the file's key and restarts it.

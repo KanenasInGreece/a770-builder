@@ -18,10 +18,13 @@ OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patc
     [ -L "$WT/$f" ] && continue                                   # a symlink is named in the report, never followed or applied
     safe_git_diff "$WT" --no-index -- /dev/null "$f" || true; done
 } > "$PATCH"
+# the diff is taken into a file first: piping it into head made git die of SIGPIPE on a diff over 400 lines, and under
+# pipefail that aborted the capture before the reset, leaving the seat dirty while the skill reported it clean
+DIFF="$A770B_DATA/logs/capture-$LABEL.diff"; safe_git_diff "$WT" > "$DIFF"
 {
 echo "# Task capture — $LABEL — $(date -Is)"
 echo; echo "## git status (worktree)"; safe_git "$WT" status --porcelain
-echo; echo "## diff (tracked)"; echo '```diff'; safe_git_diff "$WT" | head -400; echo '```'
+echo; echo "## diff (tracked, first 400 lines; the complete change is the patch)"; echo '```diff'; head -400 -- "$DIFF"; echo '```'
 echo; echo "## new files"
 safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
   echo; if [ -L "$WT/$f" ]; then echo "### $f — SYMLINK to $(readlink -- "$WT/$f"), not read, not in the patch (the host never follows a link the model made)"; continue; fi
@@ -30,6 +33,15 @@ echo; echo "## ignored files the run left behind (names only; removed by the res
 safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || echo "none"
 echo; echo "## pytest summary as reported by the model inside the run (NOT re-executed here)"
 grep -E '[0-9]+ (passed|failed|error)' "$BLOG" | tail -3 || echo "no pytest summary line in the transcript"
+echo; echo "## run specification"
+if [ -n "${A770B_SPEC:-}" ] && [ -f "$A770B_SPEC" ]; then
+  ( umask 077; cp -- "$A770B_SPEC" "$A770B_DATA/results/$LABEL.spec.json" )
+  ECHO=$(cat "$A770B_DATA/logs/last-build.echo.path" 2>/dev/null || true)
+  if [ -n "$ECHO" ] && [ -f "$ECHO" ]; then ( umask 077; cp -- "$ECHO" "$A770B_DATA/results/$LABEL.echo.json" ); echo '```json'; cat -- "$ECHO"; echo '```'; else echo "no echo file: the renderer wrote none"; fi
+  echo "specification kept as $A770B_DATA/results/$LABEL.spec.json; the echo, what was actually rendered, as $A770B_DATA/results/$LABEL.echo.json"
+else
+  echo "none: the run had no specification, so the profile is the template's defaults"
+fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
 python3 - "$SLOG" <<'PY'
@@ -48,5 +60,6 @@ print(f"TPOT ms: median={q(tpot,.5):.1f} p90={q(tpot,.9):.1f}   decode tok/s med
 print(f"prefill tok/s over all prompts={pt/ (sum(p[0] for p in P)/1000) if P else 0:.0f}")
 PY
 } > "$OUT" 2>&1
+rm -f -- "$DIFF"
 echo "captured → $OUT ($(wc -l < "$OUT") lines) · patch $PATCH ($(wc -l < "$PATCH") lines)"
 reset_worktree "$WT"

@@ -53,7 +53,9 @@ those. <strong>long</strong> is Gemma 4 E4B with flash attention off, a 131k-tok
 and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
 is a capacity, not the depth a model works reliably at, and each profile's row says which depth was measured. No
 profile indexes a large file, which stays a <code>grep</code>: where a deterministic tool answers exactly, the seat is not asked to
-approximate it. Every profile's output is judged the same way, by its capture and by <code>verify</code>.</p>
+approximate it. A run specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the
+paths it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
+Every profile's output is judged the same way, by its capture and by <code>verify</code>.</p>
 <pre><code class="language-text">your coding agent ── the context, the judgement, the plan
       │  local-build skill (a brief in, a capture out)
       ▼
@@ -108,6 +110,12 @@ re-qualified the same way instead of trusted.</p>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><strong>a Linux host</strong></td>
+<td>the whole harness: the sandbox is bubblewrap, which is Linux kernel namespaces; the VRAM cap reads <code>nvtop</code>; the reset watch reads the kernel log; the serving line rests on Mesa's Vulkan driver and the Xe watchdog rules. Measured on Fedora 44 only. On Windows the plausible route is the harness under WSL2 with <code>llama-server</code> running natively on Windows and reached over the loopback, but that has not been measured here and the VRAM cap would not see the card; macOS has no bubblewrap</td>
+<td>any distribution with user namespaces enabled (the default on Fedora, Ubuntu, Debian, Arch)</td>
+<td><code>bwrap</code>, <code>nvtop</code>, <code>journalctl</code> on <code>PATH</code></td>
+</tr>
 <tr>
 <td>Vulkan driver for the card</td>
 <td>the GPU backend llama.cpp runs on</td>

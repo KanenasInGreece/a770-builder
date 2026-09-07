@@ -28,7 +28,8 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 # watchdog fires); without it the V cache must be f16, which the sliding window keeps small
 : "${A770B_LONG_EXTRA:=-fa off}"
 : "${A770B_FAST_TIMEOUT:=1500}";                             : "${A770B_SERIOUS_TIMEOUT:=3600}";    : "${A770B_LONG_TIMEOUT:=1500}"
-: "${A770B_OUTPUT_TOKENS:=4096}"                             # opencode's per-reply output limit for both profiles
+: "${A770B_OUTPUT_TOKENS:=16384}"                            # opencode's per-reply output limit: a whole file goes out in one tool call, and at 4,096 a test file of two hundred lines was cut mid-JSON, so every write failed (measured 2026-09-08)
+: "${A770B_HIDDEN_ROOT:=$A770B_DATA/hidden}"                  # hidden acceptance tests a run specification may name: files the model never sees, copied into the seat by verify after the patch applies
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_LLAMA_BIN:=${LLAMA_BIN:-$HOME/llama.cpp/build/bin/llama-server}}"
 : "${A770B_DEVICE:=Vulkan0}"                             # llama-server --list-devices names the cards; pick the builder card
@@ -66,12 +67,19 @@ a770b_api_key(){
   chmod 600 "$A770B_API_KEY_FILE" 2>/dev/null || true       # re-asserted on every read, not only at creation
   head -n 1 "$A770B_API_KEY_FILE"
 }
-# a770b_render_profile <profile> <ctx> <out> [nokey] — the ONLY opencode config a sandboxed run sees, rendered from the
-# template with the server URL, the key, the window and the output limit. Written mode 600: it carries the key. With a
-# fourth argument the key is a placeholder: for runs that need no server (verify), so patch-supplied code never sees it.
+# a770b_render_profile <profile> <ctx> <out> [nokey] — the ONLY opencode config a sandboxed run sees, rendered by
+# harness/render_profile.py from the template with the server URL, the key, the window and the output limit, and, when
+# A770B_SPEC names a run specification, with that specification applied against the seat in A770B_RENDER_SEAT; the
+# renderer then writes <out>.echo.json saying what it rendered. Written mode 600: it carries the key. With a fourth
+# argument the key is a placeholder and no specification is applied: for runs that need no server (verify).
 a770b_render_profile(){
   local profile="$1" ctx="$2" out="$3" key
   if [ -n "${4:-}" ]; then key="no-key-for-this-run"; else key=$(a770b_api_key) || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; return 1; }; fi
-  rm -f "$out"; ( umask 077; sed -e "s#__BASEURL__#http://$A770B_HOST:$A770B_PORT/v1#g" -e "s#__APIKEY__#$key#g" -e "s#__CTX__#$ctx#g"         -e "s#__OUTPUT__#$A770B_OUTPUT_TOKENS#g" -e "s#__NAME__#$profile#g" "$A770B_PROFILE_TEMPLATE" > "$out" )
+  rm -f "$out" "$out.echo.json"
+  if [ -n "${A770B_SPEC:-}" ] && [ -z "${4:-}" ]; then
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile" --spec "$A770B_SPEC" --seat "${A770B_RENDER_SEAT:?the seat the specification is checked against}" --echo "$out.echo.json"
+  else
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile"
+  fi
 }
 a770b_opencode_bin(){ if [ -n "$A770B_OPENCODE_BIN" ]; then printf '%s\n' "$A770B_OPENCODE_BIN"; else dirname "$(readlink -f "$(command -v opencode)")"; fi; }

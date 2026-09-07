@@ -11,17 +11,24 @@ set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 WT=$(guard_worktree "${1:?worktree path}"); BRIEF="${2:?brief file or task text}"
 PROFILE="${PROFILE:-fast}"
-case "$PROFILE" in fast) CTX=$A770B_FAST_CTX;; serious) CTX=$A770B_SERIOUS_CTX;; *) echo "⛔ PROFILE must be fast|serious" >&2; exit 2;; esac
+case "$PROFILE" in fast) CTX=$A770B_FAST_CTX;; serious) CTX=$A770B_SERIOUS_CTX;; long) CTX=$A770B_LONG_CTX;; *) echo "⛔ PROFILE must be fast|serious|long" >&2; exit 2;; esac
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"
 curl -sf --max-time 5 -H "Authorization: Bearer $(a770b_api_key)" "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve fast|serious)" >&2; exit 3; }
 # render the profile config (server URL, key, window, output limit)
 CFG="$A770B_DATA/logs/opencode.$PROFILE.jsonc"
-a770b_render_profile "$PROFILE" "$CTX" "$CFG" || exit 2
+export A770B_RENDER_SEAT="$WT"; a770b_render_profile "$PROFILE" "$CTX" "$CFG" || exit 2
 export OPENCODE_CONFIG="$CFG"
 MODEL="${LOCAL_MODEL:-local-a770/$A770B_ALIAS}"
 mkdir -p "$WT/Local_Documentation/briefs"
 stamp=$(date +%Y%m%d-%H%M%S)
 if [ -f "$BRIEF" ]; then cp -- "$BRIEF" "$WT/Local_Documentation/briefs/brief-$stamp.md"; else printf '%s\n' "$BRIEF" > "$WT/Local_Documentation/briefs/brief-$stamp.md"; fi
+# the run specification, if any: the prepared context lands in the brief copy, the echo beside the rendered profile
+if [ -n "${A770B_SPEC:-}" ]; then
+  python3 "$A770B_PROJECT/harness/render_profile.py" context --spec "$A770B_SPEC" --seat "$WT" --brief-copy "$WT/Local_Documentation/briefs/brief-$stamp.md" --echo "$CFG.echo.json" || exit 2
+  printf '%s\n' "$CFG.echo.json" > "$A770B_DATA/logs/last-build.echo.path"
+else
+  rm -f "$A770B_DATA/logs/last-build.echo.path"
+fi
 LOG="$A770B_DATA/logs/build-$stamp.log"
 printf '%s\n' "$LOG" > "$A770B_DATA/logs/last-build.log.path"
 echo "▶ profile=$PROFILE ctx=$CTX model=$MODEL endpoint=$ENDPOINT worktree=$WT brief=Local_Documentation/briefs/brief-$stamp.md log=$LOG sandbox=${SANDBOX:-1}"
