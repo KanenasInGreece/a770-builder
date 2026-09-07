@@ -16,7 +16,7 @@ the same day. The measured report (matrix, serving lines, method) lives beside t
 `A770B_ALLOW_NO_NVTOP=1`), `flock` and `ss` (util-linux / iproute2), and opencode (the executor inside the sandbox). Node is
 only needed for the skills CLI route.
 
-## First run (five steps)
+## First run (six steps)
 
 ```bash
 git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builder   # 1. the project (A770B_PROJECT)
@@ -25,7 +25,7 @@ cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/bui
 git clone <your target repo> ~/local-ai/seat                        # 3. the seat: a plain clone, never a linked worktree
 #    4. put the GGUFs named in the profiles into A770B_MODELS (see Models)
 bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
-bash ~/local-ai/A770_Builder/sync_local_build.sh                    #    install the skill; then a smoke run:
+npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # 6. install the skill into your agents (or: bash sync_local_build.sh)
 bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md
 ```
 

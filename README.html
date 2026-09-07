@@ -32,14 +32,14 @@ the same day. The measured report (matrix, serving lines, method) lives beside t
 <code>nvtop</code> (the VRAM readings the cap depends on — the harness refuses to start without them unless you accept the risk with
 <code>A770B_ALLOW_NO_NVTOP=1</code>), <code>flock</code> and <code>ss</code> (util-linux / iproute2), and opencode (the executor inside the sandbox). Node is
 only needed for the skills CLI route.</p>
-<h2 id="first-run-five-steps">First run (five steps)</h2>
+<h2 id="first-run-six-steps">First run (six steps)</h2>
 <pre><code class="language-bash">git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builder   # 1. the project (A770B_PROJECT)
 cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env
 #    2. edit it: A770B_REFUSE = your live checkouts (required), A770B_MODELS, A770B_DEVICE/GPU_MATCH if not an A770
 git clone &lt;your target repo&gt; ~/local-ai/seat                        # 3. the seat: a plain clone, never a linked worktree
 #    4. put the GGUFs named in the profiles into A770B_MODELS (see Models)
 bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
-bash ~/local-ai/A770_Builder/sync_local_build.sh                    #    install the skill; then a smoke run:
+npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # 6. install the skill into your agents (or: bash sync_local_build.sh)
 bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md
 </code></pre>
 <h2 id="install-how-an-agent-acquires-this-skill">Install — how an agent acquires this skill</h2>
