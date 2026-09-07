@@ -73,9 +73,12 @@ harness script that talks to the server reads it from the file. Delete the file 
 new key, notices the running server no longer accepts it, and restarts the server.
 
 **Other services on the host.** `A770B_FRAMEWORK_PORTS` lists ports the model server must never bind. `A770B_HEALTH_URL`,
-when set, is read with one GET before a server starts, and the built-in gate refuses unless the answer carries
-`"status": "ok"`. Both are empty by default and neither is written to. A different or stricter check belongs in an
-external gate script named by `A770B_BUDGET_GATE`, which replaces the built-in gate entirely.
+when set, is read with one GET before a server starts, and the gate prints the status word the answer carries, or "no
+answer", as information: another service's health says nothing about this host or this card, so the built-in gate never
+refuses on it. Both knobs are empty by default and neither is written to. Anyone who wants a hard dependency on another
+service has the external gate: a script named by `A770B_BUDGET_GATE` replaces the built-in gate entirely. `status`
+reports whether the run lock is held and whether the seat is clean, so two sessions sharing a seat see each other before
+a run; the convention is one seat per consuming project, and harness work on a clone of its own.
 
 ## Getting llama.cpp and the models
 
@@ -164,6 +167,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `VERSION` | the project's version; the installed skill carries the same number, and `local-build.sh --version` reports both, the release the checkout stands on, and warns when they differ; `check-update` asks GitHub for the latest release, only when asked, and works from a copy on a machine that has no checkout |
 | `release.sh` | cuts a release: moves the number in its three places (`VERSION`, the skill's `SKILL_VERSION`, the tag) in one commit, pushes, publishes the GitHub Release from a notes file. The first release is 0.1.0; each one after adds 0.0.1, the minor number moves when the patch would pass 99, and a major bump takes `--major` |
 | `LICENSE` | MIT |
+| `tests/selftest.sh` | what the harness proves without the card: both scripts parse, the health line informs and never refuses, `status` carries the lock and seat lines; run it after any harness edit |
 | `briefs/` | the brief template (`TEMPLATE.md`: named files, verbatim text in quoted blocks, a test command on named files, a stop condition), the qualification task (`T1-…`), the cheap-reviewer prompt, the smoke brief |
 
 Data stays outside this folder on purpose: models in `~/LLM/tested` and `~/LLM/next-card`; the seat (`~/local-ai/seat`,

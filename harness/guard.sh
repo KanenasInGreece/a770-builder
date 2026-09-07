@@ -41,8 +41,8 @@ safe_git_diff(){ local wt="$1"; shift; safe_git "$wt" diff --no-ext-diff --no-te
 # seat_dirty <worktree> — lists everything in the seat that is not committed, INCLUDING ignored files (a model can plant
 # a .venv, a CLAUDE.md or an agent settings file that the plain status never shows). Ignored files are listed one by one
 # (status would collapse an ignored directory), and only Local_Documentation/briefs/, the one path the harness itself
-# writes, is exempt.
-seat_dirty(){ { safe_git "$1" status --porcelain 2>/dev/null; safe_git "$1" ls-files --others --ignored --exclude-standard 2>/dev/null | grep -vE '^Local_Documentation/briefs/' | sed 's/^/!! /'; } || true; }
+# writes, is exempt — in the status output too, for a repository that does not ignore that directory.
+seat_dirty(){ { safe_git "$1" status --porcelain --untracked-files=all 2>/dev/null | grep -vE '^\?\? Local_Documentation/briefs/'; safe_git "$1" ls-files --others --ignored --exclude-standard 2>/dev/null | grep -vE '^Local_Documentation/briefs/' | sed 's/^/!! /'; } || true; }
 
 # reset_worktree <worktree> — discard everything the model did in the seat: tracked changes, untracked AND ignored files
 # (-x; an operator's own ignored files in the seat go too — keep no state there), keeping only Local_Documentation/briefs.

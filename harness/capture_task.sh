@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # capture_task.sh — after a build run, capture what the model did for review, then reset the worktree.
 #   capture_task.sh <label> <worktree> <build-log>
-# Writes $A770B_DATA/results/<label>.task.md: git status, the tracked diff, every new file, the pytest summary the
+# Writes $A770B_DATA/results/<label>.task.md: git status, the tracked diff, every new file (the harness's own brief copy
+# under Local_Documentation/briefs/ excepted), the pytest summary the
 # model reported INSIDE the run (never re-executed here), the opencode transcript tail, and the server-side timing
 # distribution; and <label>.patch, the complete change (tracked diff + every new file) that `local-build.sh verify`
 # re-applies to a clean seat to run the tests inside the sandbox. Then resets the worktree to clean. All git here is safe_git: config-driven code paths neutralised,
@@ -13,14 +14,14 @@ LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log
 OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; SLOG="$A770B_DATA/logs/llamacpp-a770.log"
 # the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
 { safe_git_diff "$WT"
-  safe_git "$WT" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do safe_git_diff "$WT" --no-index -- /dev/null "$f" || true; done
+  safe_git "$WT" ls-files --others --exclude-standard -z | grep -zvE '^Local_Documentation/briefs/' | while IFS= read -r -d '' f; do safe_git_diff "$WT" --no-index -- /dev/null "$f" || true; done
 } > "$PATCH"
 {
 echo "# Task capture — $LABEL — $(date -Is)"
 echo; echo "## git status (worktree)"; safe_git "$WT" status --porcelain
 echo; echo "## diff (tracked)"; echo '```diff'; safe_git_diff "$WT" | head -400; echo '```'
 echo; echo "## new files"
-safe_git "$WT" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do echo; echo "### $f"; echo '```'; head -200 -- "$WT/$f"; echo '```'; done
+safe_git "$WT" ls-files --others --exclude-standard -z | grep -zvE '^Local_Documentation/briefs/' | while IFS= read -r -d '' f; do echo; echo "### $f"; echo '```'; head -200 -- "$WT/$f"; echo '```'; done
 echo; echo "## ignored files the run left behind (names only; removed by the reset, never applied by verify)"
 safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/' || echo "none"
 echo; echo "## pytest summary as reported by the model inside the run (NOT re-executed here)"
