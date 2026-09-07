@@ -15,6 +15,16 @@ It holds two things:
 Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.
 
+The skill offers three profiles, and the choice is the task's, not the model's reputation. **fast** is Qwen3.5-9B, the
+default for every ordinary change: a small, well-specified edit to named files, done in two or three minutes in the
+repository's own idiom. **serious** is Qwen3.8-27B, for a deliverable larger than its brief, tests written from an
+invariant or prose a reviewer will read; it is the best-written output of the matrix at eight tokens a second, and on a
+mechanical edit it produces the fast profile's patch at seven times the wall clock, so it is never the profile for
+those. **long** is Gemma 4 E4B with flash attention off, a 131k-token window for the read the fast window cannot hold
+and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits, and no
+profile indexes a large file, which stays a `grep`. Every profile's output is judged the same way, by its capture and
+by `verify`.
+
 ```text
 your coding agent
       │  local-build skill (a brief in, a capture out)
@@ -36,7 +46,7 @@ build. This card was already in the machine, driving the desktop, and idle. The 
 hold a model that actually finishes a small, well-specified change in a real repository, and whether an agent could hand
 it that work without giving a local model the run of the host. The first was answered by measurement: every candidate
 got the same brief on a live codebase, and only the ones whose tests passed under a cheap reviewer's eye kept a place. The
-second was answered by the harness and the sandbox, and by three adversarial reviews of them, all from one model family so far. A run does not end in an exit
+second was answered by the harness and the sandbox, and by four adversarial reviews of them, the last by a second model family. A run does not end in an exit
 code but in a capture, and a reviewer can re-run its tests inside a fresh sandbox with `verify` before merging anything.
 What is here is the result of all of that, so the next card, model or build can be re-qualified the same way instead of
 trusted.
@@ -118,7 +128,7 @@ opencode on the host, and the model files in `A770B_MODELS`.
 the agent's operator adds to its own constitution file if wanted (`SKILL.md` says how). Nothing writes into any agent's
 home. Licence: MIT (`LICENSE`).
 
-Operating detail (how a run and a `verify` work, the two profiles and their numbers, every knob, how to build llama.cpp
+Operating detail (how a run and a `verify` work, the three profiles and their numbers, every knob, how to build llama.cpp
 with Vulkan and fetch the models, what each file is) lives in [`docs/OPERATING.md`](docs/OPERATING.md).
 
 ## Security
@@ -126,8 +136,8 @@ with Vulkan and fetch the models, what each file is) lives in [`docs/OPERATING.m
 The model's process runs inside bubblewrap with the seat as its only writable tree, no credentials, no other checkout,
 and no network access except the model server, which itself requires a key. The guard refuses every live checkout you
 list, every linked worktree, symlink and agent home; the capture executes nothing the model wrote, and `verify` re-runs
-a capture's tests inside a fresh sandbox when you want proof. Three adversarial reviews have read the boundary, all from one model
-family; a reader from another family is still owed. All of it, with what you must still do yourself and how to report a hole, is in
+a capture's tests inside a fresh sandbox when you want proof. Four adversarial reviews have read the boundary; the fourth, by a second model
+family, found three holes the first three had missed, all closed the same day. All of it, with what you must still do yourself and how to report a hole, is in
 [`SECURITY.md`](SECURITY.md).
 
 This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the three model files, and nothing else:
