@@ -49,8 +49,8 @@ later; the capture keeps the snapshot as `<label>.spec.json` and an echo of what
 profile's hash, as `<label>.echo.json`, and prints the echo in its *run specification* section. What a specification
 cannot do is lower the floor: the sandbox, the unshared network, the read-only `.git`, the secret-file denials and the
 deny block at the end of the profile's bash rules (git state verbs, docker, systemctl, sudo, package installs, network
-clients) are rendered after everything the caller adds, and a bash pattern that is a bare wildcard or begins with a
-wrapper or interpreter is refused outright. An example specification is at the end of `briefs/TEMPLATE.md`.
+clients) are rendered after everything the caller adds, and a bash pattern that is a bare wildcard, a path, or begins with a
+wrapper or interpreter is refused outright; the floor itself is defence in depth, the boundary is the sandbox. An example specification is at the end of `briefs/TEMPLATE.md`.
 
 The test command a brief names runs in the model's own shell tool, which cuts a command at 120 seconds unless the model
 asks for longer, and inside the boundary, which has no network and none of the host's environment. So a brief names the

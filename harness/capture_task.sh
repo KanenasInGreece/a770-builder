@@ -35,9 +35,9 @@ echo; echo "## pytest summary as reported by the model inside the run (NOT re-ex
 grep -E '[0-9]+ (passed|failed|error)' "$BLOG" | tail -3 || echo "no pytest summary line in the transcript"
 echo; echo "## run specification"
 if [ -n "${A770B_SPEC:-}" ] && [ -f "$A770B_SPEC" ]; then
-  cp -- "$A770B_SPEC" "$A770B_DATA/results/$LABEL.spec.json"
+  ( umask 077; cp -- "$A770B_SPEC" "$A770B_DATA/results/$LABEL.spec.json" )
   ECHO=$(cat "$A770B_DATA/logs/last-build.echo.path" 2>/dev/null || true)
-  if [ -n "$ECHO" ] && [ -f "$ECHO" ]; then cp -- "$ECHO" "$A770B_DATA/results/$LABEL.echo.json"; echo '```json'; cat -- "$ECHO"; echo '```'; else echo "no echo file: the renderer wrote none"; fi
+  if [ -n "$ECHO" ] && [ -f "$ECHO" ]; then ( umask 077; cp -- "$ECHO" "$A770B_DATA/results/$LABEL.echo.json" ); echo '```json'; cat -- "$ECHO"; echo '```'; else echo "no echo file: the renderer wrote none"; fi
   echo "specification kept as $A770B_DATA/results/$LABEL.spec.json; the echo, what was actually rendered, as $A770B_DATA/results/$LABEL.echo.json"
 else
   echo "none: the run had no specification, so the profile is the template's defaults"

@@ -29,6 +29,9 @@ BASH_ALLOW_RE = re.compile(r"^[A-Za-z0-9 ._/*:-]+$")
 BASH_ALLOW_FORBIDDEN_FIRST = {
     "git", "bash", "sh", "dash", "zsh", "env", "xargs", "nohup", "sudo", "su", "rm", "uv", "pip",
     "curl", "wget", "ssh", "scp", "nc", "docker", "podman", "systemctl",
+    # wrappers that run another command: the first word must be the command itself, not a way to reach one
+    "timeout", "exec", "command", "busybox", "nice", "ionice", "setsid", "time", "watch", "chroot", "flatpak",
+    "script", "eval", "source", "doas", "unshare", "nsenter", "strace", "ltrace", "gdb", "perl", "ruby", "node",
 }
 VERIFY_HIDDEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -142,7 +145,11 @@ def validate_and_load(spec_path: str, seat_dir: str):
                 raise SpecError("bash_allow", "each pattern must match ^[A-Za-z0-9 ._/*:-]+$, at most 80 chars")
             if p == "*":
                 raise SpecError("bash_allow", "must not be '*'")
-            first_word = p.split(" ")[0]
+            if p != p.strip() or "  " in p:
+                raise SpecError("bash_allow", "no leading, trailing or doubled spaces")
+            first_word = p.split(" ")[0].lower()
+            if not first_word or "/" in first_word or "*" in first_word:
+                raise SpecError("bash_allow", "the first word must be a bare command name: no path, no wildcard")
             if first_word in BASH_ALLOW_FORBIDDEN_FIRST:
                 raise SpecError("bash_allow", f"must not start with '{first_word}'")
 
@@ -188,7 +195,7 @@ def _write_file(path: str, content: bytes) -> None:
         os.close(fd)
 
 
-def _build_echo(spec: dict, card_text, card_source, apikey: str, rendered_text: str) -> dict:
+def _build_echo(spec: dict, card_text, card_source, apikey: str, rendered_text: str, profile_name: str) -> dict:
     card_field = None
     if card_text is not None:
         card_field = {
@@ -209,8 +216,8 @@ def _build_echo(spec: dict, card_text, card_source, apikey: str, rendered_text: 
         "card": card_field,
         "scope_edit": scope_edit,
         "bash_allow": bash_allow,
-        "profile": spec.get("profile"),
-        "timeout": spec.get("timeout"),
+        "profile": profile_name,
+        "timeout_requested": spec.get("timeout"),
         "verify_test": verify.get("test"),
         "hidden": verify.get("hidden") or [],
         "rendered_sha256": rendered_sha256,
@@ -367,7 +374,7 @@ def cmd_render(args) -> int:
     text = text.replace("__BASH_ALLOW__", bash_allow_str)
 
     # Check for any remaining unreplaced placeholders
-    pattern = r"__[A-Z]+__"
+    pattern = r"__[A-Z][A-Z_]*__"
     if re.search(pattern, text):
         print("render_profile: unreplaced placeholder", file=sys.stderr)
         return 2
@@ -376,7 +383,7 @@ def cmd_render(args) -> int:
     _write_file(args.out, text.encode("utf-8"))
 
     if args.echo:
-        echo_data = _build_echo(spec, card_text, card_source, args.apikey, text)
+        echo_data = _build_echo(spec, card_text, card_source, args.apikey, text, args.name)
         _write_file(args.echo, json.dumps(echo_data).encode("utf-8"))
 
     return 0

@@ -52,7 +52,8 @@ the paths it may edit, extra commands it may run, files whose definitions are pr
 verified. The specification widens nothing beneath the profile: it is read on the host, checked against the seat
 before the run lock and before any server starts, never read from inside the seat, and its card and context files must
 be regular files inside the seat, so it cannot make the harness read a host file into the model's prompt. Its bash
-additions are refused when they are a bare wildcard or begin with a wrapper or interpreter, and the profile's deny
+additions are refused when they are a bare wildcard, a path, or begin with a wrapper or interpreter (a first word
+that runs another command, case-folded), and the profile's deny
 block, the floor, is rendered after them. That floor is defence in depth and nothing more: the profile already lets the
 model run python, so a model that wants a git verb has one; what stops it is the read-only `.git` mount, the unshared
 network and the reset, which are not the specification's to touch. The capture keeps the snapshot and an echo of what

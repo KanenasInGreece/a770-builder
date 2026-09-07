@@ -73,7 +73,7 @@ The brief is prose. Beside it you may pass `--spec <spec.json>`, every key optio
 
 `card` (a file inside the seat, or `{"text": "…"}`, at most 8,000 characters) becomes the model's standing instructions
 for the run: the repository's conventions, the idiom to copy. `scope.edit` limits edits to the listed paths. `bash_allow`
-adds commands the profile's allow-list lacks; a bare wildcard, or anything beginning with a wrapper or interpreter, is
+adds commands the profile's allow-list lacks; a bare wildcard, a path, or anything beginning with a wrapper or interpreter is
 refused, and the profile's deny block is rendered after every addition. `context.definitions_of` names files whose
 definitions the harness greps into the brief copy (at most 8 files, 400 lines each, 1,200 in all), so the model reads
 an index instead of paging. `verify.test` is what `verify` runs when you give no `--test`; `verify.hidden` names

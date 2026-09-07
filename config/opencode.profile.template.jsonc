@@ -2,7 +2,7 @@
   // opencode profile TEMPLATE for the local builder seat. build_local.sh renders it per run through
   // harness/render_profile.py into $A770B_DATA/logs/opencode.<profile>.jsonc (mode 600), replacing
   // __BASEURL__ __APIKEY__ __CTX__ __OUTPUT__ __NAME__ from env.sh, and __PROMPT__ __EDIT_RULES__ __BASH_ALLOW__
-  // from the run specification (their defaults: the prompt below, edit allowed everywhere, no extra bash patterns).
+  // from the run specification (their defaults: the prompt in render_profile.py, edit allowed everywhere, no extra bash patterns).
   // The key is the server's: the model inside the sandbox can read it, and can reach nothing but that server with it.
   // It is the ONLY opencode config inside the sandbox (the global config never enters), so the policy below is
   // the whole policy: bash is DEFAULT-DENY with an explicit allow-list; edits stay inside the project (the sandbox

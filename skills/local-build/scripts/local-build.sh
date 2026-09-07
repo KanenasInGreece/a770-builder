@@ -93,9 +93,9 @@ case "${1:-}" in
     SPEC_SNAP=""
     if [ -n "$spec" ]; then
       [ -f "$spec" ] && [ ! -L "$spec" ] || die "specification not found, or a symlink: $spec"
-      python3 "$A770B_PROJECT/harness/render_profile.py" check --spec "$spec" --seat "$WT" || die "specification refused: $spec"
       mkdir -p "$A770B_DATA/logs"; SPEC_SNAP="$A770B_DATA/logs/spec-$(date +%Y%m%d-%H%M%S)-$$.json"
-      ( umask 077; cp -- "$spec" "$SPEC_SNAP" )
+      ( umask 077; cp -- "$spec" "$SPEC_SNAP" )                     # the snapshot is what is checked and what is used: no file changes between the two
+      python3 "$A770B_PROJECT/harness/render_profile.py" check --spec "$SPEC_SNAP" --seat "$WT" || { rm -f -- "$SPEC_SNAP"; die "specification refused: $spec"; }
       read -r spec_profile spec_timeout <<<"$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("profile") or "-", d.get("timeout") or "-")' "$SPEC_SNAP")"
       [ "$profile_set" = 1 ] || [ "$spec_profile" = "-" ] || profile="$spec_profile"
       [ -n "$timeout" ] || [ "$spec_timeout" = "-" ] || timeout="$spec_timeout"
@@ -131,8 +131,11 @@ case "${1:-}" in
     if [ -f "$SRC" ]; then PATCH=$(realpath -e -- "$SRC"); else SRC=$(basename "$SRC"); PATCH="$A770B_DATA/results/${SRC%.task.md}"; PATCH="${PATCH%.patch}.patch"; fi
     [ -f "$PATCH" ] || die "patch not found: $PATCH (every capture writes <label>.patch beside <label>.task.md)"
     [ -s "$PATCH" ] || die "patch is empty — that run changed nothing, there is nothing to verify"
-    SPECF="${PATCH%.patch}.spec.json"; HIDDEN=(); HROOT="${A770B_HIDDEN_ROOT:-$A770B_DATA/hidden}"
+    SPECF="${PATCH%.patch}.spec.json"; HIDDEN=(); HROOT_RAW="${A770B_HIDDEN_ROOT:-$A770B_DATA/hidden}"
     if [ -f "$SPECF" ]; then
+      # the hidden root is a real directory, never a link, and every file in it is checked at its resolved path
+      [ -d "$HROOT_RAW" ] && [ ! -L "$HROOT_RAW" ] || die "A770B_HIDDEN_ROOT is not a real directory (a symlink is refused): $HROOT_RAW"
+      HROOT=$(realpath -e -- "$HROOT_RAW")
       [ -n "$TEST" ] || TEST=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print((d.get("verify") or {}).get("test") or "")' "$SPECF")
       while IFS= read -r h; do
         [ -n "$h" ] || continue
@@ -158,11 +161,18 @@ case "${1:-}" in
     safe_git "$WT" apply --check "$PATCH" || die "patch does not apply cleanly to $WT"
     trap 'reset_worktree "$WT" >/dev/null' EXIT; trap 'reset_worktree "$WT" >/dev/null; exit 130' INT TERM   # clean again whatever happens
     safe_git "$WT" apply "$PATCH" || die "patch failed to apply"
+    if [ ${#HIDDEN[@]} -gt 0 ]; then
+      # the destination directory is the seat's own tests/, never a link the patch or the model planted
+      mkdir -p "$WT/tests"; [ -d "$WT/tests" ] && [ ! -L "$WT/tests" ] && [ "$(realpath -e -- "$WT/tests")" = "$WT/tests" ] || die "the patched seat's tests/ is a symlink or missing — hidden tests refused"
+    fi
     for h in "${HIDDEN[@]}"; do
-      [ ! -e "$WT/tests/_hidden_$h" ] || die "the patched seat already has tests/_hidden_$h — refused, a hidden test must not be overwritten"
-      mkdir -p "$WT/tests"; cp -- "$HROOT/$h" "$WT/tests/_hidden_$h"; chmod 644 "$WT/tests/_hidden_$h"; files+=("tests/_hidden_$h")
+      [ ! -e "$WT/tests/_hidden_$h" ] && [ ! -L "$WT/tests/_hidden_$h" ] || die "the patched seat already has tests/_hidden_$h — refused, a hidden test must not be overwritten"
+      cp -P -- "$HROOT/$h" "$WT/tests/_hidden_$h"; chmod 644 "$WT/tests/_hidden_$h"; files+=("tests/_hidden_$h")
     done
-    if [ -n "$TEST" ]; then CMD=(bash -c "$TEST"); else CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}"); fi
+    if [ -n "$TEST" ] && [ ${#HIDDEN[@]} -gt 0 ]; then
+      # the caller's command first, then the hidden tests by pytest; the names reach pytest as argv words, never through the shell string
+      CMD=(bash -c "$TEST"' && exec uv run --with pytest --with pytest-asyncio python -m pytest -q "$@"' _ "${files[@]}")
+    elif [ -n "$TEST" ]; then CMD=(bash -c "$TEST"); else CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}"); fi
     label=$(basename "${PATCH%.patch}"); OUT="$A770B_DATA/results/$label.verify.md"
     CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify "$A770B_FAST_CTX" "$CFG" nokey || exit 2
     t=${timeout:-$A770B_FAST_TIMEOUT}

@@ -85,7 +85,7 @@ def test_no_placeholder_left(tmp_path):
     assert result.returncode == 0, f"Render failed: {result.stderr}"
 
     text = out.read_text()
-    assert re.search(r"__[A-Z]+__", text) is None, "Unreplaced placeholder found"
+    assert re.search(r"__[A-Z][A-Z_]*__", text) is None, "Unreplaced placeholder found"
 
 
 def test_matches_plain_substitution(tmp_path):
@@ -234,7 +234,7 @@ def test_bash_allow_refuses_wildcard_and_wrappers(tmp_path):
     seat = tmp_path / "seat"
     seat.mkdir()
 
-    patterns = [["*"], ["env X"], ["sh -c ls"], ["uv run x"], ["ls; rm"], ["a=b"]]
+    patterns = [["*"], ["env X"], ["sh -c ls"], ["uv run x"], ["ls; rm"], ["a=b"], ["/bin/bash -c ls"], ["/usr/bin/env sh"], ["./bash x"], ["/usr/bin/git push"], ["git*"], ["Git push"], [" git push"], ["timeout 5 git push"], ["exec git push"], ["busybox wget x"], ["make  check"]]
     for i, p in enumerate(patterns):
         spec = write_spec(tmp_path / f"spec_{i}.json", {"bash_allow": p})
         result = run_check(spec, seat)
