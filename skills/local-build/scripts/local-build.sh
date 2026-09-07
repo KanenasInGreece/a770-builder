@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # local-build.sh — the A770 builder seat, three profiles. Installed as a skill in every agent's skill dir (copies).
-#   run [<worktree>] <brief.md> [--serious|--long] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
+#   run [<worktree>] <brief.md> [--spec <spec.json>] [--serious|--long] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve fast|serious|long | status | stop | version (--version)
@@ -82,12 +82,24 @@ case "${1:-}" in
   status) status ;;
   stop)   bash "$SERVE" stop ;;
   run)
-    shift; profile=fast; timeout=""
+    shift; profile=fast; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --serious) profile=serious;; --fast) profile=fast;; --long) profile=long;; --timeout) timeout="$2"; shift;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --serious) profile=serious; profile_set=1;; --fast) profile=fast; profile_set=1;; --long) profile=long; profile_set=1;; --timeout) timeout="$2"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
+    # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
+    # so nothing re-reads the caller's file later; a flag on the command line wins over a key in the specification
+    SPEC_SNAP=""
+    if [ -n "$spec" ]; then
+      [ -f "$spec" ] && [ ! -L "$spec" ] || die "specification not found, or a symlink: $spec"
+      python3 "$A770B_PROJECT/harness/render_profile.py" check --spec "$spec" --seat "$WT" || die "specification refused: $spec"
+      mkdir -p "$A770B_DATA/logs"; SPEC_SNAP="$A770B_DATA/logs/spec-$(date +%Y%m%d-%H%M%S)-$$.json"
+      ( umask 077; cp -- "$spec" "$SPEC_SNAP" )
+      read -r spec_profile spec_timeout <<<"$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("profile") or "-", d.get("timeout") or "-")' "$SPEC_SNAP")"
+      [ "$profile_set" = 1 ] || [ "$spec_profile" = "-" ] || profile="$spec_profile"
+      [ -n "$timeout" ] || [ "$spec_timeout" = "-" ] || timeout="$spec_timeout"
+    fi
     run_lock                                                       # one run at a time on this card
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
     profile_vars "$profile"; t=${timeout:-$t}
@@ -98,48 +110,64 @@ case "${1:-}" in
     restore(){ if [ "$aside" = 1 ] && [ -f "$WT/AGENTS.md.local-off" ]; then mv -f "$WT/AGENTS.md.local-off" "$WT/AGENTS.md"; aside=0; fi; }
     trap restore EXIT INT TERM                                    # restored even on crash or timeout
     if [ -f "$WT/AGENTS.md" ]; then mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"; aside=1; fi
-    PROFILE="$profile" LOCAL_AGENT=local-builder LOCAL_TIMEOUT="$t" bash "$BUILD" "$WT" "$BRIEF" 2>&1 | grep -vE '^\s*$' | tail -15 | cut -c1-240
+    A770B_SPEC="$SPEC_SNAP" PROFILE="$profile" LOCAL_AGENT=local-builder LOCAL_TIMEOUT="$t" bash "$BUILD" "$WT" "$BRIEF" 2>&1 | grep -vE '^\s*$' | tail -15 | cut -c1-240
     brc=${PIPESTATUS[0]}
     restore
     case "$brc" in 2|3) echo "⛔ build refused (exit $brc) — no capture, no reset" >&2; exit "$brc";; esac
     BL=$(cat "$A770B_DATA/logs/last-build.log.path" 2>/dev/null || true)
     [ -f "$BL" ] || die "build log path missing — capture skipped"
-    bash "$CAPTURE" "$label" "$WT" "$BL" | tail -2; crc=${PIPESTATUS[0]}
+    A770B_SPEC="$SPEC_SNAP" bash "$CAPTURE" "$label" "$WT" "$BL" | tail -2; crc=${PIPESTATUS[0]}
     [ "$crc" = 0 ] || { echo "⛔ the capture failed (exit $crc) and the seat was NOT reset: read $A770B_DATA/results/$label.task.md, then run: local-build.sh reset $WT" >&2; exit "$crc"; }
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean." ;;
   verify)
     # Re-apply what a run produced (<label>.patch beside the capture) to a CLEAN seat and run the tests inside the same
     # boundary the model had — no server, no bridge, no key. The verdict is the EXIT CODE of the test command; the pytest
-    # line is quoted for the reader but decides nothing (the patch controls what the tests print).
+    # line is quoted for the reader but decides nothing (the patch controls what the tests print). If the run had a
+    # specification, <label>.spec.json beside the patch supplies the test command when --test is absent, and its hidden
+    # acceptance tests — files the model never saw, kept under A770B_HIDDEN_ROOT — are copied into the seat AFTER the
+    # patch applies and run with the rest; the reset removes them.
     shift; SRC="${1:?capture label or .patch path}"; shift; WT_RAW="$A770B_SEAT"; TEST=""; timeout=""
     while [ $# -gt 0 ]; do case "$1" in --test) TEST="${2:?command}"; shift;; --timeout) timeout="${2:?seconds}"; shift;; *) if [ -d "$1" ]; then WT_RAW="$1"; else die "unknown arg $1"; fi;; esac; shift; done
     if [ -f "$SRC" ]; then PATCH=$(realpath -e -- "$SRC"); else SRC=$(basename "$SRC"); PATCH="$A770B_DATA/results/${SRC%.task.md}"; PATCH="${PATCH%.patch}.patch"; fi
     [ -f "$PATCH" ] || die "patch not found: $PATCH (every capture writes <label>.patch beside <label>.task.md)"
     [ -s "$PATCH" ] || die "patch is empty — that run changed nothing, there is nothing to verify"
+    SPECF="${PATCH%.patch}.spec.json"; HIDDEN=(); HROOT="${A770B_HIDDEN_ROOT:-$A770B_DATA/hidden}"
+    if [ -f "$SPECF" ]; then
+      [ -n "$TEST" ] || TEST=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print((d.get("verify") or {}).get("test") or "")' "$SPECF")
+      while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        case "$h" in *[!A-Za-z0-9._-]*|.*|-*) die "hidden test name is not a plain basename: '$h'";; esac
+        [ -f "$HROOT/$h" ] && [ ! -L "$HROOT/$h" ] || die "hidden test not found under $HROOT, or a symlink: $h"
+        [ "$(stat -c %s -- "$HROOT/$h")" -le 65536 ] || die "hidden test over 64 KiB: $h"
+        HIDDEN+=("$h")
+      done < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [print(x) for x in ((d.get("verify") or {}).get("hidden") or [])]' "$SPECF")
+    fi
     WT=$(guard_worktree "$WT_RAW") || exit 2
     run_lock                                                       # the seat is exclusive, like the card
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — it is reset after every run; run: local-build.sh reset $WT"; }
-    CMD=()
-    if [ -n "$TEST" ]; then CMD=(bash -c "$TEST")                  # the operator's command, run as given
-    else
+    files=()
+    if [ -z "$TEST" ]; then
       # the default: pytest on every tests/*.py file the patch touches — file names pass as SEPARATE argv words and must be
       # plain (a model-chosen name is untrusted input; a shell metacharacter in it is refused, never interpreted)
-      files=()
       while IFS= read -r f; do
         case "$f" in *[!A-Za-z0-9._/-]*|*..*|/*) die "unsafe test path in the patch: '$f' — pass --test '<command>' if you still want to run it";; esac
         files+=("$f")
       done < <(grep -oE '^\+\+\+ b/tests?/[^[:space:]]+\.py$' "$PATCH" | sed 's#^+++ b/##' | sort -u)
-      [ ${#files[@]} -gt 0 ] || die "the patch adds or changes no tests/*.py file — pass --test '<command to run inside the sandbox>'"
-      CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}")
+      [ ${#files[@]} -gt 0 ] || [ ${#HIDDEN[@]} -gt 0 ] || die "the patch adds or changes no tests/*.py file — pass --test '<command to run inside the sandbox>'"
     fi
     safe_git "$WT" apply --check "$PATCH" || die "patch does not apply cleanly to $WT"
     trap 'reset_worktree "$WT" >/dev/null' EXIT; trap 'reset_worktree "$WT" >/dev/null; exit 130' INT TERM   # clean again whatever happens
     safe_git "$WT" apply "$PATCH" || die "patch failed to apply"
+    for h in "${HIDDEN[@]}"; do
+      [ ! -e "$WT/tests/_hidden_$h" ] || die "the patched seat already has tests/_hidden_$h — refused, a hidden test must not be overwritten"
+      mkdir -p "$WT/tests"; cp -- "$HROOT/$h" "$WT/tests/_hidden_$h"; chmod 644 "$WT/tests/_hidden_$h"; files+=("tests/_hidden_$h")
+    done
+    if [ -n "$TEST" ]; then CMD=(bash -c "$TEST"); else CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}"); fi
     label=$(basename "${PATCH%.patch}"); OUT="$A770B_DATA/results/$label.verify.md"
     CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify "$A770B_FAST_CTX" "$CFG" nokey || exit 2
     t=${timeout:-$A770B_FAST_TIMEOUT}
     echo "▶ verify $label · seat $WT · inside the sandbox: ${CMD[*]}"
-    { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "command, inside the sandbox (no model, no bridge, no key): ${CMD[*]}"; echo; echo '```'; } > "$OUT"
+    { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "hidden tests: ${HIDDEN[*]:-none}"; echo "command, inside the sandbox (no model, no bridge, no key): ${CMD[*]}"; echo; echo '```'; } > "$OUT"
     ( A770B_NO_BRIDGE=1 timeout "$t" bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
     vrc=${PIPESTATUS[0]}
     summary=$(grep -E '[0-9]+ (passed|failed|error)' "$OUT" | tail -1)
@@ -148,5 +176,5 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--serious|--long] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious|long | status | stop | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--serious|--long] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious|long | status | stop | version | check-update" >&2; exit 2 ;;
 esac
