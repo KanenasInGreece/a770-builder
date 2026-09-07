@@ -28,7 +28,7 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 # watchdog fires); without it the V cache must be f16, which the sliding window keeps small
 : "${A770B_LONG_EXTRA:=-fa off}"
 : "${A770B_FAST_TIMEOUT:=1500}";                             : "${A770B_SERIOUS_TIMEOUT:=3600}";    : "${A770B_LONG_TIMEOUT:=1500}"
-: "${A770B_OUTPUT_TOKENS:=4096}"                             # opencode's per-reply output limit for both profiles
+: "${A770B_OUTPUT_TOKENS:=16384}"                            # opencode's per-reply output limit: a whole file goes out in one tool call, and at 4,096 a test file of two hundred lines was cut mid-JSON, so every write failed (measured 2026-09-08)
 : "${A770B_HIDDEN_ROOT:=$A770B_DATA/hidden}"                  # hidden acceptance tests a run specification may name: files the model never sees, copied into the seat by verify after the patch applies
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_LLAMA_BIN:=${LLAMA_BIN:-$HOME/llama.cpp/build/bin/llama-server}}"
