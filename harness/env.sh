@@ -37,7 +37,7 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_BUDGET_GATE:=}"
 : "${A770B_MIN_AVAIL_MB:=20000}"; : "${A770B_MIN_VRAM_MB:=3000}"
 : "${A770B_FRAMEWORK_PORTS:=}"                           # ports the seat must never bind (another service's card), space-separated
-: "${A770B_HEALTH_URL:=}"                                # optional: a URL that must answer ok before a server starts (empty = skip)
+: "${A770B_HEALTH_URL:=}"                                # optional: a status URL read once before a server starts; its answer is printed, never a refusal (empty = skip)
 # ── opencode + sandbox ───────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_OPENCODE_BIN:=}"                              # directory holding `opencode`; empty = found on PATH
 : "${A770B_OPENCODE_MODELS:=$HOME/.cache/opencode/models.json}"

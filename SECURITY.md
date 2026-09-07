@@ -23,8 +23,8 @@ Each of those is a different failure of the same idea: a local model with a shel
 
 The model's process runs inside bubblewrap. Its writable tree is the seat, a standalone clone with its own `.git`
 directory, and nothing else of yours: a private empty home, the pre-warmed uv cache mounted read-only, no credentials,
-no other checkout. Inside the seat, `.git/config`, `.git/hooks` and `.git/info` are mounted read-only, so no config-driven
-code path can be planted for the host. The sandbox has no network access except the model server: the network namespace
+no other checkout. Inside the seat, the whole `.git` directory is mounted read-only, so no config-driven code path can be planted for
+the host and nothing can be hidden there to outlive the reset. The sandbox has no network access except the model server: the network namespace
 is unshared and a loopback bridge carries only that one port. The only agent configuration inside is a profile rendered
 per run, with a default-deny shell allow-list, no MCP, no web fetch, no skills, and `.env` and key files unreadable.
 
@@ -41,12 +41,16 @@ ones is still the reviewer's reading of the capture. The model server requires a
 operator can read, so a process outside the harness cannot use the card unnoticed. The guard refuses every live
 checkout you list, every linked worktree, symlink, subdirectory and agent home, a seat whose `.git` is a link to
 another repository, and refuses to run at all while that list is empty. The run lock's descriptor is closed before the
-sandbox starts, so no host file crosses the boundary with it.
+sandbox starts, so no host file crosses the boundary with it. A symlink the model leaves in the seat is named in the
+capture and never followed: the host reads nothing through a link the model made, and the patch does not carry it. The
+briefs directory the harness writes keeps only the harness's own copies across a reset; anything else planted there is
+reported and removed. The health line the budget gate prints from an optional URL is stripped of control characters
+and cut short, so a hostile service cannot write to your terminal through it.
 
 | surface | inside the sandbox |
 |---|---|
 | filesystem | the seat read-write; a private empty home; the pre-warmed uv cache read-only; nothing else of yours |
-| the seat's `.git` | `config`, `hooks` and `info` read-only, so no config-driven code path can be planted for the host |
+| the seat's `.git` | the whole directory read-only: the model reads history and status, and can plant nothing there, neither a config-driven code path for host-side git nor a file that would outlive the reset unseen |
 | network | none, except the model server; no LAN, no internet, no other service on the host |
 | tools | one rendered profile: default-deny shell allow-list, no MCP, no web fetch, no skills; `.env` and key files unreadable |
 | the model server | reachable with the key the rendered profile carries; the key unlocks nothing else |
@@ -86,8 +90,10 @@ Four of the five pieces are in place, and the fifth is half done. The public-rea
 the read-only git metadata, the network unshare, the default-deny profile and the rendered configuration; every one was
 fixed and mutation-checked the same day. The reviewer-invoked `verify` command and the API key on the server came in the
 cycle after publication, and the review of that cycle closed the gaps it opened: an injectable default command in
-`verify`, the run lock's descriptor reaching the sandbox, and ignored files surviving the reset. Three reviews have now read the boundary, every one from the same model family, so the fifth
-piece still wants a reader from another family. Every change to the boundary since has gone through a branch, a
+`verify`, the run lock's descriptor reaching the sandbox, and ignored files surviving the reset. Three reviews had read the boundary, every one from the same model family; the fourth, by another family, read it
+with the cycle that made the health line informational and found what the first three had not: a symlink the model
+leaves in the seat was followed by the host when the capture read new files, a file planted under `.git` outlived the
+reset unseen, and the briefs directory's exemption could hide a planted file. All three are closed above. Every change to the boundary since has gone through a branch, a
 read-only adversarial review by a model that did not write it, and the mutation checks re-run before merge.
 
 ## What is still open
@@ -103,6 +109,9 @@ read-only adversarial review by a model that did not write it, and the mutation 
   only thing that knows which trees are yours.
 - Judge every run by its capture in `A770B_DATA/results/`, never by its exit code. Run `verify` on a capture before
   merging anything from it.
+- Never run a builder's test file on the host to see whether it passes: `verify` exists so the proof happens inside a
+  fresh sandbox. A test file is code the model wrote; read it before it runs anywhere you can be hurt, including
+  `tests/selftest.sh` in a patch that touches it.
 - Keep the seat a standalone clone. A linked worktree shares `.git` with the live checkout and is refused for that reason.
 
 ## Reporting

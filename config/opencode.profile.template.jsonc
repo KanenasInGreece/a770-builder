@@ -27,7 +27,7 @@
       "grep *": "allow", "rg *": "allow", "find *": "allow", "tree *": "allow", "diff *": "allow", "stat *": "allow", "file *": "allow",
       "echo *": "allow", "printf *": "allow", "true": "allow", "sed -n *": "allow", "awk *": "allow", "sort *": "allow", "uniq *": "allow",
       "mkdir *": "allow", "touch *": "allow", "cp *": "allow", "mv *": "allow",
-      "python3 *": "allow", "python *": "allow", "pytest *": "allow", "python3 -m pytest *": "allow",
+      "python3 *": "allow", "python *": "allow", "pytest *": "allow", "python3 -m pytest *": "allow", "bash tests/*": "allow", "bash ./tests/*": "allow",
       "uv run *": "allow", "uv pip *": "deny", "uv tool *": "deny",
       "git status*": "allow", "git diff*": "allow", "git log*": "allow", "git show*": "allow", "git ls-files*": "allow", "git grep*": "allow", "git blame*": "allow"
     }
