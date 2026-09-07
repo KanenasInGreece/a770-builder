@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 # local-build.sh — the A770 builder seat, two profiles. Installed as a skill in every agent's skill dir (copies).
 #   run [<worktree>] <brief.md> [--serious] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
-#   serve fast|serious | status | stop
+#   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
+#   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
+#   serve fast|serious | status | stop | version (--version)
 # The installed copy finds the project through A770B_PROJECT: the environment, then
 # ${XDG_CONFIG_HOME:-~/.config}/a770-builder/builder.env, then the default ~/local-ai/A770_Builder. Every other path
 # and knob comes from the project's harness/env.sh (see config/builder.env.example).
 set -uo pipefail
+SKILL_VERSION=0.1.0            # the version of THIS installed copy; the project's VERSION file must match (see `version`)
 die(){ echo "⛔ $*" >&2; exit 2; }
 _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/builder.env"
 if [ -z "${A770B_PROJECT:-}" ] && [ -f "$_cfg" ]; then A770B_PROJECT=$(sed -nE 's/^[[:space:]]*A770B_PROJECT=([^#]*).*/\1/p' "$_cfg" | tail -1 | tr -d '"' | sed "s#^~#$HOME#"); fi
 A770B_PROJECT="${A770B_PROJECT:-$HOME/local-ai/A770_Builder}"; export A770B_PROJECT
+version(){ local pv sha
+  echo "local-build skill $SKILL_VERSION · installed at $(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  if [ -r "$A770B_PROJECT/VERSION" ]; then pv=$(head -1 "$A770B_PROJECT/VERSION"); sha=$(git -c core.hooksPath=/dev/null -C "$A770B_PROJECT" rev-parse --short HEAD 2>/dev/null || true)
+    echo "a770-builder project $pv${sha:+ ($sha)} · $A770B_PROJECT"
+    [ "$pv" = "$SKILL_VERSION" ] || echo "⚠ installed skill $SKILL_VERSION ≠ project $pv — reinstall the skill from the project (npx skills add … --copy, or copy skills/local-build by hand)" >&2
+  else echo "a770-builder project: not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)" >&2; fi
+}
+case "${1:-}" in version|--version|-V) version; exit 0;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh"; . "$A770B_PROJECT/harness/guard.sh"
 SERVE="$A770B_PROJECT/harness/serve_a770_llamacpp.sh"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
@@ -24,7 +35,10 @@ profile_vars(){ # sets gguf ctx kv reasoning extra t for a profile
 }
 serve(){ local p="$1" gguf ctx kv reasoning extra t; profile_vars "$p"
   [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
-  if [ "$(current)" = "$gguf" ] && curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; return 0; fi
+  if [ "$(current)" = "$gguf" ] && curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
+    if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; return 0; fi
+    echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+  fi
   bash "$SERVE" stop >/dev/null 2>&1
   # shellcheck disable=SC2086  (extra is a deliberate word list from the env)
   KV_K=$kv KV_V=$kv REASONING=$reasoning bash "$SERVE" start "$gguf" "$ctx" $extra || die "server did not start (budget gate or VRAM cap refused — see above)"
@@ -32,7 +46,7 @@ serve(){ local p="$1" gguf ctx kv reasoning extra t; profile_vars "$p"
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || die "server not healthy after 180 s"
   echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv · $A770B_HOST:$A770B_PORT"
 }
-status(){ local c; c=$(current)
+status(){ local c; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo
   echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
@@ -41,6 +55,7 @@ status(){ local c; c=$(current)
 }
 case "${1:-}" in
   serve)  run_lock; serve "${2:-fast}" ;;
+  reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   stop)   bash "$SERVE" stop ;;
   run)
@@ -51,6 +66,7 @@ case "${1:-}" in
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     run_lock                                                       # one run at a time on this card
+    dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
     profile_vars "$profile"; t=${timeout:-$t}
     serve "$profile" || exit $?
     label="$profile-$(date +%Y%m%d-%H%M%S)"
@@ -67,5 +83,46 @@ case "${1:-}" in
     [ -f "$BL" ] || die "build log path missing — capture skipped"
     bash "$CAPTURE" "$label" "$WT" "$BL" | tail -2
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean." ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--serious] [--timeout S] | serve fast|serious | status | stop" >&2; exit 2 ;;
+  verify)
+    # Re-apply what a run produced (<label>.patch beside the capture) to a CLEAN seat and run the tests inside the same
+    # boundary the model had — no server, no bridge, no key. The verdict is the EXIT CODE of the test command; the pytest
+    # line is quoted for the reader but decides nothing (the patch controls what the tests print).
+    shift; SRC="${1:?capture label or .patch path}"; shift; WT_RAW="$A770B_SEAT"; TEST=""; timeout=""
+    while [ $# -gt 0 ]; do case "$1" in --test) TEST="${2:?command}"; shift;; --timeout) timeout="${2:?seconds}"; shift;; *) if [ -d "$1" ]; then WT_RAW="$1"; else die "unknown arg $1"; fi;; esac; shift; done
+    if [ -f "$SRC" ]; then PATCH=$(realpath -e -- "$SRC"); else SRC=$(basename "$SRC"); PATCH="$A770B_DATA/results/${SRC%.task.md}"; PATCH="${PATCH%.patch}.patch"; fi
+    [ -f "$PATCH" ] || die "patch not found: $PATCH (every capture writes <label>.patch beside <label>.task.md)"
+    [ -s "$PATCH" ] || die "patch is empty — that run changed nothing, there is nothing to verify"
+    WT=$(guard_worktree "$WT_RAW") || exit 2
+    run_lock                                                       # the seat is exclusive, like the card
+    dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — it is reset after every run; run: local-build.sh reset $WT"; }
+    CMD=()
+    if [ -n "$TEST" ]; then CMD=(bash -c "$TEST")                  # the operator's command, run as given
+    else
+      # the default: pytest on every tests/*.py file the patch touches — file names pass as SEPARATE argv words and must be
+      # plain (a model-chosen name is untrusted input; a shell metacharacter in it is refused, never interpreted)
+      files=()
+      while IFS= read -r f; do
+        case "$f" in *[!A-Za-z0-9._/-]*|*..*|/*) die "unsafe test path in the patch: '$f' — pass --test '<command>' if you still want to run it";; esac
+        files+=("$f")
+      done < <(grep -oE '^\+\+\+ b/tests?/[^[:space:]]+\.py$' "$PATCH" | sed 's#^+++ b/##' | sort -u)
+      [ ${#files[@]} -gt 0 ] || die "the patch adds or changes no tests/*.py file — pass --test '<command to run inside the sandbox>'"
+      CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}")
+    fi
+    safe_git "$WT" apply --check "$PATCH" || die "patch does not apply cleanly to $WT"
+    trap 'reset_worktree "$WT" >/dev/null' EXIT; trap 'reset_worktree "$WT" >/dev/null; exit 130' INT TERM   # clean again whatever happens
+    safe_git "$WT" apply "$PATCH" || die "patch failed to apply"
+    label=$(basename "${PATCH%.patch}"); OUT="$A770B_DATA/results/$label.verify.md"
+    CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify "$A770B_FAST_CTX" "$CFG" nokey || exit 2
+    t=${timeout:-$A770B_FAST_TIMEOUT}
+    echo "▶ verify $label · seat $WT · inside the sandbox: ${CMD[*]}"
+    { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "command, inside the sandbox (no model, no bridge, no key): ${CMD[*]}"; echo; echo '```'; } > "$OUT"
+    ( A770B_NO_BRIDGE=1 timeout "$t" bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
+    vrc=${PIPESTATUS[0]}
+    summary=$(grep -E '[0-9]+ (passed|failed|error)' "$OUT" | tail -1)
+    case "$vrc" in 0) verdict="PASS (exit 0)";; 124) verdict="TIMEOUT after ${t}s";; *) verdict="FAIL (exit $vrc)";; esac
+    { echo '```'; echo; echo "verdict: $verdict — the exit code of the command is the verdict"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"
+    reset_worktree "$WT"; trap - EXIT INT TERM
+    echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
+    exit "$vrc" ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--serious] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious | status | stop | version" >&2; exit 2 ;;
 esac

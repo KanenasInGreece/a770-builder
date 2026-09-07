@@ -9,9 +9,12 @@ guard_worktree(){
   [ -n "$A770B_REFUSE" ] || { echo "⛔ A770B_REFUSE is empty — list the live checkouts this seat must never touch (colon-separated) in builder.env before running" >&2; exit 2; }
   [ -n "$wt" ] || { echo "⛔ empty worktree path" >&2; exit 2; }
   real=$(realpath -e -- "$wt" 2>/dev/null) || { echo "⛔ worktree does not exist: $wt" >&2; exit 2; }
+  [ ! -L "$real/.git" ] || { echo "⛔ $real/.git is a symlink — the seat's repository metadata must be its own" >&2; exit 2; }
   [ -d "$real/.git" ] || { echo "⛔ $real is not a self-contained git clone (needs a .git DIRECTORY; linked worktrees of a live checkout are refused)" >&2; exit 2; }
   top=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$real" rev-parse --show-toplevel 2>/dev/null | xargs -r realpath -e 2>/dev/null || true)
   [ -n "$top" ] || { echo "⛔ $real is not inside a git working tree" >&2; exit 2; }
+  gitdir=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$real" rev-parse --absolute-git-dir 2>/dev/null | xargs -r realpath -e 2>/dev/null || true)
+  [ "$gitdir" = "$real/.git" ] || { echo "⛔ $real's repository metadata resolves to $gitdir, not to its own .git" >&2; exit 2; }
   [ "$top" = "$real" ] || { echo "⛔ $real is a subdirectory of a worktree ($top); pass the worktree root" >&2; exit 2; }
   local IFS=':'; for r in $A770B_REFUSE; do
     [ -n "$r" ] || continue; r=$(realpath -m -- "$r")
@@ -25,10 +28,27 @@ guard_worktree(){
 # safe_git <worktree> <args…> — host-side git against a tree the sandboxed model can write to. Every config-driven
 # code path is neutralised on the command line (review finding: a model-written .git/config would otherwise run on the
 # host at the next `git status`); the sandbox additionally mounts .git/config, .git/hooks and .git/info read-only.
+# Diffs go through safe_git_diff, which adds --no-ext-diff --no-textconv (an empty diff.external would itself mean "run an
+# empty command", so the external-diff path is closed per call, not by config).
 safe_git(){ local wt="$1"; shift; GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 \
   git -c core.fsmonitor= -c core.pager=cat -c core.hooksPath=/dev/null -c core.sshCommand=/bin/false -c credential.helper= \
-      -c diff.external= -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false \
+      -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false \
       -c core.editor=/bin/false -c core.askPass=/bin/false -c protocol.allow=never -C "$wt" "$@"; }
+
+# safe_git_diff <worktree> <args…> — a diff with every external program disabled.
+safe_git_diff(){ local wt="$1"; shift; safe_git "$wt" diff --no-ext-diff --no-textconv "$@"; }
+
+# seat_dirty <worktree> — lists everything in the seat that is not committed, INCLUDING ignored files (a model can plant
+# a .venv, a CLAUDE.md or an agent settings file that the plain status never shows); only the top-level briefs dir is exempt.
+seat_dirty(){ safe_git "$1" status --porcelain --ignored 2>/dev/null | grep -vE '^!! Local_Documentation/' || true; }
+
+# reset_worktree <worktree> — discard everything the model did in the seat: tracked changes, untracked AND ignored files
+# (-x), keeping only the top-level Local_Documentation (the briefs). Every call is safe_git because the model owned the tree.
+reset_worktree(){ local wt="$1"
+  safe_git "$wt" checkout -- . 2>/dev/null || true
+  safe_git "$wt" clean -fdxq -e /Local_Documentation 2>/dev/null || true
+  echo "worktree reset: $(seat_dirty "$wt" | wc -l) entries remain"
+}
 
 # llama_pid_alive <pidfile> — prints the pid only if it is alive AND is a llama-server process.
 llama_pid_alive(){
