@@ -33,6 +33,15 @@ echo; echo "## ignored files the run left behind (names only; removed by the res
 safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || echo "none"
 echo; echo "## pytest summary as reported by the model inside the run (NOT re-executed here)"
 grep -E '[0-9]+ (passed|failed|error)' "$BLOG" | tail -3 || echo "no pytest summary line in the transcript"
+echo; echo "## run specification"
+if [ -n "${A770B_SPEC:-}" ] && [ -f "$A770B_SPEC" ]; then
+  cp -- "$A770B_SPEC" "$A770B_DATA/results/$LABEL.spec.json"
+  ECHO=$(cat "$A770B_DATA/logs/last-build.echo.path" 2>/dev/null || true)
+  if [ -n "$ECHO" ] && [ -f "$ECHO" ]; then cp -- "$ECHO" "$A770B_DATA/results/$LABEL.echo.json"; echo '```json'; cat -- "$ECHO"; echo '```'; else echo "no echo file: the renderer wrote none"; fi
+  echo "specification kept as $A770B_DATA/results/$LABEL.spec.json; the echo, what was actually rendered, as $A770B_DATA/results/$LABEL.echo.json"
+else
+  echo "none: the run had no specification, so the profile is the template's defaults"
+fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
 python3 - "$SLOG" <<'PY'
