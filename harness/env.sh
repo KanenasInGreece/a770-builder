@@ -20,7 +20,8 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_FAST_REASONING:=off}";                            : "${A770B_FAST_EXTRA:=}"
 : "${A770B_SERIOUS_MODEL:=Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf}"; : "${A770B_SERIOUS_CTX:=158000}"; : "${A770B_SERIOUS_KV:=q4_0}"
 : "${A770B_SERIOUS_REASONING:=on}"
-: "${A770B_SERIOUS_EXTRA:=--chat-template-kwargs {\"reasoning_effort\":\"low\"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0}"
+# the serious default is set in two statements: a brace inside a ${…:=…} expansion ends the expansion at the JSON's first '}'
+[ -n "${A770B_SERIOUS_EXTRA:-}" ] || A770B_SERIOUS_EXTRA='--chat-template-kwargs {"reasoning_effort":"low"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0'
 : "${A770B_FAST_TIMEOUT:=1500}";                             : "${A770B_SERIOUS_TIMEOUT:=3600}"
 : "${A770B_OUTPUT_TOKENS:=4096}"                             # opencode's per-reply output limit for both profiles
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
