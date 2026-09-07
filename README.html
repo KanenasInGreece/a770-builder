@@ -33,7 +33,7 @@ the same day. The measured report (matrix, serving lines, method) lives beside t
 <code>A770B_ALLOW_NO_NVTOP=1</code>), <code>flock</code> and <code>ss</code> (util-linux / iproute2), and opencode (the executor inside the sandbox). Node is
 only needed for the skills CLI route.</p>
 <h2 id="first-run-five-steps">First run (five steps)</h2>
-<pre><code class="language-bash">git clone &lt;this repo&gt; ~/local-ai/A770_Builder                      # 1. the project (A770B_PROJECT)
+<pre><code class="language-bash">git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builder   # 1. the project (A770B_PROJECT)
 cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env
 #    2. edit it: A770B_REFUSE = your live checkouts (required), A770B_MODELS, A770B_DEVICE/GPU_MATCH if not an A770
 git clone &lt;your target repo&gt; ~/local-ai/seat                        # 3. the seat: a plain clone, never a linked worktree
@@ -47,7 +47,7 @@ bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Bui
 <code>SKILL.md</code> (name + description in the front matter, instructions in the body), <code>scripts/</code> and a constitution snippet.
 Tested here on 2026-09-07, all three routes:</p>
 <p><strong>1. The open skills CLI</strong> — detects the agents you have installed and copies the skill into each of them.</p>
-<pre><code class="language-bash">npx skills add &lt;owner&gt;/A770_Builder --skill local-build -g --copy      # from GitHub, user-level, real copies
+<pre><code class="language-bash">npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # from GitHub, user-level, real copies
 npx skills add /path/to/A770_Builder --skill local-build -g --copy     # from a local clone (tested)
 npx skills add /path/to/A770_Builder --list                            # browse first (tested: finds local-build)
 </code></pre>

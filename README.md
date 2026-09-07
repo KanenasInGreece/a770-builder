@@ -19,7 +19,7 @@ only needed for the skills CLI route.
 ## First run (five steps)
 
 ```bash
-git clone <this repo> ~/local-ai/A770_Builder                      # 1. the project (A770B_PROJECT)
+git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builder   # 1. the project (A770B_PROJECT)
 cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env
 #    2. edit it: A770B_REFUSE = your live checkouts (required), A770B_MODELS, A770B_DEVICE/GPU_MATCH if not an A770
 git clone <your target repo> ~/local-ai/seat                        # 3. the seat: a plain clone, never a linked worktree
@@ -37,7 +37,7 @@ Tested here on 2026-09-07, all three routes:
 
 **1. The open skills CLI** — detects the agents you have installed and copies the skill into each of them.
 ```bash
-npx skills add <owner>/A770_Builder --skill local-build -g --copy      # from GitHub, user-level, real copies
+npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # from GitHub, user-level, real copies
 npx skills add /path/to/A770_Builder --skill local-build -g --copy     # from a local clone (tested)
 npx skills add /path/to/A770_Builder --list                            # browse first (tested: finds local-build)
 ```
