@@ -8,8 +8,9 @@ It holds two things:
 
 1. **`local-build`**, the installable skill in the [Agent Skills](https://agentskills.io) format. Any compatible coding
    agent can install it and hand the seat a brief.
-2. **The A770 builder runtime** the skill calls: the harness, the sandbox, the serving lines, and the two models that
-   earned their place by passing a real test-writing task on a live codebase.
+2. **The A770 builder runtime** the skill calls: the harness, the sandbox, the serving lines, and the three models that
+   earned their place: two by passing a real test-writing task on a live codebase, one by reading a hundred thousand
+   tokens of it and answering from the far end.
 
 Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.
@@ -50,7 +51,7 @@ Each is installed and configured by its own instructions, linked here; this proj
 |---|---|---|---|
 | Vulkan driver for the card | the GPU backend llama.cpp runs on | your distribution's Mesa Vulkan driver (`mesa-vulkan-drivers`) and `vulkan-tools`; `vulkaninfo --summary` must list the card | `A770B_DEVICE` = the name `llama-server --list-devices` prints |
 | `llama.cpp` with the Vulkan backend | serves the model (`llama-server`) | build it from source per [llama.cpp `docs/build.md`, *Vulkan*](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan) (measured here on b10805) | `A770B_LLAMA_BIN` (default `~/llama.cpp/build/bin/llama-server`) |
-| the two GGUF models | the fast and serious profiles | Hugging Face: [`lmstudio-community/Qwen3.5-9B-GGUF`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF) and [`ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF); the download lines are in [`docs/OPERATING.md`](docs/OPERATING.md#getting-llamacpp-and-the-models); every model measured on this card is in [`config/models.md`](config/models.md), and a new one enters by the procedure in `docs/OPERATING.md` | `A770B_MODELS` (default `~/LLM/tested`), `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL` |
+| the three GGUF models | the fast, serious and long profiles | Hugging Face: [`lmstudio-community/Qwen3.5-9B-GGUF`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF), [`ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF) and [`lmstudio-community/gemma-4-E4B-it-GGUF`](https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF); the download lines are in [`docs/OPERATING.md`](docs/OPERATING.md#getting-llamacpp-and-the-models); every model measured on this card is in [`config/models.md`](config/models.md), and a new one enters by the procedure in `docs/OPERATING.md` | `A770B_MODELS` (default `~/LLM/tested`), `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` |
 | [opencode](https://opencode.ai/docs) | the coding agent that runs inside the sandbox | its install script or package, per its docs | found on `PATH`, or `A770B_OPENCODE_BIN` |
 | [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) | the sandbox | your distribution's `bubblewrap` package | on `PATH` |
 | [socat](http://www.dest-unreach.org/socat/) | the loopback bridge to the model server | your distribution's `socat` package | on `PATH` |
@@ -129,7 +130,7 @@ a capture's tests inside a fresh sandbox when you want proof. Three adversarial 
 family; a reader from another family is still owed. All of it, with what you must still do yourself and how to report a hole, is in
 [`SECURITY.md`](SECURITY.md).
 
-This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the two model files, and nothing else:
+This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the three model files, and nothing else:
 no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
 developed alongside the [Shared Memory](https://github.com/KanenasInGreece/Shared_Memory) framework, a sibling project
 that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.

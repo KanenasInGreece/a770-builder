@@ -3,8 +3,9 @@
 A LOCAL model on the Arc A770 can execute an already-ruled build brief when the online seats are down or
 rate-limited. Skill: the `local-build` folder in YOUR OWN skill directory (script `scripts/local-build.sh`). Two profiles:
 **fast** (default) = Qwen3.5-9B Q4_K_M, 81,920-token window, ~45 tok/s, 2–3 min per small task;
-**`--serious`** = Qwen3.8-27B IQ2_XS, 158,000-token window, ~8 tok/s, 10–25 min. Call:
-`bash <your-skill-dir>/local-build/scripts/local-build.sh run [<seat>] <brief.md> [--serious]` — it starts or
+**`--serious`** = Qwen3.8-27B IQ2_XS, 158,000-token window, ~8 tok/s, 10–25 min; **`--long`** = Gemma 4 E4B, 131,072-token
+window, for reading files the fast window cannot hold, useful to ~100k. Call:
+`bash <your-skill-dir>/local-build/scripts/local-build.sh run [<seat>] <brief.md> [--serious|--long]` — it starts or
 switches the server, dispatches the brief through opencode inside the sandbox, captures diff + tests + timings, resets the seat.
 Judge the result by the capture (`~/local-ai/results/<label>.task.md`) and by `verify <label>`, which re-runs the tests in
 a fresh sandbox — never by exit code. Hard rules: a STANDALONE CLONE only, never a live checkout or a linked worktree

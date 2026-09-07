@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# ctx_sweep.sh — prefill and decode against prompt position on the running server, with VRAM sampled during each
+# prompt and the kernel log watched. Answers "does the large window come at a spillover cost". Usage: ctx_sweep.sh [sizes…]
+set -u
+. "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
+URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("${@:-8000 32000 64000 100000 120000}")
+CORPUS=$(mktemp); find "$A770B_SEAT" -name '*.py' -size +2k | head -400 | xargs cat 2>/dev/null | tr -cd '\11\12\15\40-\176' > "$CORPUS"
+printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' target tokens ttft_s prefill_tps decode_tps vram_max resets
+for want in ${SIZES[@]}; do
+  chars=$((want*4)); TXT=$(head -c "$chars" "$CORPUS")
+  python3 -c 'import json,sys; t=sys.stdin.read(); print(json.dumps({"model":"local-builder","max_tokens":96,"temperature":0,"messages":[{"role":"user","content":"Read this code and answer in one sentence: what does it do?\n\n"+t}]}))' <<<"$TXT" > "$CORPUS.body"
+  b0=$(journalctl -k --since '-1min' 2>/dev/null | grep -ciE 'engine reset|timedout')
+  vmax=0; ( while :; do u=$(gpu_used_gib); echo "$u"; sleep 2; done ) > "$CORPUS.vram" & VP=$!
+  t0=$(date +%s.%N)
+  R=$(curl -s --max-time 900 -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$CORPUS.body" "$URL/v1/chat/completions")
+  t1=$(date +%s.%N); kill $VP 2>/dev/null; wait $VP 2>/dev/null
+  vmax=$(sort -n "$CORPUS.vram" | tail -1)
+  read -r toks pms pps dps <<<"$(python3 -c '
+import json,sys
+try:
+    r=json.loads(sys.argv[1]); u=r.get("usage",{}); t=r.get("timings",{})
+    print(u.get("prompt_tokens",0), round(t.get("prompt_ms",0)/1000,1), round(t.get("prompt_per_second",0),0), round(t.get("predicted_per_second",0),1))
+except Exception as e: print(0,0,0,0)' "$R")"
+  wall=$(python3 -c "print(round($t1-$t0,1))"); after=$(journalctl -k --since '-1min' 2>/dev/null | grep -ciE 'engine reset|timedout')
+  [ "$toks" = 0 ] && echo "$want: NO ANSWER (wall ${wall}s): $(echo "$R" | head -c 160)" || printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' "$want" "$toks" "$pms" "$pps" "$dps" "${vmax}GiB" "$((after-b0))"
+  curl -sf --max-time 5 "$URL/health" | grep -q '"ok"' || { echo "server not healthy after $want — stopping the sweep"; break; }
+done
+rm -f "$CORPUS" "$CORPUS.vram" "$CORPUS.body"

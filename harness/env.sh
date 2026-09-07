@@ -15,14 +15,19 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_SEAT:=$A770B_DATA/seat}"                     # default worktree: a plain clone of the target repo
 : "${A770B_MODELS:=$HOME/LLM/tested}"                   # where the GGUFs live (the server reads them; the sandbox never sees them)
 : "${A770B_REFUSE:=}"                                   # REQUIRED: colon-separated live checkouts the seat must never touch (guard refuses to run while empty)
-# ── the two profiles ─────────────────────────────────────────────────────────────────────────────────────────
+# ── the three profiles ─────────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_FAST_MODEL:=Qwen3.5-9B-Q4_K_M.gguf}";            : "${A770B_FAST_CTX:=81920}";    : "${A770B_FAST_KV:=q8_0}"
 : "${A770B_FAST_REASONING:=off}";                            : "${A770B_FAST_EXTRA:=}"
 : "${A770B_SERIOUS_MODEL:=Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf}"; : "${A770B_SERIOUS_CTX:=158000}"; : "${A770B_SERIOUS_KV:=q4_0}"
 : "${A770B_SERIOUS_REASONING:=on}"
 # the serious default is set in two statements: a brace inside a ${…:=…} expansion ends the expansion at the JSON's first '}'
 [ -n "${A770B_SERIOUS_EXTRA:-}" ] || A770B_SERIOUS_EXTRA='--chat-template-kwargs {"reasoning_effort":"low"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0'
-: "${A770B_FAST_TIMEOUT:=1500}";                             : "${A770B_SERIOUS_TIMEOUT:=3600}"
+: "${A770B_LONG_MODEL:=gemma-4-E4B-it-Q4_K_M.gguf}";        : "${A770B_LONG_CTX:=131072}";     : "${A770B_LONG_KV:=f16}"
+: "${A770B_LONG_REASONING:=off}"
+# flash attention off is the Gemma 4 condition on this card (with it on, prefill collapses with position and the GPU
+# watchdog fires); without it the V cache must be f16, which the sliding window keeps small
+: "${A770B_LONG_EXTRA:=-fa off}"
+: "${A770B_FAST_TIMEOUT:=1500}";                             : "${A770B_SERIOUS_TIMEOUT:=3600}";    : "${A770B_LONG_TIMEOUT:=1500}"
 : "${A770B_OUTPUT_TOKENS:=4096}"                             # opencode's per-reply output limit for both profiles
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_LLAMA_BIN:=${LLAMA_BIN:-$HOME/llama.cpp/build/bin/llama-server}}"

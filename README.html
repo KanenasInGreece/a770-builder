@@ -27,8 +27,9 @@ else on the machine, qualified on a real coding task, and judged by the artefact
 <ol>
 <li><strong><code>local-build</code></strong>, the installable skill in the <a href="https://agentskills.io">Agent Skills</a> format. Any compatible coding
    agent can install it and hand the seat a brief.</li>
-<li><strong>The A770 builder runtime</strong> the skill calls: the harness, the sandbox, the serving lines, and the two models that
-   earned their place by passing a real test-writing task on a live codebase.</li>
+<li><strong>The A770 builder runtime</strong> the skill calls: the harness, the sandbox, the serving lines, and the three models that
+   earned their place: two by passing a real test-writing task on a live codebase, one by reading a hundred thousand
+   tokens of it and answering from the far end.</li>
 </ol>
 <p>Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.</p>
@@ -79,10 +80,10 @@ trusted.</p>
 <td><code>A770B_LLAMA_BIN</code> (default <code>~/llama.cpp/build/bin/llama-server</code>)</td>
 </tr>
 <tr>
-<td>the two GGUF models</td>
-<td>the fast and serious profiles</td>
-<td>Hugging Face: <a href="https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF"><code>lmstudio-community/Qwen3.5-9B-GGUF</code></a> and <a href="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"><code>ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF</code></a>; the download lines are in <a href="docs/OPERATING.md#getting-llamacpp-and-the-models"><code>docs/OPERATING.md</code></a>; every model measured on this card is in <a href="config/models.md"><code>config/models.md</code></a>, and a new one enters by the procedure in <code>docs/OPERATING.md</code></td>
-<td><code>A770B_MODELS</code> (default <code>~/LLM/tested</code>), <code>A770B_FAST_MODEL</code>, <code>A770B_SERIOUS_MODEL</code></td>
+<td>the three GGUF models</td>
+<td>the fast, serious and long profiles</td>
+<td>Hugging Face: <a href="https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF"><code>lmstudio-community/Qwen3.5-9B-GGUF</code></a>, <a href="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"><code>ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF</code></a> and <a href="https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF"><code>lmstudio-community/gemma-4-E4B-it-GGUF</code></a>; the download lines are in <a href="docs/OPERATING.md#getting-llamacpp-and-the-models"><code>docs/OPERATING.md</code></a>; every model measured on this card is in <a href="config/models.md"><code>config/models.md</code></a>, and a new one enters by the procedure in <code>docs/OPERATING.md</code></td>
+<td><code>A770B_MODELS</code> (default <code>~/LLM/tested</code>), <code>A770B_FAST_MODEL</code>, <code>A770B_SERIOUS_MODEL</code>, <code>A770B_LONG_MODEL</code></td>
 </tr>
 <tr>
 <td><a href="https://opencode.ai/docs">opencode</a></td>
@@ -217,7 +218,7 @@ list, every linked worktree, symlink and agent home; the capture executes nothin
 a capture's tests inside a fresh sandbox when you want proof. Three adversarial reviews have read the boundary, all from one model
 family; a reader from another family is still owed. All of it, with what you must still do yourself and how to report a hole, is in
 <a href="SECURITY.md"><code>SECURITY.md</code></a>.</p>
-<p>This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the two model files, and nothing else:
+<p>This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the three model files, and nothing else:
 no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
 developed alongside the <a href="https://github.com/KanenasInGreece/Shared_Memory">Shared Memory</a> framework, a sibling project
 that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.

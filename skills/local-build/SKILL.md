@@ -1,6 +1,6 @@
 ---
 name: local-build
-description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Two profiles — fast (Qwen3.5-9B, default) and serious (Qwen3.8-27B IQ2_XS). Use when online seats are down or rate-limited, for small well-specified changes in a standalone clone of the target repository, never in a live checkout.
+description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Three profiles — fast (Qwen3.5-9B, default), serious (Qwen3.8-27B IQ2_XS) and long (Gemma 4 E4B, a 131k window for reading large files). Use when online seats are down or rate-limited, for small well-specified changes in a standalone clone of the target repository, never in a live checkout.
 ---
 
 # local-build — the A770 builder seat
@@ -13,7 +13,7 @@ green) and by `verify`, never by exit code.
 **When to use it.** An already-ruled, well-specified change to a few named files, when the online seats are down,
 rate-limited or too expensive for the task. Not for design work, not for anything touching a live checkout.
 
-## Two profiles — pick by the task, know the window you have
+## Three profiles — pick by the task, know the window you have
 
 Measured on this A770 (16 GB, also driving the desktop), llama.cpp b10805 Vulkan, on the qualification task:
 
@@ -21,6 +21,7 @@ Measured on this A770 (16 GB, also driving the desktop), llama.cpp b10805 Vulkan
 |---|---|---|---|---|---|
 | **fast** (default) | Qwen3.5-9B Q4_K_M | **81,920 tokens** | 45 tok/s decode · 464 tok/s prefill | ~2–3 min | every ordinary change; in the qualification task it followed the repository's idioms and passed its tests first try |
 | **serious** | Qwen3.8-27B GSQ-RCO IQ2_XS | **158,000 tokens** | 8.1 tok/s decode · 70 tok/s prefill | ~10–25 min | when the fast profile fails or the deliverable is larger than its spec: tests from an invariant, text a reviewer will read; the best-written output of our matrix, at the speed floor. Never for mechanical edits: measured on a six-site one-keyword change, it produced the same patch as the fast profile, one comment word closer to the brief, at seven times the wall clock |
+| **long** | Gemma 4 E4B Q4_K_M, flash attention off | **131,072 tokens** | 60 tok/s decode · 796 tok/s prefill, falling to 16 · 280 at 100k | ~1.5 min; a cold 100k read 4.5 min | files the fast window cannot hold, and the read before a brief is written; useful to about 100k for precise questions about a passage (exact at that depth on a planted detail; broad recall blends real names; a misread number at 120k; asked to index a 6,300-line file it read 60% and got 34 of 40 names right). Neither seat indexes a large file; that stays a `grep`. Not for multi-file shell edits: it made one of three and reported all done |
 
 The profiles are configuration, not fixed: `status` shows what is actually configured on this machine, and the project's
 `config/models.md` is the ledger of every model qualified on this card with its numbers; a new model enters through
@@ -36,8 +37,9 @@ for the run and restored after; the skill does that.)
 # 2. a brief: a Markdown file that names the files, the exact test command, and the stop condition
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md>                       # fast, on the default seat
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --serious      # serious, on a given seat
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --long                # long: the 131k window, for the read
 bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>                       # re-run a capture's tests in a fresh sandbox
-bash ~/.claude/skills/local-build/scripts/local-build.sh serve fast|serious   # start/switch the server only
+bash ~/.claude/skills/local-build/scripts/local-build.sh serve fast|serious|long   # start/switch the server only
 bash ~/.claude/skills/local-build/scripts/local-build.sh status               # which model is up, VRAM, health
 bash ~/.claude/skills/local-build/scripts/local-build.sh stop                 # free the card
 bash ~/.claude/skills/local-build/scripts/local-build.sh reset                # discard everything uncommitted in the seat, ignored files too
@@ -62,7 +64,9 @@ capture decides. A cheap reviewer prompt for it lives at `~/local-ai/A770_Builde
 - **Seat only, inside the sandbox.** The seat must be a standalone clone not listed in `A770B_REFUSE`. The model's
   process sees the seat, a private home and a read-only uv cache; no credentials, no other tree, no network except the
   model server. Every test package a brief needs must be pre-warmed into the uv cache (`harness/warm_cache.sh`).
-- **Timeouts:** fast 1,500 s, serious 3,600 s by default (`--timeout` overrides).
+- **Timeouts:** fast 1,500 s, serious 3,600 s, long 1,500 s by default (`--timeout` overrides).
+- **Flash attention is per model family.** The Qwen profiles run with it on; the long profile's Gemma runs with it off,
+  because with it on every Gemma 4 measured here collapsed on prefill and reset the GPU. The profile carries the flag.
 
 ## Brief shape that works (measured)
 

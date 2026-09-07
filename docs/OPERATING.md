@@ -9,9 +9,10 @@ exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) 
 ```bash
 bash skills/local-build/scripts/local-build.sh run <brief.md>                            # fast profile, on the default seat
 bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --serious  # serious profile, on a named seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --long                     # long profile: the 131k window
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
-bash skills/local-build/scripts/local-build.sh serve fast|serious · status · stop · --version · check-update
+bash skills/local-build/scripts/local-build.sh serve fast|serious|long · status · stop · --version · check-update
 ```
 
 `run` refuses anything but the root of a standalone clone that is not a live checkout, refuses a seat that is not clean
@@ -49,6 +50,17 @@ task. Numbers are properties of this card, build and quantisation, not of the mo
 |---|---|---|---|---|---|
 | `fast` (default) | Qwen3.5-9B Q4_K_M | 81,920 · q8_0 | 6.9 GiB | 45 tok/s / 464 tok/s | 2–3 min |
 | `--serious` | Qwen3.8-27B GSQ-RCO IQ2_XS | 158,000 · q4_0 | 11.5 GiB | 8.1 tok/s / 70 tok/s | 10–25 min |
+| `--long` | Gemma 4 E4B Q4_K_M, flash attention off | 131,072 · f16 | 8.1 GiB | 60 tok/s / 796 tok/s, falling to 16 / 280 at 100k | 1.5 min; a cold 100k read 4.5 min |
+
+The long profile exists for the read, not the edit: files the fast window cannot hold, and the "read this whole thing
+and tell me" step before a brief is written. Its useful depth is about 100k tokens: at that depth it answered a probe's
+planted detail exactly, while its broad recall of "three other functions" blended real names into ones that do not
+exist; at 120k it misread a number. Ask it precise questions about a passage, not to recall the file: asked to index every definition of a 6,300-line
+file it paged through 60% and got 34 of 40 names right and 19 lines; the fast profile paged through all of it in
+15 minutes and listed constants instead of definitions. Neither seat indexes a large file. Judge what it reports the
+way every capture is judged. It is not the profile for multi-file shell edits: on the harness's own brief it made one
+edit of three and reported all three done. Flash attention off is its condition on this card, and with it off the V
+cache is f16.
 
 The window is the server's. opencode's opening request costs about 5.4k tokens with the seat's `AGENTS.md` set aside
 (the skill does this for the run and restores it after); with it in place the opening request was about 32k tokens, which
@@ -101,6 +113,7 @@ Fetch them with the Hugging Face CLI (no account needed for these), straight int
 ```bash
 uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested            # fast
 uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf --local-dir ~/LLM/tested   # serious
+uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested       # long
 ```
 
 llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M` downloads into
@@ -110,7 +123,7 @@ llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qw
 ## Models — where to put them, how the skill reaches them
 
 1. Put the GGUFs in `A770B_MODELS` (default `~/LLM/tested`); keep a README there saying why each earned its place.
-2. Name the two profiles' files: `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL` (bare name = looked up in `A770B_MODELS`;
+2. Name the profiles' files: `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` (bare name = looked up in `A770B_MODELS`;
    absolute paths work). Set the context and KV type per profile (`A770B_*_CTX`, `A770B_*_KV`); reasoning models take
    `A770B_*_REASONING=on` plus their template kwargs in `A770B_*_EXTRA`.
 3. The llama-server process on the host reads the weights and answers on `A770B_HOST:A770B_PORT` under the alias
@@ -131,7 +144,14 @@ by measurement, in one sitting, without touching any script:
    and `REASONING` in the environment as the model needs. It starts the server under the card's rules, runs the probes
    (load time, VRAM, the sanity gate, the long prefill, a tool call), refuses to continue if the sanity gate fails, then
    dispatches the brief through opencode in the seat and writes the capture and a JSON of the numbers to
-   `A770B_DATA/results/<label>.*`.
+   `A770B_DATA/results/<label>.*`. Flash attention is a variable of the row, not a constant of the card: if the long
+   prefill slows with position or the kernel logs an engine reset, run the row again with `-fa off` and `KV_V=f16`
+   before judging the model. Watch the kernel log beside every row (`journalctl -k`) and stop the server on the first
+   reset.
+   For a model meant to hold large files, add three measurements with the server up: `harness/cancel_repro.sh` (a
+   cancelled request must not take the card down), `harness/ctx_sweep.sh` (prefill, decode and VRAM against position)
+   and `harness/depth_probe.sh` (correct answers from deep inside the prompt), and run `briefs/T2-read-a-large-file.md`
+   as a second task.
 3. **Grade the capture** with a reviewer that did not write it: `briefs/REVIEW-prompt.md` is the prompt, the capture is
    its only input. Run `local-build.sh verify <label>` for the proof. Green tests and PASS or PARTIAL qualify.
 4. **Record it**: add the row to `config/models.md` with the measured numbers, the source repository and the caveats.
@@ -162,6 +182,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `harness/guard.sh` | canonical seat guard, verified pids, the run lock, `safe_git`, the seat reset, the built-in budget gate |
 | `harness/capture_task.sh` | diff + new files + the model's pytest line + server-side TTFT/TPOT distribution, the `.patch` for `verify`, then the seat reset |
 | `harness/bench_model.sh` · `run_one.sh` · `measure_overhead.sh` | the qualification row: probes → gate → task → capture; opencode opening-request cost (testing only, run by the operator) |
+| `harness/cancel_repro.sh` · `ctx_sweep.sh` · `depth_probe.sh` | the long-context qualification: a cancelled request while the slot is held; prefill, decode and VRAM against position; correct answers from 85% of the way into a large prompt (run by the operator against a server that is up) |
 | `config/opencode.profile.template.jsonc` | the ONLY opencode config the sandbox sees, rendered per run with the server URL, the key, the profile's window and a default-deny bash allow-list |
 | `harness/warm_cache.sh` | pre-fills the read-only uv cache the sandbox mounts (it has no network) |
 | `SECURITY.md` · `SANDBOX-PLAN.md` | the boundary as it stands; the problem, the plan and what was done |
@@ -169,7 +190,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `release.sh` | cuts a release: moves the number in its three places (`VERSION`, the skill's `SKILL_VERSION`, the tag) in one commit, pushes, publishes the GitHub Release from a notes file. The first release is 0.1.0; each one after adds 0.0.1, the minor number moves when the patch would pass 99, and a major bump takes `--major` |
 | `LICENSE` | MIT |
 | `tests/selftest.sh` | what the harness proves without the card: every script parses, the health line reads the four kinds of answer and strips a hostile one, the seat's dirty check hides nothing but the harness's own brief copies, a symlink is reported and never read, the capture survives a run that made no file. Run it after a harness edit, from a tree you have read; a builder's patch is proven by `verify`, never by running its tests on the host |
-| `briefs/` | the brief template (`TEMPLATE.md`: named files, verbatim text in quoted blocks, a test command on named files, a stop condition), the qualification task (`T1-…`), the cheap-reviewer prompt, the smoke brief |
+| `briefs/` | the brief template (`TEMPLATE.md`: named files, verbatim text in quoted blocks, a test command on named files, a stop condition), the qualification task (`T1-…`, a bounded edit), the reading task (`T2-…`, one large file whole, graded against `grep`), the cheap-reviewer prompt, the smoke brief |
 
 Data stays outside this folder on purpose: models in `~/LLM/tested` and `~/LLM/next-card`; the seat (`~/local-ai/seat`,
 a standalone clone of the target repository with no link to its live checkout), results (captures, patches, verify

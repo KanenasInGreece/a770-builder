@@ -29,13 +29,31 @@ with its caveat.
 | `Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 158,000 / q4_0, reasoning on at effort low | 11.5 GiB | 8.1 / 6.7 tok/s | 70 tok/s, 247 s | PASS, 5 tests, 617 s | **serious** | best-written file of the matrix; at the speed floor, 10–25 min per small task |
 | `Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 131,072 / q4_0, reasoning on at effort low | 12.3 GiB | 8.1 / 6.7 tok/s | 65 tok/s, 265 s | PASS, 5 tests, 1,492 s | qualified alternative | same speed as IQ2_XS for 0.75 GiB more VRAM and 30k less context |
 | `gpt-oss-20b-UD-Q4_K_XL.gguf` | `unsloth/gpt-oss-20b-GGUF` | 81,920 / K q8_0 + V q4_0, `--chat-template-kwargs '{"reasoning_effort":"low"}'` | 11.7 GiB | 42.1 / 27 tok/s | 585 tok/s, 28 s | PARTIAL (green), 5 tests, 79 s | qualified alternative | fastest prefill and fastest task; improvised an import scaffold instead of the repository's idiom, which a reviewer catches; always reasons, keep the output limit generous |
+| `gemma-4-E4B-it-Q4_K_M.gguf` | `lmstudio-community/gemma-4-E4B-it-GGUF` | 131,072 / f16, **`-fa off`** (its condition, see below) | 6.8 GiB at 80k, 8.1 GiB at 131k | 60 / 38 tok/s | 796 tok/s, 29 s | PASS ×2 and PARTIAL ×1 (17, 6, 6 tests; the PARTIAL one `isinstance` assertion), 74–82 s; green at 131k after one fix | **long** | the largest window at speed on this card: cold read of 107k tokens in 273 s, exact on a planted detail at 85% depth of a 100k prompt, approximate on broad recall (asked for three other functions it blended real names into ones that do not exist), a wrong number at 120k; decode 44 → 16 tok/s from 8k to 100k; VRAM flat at 8.4 GiB (sliding window); five client-cancel rounds clean, zero resets across nine rows. Not for multi-file shell edits: on the harness's own brief it made one of three edits and reported all three done. On the reading task (T2: index every top-level definition of a 6,300-line, 100k-token file): E4B paged through 60% of it in 9 min and listed 40 names, 34 of them real definitions, 19 with the right line; the 9B paged through all of it in 15.5 min and listed 57 module-level constants instead of definitions, none right. Neither seat indexes a large file; the long profile's value is a precise question about a passage, which the fast profile cannot reach at all. |
 
 ## Measured and kept out
 
-Qwen3-14B, gemma-4-12B and Ministral-3-14B failed the coding task on this card. Speculative decoding in every form
+Qwen3-14B and Ministral-3-14B failed the coding task on this card. **Gemma 4 12B** (`gemma-4-12B-it-Q4_K_M`) does not fail:
+with flash attention on it collapses on long prefill and trips the GPU watchdog, like every Gemma 4 on this card; with it off,
+K q8_0 and V f16, it is stable through the cancel reproduction, passes the coding task (5 tests, PASS) and parses tool
+calls, but only at 65,536 of context (13.7 GiB at 80k, over the cap), at 206 tok/s prefill, 15 tok/s decode and 12 minutes
+for the task. Kept out by the context bar and by speed, not by quality.
+
+**Flash attention is a per-family condition on this card.** The Qwen line has it on. Every Gemma 4 measured with it on
+collapsed on prefill with position and reset the GPU; with it off the same weights ran clean. Without flash attention
+llama.cpp cannot quantise the V cache, so a Gemma row runs V at f16, which E4B's sliding window keeps small and the 12B's
+full cache does not. A new family enters with both settings tried before its numbers are believed. Speculative decoding in every form
 tried, a vocabulary-matched draft model and the MTP heads of the Qwen3.5 and Qwen3.8 families, made decode slower on
 this card under Vulkan (the Qwen3.8 MTP head 3.7 times slower despite high acceptance), so no profile uses it. Those
 weights are kept for the next Intel card, where the first thing to re-measure is exactly that.
+
+## How a model earns the long profile
+
+T1 measures a bounded edit at low context and says nothing about reading. A model that is to hold a large file is
+qualified twice more, with the harness's own tools: `harness/ctx_sweep.sh` for prefill and decode against position with
+VRAM sampled, and `harness/depth_probe.sh` for whether it answers correctly from deep inside the prompt; and
+`harness/cancel_repro.sh`, the client-cancel reproduction from the sibling framework's records, for whether a cancelled
+request can take the card down. `briefs/T2-read-a-large-file.md` is the reading task, graded against `grep`.
 
 ## How a model enters
 
