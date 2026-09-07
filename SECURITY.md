@@ -52,6 +52,27 @@ sandbox starts, so no host file crosses the boundary with it.
 | the model server | reachable with the key the rendered profile carries; the key unlocks nothing else |
 | the host afterwards | the capture is taken with `safe_git` and executes nothing the model wrote; the reset removes ignored files too; `verify` runs the tests in a fresh sandbox without the key |
 
+## What it touches on your machine
+
+The harness runs as you, outside the sandbox, and this is the complete list of what it touches. It reads the model files,
+starts one `llama-server` process on the port you configure, writes under the data directory (the seat, the results, the
+logs, the rendered profile and the uv cache), creates the API key file under your config directory with mode 600, and
+reads the seat's git metadata through `safe_git`. It makes no network call of its own except to that server on loopback;
+the model files and the skill are fetched by you, with the commands in the install section. It needs no database, no
+account and no memory system.
+
+If you run other services on the same host, the seat is built not to meet them. Inside the sandbox the network namespace
+is unshared and only the model server's port is bridged, so nothing the model does can reach a service on the host, the
+LAN or the internet. Outside it, the harness knows of other services through two optional knobs, both empty by default:
+`A770B_FRAMEWORK_PORTS`, ports the model server must never bind, and `A770B_HEALTH_URL`, a status URL read once, with a
+plain GET, before a server starts. Nothing is written to either.
+
+The project was developed alongside the [Shared Memory](https://github.com/KanenasInGreece/Shared_Memory) framework, a
+sibling project that kept the record of its decisions and reviews and whose repository was the seat's qualification task.
+Nothing of it is needed here and nothing of it is in this repository. If you run that framework, the paragraph above is
+the whole of what this project does near it: it never reads or writes its store, and its gateway is at most the health
+URL you choose to name.
+
 ## What was expected to be fixed
 
 The first review left five pieces of work, sequenced in [`SANDBOX-PLAN.md`](SANDBOX-PLAN.md): a kernel boundary around

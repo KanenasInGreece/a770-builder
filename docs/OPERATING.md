@@ -72,6 +72,11 @@ file is created on the first serve, one line, mode 600; the rendered profile car
 harness script that talks to the server reads it from the file. Delete the file to rotate: the next `serve` creates a
 new key, notices the running server no longer accepts it, and restarts the server.
 
+**Other services on the host.** `A770B_FRAMEWORK_PORTS` lists ports the model server must never bind. `A770B_HEALTH_URL`,
+when set, is read with one GET before a server starts, and the built-in gate refuses unless the answer carries
+`"status": "ok"`. Both are empty by default and neither is written to. A different or stricter check belongs in an
+external gate script named by `A770B_BUDGET_GATE`, which replaces the built-in gate entirely.
+
 ## Getting llama.cpp and the models
 
 **llama.cpp with the Vulkan backend.** The seat was measured on build b10805. Build instructions live in the llama.cpp

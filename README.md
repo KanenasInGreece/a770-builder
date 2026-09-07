@@ -128,6 +128,14 @@ a capture's tests inside a fresh sandbox when you want proof. Three adversarial 
 family; a reader from another family is still owed. All of it, with what you must still do yourself and how to report a hole, is in
 [`SECURITY.md`](SECURITY.md).
 
+This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the two model files, and nothing else:
+no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
+developed alongside the [Shared Memory](https://github.com/KanenasInGreece/Shared_Memory) framework, a sibling project
+that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.
+If you run that framework, or any other service, on the same host: the seat never reads or writes it, the sandbox has no
+route to it, and the harness knows of it only through two optional knobs, the ports the model server must never bind and
+a health URL read once before a server starts, both empty by default. `SECURITY.md` lists exactly what the harness touches.
+
 ## Contributors
 
 Credits are for people and collaborators, not a claim of joint copyright on every line (the project is MIT, see
