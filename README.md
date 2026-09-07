@@ -1,13 +1,25 @@
 # A770_Builder
 
-This repository is about one card, the Intel Arc A770 16 GB, used as a local code builder. A local model is not trusted
-here because it runs locally: it is treated as an untrusted coding worker, given a disposable seat, kept from everything
-else on the machine, qualified on a real coding task, and judged by the artefact it hands back, never by its exit code.
+An Intel Arc A770 16 GB as a local coding seat for the coding agents already on your workstation. The agent you work
+with keeps the context, the judgement and the plan. When it meets a piece of work that is bounded and well specified, a
+change to named files, a test file from an invariant, the read of a file its own window cannot hold, it hands that piece
+to a local model through the `local-build` skill and gets back a capture: the diff, the tests the model ran, the
+timings, and a way to re-run those tests in a fresh sandbox before anything is merged. The local model is not trusted
+because it runs locally. It is an untrusted coding worker: qualified on a real coding task before it earns a profile,
+given a disposable seat that is a standalone clone of your repository, kept from everything else on the machine by a
+kernel boundary, and judged by the artefact it hands back, never by its exit code.
 
-It holds two things:
+The idea has three parts, and they only work together: a qualified model, a disposable seat, and a captured result a
+reviewer can verify. A model on its own is a model server, and this card is not a good one. A sandbox on its own
+contains nothing worth containing. A capture without the boundary is a claim. Together they make a worker an
+orchestrating agent can hand bounded work to, repeatably and cheaply, while keeping the judgement for itself. This is
+not an autonomous coding agent and not a general inference server; it is a qualified local seat underneath an agent
+that already understands the larger job.
+
+The repository holds two things:
 
 1. **`local-build`**, the installable skill in the [Agent Skills](https://agentskills.io) format. Any compatible coding
-   agent can install it and hand the seat a brief.
+   agent can install it and hand the seat a brief; the agent decides what to hand over.
 2. **The A770 builder runtime** the skill calls: the harness, the sandbox, the serving lines, and the three models that
    earned their place: two by passing a real test-writing task on a live codebase, one by reading a hundred thousand
    tokens of it and answering from the far end.
@@ -21,12 +33,13 @@ repository's own idiom. **serious** is Qwen3.8-27B, for a deliverable larger tha
 invariant or prose a reviewer will read; it is the best-written output of the matrix at eight tokens a second, and on a
 mechanical edit it produces the fast profile's patch at seven times the wall clock, so it is never the profile for
 those. **long** is Gemma 4 E4B with flash attention off, a 131k-token window for the read the fast window cannot hold
-and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits, and no
-profile indexes a large file, which stays a `grep`. Every profile's output is judged the same way, by its capture and
-by `verify`.
+and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
+is a capacity, not the depth a model works reliably at, and each profile's row says which depth was measured. No
+profile indexes a large file, which stays a `grep`: where a deterministic tool answers exactly, the seat is not asked to
+approximate it. Every profile's output is judged the same way, by its capture and by `verify`.
 
 ```text
-your coding agent
+your coding agent ── the context, the judgement, the plan
       │  local-build skill (a brief in, a capture out)
       ▼
 A770 builder harness ── guard · run lock · budget gate · capture · verify
@@ -41,15 +54,38 @@ the same day. The measured report (matrix, serving lines, method) lives beside t
 
 ## Why we made it
 
-The online seats a workstation full of coding agents depends on go down, rate-limit, or cost credits in the middle of a
-build. This card was already in the machine, driving the desktop, and idle. The question was whether a 16 GB Arc could
-hold a model that actually finishes a small, well-specified change in a real repository, and whether an agent could hand
-it that work without giving a local model the run of the host. The first was answered by measurement: every candidate
-got the same brief on a live codebase, and only the ones whose tests passed under a cheap reviewer's eye kept a place. The
-second was answered by the harness and the sandbox, and by four adversarial reviews of them, the last by a second model family. A run does not end in an exit
-code but in a capture, and a reviewer can re-run its tests inside a fresh sandbox with `verify` before merging anything.
-What is here is the result of all of that, so the next card, model or build can be re-qualified the same way instead of
-trusted.
+A workstation full of coding agents depends on online seats that go down, rate-limit, or cost credits in the middle of
+a build. Much of what those agents are asked to do is bounded work: a change to named files, tests from a
+specification, the read of one large file. It does not need the strongest model available, only one that does it
+correctly in the repository's idiom, and it does not need the orchestrating agent's own context spent on it. This card
+was already in the machine, driving the desktop, and idle.
+
+The obvious way to use it was the stack Intel's newer cards run, vLLM on the XPU backend, and on this card that route
+is closed. Intel's inference stacks have moved on to newer Arc hardware: vLLM's validated XPU hardware today is the
+Arc Pro B-Series; its attention path after the 0.9.1 release needs Xe2 cores the A770 does not have; GGUF weights
+cannot be served on an Intel GPU through it at any version; the last line that served here, 0.9.0 on IPEX, answered
+wrongly with NaN logits; and the ipex-llm line that does run was archived in January 2026. None of that is a
+complaint, the card is old for that stack. It is the reason to ask the card a narrower question. llama.cpp with the
+Vulkan backend runs on the distribution's Mesa driver, the one already drawing the desktop, with no oneAPI runtime
+beneath it, and when the card's job watchdog fires, Vulkan surfaces a device-lost error and the server stops. The SYCL
+backend was not measured here; the reports we read of the same reset on that path describe a server that stays up and
+answers nothing, which is the worse failure for a seat judged by what it returns. So the serving line is llama.cpp
+over Vulkan, and every number here was measured on it.
+
+That left two questions. Whether a 16 GB Arc could hold a model that actually finishes a small, well-specified change
+in a real repository was answered by measurement: every candidate got the same brief on a live codebase, and only the
+ones whose tests passed under a cheap reviewer's eye kept a place; the ledger in `config/models.md` records the ones
+that did not, and why. Whether an agent could hand it that work without giving a local model the run of the host was
+answered by the harness and the sandbox, and by four adversarial reviews of them, the last by a second model family.
+A run does not end in an exit code but in a capture, and a reviewer can re-run its tests inside a fresh sandbox with
+`verify` before merging anything.
+
+The division of labour follows from that. The orchestrating agent decides what the seat is for; the skill tells it
+what each profile was measured to do and not do, and the deciding stays with the agent that has the context. Where a
+deterministic tool exists, it wins: the long profile reads a file the fast profile cannot hold, and asked to index every
+definition of a 6,300-line file it read sixty percent and named thirty-four of forty correctly, where `grep`
+names all forty in a second. What is here is the result of all of that, so the next card, model or build can be
+re-qualified the same way instead of trusted.
 
 ## Install
 
