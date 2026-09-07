@@ -1,6 +1,6 @@
 ---
 name: local-build
-description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Three profiles — fast (Qwen3.5-9B, default), serious (Qwen3.8-27B IQ2_XS) and long (Gemma 4 E4B, a 131k window for reading large files). Use when online seats are down or rate-limited, for small well-specified changes in a standalone clone of the target repository, never in a live checkout.
+description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Three profiles — fast (Qwen3.5-9B, default), serious (Qwen3.8-27B IQ2_XS) and long (Gemma 4 E4B, a 131k window for reading large files). Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout.
 ---
 
 # local-build — the A770 builder seat
@@ -10,8 +10,10 @@ inside a sandbox whose only writable tree is the seat, then captures the diff, t
 server-side timings, and resets the seat. The seat is judged by the DELIVERABLE (the capture: files changed, tests
 green) and by `verify`, never by exit code.
 
-**When to use it.** An already-ruled, well-specified change to a few named files, when the online seats are down,
-rate-limited or too expensive for the task. Not for design work, not for anything touching a live checkout.
+**When to use it.** The calling agent decides; the seat is for bounded, well-specified work that does not need that
+agent's own model or context: an already-ruled change to a few named files, a test file from an invariant, the read of a
+file the agent's window cannot hold. It is also the fallback when the online seats are down, rate-limited or too
+expensive for the task. Not for design work, not for anything touching a live checkout.
 
 ## Three profiles — pick by the task, know the window you have
 
@@ -81,7 +83,7 @@ inside a boundary with no network and none of the host's environment (measured: 
 
 ## Optional: persistent agent guidance
 
-`CONSTITUTION_SNIPPET.md` beside this file is a twelve-line reminder for an agent that will use this seat repeatedly:
+`CONSTITUTION_SNIPPET.md` beside this file is a short standing reminder for an agent that will use this seat repeatedly:
 when to use it, the three profiles, the call, the hard rules. The skill works without it. If you want it, add it to your
 own constitution file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md` in your home) between its `<!-- local-build:begin/end -->`
 markers so a later version can replace it. Nothing modifies your agent configuration for you.
