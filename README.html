@@ -49,7 +49,9 @@ default for every ordinary change: a small, well-specified edit to named files, 
 repository's own idiom. <strong>serious</strong> is Qwen3.8-27B, for a deliverable larger than its brief, tests written from an
 invariant or prose a reviewer will read; it is the best-written output of the matrix at eight tokens a second, and on a
 mechanical edit it produces the fast profile's patch at seven times the wall clock, so it is never the profile for
-those. <strong>long</strong> is Gemma 4 E4B with flash attention off, a 131k-token window for the read the fast window cannot hold
+those; it is served with 158,000 tokens of window but useful to about 32,000, since its decode falls under five tokens
+a second by 64,000. The fast profile is safe across its whole window, its prefill slowing under 150 tokens a second
+past about 64,000. <strong>long</strong> is Gemma 4 E4B with flash attention off, a 131k-token window for the read the fast window cannot hold
 and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
 is a capacity, not the depth a model works reliably at, and each profile's row says which depth was measured. No
 profile indexes a large file, which stays a <code>grep</code>: where a deterministic tool answers exactly, the seat is not asked to
@@ -65,8 +67,8 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       │                          │ loopback bridge, the only network
       └── llama.cpp (Vulkan) ────┘── the qualified model on the A770
 </code></pre>
-<p>Built and measured on 2026-09-06 and 07 on a card that also drives the desktop; reviewed adversarially twice and contained
-the same day. The measured report (matrix, serving lines, method) lives beside the weights: <code>~/LLM/tested/README.html</code>.</p>
+<p>Built and measured on 2026-09-06 to 08 on a card that also drives the desktop; reviewed adversarially and contained
+the same day, and since then built partly by its own seat. The measured report (matrix, serving lines, method) lives beside the weights: <code>~/LLM/tested/README.html</code>.</p>
 <h2 id="why-we-made-it">Why we made it</h2>
 <p>A workstation full of coding agents depends on online seats that go down, rate-limit, or cost credits in the middle of
 a build. Much of what those agents are asked to do is bounded work: a change to named files, tests from a
@@ -88,7 +90,7 @@ over Vulkan, and every number here was measured on it.</p>
 in a real repository was answered by measurement: every candidate got the same brief on a live codebase, and only the
 ones whose tests passed under a cheap reviewer's eye kept a place; the ledger in <code>config/models.md</code> records the ones
 that did not, and why. Whether an agent could hand it that work without giving a local model the run of the host was
-answered by the harness and the sandbox, and by four adversarial reviews of them, the last by a second model family.
+answered by the harness and the sandbox, and by six reviews of them, two by a second model family.
 A run does not end in an exit code but in a capture, and a reviewer can re-run its tests inside a fresh sandbox with
 <code>verify</code> before merging anything.</p>
 <p>The division of labour follows from that. The orchestrating agent decides what the seat is for; the skill tells it
@@ -180,7 +182,7 @@ re-qualified the same way instead of trusted.</p>
 </table>
 <p>On Fedora, for example, everything but llama.cpp, opencode, uv and the models is one line:
 <code>sudo dnf install mesa-vulkan-drivers vulkan-tools vulkan-headers vulkan-loader-devel glslc cmake gcc-c++ bubblewrap socat nvtop git curl python3 util-linux iproute</code>.</p>
-<p><strong>Versions this was measured and reviewed with</strong> (2026-09-07): Fedora 44, kernel 7.1.13, Mesa 26.1.8 (Vulkan 1.4.341) on
+<p><strong>Versions this was measured and reviewed with</strong> (2026-09-08): Fedora 44, kernel 7.1.13, Mesa 26.1.8 (Vulkan 1.4.354) on
 the Intel Arc A770 16 GB; llama.cpp b10805 (Vulkan); opencode 1.18.29; bubblewrap 0.12.0; socat 1.8.1.1; uv 0.12.3;
 nvtop 3.3.2; git 2.55.0; Python 3.14.7; Node 24.15.0 with <code>skills</code> CLI 1.5.24. Newer versions of the tools should work;
 a different llama.cpp build or model quantisation is a different measurement, and its numbers should be re-taken with
@@ -264,8 +266,9 @@ with Vulkan and fetch the models, what each file is) lives in <a href="docs/OPER
 <p>The model's process runs inside bubblewrap with the seat as its only writable tree, no credentials, no other checkout,
 and no network access except the model server, which itself requires a key. The guard refuses every live checkout you
 list, every linked worktree, symlink and agent home; the capture executes nothing the model wrote, and <code>verify</code> re-runs
-a capture's tests inside a fresh sandbox when you want proof. Four adversarial reviews have read the boundary; the fourth, by a second model
-family, found three holes the first three had missed, all closed the same day. All of it, with what you must still do yourself and how to report a hole, is in
+a capture's tests inside a fresh sandbox when you want proof. Six reviews have read the boundary and what sits on it, two of them by a second model
+family; the fourth found three holes the first three had missed, and the sixth read the run specification and found two
+defects in its refusals, all closed the same day. All of it, with what you must still do yourself and how to report a hole, is in
 <a href="SECURITY.md"><code>SECURITY.md</code></a>.</p>
 <p>This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the three model files, and nothing else:
 no database, no account, no memory system, and no network call of its own except the model server on loopback. It was

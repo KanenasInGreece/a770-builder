@@ -66,9 +66,15 @@ task. Numbers are properties of this card, build and quantisation, not of the mo
 
 | profile | model | window · KV | VRAM | decode / prefill | small task |
 |---|---|---|---|---|---|
-| `fast` (default) | Qwen3.5-9B Q4_K_M | 81,920 · q8_0 | 6.9 GiB | 45 tok/s / 464 tok/s | 2–3 min |
-| `--serious` | Qwen3.8-27B GSQ-RCO IQ2_XS | 158,000 · q4_0 | 11.5 GiB | 8.1 tok/s / 70 tok/s | 10–25 min |
+| `fast` (default) | Qwen3.5-9B Q4_K_M | 81,920 · q8_0, safe throughout | 6.9 GiB | 45 tok/s / 464 tok/s at 17k; 15 / 125 at 71k | 2–3 min |
+| `--serious` | Qwen3.8-27B GSQ-RCO IQ2_XS | 158,000 · q4_0, useful to about 32k | 11.5 GiB | 8.1 tok/s / 70 tok/s at 17k; 4.7 / 40 at 64k | 10–25 min |
 | `--long` | Gemma 4 E4B Q4_K_M, flash attention off | 131,072 · f16 | 8.1 GiB | 60 tok/s / 796 tok/s, falling to 16 / 280 at 100k | 1.5 min; a cold 100k read 4.5 min |
+
+The two Qwen windows were swept on 2026-09-08 with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM
+sampled and the kernel log watched: the fast profile holds across its whole window with no reset and flat VRAM, its
+prefill falling under 150 tokens a second past about 64k; the serious profile's decode falls under the five-tokens-a-second
+floor by 64k, so its useful window is about 32k of the 158,000 it is served with, and a brief for it points at files that
+fit that.
 
 The long profile exists for the read, not the edit: files the fast window cannot hold, and the "read this whole thing
 and tell me" step before a brief is written. Its useful depth is about 100k tokens: at that depth it answered a probe's

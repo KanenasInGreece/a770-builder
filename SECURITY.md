@@ -108,8 +108,13 @@ cycle after publication, and the review of that cycle closed the gaps it opened:
 `verify`, the run lock's descriptor reaching the sandbox, and ignored files surviving the reset. Three reviews had read the boundary, every one from the same model family; the fourth, by another family, read it
 with the cycle that made the health line informational and found what the first three had not: a symlink the model
 leaves in the seat was followed by the host when the capture read new files, a file planted under `.git` outlived the
-reset unseen, and the briefs directory's exemption could hide a planted file. All three are closed above. Every change to the boundary since has gone through a branch, a
-read-only adversarial review by a model that did not write it, and the mutation checks re-run before merge.
+reset unseen, and the briefs directory's exemption could hide a planted file. All three are closed above. The fifth and sixth reads, a code-quality read and a security read by the other
+family, took the run specification: both found a path-qualified wrapper passing the bash addition's first-word check and
+the renderer's placeholder guard unable to match two of its own placeholders, and the security read added a symlinked
+hidden root, a hidden test placed but never run beside a caller's test command, and an echo that named the wished-for
+profile rather than the one used; all closed in the same fix round with the reviewers' mutation checks run. Every
+change to the boundary since the first has gone through a branch, a read-only adversarial review by a model that did
+not write it, and the mutation checks re-run before merge.
 
 ## What is still open
 
