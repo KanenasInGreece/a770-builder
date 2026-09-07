@@ -20,11 +20,27 @@ tr:last-child td{border-bottom:none}blockquote{border-left:3px solid var(--rule)
 </style>
 <div class="wrap">
 <h1 id="a770_builder">A770_Builder</h1>
-<p>This repository is about one card, the Intel Arc A770 16 GB, used as a local code builder. It holds the two models that
-earned the role by passing a real test-writing task on a live codebase, with the llama.cpp flags that keep the card stable
-and the context each one gives you; and it holds <code>local-build</code>, an Agent Skills-standard skill any CLI agent can install,
-which serves the chosen model, runs the brief inside a network-isolated sandbox that can only see the seat, and hands back
-a capture for review instead of trusting the run.</p>
+<p>This repository is about one card, the Intel Arc A770 16 GB, used as a local code builder. A local model is not trusted
+here because it runs locally: it is treated as an untrusted coding worker, given a disposable seat, kept from everything
+else on the machine, qualified on a real coding task, and judged by the artefact it hands back, never by its exit code.</p>
+<p>It holds two things:</p>
+<ol>
+<li><strong><code>local-build</code></strong>, the installable skill in the <a href="https://agentskills.io">Agent Skills</a> format. Any compatible coding
+   agent can install it and hand the seat a brief.</li>
+<li><strong>The A770 builder runtime</strong> the skill calls: the harness, the sandbox, the serving lines, and the two models that
+   earned their place by passing a real test-writing task on a live codebase.</li>
+</ol>
+<p>Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
+this project, which must be present on the machine.</p>
+<pre><code class="language-text">your coding agent
+      │  local-build skill (a brief in, a capture out)
+      ▼
+A770 builder harness ── guard · run lock · budget gate · capture · verify
+      │
+      ├── bubblewrap sandbox ── opencode ── the seat (a standalone clone of your repository)
+      │                          │ loopback bridge, the only network
+      └── llama.cpp (Vulkan) ────┘── the qualified model on the A770
+</code></pre>
 <p>Built and measured on 2026-09-06 and 07 on a card that also drives the desktop; reviewed adversarially twice and contained
 the same day. The measured report (matrix, serving lines, method) lives beside the weights: <code>~/LLM/tested/README.html</code>.</p>
 <h2 id="why-we-made-it">Why we made it</h2>
@@ -33,25 +49,107 @@ build. This card was already in the machine, driving the desktop, and idle. The 
 hold a model that actually finishes a small, well-specified change in a real repository, and whether an agent could hand
 it that work without giving a local model the run of the host. The first was answered by measurement: every candidate
 got the same brief on a live codebase, and only the ones whose tests passed under a cheap reviewer's eye kept a place. The
-second was answered by the harness and the sandbox, and by two adversarial reviews of them. What is here is the result of
-both, so the next card, model or build can be re-qualified the same way instead of trusted.</p>
+second was answered by the harness and the sandbox, and by two adversarial reviews of them. A run does not end in an exit
+code but in a capture, and a reviewer can re-run its tests inside a fresh sandbox with <code>verify</code> before merging anything.
+What is here is the result of all of that, so the next card, model or build can be re-qualified the same way instead of
+trusted.</p>
 <h2 id="install">Install</h2>
-<p><code>llama.cpp</code> built with the Vulkan backend (<code>llama-server</code>), <code>bubblewrap</code> (<code>bwrap</code>), <code>socat</code>, <code>uv</code>, <code>python3</code>, <code>git</code>, <code>curl</code>,
-<code>nvtop</code> (the VRAM readings the cap depends on — the harness refuses to start without them unless you accept the risk with
-<code>A770B_ALLOW_NO_NVTOP=1</code>), <code>flock</code> and <code>ss</code> (util-linux / iproute2), and opencode (the executor inside the sandbox). Node is
-only needed for the skills CLI route.</p>
+<h3 id="prerequisites">Prerequisites</h3>
+<p>Each is installed and configured by its own instructions, linked here; this project only needs to know where it landed.</p>
+<table>
+<thead>
+<tr>
+<th>prerequisite</th>
+<th>what it is for here</th>
+<th>where to get it</th>
+<th>where this project looks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vulkan driver for the card</td>
+<td>the GPU backend llama.cpp runs on</td>
+<td>your distribution's Mesa Vulkan driver (<code>mesa-vulkan-drivers</code>) and <code>vulkan-tools</code>; <code>vulkaninfo --summary</code> must list the card</td>
+<td><code>A770B_DEVICE</code> = the name <code>llama-server --list-devices</code> prints</td>
+</tr>
+<tr>
+<td><code>llama.cpp</code> with the Vulkan backend</td>
+<td>serves the model (<code>llama-server</code>)</td>
+<td>build it from source per <a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan">llama.cpp <code>docs/build.md</code>, <em>Vulkan</em></a> (measured here on b10805)</td>
+<td><code>A770B_LLAMA_BIN</code> (default <code>~/llama.cpp/build/bin/llama-server</code>)</td>
+</tr>
+<tr>
+<td>the two GGUF models</td>
+<td>the fast and serious profiles</td>
+<td>Hugging Face: <a href="https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF"><code>lmstudio-community/Qwen3.5-9B-GGUF</code></a> and <a href="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"><code>ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF</code></a>; the download lines are in <a href="docs/OPERATING.md#getting-llamacpp-and-the-models"><code>docs/OPERATING.md</code></a>; every model measured on this card is in <a href="config/models.md"><code>config/models.md</code></a>, and a new one enters by the procedure in <code>docs/OPERATING.md</code></td>
+<td><code>A770B_MODELS</code> (default <code>~/LLM/tested</code>), <code>A770B_FAST_MODEL</code>, <code>A770B_SERIOUS_MODEL</code></td>
+</tr>
+<tr>
+<td><a href="https://opencode.ai/docs">opencode</a></td>
+<td>the coding agent that runs inside the sandbox</td>
+<td>its install script or package, per its docs</td>
+<td>found on <code>PATH</code>, or <code>A770B_OPENCODE_BIN</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/containers/bubblewrap">bubblewrap</a> (<code>bwrap</code>)</td>
+<td>the sandbox</td>
+<td>your distribution's <code>bubblewrap</code> package</td>
+<td>on <code>PATH</code></td>
+</tr>
+<tr>
+<td><a href="http://www.dest-unreach.org/socat/">socat</a></td>
+<td>the loopback bridge to the model server</td>
+<td>your distribution's <code>socat</code> package</td>
+<td>on <code>PATH</code></td>
+</tr>
+<tr>
+<td><a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a></td>
+<td>runs the tests inside the sandbox from a pre-warmed, read-only cache</td>
+<td>its install script</td>
+<td>on <code>PATH</code>; cache at <code>A770B_UV_CACHE</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/Syllo/nvtop">nvtop</a></td>
+<td>the VRAM readings the cap depends on; the harness refuses to start without them unless <code>A770B_ALLOW_NO_NVTOP=1</code></td>
+<td>your distribution's <code>nvtop</code> package</td>
+<td><code>A770B_GPU_MATCH</code> = the card's name substring in <code>nvtop -s</code></td>
+</tr>
+<tr>
+<td><code>git</code>, <code>curl</code>, <code>python3</code>, <code>flock</code>, <code>ss</code></td>
+<td>the harness itself</td>
+<td>base packages (util-linux, iproute2)</td>
+<td>on <code>PATH</code></td>
+</tr>
+<tr>
+<td><a href="https://nodejs.org">Node.js</a></td>
+<td>only for the <code>npx skills</code> install route</td>
+<td>its installer or your package manager</td>
+<td>not needed by the harness</td>
+</tr>
+</tbody>
+</table>
+<p>On Fedora, for example, everything but llama.cpp, opencode, uv and the models is one line:
+<code>sudo dnf install mesa-vulkan-drivers vulkan-tools vulkan-headers vulkan-loader-devel glslc cmake gcc-c++ bubblewrap socat nvtop git curl python3 util-linux iproute</code>.</p>
+<p><strong>Versions this was measured and reviewed with</strong> (2026-09-07): Fedora 44, kernel 7.1.13, Mesa 26.1.8 (Vulkan 1.4.341) on
+the Intel Arc A770 16 GB; llama.cpp b10805 (Vulkan); opencode 1.18.29; bubblewrap 0.12.0; socat 1.8.1.1; uv 0.12.3;
+nvtop 3.3.2; git 2.55.0; Python 3.14.7; Node 24.15.0 with <code>skills</code> CLI 1.5.24. Newer versions of the tools should work;
+a different llama.cpp build or model quantisation is a different measurement, and its numbers should be re-taken with
+<code>harness/run_one.sh</code> before being believed. The project and the installed skill carry the same version number
+(<code>VERSION</code>, <code>local-build.sh --version</code>), so an installed copy can tell when the project moved on.</p>
+<h3 id="steps">Steps</h3>
 <pre><code class="language-bash">git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builder   # 1. the project (A770B_PROJECT)
 cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env
 #    2. edit it: A770B_REFUSE = your live checkouts (required), A770B_MODELS, A770B_DEVICE/GPU_MATCH if not an A770
-git clone &lt;your target repo&gt; ~/local-ai/seat                        # 3. the seat: a plain clone, never a linked worktree
-#    4. put the GGUFs named in the profiles into A770B_MODELS (see Models)
+git clone &lt;your target repo&gt; ~/local-ai/seat                        # 3. the seat: a standalone clone, never a linked worktree
+#    4. put the GGUFs named in the profiles into A770B_MODELS (docs/OPERATING.md says where to get them and llama.cpp)
 bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
 npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # 6. install the skill into your agents
 bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md
 </code></pre>
 <p>The skill follows the <a href="https://agentskills.io">Agent Skills</a> open standard: a folder <code>skills/local-build/</code> holding
-<code>SKILL.md</code> (name + description in the front matter, instructions in the body), <code>scripts/</code> and a constitution snippet.
-Tested here on 2026-09-07, both routes:</p>
+<code>SKILL.md</code> (name + description in the front matter, instructions in the body), <code>scripts/</code> and an optional constitution
+snippet. The standard defines the skill's format, not how it is installed; install it with the open <code>skills</code> CLI or by
+copying the folder into any Agent Skills-compatible agent. Tested here on 2026-09-07 with the five agents below, both routes:</p>
 <p><strong>1. The open skills CLI</strong> — detects the agents you have installed and copies the skill into each of them.</p>
 <pre><code class="language-bash">npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # from GitHub, user-level, real copies
 npx skills add /path/to/A770_Builder --skill local-build -g --copy     # from a local clone (tested)
@@ -106,15 +204,17 @@ opencode on the host, and the model files in <code>A770B_MODELS</code>.</p>
 </tr>
 </tbody>
 </table>
-<p>Every agent adds <code>CONSTITUTION_SNIPPET.md</code> to its own constitution file itself (<code>SKILL.md</code> says how); nothing writes
-into another agent's home. Licence: MIT (<code>LICENSE</code>).</p>
-<p>Operating detail (how a run works, the two profiles and their numbers, every knob, where the models go, what each file
-is) lives in <a href="docs/OPERATING.md"><code>docs/OPERATING.md</code></a>.</p>
+<p><code>CONSTITUTION_SNIPPET.md</code> is optional: a short standing reminder for an agent that will use the seat repeatedly, which
+the agent's operator adds to its own constitution file if wanted (<code>SKILL.md</code> says how). Nothing writes into any agent's
+home. Licence: MIT (<code>LICENSE</code>).</p>
+<p>Operating detail (how a run and a <code>verify</code> work, the two profiles and their numbers, every knob, how to build llama.cpp
+with Vulkan and fetch the models, what each file is) lives in <a href="docs/OPERATING.md"><code>docs/OPERATING.md</code></a>.</p>
 <h2 id="security">Security</h2>
 <p>The model's process runs inside bubblewrap with the seat as its only writable tree, no credentials, no other checkout,
-and no network beyond a loopback bridge to the model server. The guard refuses every live checkout you list, every linked
-worktree, symlink and agent home; the capture executes nothing the model wrote. Two adversarial reviews have read the
-boundary; three items remain open. All of it, with what you must still do yourself and how to report a hole, is in
+and no network access except the model server, which itself requires a key. The guard refuses every live checkout you
+list, every linked worktree, symlink and agent home; the capture executes nothing the model wrote, and <code>verify</code> re-runs
+a capture's tests inside a fresh sandbox when you want proof. Two adversarial reviews have read the boundary; a third,
+by another model family, is still owed. All of it, with what you must still do yourself and how to report a hole, is in
 <a href="SECURITY.md"><code>SECURITY.md</code></a>.</p>
 <h2 id="contributors">Contributors</h2>
 <p>Credits are for people and collaborators, not a claim of joint copyright on every line (the project is MIT, see

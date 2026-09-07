@@ -3,19 +3,26 @@
 #   capture_task.sh <label> <worktree> <build-log>
 # Writes $A770B_DATA/results/<label>.task.md: git status, the tracked diff, every new file, the pytest summary the
 # model reported INSIDE the run (never re-executed here), the opencode transcript tail, and the server-side timing
-# distribution. Then resets the worktree to clean. All git here is safe_git: config-driven code paths neutralised,
+# distribution; and <label>.patch, the complete change (tracked diff + every new file) that `local-build.sh verify`
+# re-applies to a clean seat to run the tests inside the sandbox. Then resets the worktree to clean. All git here is safe_git: config-driven code paths neutralised,
 # because the model owns the tree.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log}"
 [ -f "$BLOG" ] || { echo "⛔ build log not found: $BLOG" >&2; exit 2; }
-OUT="$A770B_DATA/results/$LABEL.task.md"; SLOG="$A770B_DATA/logs/llamacpp-a770.log"
+OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; SLOG="$A770B_DATA/logs/llamacpp-a770.log"
+# the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
+{ safe_git_diff "$WT"
+  safe_git "$WT" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do safe_git_diff "$WT" --no-index -- /dev/null "$f" || true; done
+} > "$PATCH"
 {
 echo "# Task capture — $LABEL — $(date -Is)"
 echo; echo "## git status (worktree)"; safe_git "$WT" status --porcelain
-echo; echo "## diff (tracked)"; echo '```diff'; safe_git "$WT" diff | head -400; echo '```'
+echo; echo "## diff (tracked)"; echo '```diff'; safe_git_diff "$WT" | head -400; echo '```'
 echo; echo "## new files"
 safe_git "$WT" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do echo; echo "### $f"; echo '```'; head -200 -- "$WT/$f"; echo '```'; done
+echo; echo "## ignored files the run left behind (names only; removed by the reset, never applied by verify)"
+safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/' || echo "none"
 echo; echo "## pytest summary as reported by the model inside the run (NOT re-executed here)"
 grep -E '[0-9]+ (passed|failed|error)' "$BLOG" | tail -3 || echo "no pytest summary line in the transcript"
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
@@ -36,7 +43,5 @@ print(f"TPOT ms: median={q(tpot,.5):.1f} p90={q(tpot,.9):.1f}   decode tok/s med
 print(f"prefill tok/s over all prompts={pt/ (sum(p[0] for p in P)/1000) if P else 0:.0f}")
 PY
 } > "$OUT" 2>&1
-echo "captured → $OUT ($(wc -l < "$OUT") lines)"
-safe_git "$WT" checkout -- . 2>/dev/null || true
-safe_git "$WT" clean -fdq -e Local_Documentation 2>/dev/null || true
-echo "worktree reset: $(safe_git "$WT" status --porcelain | wc -l) entries remain"
+echo "captured → $OUT ($(wc -l < "$OUT") lines) · patch $PATCH ($(wc -l < "$PATCH") lines)"
+reset_worktree "$WT"

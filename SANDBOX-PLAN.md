@@ -1,60 +1,81 @@
-# Sandbox work for the local builder seat — sequenced (from the first adversarial review)
+# The sandbox plan
 
-The cheap fixes (findings 3, 4, 5, 7, 8, 9) are applied in the harness. What remains needs a design choice each and is
-sequenced below so every step is a small brief with its own mutation check. Principle from the review: the containment
-today is prose plus path patterns; a local model with a shell needs a kernel boundary.
+This document is about how the seat went from a model held by prose and path patterns to a model held by a kernel
+boundary. It matters because the plan is the reasoning behind every mount and refusal in the harness: a reader who wants
+to change the boundary, or judge a proposed change, needs to know which failure each piece answers. [`SECURITY.md`](SECURITY.md)
+describes the boundary as it stands; this document describes the problem, the solution that was proposed, the fixes that
+were expected, and what was done.
 
-## Step 1 — a kernel boundary around the opencode process (finding 1, the root of 6 and 10) — DONE 2026-09-07 13:45
-**Goal.** The model's shell sees the worktree and nothing else: no `../../.claude/…/.env`, no main checkout, no other
-agent's home, no `~/local-ai/A770_Builder`. **Mechanism.** `bwrap` (bubblewrap, already on Fedora) wrapping the
-`opencode run` line in `build_local.sh`: read-only bind of `/usr`, `/etc`, the opencode binary and its config
-dir, a private `$HOME` with only the worktree bound read-write, `uv`/python caches bound read-only, `--unshare-all`
-except net (the model needs `127.0.0.1:8093`), `--die-with-parent`. The linked worktree's `.git` file points at
-main's `.git/worktrees/<name>`; bind that one directory read-write and the common dir read-only, or convert the
-sandbox worktree to a full clone so no path into main exists at all (simpler; the clone is the seat's own tree).
-**Check.** From inside the sandbox: `cat ../../.claude/<any agent>/.env` fails; writing to the hooks
-directory fails; the main checkout is not a path; the smoke brief still passes.
+## The problem
 
-## Step 2 — the model's tests run inside the same boundary (finding 2) — DONE with step 1 (opencode's bash is inside the boundary; capture is read-only); the reviewer-invoked `verify` command is still open
-**Goal.** Nothing the model wrote executes on the host. **Mechanism.** The brief's "run the test command" happens
-inside the Step 1 sandbox already (opencode's own bash). Capture stays read-only (done: it quotes the transcript's
-pytest line). A separate reviewer-invoked `verify` command re-runs the tests in a fresh sandbox against the captured
-diff when a human wants proof. **Check.** A brief that writes a test which touches `$HOME` is confined; the capture
-never spawns python.
+The first adversarial review read the skill and the harness as an attacker would and found ten things, four of them
+critical. The containment was a system prompt and a deny-list of file patterns, and a deny pattern does not survive a
+relative path: from the seat the model could read another agent's bearer token, or write a hook into the live checkout
+the seat was linked to, because a linked worktree shares its repository metadata with the checkout it came from. The
+capture ran the model's test file on the host before any review. The refusal of the live checkout was a string
+comparison a symlink walked past, and it ran after the seat's `AGENTS.md` had already been moved aside. The harness
+source lay in a sibling directory the model could write, and the install script would have copied a poisoned skill into
+every agent on the machine. Nothing stopped a second process from driving the card.
 
-## Step 3 — move the harness out of the model's reach and checksum the sync (finding 6) — first half DONE by step 1 (the harness dir does not exist inside the sandbox; the seat is a clone, not a sibling worktree of main); the sync checksum is still open
-**Goal.** A poisoned run cannot become fleet-wide code. **Mechanism.** With Step 1 the project dir is invisible to
-the model; additionally the local install script refuses to install unless the source matches a recorded checksum
-(`SKILL.sha256` committed beside it, updated only by the operator), and the worktree moves to `~/local-ai/seat/`
-so it is not a sibling of the source. **Check.** Edit the source without updating the checksum → sync refuses.
+The cheap findings were fixed the same hour: a shared guard that canonicalises paths and refuses protected checkouts,
+symlinks, subdirectories and agent homes; a run lock; a restore under a trap; a capture that quotes the model's pytest
+line instead of executing the file. The rest needed a design choice each.
 
-## Step 4 — the budget gate and the server (finding 10) — gate half DONE 2026-09-07 14:00 (built into harness/guard.sh, no dependency on any other repo; A770B_BUDGET_GATE plugs an external one in); the API key on :8093 is still open
-**Goal.** No dependency on the live checkout at serve time; no unauthenticated driver of the card.
-**Mechanism.** Copy `probe_budget.sh` into `harness/` (portable form: the env path and framework ports become
-variables); start `llama-server` with `--api-key` from a file readable only by the operator and pass it to the
-provider config's `apiKey`; keep `--host 127.0.0.1`. **Check.** A curl without the key gets 401; the skill run
-still passes; the gate refuses when the framework card is busy.
+## The proposed solution
 
-## Step 5 — re-review
-A second adversarial pass (different model family from the first) on the sandboxed harness, then a written verdict
-on what the seat is now trusted for.
+Put the model's process inside a kernel boundary that sees the seat and nothing else, and make everything else lean on
+that. Bubblewrap was already on the host. With the boundary in place, the model's own test run is already confined; a
+reviewer needs only a way to re-run those tests in a fresh boundary against the captured change. The harness source
+stops being reachable the moment the seat is a standalone clone rather than a sibling worktree, so a poisoned run has
+nowhere to go. The budget gate that decides whether the card may be used is copied into the harness so the seat depends
+on no other repository, and the server takes a key so nothing outside the harness can use the card. Then a second
+reviewer, from a model family that wrote none of it, reads the result.
 
-Order matters: 1 before 2 and 3 (they lean on the boundary); 4 is independent and can run in parallel with 1.
-Each step: brief → build in a worktree of A770_Builder → mutation check listed above → fact → sync.
+## The expected fixes
 
-## Done log
-- 2026-09-07 13:45 — `harness/sandbox_run.sh` (bubblewrap 0.12): private tmpfs $HOME, only the seat read-write, the opencode
-  binary, the global policy file and the profile config (at a neutral path) read-only, a fresh private opencode state dir
-  per run (auth.json never enters), uv's managed pythons read-only, a dedicated uv cache; PID/UTS/IPC unshared, net shared
-  for 127.0.0.1:8093. `build_local.sh` runs opencode through it by default (`SANDBOX=0` for the unconfined testing path).
-  The seat is now `~/local-ai/seat`, a plain clone of the repo with no gitdir link to the live checkout; the linked
-  worktree and its branch were removed from the main checkout. Probes from inside: `.env` files, the main checkout,
-  `~/LLM`, `~/.ssh`, the MCP env, opencode's auth.json and uv's credentials are all absent; writes outside the seat fail;
-  the skill's smoke run passes through the sandbox in 20 s.
-- 2026-09-07 14:20 — public-readiness review (12 findings) and its fixes: --unshare-net with a socat loopback bridge to the
-  server only; .git/config, hooks and info read-only inside plus safe_git for every host-side call; the opencode profile
-  rendered per run from a template with a default-deny bash allow-list, the global config never mounted; the uv cache
-  read-only and pre-warmed (per-run private copy); VRAM readings that refuse to fail open; A770B_REFUSE required; sync
-  refuses foreign skills and is checksum-idempotent; every path a knob in env.sh. Re-test found and fixed a lock-fd leak
-  into the spawned server. Steps 1, 2 (build side), 3 (first half), 4a done; open: verify command, sync checksum file,
-  API key on the server, third adversarial pass (another model family), a written verdict on what the seat is trusted for.
+1. **A kernel boundary around the model's process.** Bubblewrap around the agent's run: `/usr` and `/etc` read-only, a
+   private home, only the seat writable, the network unshared except for the model server, the sandbox dying with its
+   parent. Check: from inside, an agent's `.env` is not a path, a write to a hooks directory fails, the live checkout
+   does not exist, and the smoke brief still passes.
+2. **The model's tests run only inside that boundary.** The capture never executes model-written code; a
+   reviewer-invoked `verify` re-runs the tests in a fresh sandbox against the captured change. Check: a test that touches
+   the home directory is confined; the capture spawns no interpreter.
+3. **The harness out of the model's reach.** The seat becomes a standalone clone in its own directory; the project
+   directory does not exist inside the sandbox. Check: the harness path is absent from inside.
+4. **A self-contained budget gate and a key on the server.** The gate reads host memory, stray server processes, free
+   VRAM, an optional health URL and protected ports from this project's own configuration; the server starts with an API
+   key from a file only the operator can read, and the rendered profile carries it. Check: a request without the key
+   is refused, the skill still passes, the gate refuses when the card is busy.
+5. **A second adversarial review** by a model that wrote none of it, and a written verdict on what the seat is trusted for.
+
+## What was done
+
+The boundary came first. `harness/sandbox_run.sh` wraps the agent's run in bubblewrap with a private home on tmpfs, the
+seat as the only writable tree, the agent binary and a rendered profile read-only, a fresh private state directory per
+run so no stored credential enters, uv's managed pythons read-only and a dedicated cache. The seat moved to its own
+directory as a standalone clone and the linked worktree was removed from the live checkout. Probed from inside: the
+agents' `.env` files, the live checkout, the model weights, SSH keys and the agent's own credentials are all absent,
+writes outside the seat fail, and the smoke brief passes in twenty seconds.
+
+The public-readiness review that followed hardened the boundary in twelve places, all fixed and mutation-checked the
+same day: the network namespace is unshared and a socket bridge carries only the model server's port; `.git/config`,
+`.git/hooks` and `.git/info` are read-only inside and every host-side git call goes through `safe_git`; the profile is
+rendered per run from a template with a default-deny shell allow-list and the global agent configuration never enters;
+the uv cache is pre-warmed and read-only; VRAM readings refuse to fail open; the list of protected checkouts is
+required; every path is a knob. The budget gate was built into the harness with no dependency on any other repository.
+That closed the first piece, the build side of the second, the third, and half of the fourth.
+
+The cycle after publication closed the rest of the second and fourth pieces. The capture now writes the complete change
+as a patch beside the report, and `verify` re-applies it to a clean seat and runs the tests inside a fresh sandbox with
+no model, no bridge and no key; the seat is reset afterwards, ignored files included. The server starts with
+`--api-key-file`, the key is created on first use with mode 600, the rendered profile carries it into a build run, and a
+request without it is refused. The bridge's connection-closed messages, which had been landing in every transcript, now
+go to a log of their own. The adversarial review of that cycle, by a model that wrote none of it, found and had fixed
+before merge a default test command in `verify` that a model-chosen file name could have turned into a forged pass, the
+run lock's file descriptor reaching into the sandbox as a writable host file, gitignored files surviving every reset
+unseen, and a seat guard that followed a symlinked `.git`.
+
+The fifth piece is open: a third adversarial pass by a model family that has not read this boundary yet, and with it the
+written verdict on what the seat is trusted for. The install-script checksum from the original third piece no longer
+applies to this repository: the install script is local tooling that does not ship, and the public install route copies
+the skill from the repository itself.

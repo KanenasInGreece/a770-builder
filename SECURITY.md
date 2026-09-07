@@ -1,43 +1,88 @@
 # Security
 
-The seat runs a model that writes code you did not review yet, on the same machine as your credentials and your live
-checkouts. This file says what the boundary is today, what has been checked, what is still open, and how to report a hole.
+This document is about the boundary around the local model. The seat runs a model that writes code you have not
+reviewed yet, on the same machine as your credentials and your live checkouts. It matters because a local model is not
+trusted merely for running locally: it reads a brief you may not have written, it has a shell, and one careless mount
+turns a coding seat into a way off the machine. What follows is the problem as two adversarial reviews found it, the
+boundary that answers it, what was expected to be fixed and what has been done, what is still open, what you must do
+yourself, and how to report a hole.
 
-## What holds now
+## The problem
 
-Two adversarial reviews by a reviewer-class model, read-only: one on the first version, a public-readiness pass on this one. What
-holds now, all mutation-checked: canonical refusal of protected checkouts (`A770B_REFUSE`, required), of linked worktrees,
-symlinks, subdirectories and agent homes; a run lock and pids verified before any kill; the model's process inside bubblewrap
-with a private home, no credentials, no other tree, **no network except a loopback bridge to the model server** (socat over a
-unix socket; the LAN, the internet and every other host service are unreachable), `.git/config`, `.git/hooks` and `.git/info`
-mounted read-only so the model cannot plant config-driven code; every host-side git call neutralises config-driven code paths
-(`safe_git`); the uv cache read-only and pre-warmed; the only opencode config inside is a rendered per-run profile with a
-default-deny bash allow-list and no MCP, web or skills; capture executes nothing the model wrote; VRAM readings that refuse to
-fail open. Still open (see below and `SANDBOX-PLAN.md`): a sandboxed `verify` command for reviewers, a checksum on the sync, an API key on the
-model server, a third adversarial pass from another model family.
+The first version of the seat contained the model with prose and path patterns: a system prompt that asked it to stay
+in its tree, and a deny-list of file patterns in the agent's configuration. The first review showed how little that is
+worth. A deny pattern does not survive a relative path, so from the seat the model could read a sibling agent's `.env`
+file, which holds a bearer token, or write into the hooks directory of the live checkout the seat was linked to. The
+capture step ran the model's own test file on the host, as the operator, with the full environment, before anyone had
+read it. The model owned its tree's `.git/config`, so a config-driven code path it wrote there would have run on the host
+at the next `git status`. And the model shared the host's network, so anything it could reach, it could reach.
 
-## What the model can and cannot reach
+Each of those is a different failure of the same idea: a local model with a shell needs a kernel boundary, not advice.
+
+## The boundary today
+
+The model's process runs inside bubblewrap. Its writable tree is the seat, a standalone clone with its own `.git`
+directory, and nothing else of yours: a private empty home, the pre-warmed uv cache mounted read-only, no credentials,
+no other checkout. Inside the seat, `.git/config`, `.git/hooks` and `.git/info` are mounted read-only, so no config-driven
+code path can be planted for the host. The sandbox has no network access except the model server: the network namespace
+is unshared and a loopback bridge carries only that one port. The only agent configuration inside is a profile rendered
+per run, with a default-deny shell allow-list, no MCP, no web fetch, no skills, and `.env` and key files unreadable.
+
+On the host side, every git command that touches the seat goes through `safe_git`, which neutralises the config-driven
+code paths on the command line: hooks, fsmonitor, pagers, filters, credential helpers, and, on every diff it takes, the
+external diff and textconv programs. The capture executes nothing the model wrote; it records the diff, the new files,
+the names of any ignored files the run left, the pytest line the model reported, and writes the complete change as a
+patch. The reset that follows removes everything the run produced, ignored files included, keeping only the briefs
+directory the harness itself writes, so nothing a run planted waits for the next one. When a reviewer wants proof rather than a claim, `verify` re-applies that patch to a clean seat
+and runs the tests inside a fresh sandbox with no model, no bridge and no key; its verdict is the exit code of the test
+command, never a line the tests printed, and file names taken from the patch are passed as arguments, never through a
+shell. What `verify` proves is that the model's own tests pass inside the boundary; whether those tests are the right
+ones is still the reviewer's reading of the capture. The model server requires an API key, kept in a file only the
+operator can read, so a process outside the harness cannot use the card unnoticed. The guard refuses every live
+checkout you list, every linked worktree, symlink, subdirectory and agent home, a seat whose `.git` is a link to
+another repository, and refuses to run at all while that list is empty. The run lock's descriptor is closed before the
+sandbox starts, so no host file crosses the boundary with it.
 
 | surface | inside the sandbox |
 |---|---|
 | filesystem | the seat read-write; a private empty home; the pre-warmed uv cache read-only; nothing else of yours |
-| the seat's `.git` | `config`, `hooks` and `info` mounted read-only, so no config-driven code path can be planted for the host |
-| network | none, except a loopback bridge to the model server on `A770B_PORT`; no LAN, no internet, no other host service |
-| tools | opencode with a rendered per-run profile: default-deny bash allow-list, no MCP, no web fetch, no skills, `.env` and key files unreadable |
-| the host afterwards | the capture is taken with `safe_git`, which neutralises every config-driven git code path, and executes nothing the model wrote |
+| the seat's `.git` | `config`, `hooks` and `info` read-only, so no config-driven code path can be planted for the host |
+| network | none, except the model server; no LAN, no internet, no other service on the host |
+| tools | one rendered profile: default-deny shell allow-list, no MCP, no web fetch, no skills; `.env` and key files unreadable |
+| the model server | reachable with the key the rendered profile carries; the key unlocks nothing else |
+| the host afterwards | the capture is taken with `safe_git` and executes nothing the model wrote; the reset removes ignored files too; `verify` runs the tests in a fresh sandbox without the key |
+
+## What was expected to be fixed
+
+The first review left five pieces of work, sequenced in [`SANDBOX-PLAN.md`](SANDBOX-PLAN.md): a kernel boundary around
+the model's process; the model's tests executed only inside that boundary, with a way for a reviewer to re-run them;
+the harness source out of the model's reach; a budget gate that depends on nothing outside this project and a key on
+the model server; and a second adversarial review by a model that had not written any of it.
+
+## What has been done
+
+Four of the five pieces are in place, and the fifth is half done. The public-readiness review that followed the first found twelve more items, among them
+the read-only git metadata, the network unshare, the default-deny profile and the rendered configuration; every one was
+fixed and mutation-checked the same day. The reviewer-invoked `verify` command and the API key on the server came in the
+cycle after publication, and the review of that cycle closed the gaps it opened: an injectable default command in
+`verify`, the run lock's descriptor reaching the sandbox, and ignored files surviving the reset. A second review has read the boundary, but by the same model family as the first, so the
+fifth piece still wants a reader from another family. Every change to the boundary since has gone through a branch, a
+read-only adversarial review by a model that did not write it, and the mutation checks re-run before merge.
 
 ## What is still open
 
-- a sandboxed `verify` command so a reviewer can run the model's tests inside the same boundary;
-- an API key on the model server, so a process outside the sandbox cannot use the card unnoticed;
-- a third adversarial pass by a model family that has not reviewed this boundary yet.
+- A third adversarial pass, by a model family that has not yet read this boundary.
+- The API key is readable by the model inside a build run, because the rendered profile carries it. That is accepted:
+  the key unlocks only the server the sandbox already reaches; `verify` runs without it. Rotate by deleting the key
+  file; the next `serve` notices the running server no longer accepts the file's key and restarts it.
 
 ## What you must do yourself
 
-- Set `A770B_REFUSE` to every live checkout on the machine. The guard refuses to run while it is empty, and it is the only
-  thing that knows which trees are yours.
-- Judge every run by its capture in `A770B_DATA/results/`, never by its exit code, and never merge a capture unread.
-- Keep the seat a plain clone. A linked worktree shares `.git` with the live checkout and is refused for that reason.
+- Set `A770B_REFUSE` to every live checkout on the machine. The guard refuses to run while it is empty, and it is the
+  only thing that knows which trees are yours.
+- Judge every run by its capture in `A770B_DATA/results/`, never by its exit code. Run `verify` on a capture before
+  merging anything from it.
+- Keep the seat a standalone clone. A linked worktree shares `.git` with the live checkout and is refused for that reason.
 
 ## Reporting
 

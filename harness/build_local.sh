@@ -13,10 +13,10 @@ WT=$(guard_worktree "${1:?worktree path}"); BRIEF="${2:?brief file or task text}
 PROFILE="${PROFILE:-fast}"
 case "$PROFILE" in fast) CTX=$A770B_FAST_CTX;; serious) CTX=$A770B_SERIOUS_CTX;; *) echo "⛔ PROFILE must be fast|serious" >&2; exit 2;; esac
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"
-curl -sf --max-time 5 "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve fast|serious)" >&2; exit 3; }
-# render the profile config
+curl -sf --max-time 5 -H "Authorization: Bearer $(a770b_api_key)" "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve fast|serious)" >&2; exit 3; }
+# render the profile config (server URL, key, window, output limit)
 CFG="$A770B_DATA/logs/opencode.$PROFILE.jsonc"
-sed -e "s#__BASEURL__#$ENDPOINT/v1#g" -e "s#__CTX__#$CTX#g" -e "s#__OUTPUT__#$A770B_OUTPUT_TOKENS#g" -e "s#__NAME__#$PROFILE#g" "$A770B_PROFILE_TEMPLATE" > "$CFG"
+a770b_render_profile "$PROFILE" "$CTX" "$CFG" || exit 2
 export OPENCODE_CONFIG="$CFG"
 MODEL="${LOCAL_MODEL:-local-a770/$A770B_ALIAS}"
 mkdir -p "$WT/Local_Documentation/briefs"
@@ -31,7 +31,7 @@ AGENT_ARGS=(); [ -n "${LOCAL_AGENT:-}" ] && AGENT_ARGS=(--agent "$LOCAL_AGENT")
 PROMPT="Read Local_Documentation/briefs/brief-$stamp.md in this project and carry out the task it describes. Work only inside this project directory. Do not run git commit, push, merge or any docker/systemctl command."
 if [ "${SANDBOX:-1}" = 1 ]; then
   ( timeout "${LOCAL_TIMEOUT:-1800}" bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
-      opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null ) 2>&1 | tee "$LOG"
+      opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 9>&- ) 2>&1 | tee "$LOG"
 else
   echo "⚠ SANDBOX=0: running opencode UNCONFINED (testing only)" | tee -a "$LOG"
   ( cd "$WT" && timeout "${LOCAL_TIMEOUT:-1800}" opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null ) 2>&1 | tee "$LOG"

@@ -29,6 +29,7 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_GPU_MATCH:=DG2}"                             # substring of the card's name in `nvtop -s`, for VRAM readings and the cap
 : "${A770B_PORT:=8093}";  : "${A770B_HOST:=127.0.0.1}";  : "${A770B_ALIAS:=local-builder}"
 : "${A770B_UBATCH:=512}";  : "${A770B_BATCH:=2048}";     : "${A770B_VRAM_CAP_GIB:=13.0}"
+: "${A770B_API_KEY_FILE:=${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/api.key}"   # the server's API key (one line, mode 600); created on first serve
 : "${A770B_ALLOW_NO_NVTOP:=0}"                           # 1 = start without VRAM readings (NOT on a card that draws a desktop)
 : "${GGML_VK_DISABLE_COOPMAT:=1}"; export GGML_VK_DISABLE_COOPMAT
 # ── the budget gate (built in; set A770B_BUDGET_GATE to an external script to use that instead) ─────────────
@@ -45,7 +46,26 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_TASK_BRIEF:=$A770B_PROJECT/briefs/T1-sanitize-entity-tests.md}"   # the coding task every candidate model gets — write your own for your repo
 : "${A770B_PROBE_CORPUS:=$A770B_SEAT/**/*.py}"          # glob of source files for the long-context prefill probe
 : "${A770B_TASK_TEST_FILE:=tests/test_sanitize_entity_name_matrix.py}"      # the file the task brief asks for (capture reports on it)
-export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS
+export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }
+# a770b_api_key — the key the server requires and the rendered profile carries. Created once, readable only by the operator.
+a770b_api_key(){
+  if [ ! -s "$A770B_API_KEY_FILE" ]; then
+    mkdir -p "$(dirname "$A770B_API_KEY_FILE")"
+    # noclobber (set -C): two first callers cannot both create a key; the loser reads the winner's
+    ( umask 077; set -C; python3 -c 'import secrets; print("a770b-" + secrets.token_hex(24))' > "$A770B_API_KEY_FILE" ) 2>/dev/null || true
+    [ -s "$A770B_API_KEY_FILE" ] || return 1
+  fi
+  chmod 600 "$A770B_API_KEY_FILE" 2>/dev/null || true       # re-asserted on every read, not only at creation
+  head -n 1 "$A770B_API_KEY_FILE"
+}
+# a770b_render_profile <profile> <ctx> <out> [nokey] — the ONLY opencode config a sandboxed run sees, rendered from the
+# template with the server URL, the key, the window and the output limit. Written mode 600: it carries the key. With a
+# fourth argument the key is a placeholder: for runs that need no server (verify), so patch-supplied code never sees it.
+a770b_render_profile(){
+  local profile="$1" ctx="$2" out="$3" key
+  if [ -n "${4:-}" ]; then key="no-key-for-this-run"; else key=$(a770b_api_key) || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; return 1; }; fi
+  rm -f "$out"; ( umask 077; sed -e "s#__BASEURL__#http://$A770B_HOST:$A770B_PORT/v1#g" -e "s#__APIKEY__#$key#g" -e "s#__CTX__#$ctx#g"         -e "s#__OUTPUT__#$A770B_OUTPUT_TOKENS#g" -e "s#__NAME__#$profile#g" "$A770B_PROFILE_TEMPLATE" > "$out" )
+}
 a770b_opencode_bin(){ if [ -n "$A770B_OPENCODE_BIN" ]; then printf '%s\n' "$A770B_OPENCODE_BIN"; else dirname "$(readlink -f "$(command -v opencode)")"; fi; }
