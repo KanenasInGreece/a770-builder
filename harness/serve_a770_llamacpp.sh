@@ -12,7 +12,7 @@ set -euo pipefail
 PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; LOG="$A770B_DATA/logs/llamacpp-a770.log"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 case "${1:-}" in
   stop)   if pid=$(llama_pid_alive "$PIDFILE"); then kill "$pid"; echo "stopped pid $pid"; else echo "not running (or pidfile stale — nothing killed)"; fi; rm -f "$PIDFILE" "$MARK"; exit 0;;
-  status) if pid=$(llama_pid_alive "$PIDFILE"); then echo "running pid $pid · $(cat "$MARK" 2>/dev/null)"; curl -s "http://$A770B_HOST:$A770B_PORT/v1/models" | head -c 200; echo; else echo "not running"; fi; exit 0;;
+  status) if pid=$(llama_pid_alive "$PIDFILE"); then echo "running pid $pid · $(cat "$MARK" 2>/dev/null)"; curl -s -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" | head -c 200; echo; else echo "not running"; fi; exit 0;;
   start)  ;;
   *) echo "usage: start <gguf> [ctx] [extra…] | stop | status" >&2; exit 2;;
 esac
@@ -22,7 +22,9 @@ MODEL=$(a770b_model_path "${2:?gguf}"); CTX="${3:-32768}"; shift 3 2>/dev/null |
 llama_pid_alive "$PIDFILE" >/dev/null && { echo "⛔ already running (pid $(cat "$PIDFILE")) — stop first" >&2; exit 2; }
 budget_gate || exit 1
 ss -ltn | grep -q ":$A770B_PORT " && { echo "⛔ port $A770B_PORT bound" >&2; exit 2; }
-nohup "$A770B_LLAMA_BIN" -m "$MODEL" --alias "$A770B_ALIAS" --device "$A770B_DEVICE" --host "$A770B_HOST" --port "$A770B_PORT" \
+a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
+# --api-key-file: every completion needs the key (the rendered profile carries it); a process outside the harness cannot use the card unnoticed
+nohup "$A770B_LLAMA_BIN" -m "$MODEL" --alias "$A770B_ALIAS" --device "$A770B_DEVICE" --host "$A770B_HOST" --port "$A770B_PORT" --api-key-file "$A770B_API_KEY_FILE" \
   -ngl 99 -c "$CTX" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --no-mmap -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
   --jinja --reasoning "${REASONING:-off}" --reasoning-format deepseek "$@" > "$LOG" 2>&1 9>&- &   # 9>&-: never inherit the run lock
 echo $! > "$PIDFILE"; printf '%s\n' "$MODEL" > "$MARK"

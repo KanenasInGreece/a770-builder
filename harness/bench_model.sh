@@ -4,7 +4,7 @@
 # Leaves the server RUNNING (for the build task) and writes $A770B_DATA/results/<label>.json with:
 #   load_s, vram_gib, quality (3 greedy answers), ttft_short_ms / tpot_ms / decode_tps (short prompt),
 #   ttft_long_ms at ~N tokens of repo text (long-context prefill), toolcall_ms (round trip incl. parse).
-. "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 set -euo pipefail
 LABEL="${1:?label}"; GGUF="${2:?gguf}"; CTX="${3:?ctx}"; shift 3 || shift $#
 OUT="$A770B_DATA/results/$LABEL.json"; LOG="$A770B_DATA/logs/llamacpp-a770.log"
@@ -16,12 +16,12 @@ for i in $(seq 1 150); do curl -sf --max-time 2 $A770B_HOST:$A770B_PORT/health 2
 curl -sf $A770B_HOST:$A770B_PORT/health >/dev/null || { echo "not ready"; exit 1; }
 load_s=$(echo "$(date +%s.%N) - $t0" | bc)
 vram=$(nvtop -s 2>/dev/null | python3 -c "import sys,json; d=[x for x in json.load(sys.stdin) if '$A770B_GPU_MATCH' in x['device_name']]; print(round(int(d[0]['mem_used'])/2**30,2))")
-export LABEL GGUF CTX load_s vram OUT
+A770B_KEY=$(a770b_api_key); export LABEL GGUF CTX load_s vram OUT A770B_KEY
 python3 - "$A770B_PROBE_CORPUS" <<'PY'
-import json,os,time,urllib.request,subprocess,glob
-U='http://127.0.0.1:8093'
+import json,os,sys,time,urllib.request,subprocess,glob
+U=f"http://{os.environ['A770B_HOST']}:{os.environ['A770B_PORT']}"
 def post(path,body,timeout=600):
-    req=urllib.request.Request(U+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
+    req=urllib.request.Request(U+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['A770B_KEY']})
     t=time.time(); d=json.load(urllib.request.urlopen(req,timeout=timeout)); return d,(time.time()-t)*1000
 def chat(msgs,max_tokens=64,**kw):
     b={"model":"local-builder","messages":msgs,"temperature":0,"max_tokens":max_tokens}; b.update(kw); return post('/v1/chat/completions',b)
