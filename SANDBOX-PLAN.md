@@ -24,7 +24,7 @@ never spawns python.
 
 ## Step 3 — move the harness out of the model's reach and checksum the sync (finding 6) — first half DONE by step 1 (the harness dir does not exist inside the sandbox; the seat is a clone, not a sibling worktree of main); the sync checksum is still open
 **Goal.** A poisoned run cannot become fleet-wide code. **Mechanism.** With Step 1 the project dir is invisible to
-the model; additionally `sync_local_build.sh` refuses to install unless the source matches a recorded checksum
+the model; additionally the local install script refuses to install unless the source matches a recorded checksum
 (`SKILL.sha256` committed beside it, updated only by the operator), and the worktree moves to `~/local-ai/seat/`
 so it is not a sibling of the source. **Check.** Edit the source without updating the checksum → sync refuses.
 
