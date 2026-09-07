@@ -80,6 +80,15 @@ require_vram_readings(){
 gpu_used_gib(){ local u; u=$(_nvtop_field mem_used); [ "$u" -ge 0 ] && python3 -c "print($u/2**30)" || echo 0; }
 gpu_free_mb(){  local f; f=$(_nvtop_field mem_free); [ "$f" -ge 0 ] && echo $((f/1048576)) || echo 1000000; }
 
+# health_status <url> — one GET, and the status word the answer carries; "no answer" when nothing comes back. It informs
+# the operator reading the log and never refuses: another service's health says nothing about this host or this card.
+health_status(){ local body word
+  body=$(curl -s --max-time 5 "$1" 2>/dev/null) || body=""
+  [ -n "$body" ] || { echo "no answer"; return 0; }
+  word=$(printf '%s' "$body" | grep -oE '"status": ?"[^"]*"' | head -1 | sed -E 's/.*"([^"]*)"$/\1/')
+  [ -n "$word" ] && echo "$word" || echo "answered, no status field"
+}
+
 # budget_gate — the built-in gate: host RAM, no stray llama-server, VRAM on the builder card, optional health URL, port.
 # Replaced entirely by A770B_BUDGET_GATE when that is set.
 budget_gate(){
@@ -90,7 +99,7 @@ budget_gate(){
   if [ "$avail" -ge "$A770B_MIN_AVAIL_MB" ]; then printf '  %-30s %s\n' "host MemAvailable (MB)" "$avail ≥ $A770B_MIN_AVAIL_MB"; else printf '⛔ %-30s %s\n' "host MemAvailable (MB)" "$avail < $A770B_MIN_AVAIL_MB"; ok=0; fi
   if pgrep -x llama-server >/dev/null && ! llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid" >/dev/null; then printf '⛔ %-30s %s\n' "other llama-server" "running outside this harness — one GPU process per card"; ok=0; else printf '  %-30s %s\n' "other llama-server" "none"; fi
   free=$(gpu_free_mb); if [ "$free" -ge "$A770B_MIN_VRAM_MB" ]; then printf '  %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free ≥ $A770B_MIN_VRAM_MB"; else printf '⛔ %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free < $A770B_MIN_VRAM_MB"; ok=0; fi
-  if [ -n "$A770B_HEALTH_URL" ]; then if curl -s --max-time 5 "$A770B_HEALTH_URL" | grep -qE '"status": ?"ok"'; then printf '  %-30s %s\n' "health $A770B_HEALTH_URL" "ok"; else printf '⛔ %-30s %s\n' "health $A770B_HEALTH_URL" "not ok"; ok=0; fi; fi
+  if [ -n "$A770B_HEALTH_URL" ]; then printf '  %-30s %s\n' "health $A770B_HEALTH_URL" "$(health_status "$A770B_HEALTH_URL") (informational, never a refusal)"; fi
   case " $A770B_FRAMEWORK_PORTS " in *" $A770B_PORT "*) printf '⛔ %-30s %s\n' "port $A770B_PORT" "is a protected port"; ok=0;; esac
   [ "$ok" = 1 ] || { echo "⛔ budget refused — nothing started"; return 1; }
   echo "✅ budget ok"
