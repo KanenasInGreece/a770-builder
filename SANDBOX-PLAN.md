@@ -1,4 +1,4 @@
-# Sandbox work for the local builder seat — sequenced (from the adversarial review `fact:2087`)
+# Sandbox work for the local builder seat — sequenced (from the first adversarial review)
 
 The cheap fixes (findings 3, 4, 5, 7, 8, 9) are applied in the harness. What remains needs a design choice each and is
 sequenced below so every step is a small brief with its own mutation check. Principle from the review: the containment
@@ -12,7 +12,7 @@ dir, a private `$HOME` with only the worktree bound read-write, `uv`/python cach
 except net (the model needs `127.0.0.1:8093`), `--die-with-parent`. The linked worktree's `.git` file points at
 main's `.git/worktrees/<name>`; bind that one directory read-write and the common dir read-only, or convert the
 sandbox worktree to a full clone so no path into main exists at all (simpler; the clone is the seat's own tree).
-**Check.** From inside the sandbox: `cat ../../.claude/skills/shared-memory/.env` fails; writing to the hooks
+**Check.** From inside the sandbox: `cat ../../.claude/<any agent>/.env` fails; writing to the hooks
 directory fails; the main checkout is not a path; the smoke brief still passes.
 
 ## Step 2 — the model's tests run inside the same boundary (finding 2) — DONE with step 1 (opencode's bash is inside the boundary; capture is read-only); the reviewer-invoked `verify` command is still open
@@ -36,8 +36,8 @@ provider config's `apiKey`; keep `--host 127.0.0.1`. **Check.** A curl without t
 still passes; the gate refuses when the framework card is busy.
 
 ## Step 5 — re-review
-A second adversarial pass (different model family from the first) on the sandboxed harness, then a retrospective
-against `decision:2084` recording what the seat is now trusted for.
+A second adversarial pass (different model family from the first) on the sandboxed harness, then a written verdict
+on what the seat is now trusted for.
 
 Order matters: 1 before 2 and 3 (they lean on the boundary); 4 is independent and can run in parallel with 1.
 Each step: brief → build in a worktree of A770_Builder → mutation check listed above → fact → sync.
@@ -57,4 +57,4 @@ Each step: brief → build in a worktree of A770_Builder → mutation check list
   read-only and pre-warmed (per-run private copy); VRAM readings that refuse to fail open; A770B_REFUSE required; sync
   refuses foreign skills and is checksum-idempotent; every path a knob in env.sh. Re-test found and fixed a lock-fd leak
   into the spawned server. Steps 1, 2 (build side), 3 (first half), 4a done; open: verify command, sync checksum file,
-  API key on the server, third adversarial pass (another model family), retrospective on decision:2084.
+  API key on the server, third adversarial pass (another model family), a written verdict on what the seat is trusted for.

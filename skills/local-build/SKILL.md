@@ -7,7 +7,7 @@ description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (
 
 **What it does.** Starts (or switches) the llama.cpp server on the A770, runs the brief through opencode
 against it inside a git worktree, then captures the diff, the test result and the server-side timings.
-Ruled the offline builder seat on 2026-09-07 (`decision:2084`, method `fact:2076`). The seat is judged by
+Ruled the offline builder seat on 2026-09-07 after a measured model matrix. The seat is judged by
 the DELIVERABLE (files changed, tests green) and the worktree's git status — never by exit code.
 
 ## Two profiles — pick by the task, know the context you have
@@ -39,7 +39,7 @@ finds the project through `A770B_PROJECT` (default `~/local-ai/A770_Builder`). N
 **Models.** Put GGUF files in `A770B_MODELS` (default `~/LLM/tested`) and name the two profiles' files in
 `A770B_FAST_MODEL` / `A770B_SERIOUS_MODEL` (a bare file name is looked up there; an absolute path works too). Only the
 llama-server process on the host reads the weights; the model's own sandbox never sees `A770B_MODELS`, by design. To
-qualify a new model before trusting it, run `harness/run_one.sh` from the project (method `fact:2076`).
+qualify a new model before trusting it, run `harness/run_one.sh` from the project.
 
 **Card.** `A770B_DEVICE` is the name from `llama-server --list-devices`; `A770B_GPU_MATCH` the substring of that card in
 `nvtop -s`. On a card that also draws the desktop keep `A770B_VRAM_CAP_GIB` (13 of 16) and `A770B_UBATCH` (512).
@@ -48,7 +48,7 @@ qualify a new model before trusting it, run `harness/run_one.sh` from the projec
 
 ```bash
 # 1. a worktree of the target repo, NEVER the live main checkout (the script refuses it)
-#    e.g. ~/local-ai/seat (a plain CLONE of shared-memory-GitHub — no link to the live checkout) or one you make
+#    e.g. ~/local-ai/seat (a plain CLONE of your target repository — no link to a live checkout) or one you make
 # 2. a brief: a Markdown file that names the files, the exact test command, and the stop condition
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md>                       # fast, on the default seat (A770B_SEAT)
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <worktree> <brief.md> --serious  # serious, on a given worktree
@@ -65,11 +65,10 @@ anything; a cheap reviewer prompt lives at `~/local-ai/A770_Builder/briefs/REVIE
 ## Rules the card enforces (do not override)
 
 - **The A770 drives the desktop.** The server refuses to run past 13 GiB after load and holds `-ub 512`
-  (`fact:2065`). Do not raise them. One GPU process on that card at a time; the B580 is never touched.
-- **No speculative decoding** on this card — draft models and MTP heads all made decode slower (`fact:2077`,
-  `fact:2079`, `fact:2081`).
+  Do not raise them. One GPU process on that card at a time; the B580 is never touched.
+- **No speculative decoding** on this card — draft models and MTP heads all made decode slower.
 - **`< /dev/null` on every opencode call** (the script does it); without it opencode hangs after init
-  (`fact:2067`).
+  
 - **Seat only, inside a sandbox.** The seat must be a self-contained clone (a `.git` directory; linked worktrees of a live
   checkout are refused) and not in `A770B_REFUSE`. The model runs under a bubblewrap boundary that contains only the seat
   tree — no credentials, no other tree, no network except a loopback bridge to the model server — with `.git/config`,

@@ -43,7 +43,7 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_UV_CACHE:=$A770B_DATA/seat-cache/uv}"        # pre-warmed by harness/warm_cache.sh; mounted READ-ONLY, the sandbox has no network
 # ── qualification (harness/run_one.sh, bench_model.sh) ──────────────────────────────────────────────────────
 : "${A770B_TASK_BRIEF:=$A770B_PROJECT/briefs/T1-sanitize-entity-tests.md}"   # the coding task every candidate model gets — write your own for your repo
-: "${A770B_PROBE_CORPUS:=$A770B_SEAT/shared-memory/scripts/*.py}"          # glob of source files for the long-context prefill probe
+: "${A770B_PROBE_CORPUS:=$A770B_SEAT/**/*.py}"          # glob of source files for the long-context prefill probe
 : "${A770B_TASK_TEST_FILE:=tests/test_sanitize_entity_name_matrix.py}"      # the file the task brief asks for (capture reports on it)
 export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true

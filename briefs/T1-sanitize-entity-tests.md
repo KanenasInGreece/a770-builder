@@ -1,7 +1,8 @@
 # Task: unit tests for `sanitize_entity_name` (matrix task T1, every candidate model gets this brief)
 
-You are in a git worktree of the shared-memory-GitHub repository. The gateway's entity gate is the
-function `sanitize_entity_name` in `shared-memory/scripts/ontology.py`. Read that function first.
+You are in a git worktree of a Python repository (this brief is the example task written for the repository the seat
+was qualified on; write your own for yours). The function under test is `sanitize_entity_name` in
+`shared-memory/scripts/ontology.py`. Read that function first.
 
 Write a NEW test file `tests/test_sanitize_entity_name_matrix.py` (do not touch any other file) that:
 1. Puts `../shared-memory/scripts` on `sys.path` the way the other files in `tests/` do (look at one).

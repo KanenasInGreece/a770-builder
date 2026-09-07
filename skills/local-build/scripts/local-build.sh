@@ -48,16 +48,16 @@ case "${1:-}" in
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
     while [ $# -gt 0 ]; do case "$1" in --serious) profile=serious;; --fast) profile=fast;; --timeout) timeout="$2"; shift;; *) die "unknown arg $1";; esac; shift; done
-    WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched (fact:2087 #3/#4)
+    WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
-    run_lock                                                       # one run at a time on this card (fact:2087 #8)
+    run_lock                                                       # one run at a time on this card
     profile_vars "$profile"; t=${timeout:-$t}
     serve "$profile" || exit $?
     label="$profile-$(date +%Y%m%d-%H%M%S)"
     echo "▶ profile=$profile timeout=${t}s worktree=$WT brief=$BRIEF label=$label"
     aside=0
     restore(){ if [ "$aside" = 1 ] && [ -f "$WT/AGENTS.md.local-off" ]; then mv -f "$WT/AGENTS.md.local-off" "$WT/AGENTS.md"; aside=0; fi; }
-    trap restore EXIT INT TERM                                    # fact:2087 #7
+    trap restore EXIT INT TERM                                    # restored even on crash or timeout
     if [ -f "$WT/AGENTS.md" ]; then mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"; aside=1; fi
     PROFILE="$profile" LOCAL_AGENT=local-builder LOCAL_TIMEOUT="$t" bash "$BUILD" "$WT" "$BRIEF" 2>&1 | grep -vE '^\s*$' | tail -15 | cut -c1-240
     brc=${PIPESTATUS[0]}

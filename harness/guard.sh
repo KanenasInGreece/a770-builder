@@ -18,7 +18,7 @@ guard_worktree(){
     case "$real" in "$r"|"$r"/*) echo "⛔ refusing: $wt resolves to a protected live checkout ($r)" >&2; exit 2;; esac
     case "$top"  in "$r"|"$r"/*) echo "⛔ refusing: $wt's working tree is a protected live checkout ($r)" >&2; exit 2;; esac
   done; unset IFS
-  case "$real" in "$HOME"/.claude/*|"$HOME"/.grok/*|"$HOME"/.codex/*|"$HOME"/.gemini/*|"$HOME"/.config/*|"$HOME"/.shared-memory/*|"$HOME"/.ssh/*|"$A770B_PROJECT"|"$A770B_PROJECT"/*) echo "⛔ refusing: $real is an agent home, operator ground or the harness itself" >&2; exit 2;; esac
+  case "$real" in "$HOME"/.claude/*|"$HOME"/.grok/*|"$HOME"/.codex/*|"$HOME"/.gemini/*|"$HOME"/.config/*|"$HOME"/.ssh/*|"$A770B_PROJECT"|"$A770B_PROJECT"/*) echo "⛔ refusing: $real is an agent home, operator ground or the harness itself" >&2; exit 2;; esac
   printf '%s\n' "$real"
 }
 

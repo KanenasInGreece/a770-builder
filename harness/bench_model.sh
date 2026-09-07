@@ -34,7 +34,7 @@ for p,exp in [("What is 2+2? Answer with the number only.","4"),("What is the ca
 r["quality"]=q; r["quality_ok"]=all(x['ok'] for x in q)
 d,ms=chat([{"role":"user","content":"Write a 200-word paragraph about git worktrees."}],max_tokens=256)
 t=d.get('timings',{}); r["short"]={"prompt_tokens":t.get('prompt_n'),"ttft_ms":round(t.get('prompt_ms',0)),"gen_tokens":t.get('predicted_n'),"tpot_ms":round(t.get('predicted_per_token_ms',0),2),"decode_tps":round(t.get('predicted_per_second',0),1),"wall_ms":round(ms)}
-files=sorted(glob.glob(os.path.expanduser(sys.argv[1])))
+files=sorted(glob.glob(os.path.expanduser(sys.argv[1]),recursive=True))
 text=""
 for f in files:
     text+=f"\n\n### FILE {os.path.basename(f)}\n"+open(f,errors='ignore').read()
@@ -42,7 +42,7 @@ for f in files:
 d,ms=chat([{"role":"user","content":"Here is source code from a project:\n"+text+"\n\nIn ONE sentence, what does this project do?"}],max_tokens=256,timeout=1800)
 t=d.get('timings',{}); r["long"]={"prompt_tokens":t.get('prompt_n'),"ttft_ms":round(t.get('prompt_ms',0)),"prefill_tps":round(t.get('prompt_per_second',0),1),"tpot_ms_after_long":round(t.get('predicted_per_token_ms',0),2),"answer":(d['choices'][0]['message'].get('content') or '')[:160],"wall_ms":round(ms)}
 tools=[{"type":"function","function":{"name":"read_file","description":"Read a file from the repository","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}]
-d,ms=chat([{"role":"user","content":"Read the file shared-memory/scripts/ontology.py using the tool."}],max_tokens=96,tools=tools,tool_choice="auto")
+d,ms=chat([{"role":"user","content":"Read the file README.md using the tool."}],max_tokens=96,tools=tools,tool_choice="auto")
 m=d['choices'][0]['message']; r["toolcall"]={"ms":round(ms),"parsed":bool(m.get('tool_calls')),"call":json.dumps(m.get('tool_calls'))[:200],"gen_tokens":d.get('timings',{}).get('predicted_n')}
 r["vram_gib_after_probes"]=float(subprocess.check_output("nvtop -s 2>/dev/null | python3 -c \"import sys,json; d=[x for x in json.load(sys.stdin) if '$A770B_GPU_MATCH' in x['device_name']]; print(round(int(d[0]['mem_used'])/2**30,2))\"",shell=True).decode().strip())
 r["kernel_resets"]=int(subprocess.check_output("journalctl -k --since @$(stat -c %Y $A770B_DATA/logs/llamacpp-a770.pid) --no-pager 2>/dev/null | grep -ciE 'engine reset|timedout' || true",shell=True).decode().strip() or 0)

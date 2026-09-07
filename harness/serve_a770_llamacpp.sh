@@ -6,7 +6,7 @@
 # and REASONING. Flags baked in (measured on the A770 under Vulkan): -fa on, --no-mmap, -ngl 99, --parallel 1,
 # quantised KV, --jinja, GGML_VK_DISABLE_COOPMAT=1 (the flag set proven on Arc under Vulkan).
 # ⚠ On a card that also drives a desktop: the VRAM cap (default 13 of 16 GiB after load) and the ubatch ceiling (512)
-# are what keep the Xe 5 s job watchdog quiet (fact:2065). Raise them only on a card that draws nothing.
+# are what keep the Xe 5 s job watchdog quiet. Raise them only on a card that draws nothing.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; LOG="$A770B_DATA/logs/llamacpp-a770.log"; MARK="$A770B_DATA/logs/llamacpp-a770.model"

@@ -92,7 +92,7 @@ the model wrote, and resets the seat. Judge by the capture in `~/local-ai/result
 | `harness/build_local.sh` | dispatch a brief through opencode in a git worktree (never the live main checkout), `< /dev/null`, inside the sandbox |
 | `harness/sandbox_run.sh` | the bubblewrap boundary: only the seat read-write, no credentials, no main checkout, no harness source |
 | `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation |
-| `harness/guard.sh` | canonical worktree guard, verified pids, the run lock, the built-in budget gate (review `fact:2087`) |
+| `harness/guard.sh` | canonical worktree guard, verified pids, the run lock, the built-in budget gate |
 | `SANDBOX-PLAN.md` | the sequenced security work from the adversarial review, with a done log |
 | `harness/capture_task.sh` | diff + new files + pytest line + server-side TTFT/TPOT distribution, then worktree reset |
 | `harness/bench_model.sh` · `run_one.sh` · `measure_overhead.sh` | the qualification row: probes → gate → task → capture; opencode opening-request cost |
@@ -129,17 +129,16 @@ edit only what differs. The defaults are the workstation the seat was qualified 
    `local-builder`. The model's own process runs inside the sandbox and never sees `A770B_MODELS` — it only talks to the
    server over loopback. So the weights can live anywhere the server can read, including a read-only share.
 4. Before trusting a new model, qualify it: `harness/run_one.sh <label> <gguf> <ctx>` runs the probes, the coding task and
-   the capture (method `fact:2076`); a cheap reviewer grades the capture; it lands in `A770B_MODELS` only on green.
+   the capture; a cheap reviewer grades the capture; it lands in `A770B_MODELS` only on green.
 
 ## What is hardcoded now
 
 Nothing that matters. Two conventions remain: the opencode alias `local-builder` (the provider files depend on it) and the
-sandbox's use of `bubblewrap`, `uv` and the opencode binary from `A770B_OPENCODE_BIN`. Private project names appear only in
-the shared-memory record ids cited in comments.
+sandbox's use of `bubblewrap`, `uv` and the opencode binary from `A770B_OPENCODE_BIN`. 
 
 ## Security state
 
-Two adversarial reviews (Opus, read-only): `fact:2087` on the first version, and a public-readiness pass on this one. What
+Two adversarial reviews by a reviewer-class model, read-only: one on the first version, a public-readiness pass on this one. What
 holds now, all mutation-checked: canonical refusal of protected checkouts (`A770B_REFUSE`, required), of linked worktrees,
 symlinks, subdirectories and agent homes; a run lock and pids verified before any kill; the model's process inside bubblewrap
 with a private home, no credentials, no other tree, **no network except a loopback bridge to the model server** (socat over a
@@ -148,10 +147,4 @@ mounted read-only so the model cannot plant config-driven code; every host-side 
 (`safe_git`); the uv cache read-only and pre-warmed; the only opencode config inside is a rendered per-run profile with a
 default-deny bash allow-list and no MCP, web or skills; capture executes nothing the model wrote; VRAM readings that refuse to
 fail open. Still open (`SANDBOX-PLAN.md`): a sandboxed `verify` command for reviewers, a checksum on the sync, an API key on the
-model server, a third adversarial pass from another model family, a retrospective on `decision:2084`.
-
-## Records
-The `fact:`/`decision:`/`retro:` ids cited in comments and here point into the author's private shared-memory store; they are
-kept as provenance and resolve to nothing outside it. Project `shared-memory-GitHub`, domain `inference`, entity `A770`: method `fact:2076`, matrix
-`fact:2062–2082`, seat `decision:2084`, skill `fact:2085`, containment `fact:2087–2089` / `decision:2090` / `retro:2091`,
-latest handoff `fact:2092`.
+model server, a third adversarial pass from another model family.
