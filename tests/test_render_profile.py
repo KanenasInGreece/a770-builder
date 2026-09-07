@@ -42,6 +42,29 @@ def render_to(out: Path) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def write_spec(path: Path, data: dict) -> Path:
+    """Write a run specification as JSON to `path` and return it."""
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f)
+    return path
+
+
+def run_check(spec_path: Path, seat_path: Path) -> subprocess.CompletedProcess:
+    """Run the `check` subcommand against a spec/seat pair."""
+    cmd = [sys.executable, str(RENDERER), "check", "--spec", str(spec_path), "--seat", str(seat_path)]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def render_with_spec(out: Path, spec_path: Path, seat_path: Path, echo: Path = None) -> subprocess.CompletedProcess:
+    """Render the profile using a run specification and seat directory, optionally with --echo."""
+    cmd = [sys.executable, str(RENDERER)] + COMMON_ARGS + [
+        "--out", str(out), "--spec", str(spec_path), "--seat", str(seat_path),
+    ]
+    if echo is not None:
+        cmd += ["--echo", str(echo)]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
 def test_renders_valid_json(tmp_path):
     """Test 1: rendered output is valid JSON with correct values."""
     out = tmp_path / "out.jsonc"
@@ -138,6 +161,176 @@ def test_output_mode_600(tmp_path):
     out = tmp_path / "out.jsonc"
     result = render_to(out)
     assert result.returncode == 0, f"Render failed: {result.stderr}"
-    
+
     mode = oct(out.stat().st_mode & 0o777)
     assert mode == "0o600", f"Expected mode 0o600, got {mode}"
+
+
+def test_check_accepts_minimal_spec(tmp_path):
+    """Test 7: an empty spec object passes check, printing nothing."""
+    spec = write_spec(tmp_path / "spec.json", {})
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    result = run_check(spec, seat)
+    assert result.returncode == 0, f"check failed: {result.stderr}"
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_check_refuses_unknown_key(tmp_path):
+    """Test 8: an unknown top-level key is refused, naming that key."""
+    spec = write_spec(tmp_path / "spec.json", {"skills": []})
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    result = run_check(spec, seat)
+    assert result.returncode == 2
+    assert "skills" in result.stderr
+
+
+def test_check_refuses_nested_unknown_key(tmp_path):
+    """Test 9: an unknown key nested inside verify is refused, naming 'verify'."""
+    spec = write_spec(tmp_path / "spec.json", {"verify": {"timeout": 5}})
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    result = run_check(spec, seat)
+    assert result.returncode == 2
+    assert "verify" in result.stderr
+
+
+def test_bash_allow_renders_before_floor(tmp_path):
+    """Test 10: a git-prefixed bash_allow pattern is refused; a plain one renders ahead of the floor."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    spec1 = write_spec(tmp_path / "spec1.json", {"bash_allow": ["git push *", "make check"]})
+    out1 = tmp_path / "out1.jsonc"
+    result1 = render_with_spec(out1, spec1, seat)
+    assert result1.returncode == 2
+    assert "bash_allow" in result1.stderr
+
+    spec2 = write_spec(tmp_path / "spec2.json", {"bash_allow": ["make check"]})
+    out2 = tmp_path / "out2.jsonc"
+    result2 = render_with_spec(out2, spec2, seat)
+    assert result2.returncode == 0, f"Render failed: {result2.stderr}"
+
+    text = out2.read_text()
+    bash_match = re.search(r'"bash": \{([^}]*(?:\}[^}]*)?)\n    \}', text, re.DOTALL)
+    assert bash_match is not None, "Could not find bash object"
+    bash_content = bash_match.group(1)
+
+    idx_make = bash_content.index('"make check": "allow"')
+    idx_commit_deny = bash_content.index('"git commit*": "deny"')
+    idx_blame_allow = bash_content.index('"git blame*": "allow"')
+
+    assert idx_make < idx_commit_deny, "bash_allow pattern must render before the floor"
+    assert idx_make > idx_blame_allow, "bash_allow pattern must render after the base allow rules"
+
+
+def test_bash_allow_refuses_wildcard_and_wrappers(tmp_path):
+    """Test 11: a bare wildcard and shell/wrapper-prefixed patterns are all refused."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    patterns = [["*"], ["env X"], ["sh -c ls"], ["uv run x"], ["ls; rm"], ["a=b"]]
+    for i, p in enumerate(patterns):
+        spec = write_spec(tmp_path / f"spec_{i}.json", {"bash_allow": p})
+        result = run_check(spec, seat)
+        assert result.returncode == 2, f"pattern {p!r} should be refused: {result.stderr}"
+
+
+def test_card_from_seat_lands_in_prompt(tmp_path):
+    """Test 12: a card file inside the seat becomes the rendered prompt; the echo reports it."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    card_text = 'Card text with "quotes" and\nnewline'
+    (seat / "CARD.md").write_text(card_text, encoding="utf-8")
+
+    spec = write_spec(tmp_path / "spec.json", {"card": "CARD.md"})
+    out = tmp_path / "out.jsonc"
+    echo = tmp_path / "echo.json"
+    result = render_with_spec(out, spec, seat, echo=echo)
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    parsed = json.loads(strip_comments(out.read_text()))
+    assert parsed["agent"]["local-builder"]["prompt"] == card_text
+
+    echo_data = json.loads(echo.read_text())
+    assert echo_data["card"]["chars"] == len(card_text)
+    assert echo_data["card"]["source"] == "CARD.md"
+
+
+def test_card_outside_seat_refused(tmp_path):
+    """Test 13: a card path escaping the seat, and a card that is a symlink, are both refused."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    (tmp_path / "outside.md").write_text("nope", encoding="utf-8")
+
+    spec1 = write_spec(tmp_path / "spec1.json", {"card": "../outside.md"})
+    result1 = run_check(spec1, seat)
+    assert result1.returncode == 2
+    assert "card" in result1.stderr
+
+    real_card = seat / "real.md"
+    real_card.write_text("real card text", encoding="utf-8")
+    (seat / "link.md").symlink_to(real_card)
+
+    spec2 = write_spec(tmp_path / "spec2.json", {"card": "link.md"})
+    result2 = run_check(spec2, seat)
+    assert result2.returncode == 2
+    assert "card" in result2.stderr
+
+
+def test_card_over_limit_refused(tmp_path):
+    """Test 14: inline card text over 8000 characters is refused."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    spec = write_spec(tmp_path / "spec.json", {"card": {"text": "x" * 8001}})
+
+    result = run_check(spec, seat)
+    assert result.returncode == 2
+    assert "card" in result.stderr
+
+
+def test_scope_edit_renders_deny_then_allow(tmp_path):
+    """Test 15: scope.edit renders a deny-all floor followed by an allow per glob, in order."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    spec = write_spec(tmp_path / "spec.json", {"scope": {"edit": ["src/a.py", "tests/*.py"]}})
+    out = tmp_path / "out.jsonc"
+    result = render_with_spec(out, spec, seat)
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    parsed = json.loads(strip_comments(out.read_text()))
+    assert parsed["permission"]["edit"] == {"*": "deny", "src/a.py": "allow", "tests/*.py": "allow"}
+
+
+def test_echo_written(tmp_path):
+    """Test 16: the echo file parses, carries a 64-hex-char rendered hash, and the redaction never leaks."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    spec = write_spec(tmp_path / "spec.json", {})
+    out = tmp_path / "out.jsonc"
+    echo = tmp_path / "echo.json"
+    result = render_with_spec(out, spec, seat, echo=echo)
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    echo_data = json.loads(echo.read_text())
+    assert re.fullmatch(r"[0-9a-f]{64}", echo_data["rendered_sha256"])
+
+    assert "REDACTED" not in out.read_text()
+
+
+def test_spec_symlink_refused(tmp_path):
+    """Test 17: a spec file that is itself a symlink is refused, even when it points at a valid spec."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    real_spec = write_spec(tmp_path / "real_spec.json", {})
+    link_spec = tmp_path / "link_spec.json"
+    link_spec.symlink_to(real_spec)
+
+    result = run_check(link_spec, seat)
+    assert result.returncode == 2
+    assert "spec" in result.stderr
