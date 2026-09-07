@@ -190,7 +190,14 @@ idioms) are read straight off the ledger row; when the row changes, so do they.
 
 ## What is hardcoded now
 
-Nothing that matters. Two conventions remain: the opencode alias `local-builder` (the profile template depends on it) and
+Linux. The sandbox is bubblewrap, so the harness needs a kernel with unprivileged user namespaces; the VRAM readings
+come from `nvtop` and the reset watch from `journalctl -k`; the serving line was measured on Mesa's Vulkan driver over
+the Xe kernel driver, and the display-card rules are that driver's watchdog. Windows is not a target: the plausible
+shape is the harness under WSL2 with `llama-server` native on Windows, reached over the loopback bridge, with
+`A770B_ALLOW_NO_NVTOP=1` because the cap cannot read the card from inside WSL2; it has not been measured and the README
+says so. macOS has no bubblewrap.
+
+Beyond that, nothing that matters. Two conventions remain: the opencode alias `local-builder` (the profile template depends on it) and
 the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A770B_OPENCODE_BIN`.
 
 ## What is in here

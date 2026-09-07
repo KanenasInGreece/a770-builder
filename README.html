@@ -111,6 +111,12 @@ re-qualified the same way instead of trusted.</p>
 </thead>
 <tbody>
 <tr>
+<td><strong>a Linux host</strong></td>
+<td>the whole harness: the sandbox is bubblewrap, which is Linux kernel namespaces; the VRAM cap reads <code>nvtop</code>; the reset watch reads the kernel log; the serving line rests on Mesa's Vulkan driver and the Xe watchdog rules. Measured on Fedora 44 only. On Windows the plausible route is the harness under WSL2 with <code>llama-server</code> running natively on Windows and reached over the loopback, but that has not been measured here and the VRAM cap would not see the card; macOS has no bubblewrap</td>
+<td>any distribution with user namespaces enabled (the default on Fedora, Ubuntu, Debian, Arch)</td>
+<td><code>bwrap</code>, <code>nvtop</code>, <code>journalctl</code> on <code>PATH</code></td>
+</tr>
+<tr>
 <td>Vulkan driver for the card</td>
 <td>the GPU backend llama.cpp runs on</td>
 <td>your distribution's Mesa Vulkan driver (<code>mesa-vulkan-drivers</code>) and <code>vulkan-tools</code>; <code>vulkaninfo --summary</code> must list the card</td>
