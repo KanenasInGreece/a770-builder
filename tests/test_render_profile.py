@@ -70,10 +70,10 @@ def test_renders_valid_json(tmp_path):
     out = tmp_path / "out.jsonc"
     result = render_to(out)
     assert result.returncode == 0, f"Render failed: {result.stderr}"
-    
+
     text = strip_comments(out.read_text())
     parsed = json.loads(text)
-    
+
     assert parsed["provider"]["local-a770"]["options"]["apiKey"] == "k-test"
     assert parsed["provider"]["local-a770"]["models"]["local-builder"]["limit"]["context"] == 81920
 
@@ -83,7 +83,7 @@ def test_no_placeholder_left(tmp_path):
     out = tmp_path / "out.jsonc"
     result = render_to(out)
     assert result.returncode == 0, f"Render failed: {result.stderr}"
-    
+
     text = out.read_text()
     assert re.search(r"__[A-Z]+__", text) is None, "Unreplaced placeholder found"
 
@@ -93,7 +93,7 @@ def test_matches_plain_substitution(tmp_path):
     out = tmp_path / "out.jsonc"
     result = render_to(out)
     assert result.returncode == 0, f"Render failed: {result.stderr}"
-    
+
     text = TEMPLATE.read_text()
     expected = (
         text
@@ -106,7 +106,7 @@ def test_matches_plain_substitution(tmp_path):
         .replace("__EDIT_RULES__", '"*": "allow"')
         .replace("__BASH_ALLOW__", "")
     )
-    
+
     assert out.read_text() == expected
 
 
@@ -115,10 +115,10 @@ def test_default_prompt_and_edit_rules(tmp_path):
     out = tmp_path / "out.jsonc"
     result = render_to(out)
     assert result.returncode == 0, f"Render failed: {result.stderr}"
-    
+
     text = strip_comments(out.read_text())
     parsed = json.loads(text)
-    
+
     assert parsed["agent"]["local-builder"]["prompt"] == DEFAULT
     assert parsed["permission"]["edit"] == {"*": "allow"}
 
@@ -128,27 +128,27 @@ def test_floor_renders_after_every_allow(tmp_path):
     out = tmp_path / "out.jsonc"
     result = render_to(out)
     assert result.returncode == 0, f"Render failed: {result.stderr}"
-    
+
     text = out.read_text()
-    
+
     # Find the bash object (from first "bash": { to next }\n    })
     bash_match = re.search(r'"bash": \{([^}]*(?:\}[^}]*)?)\n    \}', text, re.DOTALL)
     assert bash_match is not None, "Could not find bash object"
-    
+
     bash_content = bash_match.group(1)
-    
+
     # Find the index of the last "allow" in the bash object
     last_allow = bash_content.rfind('"allow"')
     assert last_allow != -1, "No 'allow' found in bash object"
-    
+
     # Find the index of the first "git commit*" (floor key)
     floor_key = '"git commit*"'
     floor_index = bash_content.find(floor_key)
     assert floor_index != -1, "Floor key 'git commit*' not found"
-    
+
     # Floor key should be after the last allow
     assert floor_index > last_allow, "Floor key should appear after all allow rules"
-    
+
     # Verify floor deny rules are present
     assert '"git commit*": "deny"' in bash_content
     assert '"git push*": "deny"' in bash_content
@@ -357,13 +357,21 @@ def test_context_appends_definitions(tmp_path):
     assert result.returncode == 0, f"context failed: {result.stderr}"
 
     brief_text = brief.read_text()
-    assert "2: def alpha():" in brief_text
-    assert "4: class Beta:" in brief_text
-    assert "5:     def gamma(self):" in brief_text
-    assert "### b.js" in brief_text
-    assert "1: function delta() {" in brief_text
-    assert "3: helper() {" in brief_text
     assert "import os" not in brief_text
+
+    idx_a = brief_text.index("### a.py")
+    idx_b = brief_text.index("### b.js")
+    between = brief_text[idx_a:idx_b]
+    after_b = brief_text[idx_b:]
+
+    assert "2: def alpha():" in between
+    assert "4: class Beta:" in between
+    assert "5:     def gamma(self):" in between
+    assert "function delta" not in between
+
+    assert "1: function delta() {" in after_b
+    assert "3: helper() {" in after_b
+    assert "def alpha" not in after_b
 
 
 def test_context_echo_lists_files(tmp_path):
@@ -452,9 +460,10 @@ def test_context_caps_per_file(tmp_path):
 
     spec = write_spec(tmp_path / "spec.json", {"context": {"definitions_of": ["a.py"]}})
 
+    echo = tmp_path / "echo.json"
     result = subprocess.run(
         [sys.executable, str(RENDERER), "context", "--spec", str(spec), "--seat", str(seat),
-         "--brief-copy", str(brief)],
+         "--brief-copy", str(brief), "--echo", str(echo)],
         capture_output=True, text=True
     )
     assert result.returncode == 0, f"context failed: {result.stderr}"
@@ -462,6 +471,42 @@ def test_context_caps_per_file(tmp_path):
     brief_text = brief.read_text()
     assert brief_text.count(": ") == 400
     assert "(truncated at 400 lines)" in brief_text
+
+    echo_data = json.loads(echo.read_text())
+    assert echo_data["context"] == [{"path": "a.py", "lines": 400}]
+
+
+def test_context_caps_total(tmp_path):
+    """Test 24: context subcommand caps the total kept lines across all files at 1200."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    names = ["a.py", "b.py", "c.py", "d.py"]
+    for name in names:
+        content = "\n".join(f"def f{i}():" for i in range(1, 351))
+        (seat / name).write_text(content, encoding="utf-8")
+    brief = tmp_path / "brief.md"
+    brief.write_text("# brief", encoding="utf-8")
+
+    spec = write_spec(tmp_path / "spec.json", {"context": {"definitions_of": names}})
+
+    echo = tmp_path / "echo.json"
+    result = subprocess.run(
+        [sys.executable, str(RENDERER), "context", "--spec", str(spec), "--seat", str(seat),
+         "--brief-copy", str(brief), "--echo", str(echo)],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"context failed: {result.stderr}"
+
+    echo_data = json.loads(echo.read_text())
+    assert echo_data["context"] == [
+        {"path": "a.py", "lines": 350},
+        {"path": "b.py", "lines": 350},
+        {"path": "c.py", "lines": 350},
+        {"path": "d.py", "lines": 150},
+    ]
+
+    brief_text = brief.read_text()
+    assert "(truncated at 150 lines)" in brief_text
 
 
 def test_check_validates_context_paths(tmp_path):

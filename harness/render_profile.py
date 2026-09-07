@@ -158,18 +158,7 @@ def validate_and_load(spec_path: str, seat_dir: str):
             or not all(isinstance(x, str) for x in defs)
         ):
             raise SpecError("context.definitions_of", "must be a list of 1 to 8 strings")
-        seat_real = os.path.realpath(seat_dir) if seat_dir else None
-        for p in defs:
-            joined = os.path.join(seat_dir, p)
-            joined_real = os.path.realpath(joined)
-            if joined_real.startswith(seat_real + os.sep) is False:
-                raise SpecError("context.definitions_of", "path must be inside --seat")
-            if "/.git/" in joined_real or joined_real.endswith("/.git"):
-                raise SpecError("context.definitions_of", "path must not be inside .git")
-            if not os.path.isfile(joined_real):
-                raise SpecError("context.definitions_of", "path must be a regular file")
-            if os.path.islink(joined):
-                raise SpecError("context.definitions_of", "path must not be a symlink")
+        _validate_context_definitions(seat_dir, defs)
 
     # Rule 9: verify.
     if "verify" in data:
@@ -254,109 +243,79 @@ def _validate_context_definitions(seat_dir: str, definitions_of: list[str]) -> N
             raise SpecError("context.definitions_of", "path must not be a symlink")
 
 
+CONTEXT_DEF_RE = re.compile(r"^\s*(def |class |async def |function |[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{)")
+
+CONTEXT_PER_FILE_CAP = 400
+CONTEXT_TOTAL_CAP = 1200
+
+
 def cmd_context(args) -> int:
     try:
-        validate_and_load(args.spec, args.seat)
+        spec, card_text, card_source = validate_and_load(args.spec, args.seat)
     except SpecError as e:
         print(f"render_profile: {e.key}: {e.reason}", file=sys.stderr)
         return 2
 
-    spec = {}
-    card_text = None
-    card_source = None
-
-    if args.spec is not None:
-        try:
-            spec, card_text, card_source = validate_and_load(args.spec, args.seat)
-        except SpecError as e:
-            print(f"render_profile: {e.key}: {e.reason}", file=sys.stderr)
-            return 2
-
-    # Validate --brief-copy
     if not os.path.isfile(args.brief_copy):
-        print(f"render_profile: brief-copy: must be a regular file", file=sys.stderr)
+        print("render_profile: brief-copy: must be a regular file", file=sys.stderr)
         return 2
 
-    # Check if spec has context key
     context_spec = spec.get("context")
     if context_spec is None:
-        # No context key: do nothing to brief, ensure echo has empty context if it exists
-        brief_path = Path(args.brief_copy)
-        echo_path = Path(args.echo) if args.echo else None
-        brief_text = brief_path.read_text(encoding="utf-8")
-
-        if echo_path is not None:
-            echo_text = echo_path.read_text(encoding="utf-8")
-            echo_data = json.loads(echo_text)
-            echo_data["context"] = []
-            echo_path.write_text(json.dumps(echo_data), encoding="utf-8")
-
+        # No context key: do nothing to the brief; if an echo file already exists, set its
+        # context key to [] and rewrite it. Nothing is written when no echo path is given, and
+        # nothing is created when an echo path is given but no file exists there yet.
+        if args.echo:
+            echo_path = Path(args.echo)
+            if echo_path.exists():
+                echo_data = json.loads(echo_path.read_text(encoding="utf-8"))
+                echo_data["context"] = []
+                _write_file(args.echo, json.dumps(echo_data).encode("utf-8"))
         return 0
 
-    # Extract definitions_of paths
-    definitions_of = context_spec.get("definitions_of", [])
+    definitions_of = context_spec["definitions_of"]
 
-    # Validate paths
-    _validate_context_definitions(args.seat, definitions_of)
-
-    # Process definitions
-    all_lines = []
+    # Read each named file exactly once, keeping the definition-like lines up to the per-file
+    # cap and the running total cap (once the total is reached, no further lines are kept from
+    # any later file, or from later lines of the current file).
+    per_file = []
+    total_kept = 0
     for p in definitions_of:
         file_path = os.path.join(args.seat, p)
         content = Path(file_path).read_text(encoding="utf-8", errors="replace")
-        lines = content.splitlines()
-        kept_lines = []
-        for lineno, line in enumerate(lines, start=1):
-            # Match: def, class, async def, function, or identifier(){}
-            if re.match(r"^\s*(def |class |async def |function |[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{)", line):
-                if len(kept_lines) < 400:
-                    kept_lines.append((lineno, line.rstrip()))
-        all_lines.extend(kept_lines)
+        kept = []
+        matching_count = 0
+        for lineno, line in enumerate(content.splitlines(), start=1):
+            if CONTEXT_DEF_RE.match(line):
+                matching_count += 1
+                if len(kept) < CONTEXT_PER_FILE_CAP and total_kept < CONTEXT_TOTAL_CAP:
+                    kept.append((lineno, line.rstrip()))
+                    total_kept += 1
+        per_file.append((p, kept, matching_count))
 
-    # Append to brief copy
-    brief_path = Path(args.brief_copy)
-    brief_text = brief_path.read_text(encoding="utf-8")
-
-    # Build the definitions section
+    # Build the definitions section, grouped per file: under each "### <p>" heading only that
+    # file's own kept lines appear.
     lines_out = ["", "## Definitions in the named files (prepared by the harness, not by the model)"]
-    for p in definitions_of:
+    for p, kept, matching_count in per_file:
         lines_out.append("")
         lines_out.append(f"### {p}")
-        for lineno, line in all_lines:
+        for lineno, line in kept:
             lines_out.append(f"{lineno}: {line}")
-        # Check if this file had more matching lines than were kept
-        file_path = os.path.join(args.seat, p)
-        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
-        lines = content.splitlines()
-        matching_lines = []
-        for lineno, line in enumerate(lines, start=1):
-            if re.match(r"^\s*(def |class |async def |function |[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{)", line):
-                matching_lines.append(line)
-        if len(matching_lines) > len(all_lines):
-            lines_out.append(f"(truncated at {len(all_lines)} lines)")
+        if matching_count > len(kept):
+            lines_out.append(f"(truncated at {len(kept)} lines)")
 
-    # Write back to brief file
-    new_brief_text = brief_text + "\n" + "\n".join(lines_out)
-    brief_path.write_text(new_brief_text, encoding="utf-8")
+    with open(args.brief_copy, "a", encoding="utf-8") as f:
+        f.write("\n" + "\n".join(lines_out))
 
-    # Build echo data
     echo_data = {}
     if args.echo:
         echo_path = Path(args.echo)
         if echo_path.exists():
-            echo_text = echo_path.read_text(encoding="utf-8")
-            echo_data = json.loads(echo_text)
-        else:
-            echo_data = {}
-    for key in {"context"}:
-        if key not in echo_data:
-            echo_data[key] = []
-    for p in definitions_of:
-        echo_data["context"].append({"path": p, "lines": len(all_lines)})
+            echo_data = json.loads(echo_path.read_text(encoding="utf-8"))
+    echo_data["context"] = [{"path": p, "lines": len(kept)} for p, kept, _ in per_file]
 
     if args.echo:
-        Path(args.echo).write_text(json.dumps(echo_data), encoding="utf-8")
-        os.chmod(args.echo, 0o600)
+        _write_file(args.echo, json.dumps(echo_data).encode("utf-8"))
 
     return 0
 
