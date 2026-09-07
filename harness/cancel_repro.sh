@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cancel_repro.sh — the deterministic reproduction from the clawee record: request A (a ~3k-token prompt, max_tokens 400)
+# cancel_repro.sh — the deterministic reproduction from the sibling framework's records: request A (a ~3k-token prompt, max_tokens 400)
 # holds the single slot; 4 s later request B, the same prompt, is cancelled by its client after 5 s while queued. On
 # Gemma 4 with flash attention on that killed the card every time. Runs N rounds against the harness's server, then
 # reports device-lost lines, kernel resets, and whether the server still answers. Usage: cancel_repro.sh [rounds]
