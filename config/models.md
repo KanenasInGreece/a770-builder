@@ -1,9 +1,11 @@
 # Qualified models
 
 This file is the ledger of every model that has been put through the seat's qualification on this card, and how it
-measured. It matters because the two profiles in `builder.env` are configuration, not a promise: a model earns a profile
+measured. It matters because the three profiles in `builder.env` are configuration, not a promise: a model earns a profile
 here first, with numbers, and a model that is not in this table has not been measured on this card, whatever its
-reputation elsewhere. New releases of a model family are new models; they enter the same way.
+reputation elsewhere. Today the profiles are **fast** = Qwen3.5-9B Q4_K_M, the default for every ordinary change;
+**serious** = Qwen3.8-27B GSQ-RCO IQ2_XS, for a deliverable larger than its brief; **long** = Gemma 4 E4B Q4_K_M with
+flash attention off, for the read the fast window cannot hold. The profile column below says which row holds which. New releases of a model family are new models; they enter the same way.
 
 ## The bar
 
