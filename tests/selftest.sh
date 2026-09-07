@@ -20,6 +20,7 @@ check "file://$t/ok.json" "ok"
 check "file://$t/nostatus.json" "answered, no status field"
 check "file://$t/missing.json" "no answer"
 check "file://$t/hostile.json" "[2J[Hfake"
+grep -q 'health_status "$A770B_HEALTH_URL"' "$here/harness/guard.sh" && echo "ok   gate: budget_gate prints health_status" || { echo "FAIL budget_gate does not call health_status"; fail=1; }
 sed -n '/health_status "$A770B_HEALTH_URL"/p' "$here/harness/guard.sh" | grep -q 'ok=0' && { echo "FAIL the health line still refuses"; fail=1; }
 # a seat with the harness's own brief copy is clean; anything else planted in that directory, or a symlink, is reported and reset
 r="$t/seat"; git init -q "$r"; ( cd "$r" && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init )
@@ -29,6 +30,8 @@ echo planted > "$r/Local_Documentation/briefs/evil.py"; ln -s /etc/hostname "$r/
 seat_dirty "$r" | grep -q 'Local_Documentation/briefs/evil.py' && echo "ok   seat: a planted file in briefs/ is reported" || { echo "FAIL planted briefs file hidden"; fail=1; }
 seat_dirty "$r" | grep -q 'leak' && echo "ok   seat: a symlink is reported" || { echo "FAIL symlink hidden"; fail=1; }
 reset_worktree "$r" >/dev/null; [ ! -e "$r/Local_Documentation/briefs/evil.py" ] && [ ! -L "$r/leak" ] && [ -f "$r/Local_Documentation/briefs/brief-20260907-120000.md" ] && echo "ok   reset: planted file and symlink gone, the brief copy kept" || { echo "FAIL reset left something or removed the brief"; fail=1; }
+rm -rf "$r/Local_Documentation/briefs"; mkdir -p "$t/outside"; ln -s "$t/outside" "$r/Local_Documentation/briefs"
+reset_worktree "$r" >/dev/null; [ ! -L "$r/Local_Documentation/briefs" ] && [ -d "$t/outside" ] && echo "ok   reset: a symlinked briefs directory is removed, its target untouched" || { echo "FAIL a symlinked briefs directory survived the reset or its target was harmed"; fail=1; }
 # the capture on a run that made no file, and on one whose only new file is a symlink: it must finish and never read through the link
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"; : > "$A770B_DATA/logs/llamacpp-a770.log"; echo "no pytest here" > "$t/build.log"
 A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" selftest-empty "$r" "$t/build.log" >/dev/null 2>&1 && [ -f "$A770B_DATA/results/selftest-empty.task.md" ] && echo "ok   capture: a run with no new file still writes its report" || { echo "FAIL capture aborted on an empty new-file list"; fail=1; }

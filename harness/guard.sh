@@ -49,6 +49,9 @@ seat_dirty(){ { safe_git "$1" status --porcelain --untracked-files=all 2>/dev/nu
 # Every call is safe_git because the model owned the tree.
 reset_worktree(){ local wt="$1"
   safe_git "$wt" checkout -- . 2>/dev/null || true
+  # a briefs path that is not a real directory (a symlink the model left) goes first: git clean's exemption would keep it
+  [ -L "$wt/Local_Documentation/briefs" ] && rm -f -- "$wt/Local_Documentation/briefs"
+  [ -L "$wt/Local_Documentation" ] && rm -f -- "$wt/Local_Documentation"
   safe_git "$wt" clean -fdxq -e /Local_Documentation/briefs 2>/dev/null || true
   # the briefs directory keeps only the harness's own copies; anything else planted there goes with the rest
   [ -d "$wt/Local_Documentation/briefs" ] && find "$wt/Local_Documentation/briefs" -mindepth 1 -regextype posix-extended ! -regex '.*/brief-[0-9]{8}-[0-9]{6}\.md' -exec rm -rf -- {} + 2>/dev/null

@@ -27,7 +27,7 @@ safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Doc
   echo; if [ -L "$WT/$f" ]; then echo "### $f — SYMLINK to $(readlink -- "$WT/$f"), not read, not in the patch (the host never follows a link the model made)"; continue; fi
   echo "### $f"; echo '```'; head -200 -- "$WT/$f"; echo '```'; done
 echo; echo "## ignored files the run left behind (names only; removed by the reset, never applied by verify)"
-safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/' || echo "none"
+safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || echo "none"
 echo; echo "## pytest summary as reported by the model inside the run (NOT re-executed here)"
 grep -E '[0-9]+ (passed|failed|error)' "$BLOG" | tail -3 || echo "no pytest summary line in the transcript"
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
