@@ -20,7 +20,7 @@ Measured on this A770 (16 GB, also driving the desktop), llama.cpp b10805 Vulkan
 | profile | model | context | speed | typical small task | when |
 |---|---|---|---|---|---|
 | **fast** (default) | Qwen3.5-9B Q4_K_M | **81,920 tokens** | 45 tok/s decode · 464 tok/s prefill | ~2–3 min | every ordinary change; in the qualification task it followed the repository's idioms and passed its tests first try |
-| **serious** | Qwen3.8-27B GSQ-RCO IQ2_XS | **158,000 tokens** | 8.1 tok/s decode · 70 tok/s prefill | ~10–25 min | when the fast profile fails or the change needs more reasoning; the best-written output of our matrix, at the speed floor |
+| **serious** | Qwen3.8-27B GSQ-RCO IQ2_XS | **158,000 tokens** | 8.1 tok/s decode · 70 tok/s prefill | ~10–25 min | when the fast profile fails or the deliverable is larger than its spec: tests from an invariant, text a reviewer will read; the best-written output of our matrix, at the speed floor. Never for mechanical edits: measured on a six-site one-keyword change, it produced the same patch as the fast profile, one comment word closer to the brief, at seven times the wall clock |
 
 The profiles are configuration, not fixed: `status` shows what is actually configured on this machine, and the project's
 `config/models.md` is the ledger of every model qualified on this card with its numbers; a new model enters through
@@ -67,7 +67,9 @@ capture decides. A cheap reviewer prompt for it lives at `~/local-ai/A770_Builde
 ## Brief shape that works (measured)
 
 Name the target file and function, list the behaviours, give the exact test command, say what must not be edited, and
-end with a stop condition. Point at one existing file as the idiom to copy. Example:
+end with a stop condition. Point at one existing file as the idiom to copy. Anything that must appear verbatim, a
+docstring or a message, goes in the brief as a quoted block: the builder writes what it is given and drops what is
+described. Template: `~/local-ai/A770_Builder/briefs/TEMPLATE.md`; the example that qualified the seat:
 `~/local-ai/A770_Builder/briefs/T1-sanitize-entity-tests.md`. The test command names the files the change touches, never
 the whole suite: it runs in the model's shell tool, which cuts a command at 120 s unless the model asks for longer, and
 inside a boundary with no network and none of the host's environment (measured: a 3,800-test suite took 144 s there, and
