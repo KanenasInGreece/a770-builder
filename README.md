@@ -35,7 +35,7 @@ build. This card was already in the machine, driving the desktop, and idle. The 
 hold a model that actually finishes a small, well-specified change in a real repository, and whether an agent could hand
 it that work without giving a local model the run of the host. The first was answered by measurement: every candidate
 got the same brief on a live codebase, and only the ones whose tests passed under a cheap reviewer's eye kept a place. The
-second was answered by the harness and the sandbox, and by two adversarial reviews of them. A run does not end in an exit
+second was answered by the harness and the sandbox, and by three adversarial reviews of them, all from one model family so far. A run does not end in an exit
 code but in a capture, and a reviewer can re-run its tests inside a fresh sandbox with `verify` before merging anything.
 What is here is the result of all of that, so the next card, model or build can be re-qualified the same way instead of
 trusted.
@@ -90,8 +90,8 @@ copying the folder into any Agent Skills-compatible agent. Tested here on 2026-0
 **1. The open skills CLI** — detects the agents you have installed and copies the skill into each of them.
 ```bash
 npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # from GitHub, user-level, real copies
-npx skills add /path/to/A770_Builder --skill local-build -g --copy     # from a local clone (tested)
-npx skills add /path/to/A770_Builder --list                            # browse first (tested: finds local-build)
+npx skills add KanenasInGreece/a770-builder --list                          # browse first (tested: finds local-build in the public repository)
+npx skills add /path/to/A770_Builder --skill local-build -g --copy          # from a local clone (tested)
 ```
 `-g` installs under your home (`~/.claude/skills`, `~/.codex/skills`, …); without it the CLI installs into the current
 project's `.claude/skills`. `--copy` matters: the default is a symlink, and a skill that carries scripts should be a copy.
@@ -124,8 +124,8 @@ with Vulkan and fetch the models, what each file is) lives in [`docs/OPERATING.m
 The model's process runs inside bubblewrap with the seat as its only writable tree, no credentials, no other checkout,
 and no network access except the model server, which itself requires a key. The guard refuses every live checkout you
 list, every linked worktree, symlink and agent home; the capture executes nothing the model wrote, and `verify` re-runs
-a capture's tests inside a fresh sandbox when you want proof. Two adversarial reviews have read the boundary; a third,
-by another model family, is still owed. All of it, with what you must still do yourself and how to report a hole, is in
+a capture's tests inside a fresh sandbox when you want proof. Three adversarial reviews have read the boundary, all from one model
+family; a reader from another family is still owed. All of it, with what you must still do yourself and how to report a hole, is in
 [`SECURITY.md`](SECURITY.md).
 
 ## Contributors

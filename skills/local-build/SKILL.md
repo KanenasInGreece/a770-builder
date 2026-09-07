@@ -67,7 +67,10 @@ capture decides. A cheap reviewer prompt for it lives at `~/local-ai/A770_Builde
 
 Name the target file and function, list the behaviours, give the exact test command, say what must not be edited, and
 end with a stop condition. Point at one existing file as the idiom to copy. Example:
-`~/local-ai/A770_Builder/briefs/T1-sanitize-entity-tests.md`.
+`~/local-ai/A770_Builder/briefs/T1-sanitize-entity-tests.md`. The test command names the files the change touches, never
+the whole suite: it runs in the model's shell tool, which cuts a command at 120 s unless the model asks for longer, and
+inside a boundary with no network and none of the host's environment (measured: a 3,800-test suite took 144 s there, and
+17 host-dependent tests that pass on the host failed). The full suite is the merger's run on the host after review.
 
 ## Optional: persistent agent guidance
 

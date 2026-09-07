@@ -7,8 +7,8 @@ exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) 
 ## Run it
 
 ```bash
-bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md>            # fast profile
-bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --serious  # serious profile
+bash skills/local-build/scripts/local-build.sh run <brief.md>                            # fast profile, on the default seat
+bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --serious  # serious profile, on a named seat
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
 bash skills/local-build/scripts/local-build.sh serve fast|serious · status · stop · --version
@@ -31,6 +31,13 @@ output and a verdict taken from the command's exit code, and resets the seat wha
 on every `tests/*.py` file the patch touches, passing the names as arguments and refusing any name that is not plain;
 `--test "<command>"` runs something else instead, inside the same boundary. It refuses an empty patch, a seat that is
 not clean (ignored files included), and a patch that does not apply.
+
+The test command a brief names runs in the model's own shell tool, which cuts a command at 120 seconds unless the model
+asks for longer, and inside the boundary, which has no network and none of the host's environment. So a brief names the
+test files its change touches, never the whole suite. Measured on a repository of about 3,800 tests: the full suite took
+144 seconds inside the sandbox, the first attempt was cut at 120, and 17 tests that depend on the host's environment
+failed there while passing on the host. The full suite is the merger's run on the host after review; `verify` re-runs
+what the brief named.
 
 ## Profiles
 
@@ -137,7 +144,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 
 | path | role |
 |---|---|
-| `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run`, `verify`, `serve`, `status`, `stop`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
+| `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
 | `render_readme.sh` | regenerates `README.html` from `README.md`; run after every README edit, the Markdown is the source |
 | `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (13 GiB after load on a display card), `-ub 512`, the API key, model marker |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |

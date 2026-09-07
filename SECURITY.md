@@ -3,7 +3,7 @@
 This document is about the boundary around the local model. The seat runs a model that writes code you have not
 reviewed yet, on the same machine as your credentials and your live checkouts. It matters because a local model is not
 trusted merely for running locally: it reads a brief you may not have written, it has a shell, and one careless mount
-turns a coding seat into a way off the machine. What follows is the problem as two adversarial reviews found it, the
+turns a coding seat into a way off the machine. What follows is the problem as the adversarial reviews found it, the
 boundary that answers it, what was expected to be fixed and what has been done, what is still open, what you must do
 yourself, and how to report a hole.
 
@@ -65,8 +65,8 @@ Four of the five pieces are in place, and the fifth is half done. The public-rea
 the read-only git metadata, the network unshare, the default-deny profile and the rendered configuration; every one was
 fixed and mutation-checked the same day. The reviewer-invoked `verify` command and the API key on the server came in the
 cycle after publication, and the review of that cycle closed the gaps it opened: an injectable default command in
-`verify`, the run lock's descriptor reaching the sandbox, and ignored files surviving the reset. A second review has read the boundary, but by the same model family as the first, so the
-fifth piece still wants a reader from another family. Every change to the boundary since has gone through a branch, a
+`verify`, the run lock's descriptor reaching the sandbox, and ignored files surviving the reset. Three reviews have now read the boundary, every one from the same model family, so the fifth
+piece still wants a reader from another family. Every change to the boundary since has gone through a branch, a
 read-only adversarial review by a model that did not write it, and the mutation checks re-run before merge.
 
 ## What is still open
