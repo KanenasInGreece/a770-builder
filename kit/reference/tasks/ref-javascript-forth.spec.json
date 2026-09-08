@@ -1,0 +1,7 @@
+{
+  "scope": { "edit": ["kit/reference/javascript/forth/forth.js"] },
+  "verify": {
+    "test": "node --test kit/reference/javascript/forth/run.test.mjs",
+    "hidden": ["test_forth_hidden.py"]
+  }
+}
