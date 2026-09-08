@@ -1,6 +1,6 @@
 ---
 name: local-build
-description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Three profiles — fast (Qwen3.5-9B, default), serious (Qwen3.8-27B IQ3_XXS) and long (Gemma 4 E4B, a 131k window for reading large files). Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout.
+description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Three profiles — long (Qwen3.5-9B, the default, a 262k window), fast (Gemma 4 E4B, the reader) and serious (Qwen3.8-27B IQ3_XXS). Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout.
 ---
 
 # local-build — the A770 builder seat
@@ -19,17 +19,29 @@ expensive for the task. Not for design work, not for anything touching a live ch
 
 Measured on this A770 (16 GB, also driving the desktop), llama.cpp b10805 Vulkan, on the qualification task:
 
-| profile | model | context | speed | typical small task | when |
+<!-- profiles:begin -->
+| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| **fast** (default) | Qwen3.5-9B Q4_K_M | **262,144 tokens** (native), 10.35 GiB after load, safe to about 64–72k (prefill under 150 tok/s and decode under 15 past that; zero resets) | 36.8 tok/s decode at 8k · 11.6 at 100k · prefill 571 → 147 at 100k | ~2–3 min | every ordinary change; in the qualification task it followed the repository's idioms and passed its tests first try |
-| **serious** | Qwen3.8-27B GSQ-RCO IQ3_XXS | **131,072 tokens** by default, 12.25 GiB after load, useful to about 32k; `status` shows the file and window actually served — builder.env may name IQ3_S at 114,688 under a 14.1 cap | 8.1 tok/s decode short · 6.7 after 17k · 65 tok/s prefill | ~10–25 min | when the fast profile fails or the deliverable is larger than its spec: tests from an invariant, text a reviewer will read; the best-written output of our matrix, at the speed floor. Never for mechanical edits: measured on a six-site one-keyword change, it produced the same patch as the fast profile, one comment word closer to the brief, at seven times the wall clock |
-| **long** | Gemma 4 E4B Q4_K_M, flash attention off | **131,072 tokens** | 60 tok/s decode · 796 tok/s prefill, falling to 16 · 280 at 100k | ~1.5 min; a cold 100k read 4.5 min | files the fast window cannot hold, and the read before a brief is written; useful to about 100k for precise questions about a passage (exact at that depth on a planted detail; broad recall blends real names; a misread number at 120k; asked to index a 6,300-line file it read 60% and got 34 of 40 names right). Neither seat indexes a large file; that stays a `grep`. Not for multi-file shell edits: it made one of three and reported all done |
+| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. |
+| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. |
+| serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
+<!-- profiles:end -->
 
 The profiles are configuration, not fixed: `status` shows what is actually configured on this machine, and the project's
 `config/models.md` is the ledger of every model qualified on this card with its numbers; a new model enters through
-`docs/OPERATING.md`, *Qualifying a new model*. Every file the model reads lands in that window, and prefill is what you pay for: a 17k-token read costs the fast
+`docs/OPERATING.md`, *Qualifying a new model*. Every file the model reads lands in that window, and prefill is what you pay for: a 17k-token read costs the long
 profile 37 s and the serious profile 4 min. Point briefs at files, not directories. (The seat's `AGENTS.md` is set aside
 for the run and restored after; the skill does that.)
+
+## Choosing a profile
+
+Read the card before choosing: `local-build.sh profiles`, or `--name <profile>` for one profile alone. Match the brief
+against three things the card states: the edit scope it needs (a change to the files named, several files touched at
+once, tests written from a specification); the token size of the files the brief points at, set against the profile's
+useful window; and the time you can spend, set against its decode and prefill at that depth. Take the least costly
+profile whose card covers all three, not the one with the strongest reputation. Each profile's `use_for` says in words
+what it is not for, and that refusal is as much the card's content as what it is good at; a brief that needs more than
+the strongest card covers should not go to the seat at all.
 
 ## How to call it
 
@@ -37,12 +49,13 @@ for the run and restored after; the skill does that.)
 # 1. the seat: a STANDALONE CLONE of the target repository (its own .git directory), never a live checkout or a
 #    linked worktree — the script refuses both. Default: A770B_SEAT (~/local-ai/seat).
 # 2. a brief: a Markdown file that names the files, the exact test command, and the stop condition
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md>                       # fast, on the default seat
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md>                       # long (default), on the default seat
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>    # with a run specification (below)
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --serious      # serious, on a given seat
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --long                # long: the 131k window, for the read
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --fast         # fast, on a given seat: the reader
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --serious             # serious: a deliverable larger than its brief
 bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>                       # re-run a capture's tests in a fresh sandbox
-bash ~/.claude/skills/local-build/scripts/local-build.sh serve fast|serious|long   # start/switch the server only
+bash ~/.claude/skills/local-build/scripts/local-build.sh serve <profile>      # start/switch the server only
+bash ~/.claude/skills/local-build/scripts/local-build.sh profiles [--name <profile>]   # the card, one profile or all, with what is actually served
 bash ~/.claude/skills/local-build/scripts/local-build.sh status               # which model is up, VRAM, health
 bash ~/.claude/skills/local-build/scripts/local-build.sh stop                 # free the card
 bash ~/.claude/skills/local-build/scripts/local-build.sh stop-run             # end the run in progress by its own pid; never kill bwrap by name
@@ -92,7 +105,7 @@ an echo of what was rendered as `<label>.echo.json`. A flag on the command line 
   process sees the seat, a private home and a read-only uv cache; no credentials, no other tree, no network except the
   model server. Every test package a brief needs must be pre-warmed into the uv cache (`harness/warm_cache.sh`).
 - **Timeouts:** fast 1,500 s, serious 3,600 s, long 1,500 s by default (`--timeout` overrides).
-- **Flash attention is per model family.** The Qwen profiles run with it on; the long profile's Gemma runs with it off,
+- **Flash attention is per model family.** The Qwen profiles run with it on; the fast profile's Gemma runs with it off,
   because with it on every Gemma 4 measured here collapsed on prefill and reset the GPU. The profile carries the flag.
 
 ## Brief shape that works (measured)

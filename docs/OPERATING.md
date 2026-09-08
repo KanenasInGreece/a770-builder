@@ -7,13 +7,13 @@ exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) 
 ## Run it
 
 ```bash
-bash skills/local-build/scripts/local-build.sh run <brief.md>                            # fast profile, on the default seat
+bash skills/local-build/scripts/local-build.sh run <brief.md>                            # long profile (default), on the default seat
 bash skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>         # with a run specification (below)
 bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --serious  # serious profile, on a named seat
-bash skills/local-build/scripts/local-build.sh run <brief.md> --long                     # long profile: the 131k window
+bash skills/local-build/scripts/local-build.sh run <brief.md> --fast                     # fast profile: the reader
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
-bash skills/local-build/scripts/local-build.sh serve fast|serious|long · status · stop · stop-run · --version · check-update
+bash skills/local-build/scripts/local-build.sh serve <profile> · profiles [--name <profile>] · status · stop · stop-run · --version · check-update
 ```
 
 A run that must be ended early is ended with `stop-run`: the harness records the pid of the run's `timeout` process while it lives, `stop-run` sends exactly that pid one TERM after checking it is a timeout of this harness, and the run then captures what the seat did and resets the seat as an expired timeout does. Never end a run by process name: `bwrap` is also every Flatpak application on the desktop.
@@ -63,29 +63,33 @@ what the brief named.
 
 ## Profiles
 
-Measured on this A770 (16 GB, also driving the desktop), llama.cpp b10805 with the Vulkan backend, on the qualification
-task. Numbers are properties of this card, build and quantisation, not of the models in general.
+The registry `config/profiles.json` is the single source of every profile's numbers; run `local-build.sh profiles`
+(or `--name <profile>` for one) to see what is actually configured on this machine, `--served` layered over the
+environment. Numbers below are properties of this card, build and quantisation, not of the models in general, measured
+on this A770 (16 GB, also driving the desktop), llama.cpp b10805 with the Vulkan backend, on the qualification task.
+`builder.env` may run the workstation's own IQ3_S card for `serious` at a different window under a larger cap; that row
+is included below.
 
-| profile | model | window · KV | VRAM | decode / prefill | small task |
+| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| `fast` (default) | Qwen3.5-9B Q4_K_M | 262,144 · q8_0 (native), safe to about 64–72k | 10.35 GiB | 36.8 tok/s / 571 tok/s at 8k; 11.6 / 147 at 100k | 2–3 min |
-| `--serious` (default) | Qwen3.8-27B GSQ-RCO IQ3_XXS | 131,072 · q4_0, useful to about 32k | 12.25 GiB | 8.1 tok/s / 65 tok/s at 17k; 6.7 tok/s after 17k | 10–25 min |
-| `--serious` (this workstation, builder.env) | Qwen3.8-27B GSQ-RCO IQ3_S | 114,688 · q4_0, needs a 14.1 cap, useful to about 32k | 13.78 GiB | 8.0 tok/s / 72 tok/s at 8k; 4.9 / 42 at 64k | ~9 min (five tests, 542 s) |
-| `--long` | Gemma 4 E4B Q4_K_M, flash attention off | 131,072 · f16 | 8.1 GiB | 60 tok/s / 796 tok/s, falling to 16 / 280 at 100k | 1.5 min; a cold 100k read 4.5 min |
+| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. |
+| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. |
+| serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
+| serious (this workstation, builder.env) | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 114,688 (~32k), needs a 14.1 cap | 13.78 GiB | 8.0 / 72 tok/s | Same use as `serious`, the quantiser's task-lossless file; ~9 min (five tests, 542 s). |
 
 The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM sampled and the
-kernel log watched. The fast profile serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
+kernel log watched. The long profile serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
 flat within 0.3 GiB of its load, but its prefill falls under 150 tokens a second and its decode under 15 past about 64k,
 so its useful window is about 64k to 72k of what it serves. The three 27B files share one speed profile, decode being
 compute-bound on this card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and under the
 five-tokens-a-second floor by 64k, so the serious profile's useful window is about 32k whether it serves 131,072 or
 114,688, and a brief for it points at files that fit that.
 
-The long profile exists for the read, not the edit: files the fast window cannot hold, and the "read this whole thing
+The fast profile exists for the read, not the edit: files the long window cannot hold, and the "read this whole thing
 and tell me" step before a brief is written. Its useful depth is about 100k tokens: at that depth it answered a probe's
 planted detail exactly, while its broad recall of "three other functions" blended real names into ones that do not
 exist; at 120k it misread a number. Ask it precise questions about a passage, not to recall the file: asked to index every definition of a 6,300-line
-file it paged through 60% and got 34 of 40 names right and 19 lines; the fast profile paged through all of it in
+file it paged through 60% and got 34 of 40 names right and 19 lines; the long profile paged through all of it in
 15 minutes and listed constants instead of definitions. Neither seat indexes a large file. Judge what it reports the
 way every capture is judged. It is not the profile for multi-file shell edits: on the harness's own brief it made one
 edit of three and reported all three done. Flash attention off is its condition on this card, and with it off the V
@@ -93,7 +97,7 @@ cache is f16.
 
 The window is the server's. opencode's opening request costs about 5.4k tokens with the seat's `AGENTS.md` set aside
 (the skill does this for the run and restores it after); with it in place the opening request was about 32k tokens, which
-is why it is set aside. Every file the model reads lands in that window, and a 17k-token prefill costs the fast profile
+is why it is set aside. Every file the model reads lands in that window, and a 17k-token prefill costs the long profile
 37 s and the serious profile 4 min. Keep briefs pointed at files, not directories.
 
 ## Configure
@@ -109,11 +113,18 @@ card in `nvtop -s`, which the VRAM readings and the cap depend on. On a card tha
 `A770B_VRAM_CAP_GIB` (13 of 16) and `A770B_UBATCH` (512): they keep the GPU's job watchdog quiet. The server refuses to
 stay up past the cap after load. No speculative decoding on this card: draft models and MTP heads all made decode slower.
 
+**The device pin.** `A770B_VK_DEVICE_SELECT` (default `8086:56a0!`) pins the server to the builder card by PCI vendor
+and device id rather than by the Vulkan device index `A770B_DEVICE` names, because Vulkan lists the boot card first and
+an index alone drifts when the desktop moves to another card. Find the id with `lspci -nn`, which prints each card's
+`[vendor:device]` pair; the trailing `!` means the match must be exact, not a prefix. With the selector set,
+`llama-server --list-devices` should list exactly one card, the builder's, whatever card the machine booted with as its
+display device.
+
 The cap is measured after load, and the public default of 13.0 assumes a desktop share that has never been measured on
 your card. Measure it before raising the cap: run `nvtop -s`, start something that actually draws the card (a video
 playing is enough), and sum every process on it that is not the server. On this workstation that came to 1.0 GiB, so
 the cap here runs at 14.1 in `builder.env` rather than the public 13.0. That extra headroom is what admits the serious
-profile's task-lossless file, IQ3_S, at 114,688, which loads at 13.78 GiB and peaks at 14.21 during a 32k prompt; the fast profile's full native window loads
+profile's task-lossless file, IQ3_S, at 114,688, which loads at 13.78 GiB and peaks at 14.21 during a 32k prompt; the long profile's full native window loads
 at 10.35 GiB and fits under either cap.
 
 **The key.** The server starts with `--api-key-file A770B_API_KEY_FILE` (default `~/.config/a770-builder/api.key`). The
@@ -153,10 +164,10 @@ cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j
 Fetch them with the Hugging Face CLI (no account needed for these), straight into that directory:
 
 ```bash
-uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested            # fast
+uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested            # long
 uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested   # serious
 uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested     # serious, this workstation's builder.env, under a 14.1 cap
-uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested       # long
+uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested       # fast
 ```
 
 llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M` downloads into
@@ -199,10 +210,13 @@ by measurement, in one sitting, without touching any script:
    its only input. Run `local-build.sh verify <label>` for the proof. Green tests and PASS or PARTIAL qualify.
 4. **Record it**: add the row to `config/models.md` with the measured numbers, the source repository and the caveats.
    A model that failed goes in the *kept out* paragraph with the reason, so nobody measures it twice.
-5. **Give it a profile** if it earns one: set `A770B_FAST_MODEL` or `A770B_SERIOUS_MODEL` with its `_CTX`, `_KV`,
-   `_REASONING` and `_EXTRA` in `builder.env`. The skill reads those at every call and `local-build.sh status` shows what
-   is configured. If the new profile becomes the project's default, change the defaults in `harness/env.sh`, the table in
-   `skills/local-build/SKILL.md` and the numbers in this file, and bump the version.
+5. **Give it a profile** if it earns one: it enters `config/profiles.json` with its measured card — model file, window,
+   KV type, the reasoning and extra flags, the timings, and `use_for` in words. `local-build.sh profiles` and `status`
+   show what is configured; `builder.env` may still override a served value per machine (a different quantisation, a
+   larger cap) without touching the registry. If the new profile becomes the project's default, change `default` in
+   `config/profiles.json`, run `python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet
+   skills/local-build/CONSTITUTION_SNIPPET.md` so the skill's table and the snippet pick it up, update the numbers in
+   this file, and bump the version.
 
 The expectations in the skill's table (window, speed, minutes per small task, what the model did with the repository's
 idioms) are read straight off the ledger row; when the row changes, so do they.

@@ -27,18 +27,18 @@ The repository holds two things:
 Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.
 
-The skill offers three profiles, and the choice is the task's, not the model's reputation. **fast** is Qwen3.5-9B, the
+The skill offers three profiles, and the choice is the task's, not the model's reputation. **long** is Qwen3.5-9B, the
 default for every ordinary change: a small, well-specified edit to named files, done in two or three minutes in the
-repository's own idiom. **serious** is Qwen3.8-27B, for a deliverable larger than its brief, tests written from an
+repository's own idiom; it is safe to about 64,000 to 72,000 tokens of the 262,144 it serves, its prefill slowing
+under 150 tokens a second past about 64,000. **serious** is Qwen3.8-27B, for a deliverable larger than its brief, tests written from an
 invariant or prose a reviewer will read; it is the best-written output of the matrix at eight tokens a second, and on a
-mechanical edit it produces the fast profile's patch at seven times the wall clock, so it is never the profile for
+mechanical edit it produces the long profile's patch at seven times the wall clock, so it is never the profile for
 those; it is served with 131,072 tokens of window by default, useful to about 32,000, since its decode falls under five tokens
-a second by 64,000. The fast profile is safe to about 64,000 to 72,000 tokens of the 262,144 it serves, its prefill slowing
-under 150 tokens a second past about 64,000. **long** is Gemma 4 E4B with flash attention off, a 131k-token window for the read the fast window cannot hold
+a second by 64,000. **fast** is Gemma 4 E4B with flash attention off, a 131k-token window for the read the long window cannot hold
 and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
 is a capacity, not the depth a model works reliably at, and each profile's row says which depth was measured. No
 profile indexes a large file, which stays a `grep`: where a deterministic tool answers exactly, the seat is not asked to
-approximate it. A run specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the
+approximate it. The profiles are data, not prose: `config/profiles.json` is the registry a caller can read directly. A run specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the
 paths it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
 Every profile's output is judged the same way, by its capture and by `verify`.
 
@@ -86,7 +86,7 @@ A run does not end in an exit code but in a capture, and a reviewer can re-run i
 
 The division of labour follows from that. The orchestrating agent decides what the seat is for; the skill tells it
 what each profile was measured to do and not do, and the deciding stays with the agent that has the context. Where a
-deterministic tool exists, it wins: the long profile reads a file the fast profile cannot hold, and asked to index every
+deterministic tool exists, it wins: the fast profile reads a file the long profile cannot hold, and asked to index every
 definition of a 6,300-line file it read sixty percent and named thirty-four of forty correctly, where `grep`
 names all forty in a second. What is here is the result of all of that, so the next card, model or build can be
 re-qualified the same way instead of trusted.
