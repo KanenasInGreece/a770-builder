@@ -2,7 +2,7 @@
   "schema": 1,
   "default": "long",
   "mode": "inference",
-  "notes": "Every number is a measurement on the Arc A770 with nothing else on the card (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. This registry is read when A770B_CARD_MODE=inference; config/profiles.json is read in display mode. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served. useful_ctx is the largest depth at which decode stays above four tokens a second, taken from the 8k and far-end points by extending the time per token linearly, capped by the depth probe where one failed.",
+  "notes": "Every number is a measurement on the Arc A770 with nothing else on the card (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. This registry is read when A770B_CARD_MODE=inference; config/profiles.json is read in display mode. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served. useful_ctx is the largest depth at which decode stays above four tokens a second, taken from the 8k and far-end points by extending the time per token linearly, capped by the depth probe where one failed. Rows are compared on their task numbers only within one instrument; the card's comparable_with lists them.",
   "profiles": {
     "long": {
       "model": "Qwen3.5-9B-Q4_K_M.gguf",
@@ -33,6 +33,7 @@
       },
       "depth_probe_100k": "pass",
       "task_t1": "pass",
+      "instrument": "seat: Shared_Memory@3c8e2bb",
       "capability": {},
       "capability_source": "",
       "fit": {
@@ -71,6 +72,7 @@
       },
       "depth_probe_100k": "not run",
       "task_t1": "pass",
+      "instrument": "seat: Shared_Memory@3c8e2bb",
       "capability": {"LiveCodeBench_v6": 80.4, "MMLU_Pro": 85.2, "GPQA_Diamond": 86.0},
       "capability_source": "huggingface.co/Qwen/Qwen3.6-35B-A3B model card (BF16)",
       "fit": {
@@ -109,6 +111,7 @@
       },
       "depth_probe_100k": "not run",
       "task_t1": "pass",
+      "instrument": "seat: Shared_Memory@3c8e2bb",
       "capability": {"LiveCodeBench_v6": 85.71, "GPQA_Diamond": 89.39, "AIME25": 100},
       "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100; the quantiser's task-lossless file)",
       "fit": {

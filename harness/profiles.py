@@ -30,8 +30,13 @@ CATEGORY_VALUES = {"dense", "moe"}
 WEIGHT_CLASS_RE = re.compile(r"^[0-9]+b(-[ae][0-9]+b)?$")
 FAR_END_KEYS = {"tokens", "decode_tps", "prefill_tps", "ttft_s"}
 FIT_KEYS = {"code", "think", "write"}
-SUITE_KEYS = {"briefs", "runs", "passed", "mean_wall_s", "source"}
+SUITE_KEYS = {"briefs", "runs", "passed", "mean_wall_s", "source", "instrument", "stages", "reviewer"}
 SUITE_REQUIRED_KEYS = {"briefs", "runs", "passed", "source"}
+STAGE_KEYS = {
+    "id", "working", "conformance", "lines", "budget_lines", "maintainable", "usable", "wall_s", "axes",
+}
+MAINTAINABLE_USABLE_VALUES = (0, 3, 5)
+REVIEWER_KEYS = {"profile", "model", "ctx", "sampling", "rubric_sha256"}
 TEMP_FLAG_RE = re.compile(r"(?:^|\s)--temp(?:\s|=)")
 TOP_P_FLAG_RE = re.compile(r"(?:^|\s)--top-p(?:\s|=)")
 TASK_T1_PASS_RE = re.compile(r"^pass(?:\s*\(.*\))?$", re.IGNORECASE)
@@ -42,7 +47,10 @@ STRING_KEYS = (
     "category", "weight_class",
 )
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
-OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite")
+OTHER_KEYS = (
+    "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
+    "instrument",
+)
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite"}
 
@@ -56,6 +64,10 @@ def _is_number(v) -> bool:
 
 def _is_pos_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
 
 
 def _fmt_sampling_num(v) -> str:
@@ -198,6 +210,11 @@ def validate(data) -> list[str]:
                     if not _is_number(vv):
                         errors.append(f"{name}: capability.{kk} must be a number")
 
+        if "instrument" in prof:
+            v = prof["instrument"]
+            if not isinstance(v, str) or not v:
+                errors.append(f"{name}: instrument must be a non-empty string")
+
         if "fit" in prof:
             fit = prof["fit"]
             if not isinstance(fit, dict):
@@ -245,6 +262,72 @@ def validate(data) -> list[str]:
                     v = suite["source"]
                     if not isinstance(v, str) or not v:
                         errors.append(f"{name}: suite.source must be a non-empty string")
+
+                if "instrument" in suite:
+                    v = suite["instrument"]
+                    if not isinstance(v, str) or not v:
+                        errors.append(f"{name}: suite.instrument must be a non-empty string")
+
+                if "stages" in suite:
+                    stages = suite["stages"]
+                    if not isinstance(stages, list):
+                        errors.append(f"{name}: suite.stages must be a list")
+                    else:
+                        for i, stage in enumerate(stages):
+                            if not isinstance(stage, dict):
+                                errors.append(f"{name}: suite.stages[{i}] must be an object")
+                                continue
+                            for kk in stage.keys():
+                                if kk not in STAGE_KEYS:
+                                    errors.append(f"{name}: suite.stages[{i}]: unknown key {kk}")
+                            for kk in STAGE_KEYS:
+                                if kk not in stage:
+                                    errors.append(f"{name}: suite.stages[{i}]: missing key {kk}")
+
+                            if "id" in stage and (not isinstance(stage["id"], str) or not stage["id"]):
+                                errors.append(f"{name}: suite.stages[{i}].id must be a non-empty string")
+
+                            if "working" in stage and not isinstance(stage["working"], bool):
+                                errors.append(f"{name}: suite.stages[{i}].working must be a bool")
+
+                            if "conformance" in stage:
+                                v = stage["conformance"]
+                                if v is not None and not isinstance(v, bool):
+                                    errors.append(f"{name}: suite.stages[{i}].conformance must be a bool or null")
+
+                            for lk in ("lines", "budget_lines"):
+                                if lk in stage:
+                                    v = stage[lk]
+                                    if v is not None and not _is_int(v):
+                                        errors.append(f"{name}: suite.stages[{i}].{lk} must be an int or null")
+
+                            for sk in ("maintainable", "usable"):
+                                if sk in stage:
+                                    v = stage[sk]
+                                    if v is not None and (isinstance(v, bool) or v not in MAINTAINABLE_USABLE_VALUES):
+                                        errors.append(f"{name}: suite.stages[{i}].{sk} must be 0, 3, 5 or null")
+
+                            if "wall_s" in stage and not _is_number(stage["wall_s"]):
+                                errors.append(f"{name}: suite.stages[{i}].wall_s must be a number")
+
+                            if "axes" in stage:
+                                axes = stage["axes"]
+                                if not isinstance(axes, list) or not all(isinstance(a, str) for a in axes):
+                                    errors.append(f"{name}: suite.stages[{i}].axes must be a list of strings")
+
+                if "reviewer" in suite:
+                    reviewer = suite["reviewer"]
+                    if not isinstance(reviewer, dict):
+                        errors.append(f"{name}: suite.reviewer must be an object")
+                    else:
+                        for kk in reviewer.keys():
+                            if kk not in REVIEWER_KEYS:
+                                errors.append(f"{name}: suite.reviewer: unknown key {kk}")
+                        for kk in REVIEWER_KEYS:
+                            if kk in reviewer:
+                                vv = reviewer[kk]
+                                if isinstance(vv, bool) or not isinstance(vv, (str, int)):
+                                    errors.append(f"{name}: suite.reviewer.{kk} must be a string or int")
 
         if "sampling" in prof:
             sampling = prof["sampling"]
@@ -369,7 +452,10 @@ def _card_warnings(profiles: dict) -> dict:
 def _builder_class(prof: dict) -> bool:
     """Whether a profile clears the builder-class bar: useful_ctx >= 81920 and a green task.
 
-    Computed by `card`; never stored in the registry file itself.
+    Computed by `card`; never stored in the registry file itself. When `suite.stages` is
+    present, the pass rate is computed from the stages whose `axes` include "working" (the
+    design stage and the rubric never count); otherwise it falls back to `suite.passed` /
+    `suite.runs`.
     """
     useful_ctx = prof.get("useful_ctx")
     if not _is_pos_int(useful_ctx) or useful_ctx < 81920:
@@ -381,13 +467,24 @@ def _builder_class(prof: dict) -> bool:
 
     suite = prof.get("suite")
     if isinstance(suite, dict):
-        passed, runs = suite.get("passed"), suite.get("runs")
-        if (
-            isinstance(passed, int) and not isinstance(passed, bool)
-            and _is_pos_int(runs)
-            and passed / runs >= 0.8
-        ):
-            return True
+        stages = suite.get("stages")
+        if isinstance(stages, list):
+            working_stages = [
+                s for s in stages
+                if isinstance(s, dict) and isinstance(s.get("axes"), list) and "working" in s["axes"]
+            ]
+            passed = sum(1 for s in working_stages if s.get("working") is True)
+            runs = len(working_stages)
+            if runs and passed / runs >= 0.8:
+                return True
+        else:
+            passed, runs = suite.get("passed"), suite.get("runs")
+            if (
+                isinstance(passed, int) and not isinstance(passed, bool)
+                and _is_pos_int(runs)
+                and passed / runs >= 0.8
+            ):
+                return True
 
     return False
 
@@ -425,6 +522,11 @@ def cmd_card(args) -> int:
                     served[k] = v
         prof.update(served)
         prof["builder_class"] = _builder_class(prof)
+
+    instrument_by_name = {n: p.get("instrument") for n, p in profiles.items()}
+    for name, prof in profiles.items():
+        inst = instrument_by_name[name]
+        prof["comparable_with"] = [n for n in profiles if n != name and instrument_by_name[n] == inst]
 
     warnings_by_profile = _card_warnings(profiles)
     data["warnings"] = [w for name in profiles for w in warnings_by_profile[name]]
