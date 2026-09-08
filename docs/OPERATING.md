@@ -248,7 +248,12 @@ sampling line and its behaviour on a real brief are all unmeasured until the har
 that a new model enters by measurement, in one sitting, without touching any script:
 
 1. **Fetch the GGUF** into `A770B_MODELS` (the download lines above are the pattern) and write your qualification brief
-   for your repository if you have not yet; `briefs/T1-sanitize-entity-tests.md` is the shape that works.
+   for your repository if you have not yet; `briefs/T1-sanitize-entity-tests.md` is the shape that works. Every
+   number in the ledger was measured with the seat being a standalone clone of the public Shared Memory repository
+   at a pinned commit — `git clone https://github.com/KanenasInGreece/Shared_Memory ~/local-ai/seat && git -C
+   ~/local-ai/seat checkout 3c8e2bb` — and a row measured on a different seat or commit is a different instrument,
+   comparable only against other rows measured on that same one. `A770B_PROBE_CORPUS` and `A770B_TASK_BRIEF` are the
+   knobs that point the sweep, the depth probe and the qualification task at a seat and brief of your own.
 2. **Run the row**: `bash harness/run_one.sh <label> <file.gguf> <ctx> [extra llama-server args]`, with `KV_K`/`KV_V`,
    `REASONING` and the model's own card's sampling flags in the environment as the target profile needs. It starts the
    server under the mode's cap and `-ub 512`, runs the probes — load and VRAM at the target window, the sanity gate

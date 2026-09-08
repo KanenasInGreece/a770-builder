@@ -23,8 +23,9 @@ A model qualifies when it clears four gates on the same harness, in one run of `
 2. **It answers**: correct greedy answers on a three-prompt sanity gate and a coherent one-sentence summary after a
    prefill of about 17k tokens of source.
 3. **It is fast enough**: decode at or above 5 tok/s at long context, and tool calls that llama-server parses.
-4. **It does the coding task**: the qualification brief on a real repository, run through opencode in the seat; it wrote
-   the test file, ran the given test command, and a cheap reviewer reading the capture graded the run green.
+4. **It does the coding task**: the qualification brief on a real repository (the seat is a standalone clone of the
+   public `https://github.com/KanenasInGreece/Shared_Memory` at commit `3c8e2bb`), run through opencode in the seat;
+   it wrote the test file, ran the given test command, and a cheap reviewer reading the capture graded the run green.
 
 A red run or a failing grade keeps a model out; a style deviation with green tests is recorded as PARTIAL and admitted
 with its caveat.

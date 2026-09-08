@@ -33,7 +33,10 @@ same thing as passing the hidden grader.
 Each brief was written against a particular point in this repository's history — some name a commit, some a branch,
 some just "current main" — and that point is kept exactly as the brief states it, because the hidden test was written
 against the state of the repository at that point. Before running a given brief, put the seat (a clone of this
-repository, never a live checkout) at the commit or branch that brief's own text names.
+repository, never a live checkout) at the commit or branch that brief's own text names: `git clone
+https://github.com/KanenasInGreece/a770-builder <seat> && git -C <seat> checkout <the commit the brief names>` —
+unlike the qualification seat, which is pinned once to the public Shared Memory repository at commit `3c8e2bb`, this
+one is pinned fresh, per brief, to a commit of this repository.
 
 With the seat prepared and `A770B_HIDDEN_ROOT=<checkout>/briefs/suite/hidden` set (`<checkout>` is the path to this
 repository's own clone, the one this `briefs/suite/` directory lives in — not the seat), run one brief at a time:

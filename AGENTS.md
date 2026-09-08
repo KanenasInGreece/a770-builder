@@ -69,6 +69,30 @@ from a seat that is a clone of the target repository, never a live checkout. Con
 reports all ok, and confirm which card mode you are profiling for — display, under the 13.0 cap, or inference,
 under the 15.3 cap — since the two modes keep separate registries and a row belongs to one of them.
 
+Every number in the ledger and the registries below was measured with the seat being a standalone clone of the
+public Shared Memory repository, `https://github.com/KanenasInGreece/Shared_Memory`, at commit `3c8e2bb` (its
+release v0.9.94): the qualification task `briefs/T1-sanitize-entity-tests.md` names that repository's function
+`sanitize_entity_name` in `shared-memory/scripts/ontology.py` and its `tests/` idiom; the long-context corpus for
+the sweep and the depth probe is that clone's Python files (`A770B_PROBE_CORPUS`, default every `*.py` under the
+seat); the 17k summary prompt reads the same files. The in-house suite under `briefs/suite/` runs against a
+separate clone of this repository at the commit each brief names. Both are public, and the seat needs nothing from
+either repository at run time beyond what the brief names: each is the target of the task, not a dependency of the
+harness. Set the two seats up with:
+
+```
+git clone https://github.com/KanenasInGreece/Shared_Memory ~/local-ai/seat && git -C ~/local-ai/seat checkout 3c8e2bb
+git clone https://github.com/KanenasInGreece/a770-builder <a second seat> && git -C <that seat> checkout <the commit the brief names>
+```
+
+the first is the seat the rows below were measured on — the harness runs the seat's own tests inside the sandbox,
+and the repository's own test dependencies come from the warm uv cache (`harness/warm_cache.sh`); the second is for
+a brief under `briefs/suite/`, at whatever commit that brief names. Comparability is the point of pinning both: a
+different seat or a different commit is a different instrument, and the ledger only ever takes rows measured on the
+same one. A reader who profiles a model of their own against these same seats and commits gets numbers comparable
+with the ledger; a reader who only wants a row for their own repository writes their own brief from the template
+and states plainly that the numbers are not comparable — the row is still theirs, and the profile is still the
+interface, but it is a different instrument.
+
 ## The ladder
 
 Each rung is a command as it exists in the tree, run in this order because later rungs are wasted on a model that
