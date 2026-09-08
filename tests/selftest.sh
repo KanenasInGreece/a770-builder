@@ -73,7 +73,7 @@ print("ok   spec: the caller's pattern renders before the floor, the floor after
 sys.exit(0 if ok else 1)
 PY
 else echo "FAIL spec: a valid specification was refused"; fail=1; fi
-grep -q 'long) CTX=\$A770B_LONG_CTX' "$here/harness/build_local.sh" && echo "ok   build: the long profile is accepted" || { echo "FAIL build_local.sh rejects the long profile"; fail=1; }
+grep -q 'a770b_is_profile "\$PROFILE"' "$here/harness/build_local.sh" && echo "ok   build: the long profile is accepted" || { echo "FAIL build_local.sh rejects the long profile"; fail=1; }
 printf '%s\n' "$t/p.echo.json" > "$A770B_DATA/logs/last-build.echo.path"
 A770B_REFUSE=/nonexistent A770B_SPEC="$t/spec.json" bash "$here/harness/capture_task.sh" selftest-spec "$r" "$t/build.log" >/dev/null 2>&1
 if [ -f "$A770B_DATA/results/selftest-spec.spec.json" ] && [ -f "$A770B_DATA/results/selftest-spec.echo.json" ] && grep -q '## run specification' "$A770B_DATA/results/selftest-spec.task.md" && grep -q 'rendered_sha256' "$A770B_DATA/results/selftest-spec.task.md"; then echo "ok   capture: the specification and its echo are kept beside the patch and printed"; else echo "FAIL capture did not keep or print the specification"; fail=1; fi
@@ -82,6 +82,11 @@ if command -v shellcheck >/dev/null 2>&1; then SC="shellcheck"; elif command -v 
 if [ -n "$SC" ]; then
   if $SC -S warning "$here"/harness/*.sh "$here"/skills/local-build/scripts/*.sh "$here"/tests/*.sh "$here"/render_readme.sh "$here"/release.sh; then echo "ok   shellcheck: no finding at warning level or above"; else echo "FAIL shellcheck: findings at warning level or above, listed above"; fail=1; fi
 else echo "skip shellcheck: none on PATH and none in the uv cache (install shellcheck, or once online: uvx --from shellcheck-py shellcheck --version)"; fi
+# the profiles registry: config/profiles.json is the single source now that env.sh evals `harness/profiles.py env`
+python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
+[ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = "long" ] && echo "ok   profiles: names and default come from the registry" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='$A770B_DEFAULT_PROFILE'"; fail=1; }
+[ "$(a770b_profile_var long CTX)" = "262144" ] && printf '%s' "$(a770b_profile_var serious EXTRA)" | grep -q reasoning_effort && echo "ok   profiles: the helper reads the registry's variables" || { echo "FAIL profiles: a770b_profile_var did not read the registry"; fail=1; }
+[ "$(A770B_LONG_CTX=4096 bash -c '. "$1/harness/env.sh" >/dev/null 2>&1; a770b_profile_var long CTX' _ "$here")" = "4096" ] && echo "ok   profiles: the environment wins over the registry" || { echo "FAIL profiles: A770B_LONG_CTX=4096 did not win over the registry default"; fail=1; }
 # the stop-run gate: run_pid_alive is the proof a pid is ours before any signal is sent, proved here without the card
 RUNPID="$A770B_DATA/logs/run.pid"
 rm -f "$RUNPID"

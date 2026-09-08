@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # local-build.sh — the A770 builder seat, three profiles. Installed as a skill in every agent's skill dir (copies).
-#   run [<worktree>] <brief.md> [--spec <spec.json>] [--serious|--long] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
+#   run [<worktree>] <brief.md> [--spec <spec.json>] [--<profile>] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
-#   serve fast|serious|long | status | stop | stop-run (end the run in progress by its own pid) | version (--version)
+#   serve <profile> | status | profiles [--name N] | stop | stop-run (end the run in progress by its own pid) | version (--version)
+#   profiles [--name N]   the registry card (config/profiles.json) with the served values, for a caller choosing a profile
 #   check-update      ask GitHub for the latest release and compare it with this copy (on demand only; nothing else ever calls out)
 # The installed copy finds the project through A770B_PROJECT: the environment, then
 # ${XDG_CONFIG_HOME:-~/.config}/a770-builder/builder.env, then the default ~/local-ai/A770_Builder. Every other path
@@ -46,13 +47,10 @@ case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_upd
 SERVE="$A770B_PROJECT/harness/serve_a770_llamacpp.sh"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
-profile_vars(){ # sets gguf ctx kv reasoning extra t for a profile
-  case "$1" in
-    fast)    gguf=$(a770b_model_path "$A770B_FAST_MODEL");    ctx=$A770B_FAST_CTX;    kv=$A770B_FAST_KV;    reasoning=$A770B_FAST_REASONING;    extra=$A770B_FAST_EXTRA;    t=$A770B_FAST_TIMEOUT ;;
-    serious) gguf=$(a770b_model_path "$A770B_SERIOUS_MODEL"); ctx=$A770B_SERIOUS_CTX; kv=$A770B_SERIOUS_KV; reasoning=$A770B_SERIOUS_REASONING; extra=$A770B_SERIOUS_EXTRA; t=$A770B_SERIOUS_TIMEOUT ;;
-    long)    gguf=$(a770b_model_path "$A770B_LONG_MODEL");    ctx=$A770B_LONG_CTX;    kv=$A770B_LONG_KV;    reasoning=$A770B_LONG_REASONING;    extra=$A770B_LONG_EXTRA;    t=$A770B_LONG_TIMEOUT ;;
-    *) die "profile must be fast|serious|long" ;;
-  esac
+profile_vars(){ # sets gguf ctx kv reasoning extra t for a profile named in A770B_PROFILES
+  a770b_is_profile "$1" || die "profile must be one of: $A770B_PROFILES"
+  gguf=$(a770b_model_path "$(a770b_profile_var "$1" MODEL)"); ctx=$(a770b_profile_var "$1" CTX); kv=$(a770b_profile_var "$1" KV)
+  reasoning=$(a770b_profile_var "$1" REASONING); extra=$(a770b_profile_var "$1" EXTRA); t=$(a770b_profile_var "$1" TIMEOUT)
 }
 serve(){ local p="$1" gguf ctx kv reasoning extra t; profile_vars "$p"
   [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
@@ -72,16 +70,17 @@ status(){ local c; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo
   echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
-  echo "profiles: fast = $A770B_FAST_MODEL ctx $A770B_FAST_CTX · serious = $A770B_SERIOUS_MODEL ctx $A770B_SERIOUS_CTX · long = $A770B_LONG_MODEL ctx $A770B_LONG_CTX · models in $A770B_MODELS"
+  printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s%s = %s ctx %s ·' "$p" "$([ "$p" = "$A770B_DEFAULT_PROFILE" ] && echo ' (default)')" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"
   echo "project $A770B_PROJECT · data $A770B_DATA · seat $A770B_SEAT"
   if ! : 9>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then echo "run lock: unknown (cannot open $A770B_DATA/logs/local-build.lock)"; elif ( flock -n 9 ) 9>>"$A770B_DATA/logs/local-build.lock"; then echo "run lock: free"; else echo "run lock: HELD — a run, verify, serve or reset is in progress; wait for it"; fi
   if pid=$(run_pid_alive "$A770B_DATA/logs/run.pid"); then echo "run: pid $pid in progress since $(date -r "$A770B_DATA/logs/run.pid" +%H:%M:%S 2>/dev/null || echo "a moment ago") — local-build.sh stop-run ends exactly it"; else echo "run: none"; fi
   local n; if [ -d "$A770B_SEAT/.git" ]; then n=$(seat_dirty "$A770B_SEAT" | wc -l); if [ "$n" = 0 ]; then echo "seat: $A770B_SEAT clean"; else echo "seat: $A770B_SEAT has $n uncommitted or ignored entries — local-build.sh reset before a run"; fi; else echo "seat: $A770B_SEAT is not a git clone"; fi
 }
 case "${1:-}" in
-  serve)  run_lock; serve "${2:-fast}" ;;
+  serve)  run_lock; serve "${2:-$A770B_DEFAULT_PROFILE}" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
+  profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "${A770B_PROFILES_FILE:-$A770B_PROJECT/config/profiles.json}" --served "$@" ;;
   stop)   bash "$SERVE" stop ;;
   stop-run)
     # end exactly the run in progress, through its own pid: one TERM to the timeout process ends its whole process
@@ -95,10 +94,10 @@ case "${1:-}" in
     kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
-    shift; profile=fast; timeout=""; spec=""; profile_set=0
+    shift; profile=$A770B_DEFAULT_PROFILE; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --serious) profile=serious; profile_set=1;; --fast) profile=fast; profile_set=1;; --long) profile=long; profile_set=1;; --timeout) timeout="$2"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --*) n=${1#--}; if a770b_is_profile "$n"; then profile=$n; profile_set=1; else case "$1" in --timeout) timeout="$2"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; fi;; *) die "unknown arg $1";; esac; shift; done
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
@@ -187,8 +186,8 @@ case "${1:-}" in
       CMD=(bash -c "$TEST"' && exec uv run --with pytest --with pytest-asyncio python -m pytest -q "$@"' _ "${files[@]}")
     elif [ -n "$TEST" ]; then CMD=(bash -c "$TEST"); else CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}"); fi
     label=$(basename "${PATCH%.patch}"); OUT="$A770B_DATA/results/$label.verify.md"
-    CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify "$A770B_FAST_CTX" "$CFG" nokey || exit 2
-    t=${timeout:-$A770B_FAST_TIMEOUT}
+    CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify "$(a770b_profile_var "$A770B_DEFAULT_PROFILE" CTX)" "$CFG" nokey || exit 2
+    t=${timeout:-$(a770b_profile_var "$A770B_DEFAULT_PROFILE" TIMEOUT)}
     echo "▶ verify $label · seat $WT · inside the sandbox: ${CMD[*]}"
     { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "hidden tests: ${HIDDEN[*]:-none}"; echo "command, inside the sandbox (no model, no bridge, no key): ${CMD[*]}"; echo; echo '```'; } > "$OUT"
     ( A770B_NO_BRIDGE=1 timeout "$t" bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
@@ -199,5 +198,5 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--serious|--long] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious|long | status | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--<profile>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
