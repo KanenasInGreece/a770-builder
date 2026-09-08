@@ -3,7 +3,7 @@
 #   run [<worktree>] <brief.md> [--spec <spec.json>] [--serious|--long] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
-#   serve fast|serious|long | status | stop | version (--version)
+#   serve fast|serious|long | status | stop | stop-run (end the run in progress by its own pid) | version (--version)
 #   check-update      ask GitHub for the latest release and compare it with this copy (on demand only; nothing else ever calls out)
 # The installed copy finds the project through A770B_PROJECT: the environment, then
 # ${XDG_CONFIG_HOME:-~/.config}/a770-builder/builder.env, then the default ~/local-ai/A770_Builder. Every other path
@@ -75,6 +75,7 @@ status(){ local c; c=$(current); version 2>&1
   echo "profiles: fast = $A770B_FAST_MODEL ctx $A770B_FAST_CTX · serious = $A770B_SERIOUS_MODEL ctx $A770B_SERIOUS_CTX · long = $A770B_LONG_MODEL ctx $A770B_LONG_CTX · models in $A770B_MODELS"
   echo "project $A770B_PROJECT · data $A770B_DATA · seat $A770B_SEAT"
   if ! : 9>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then echo "run lock: unknown (cannot open $A770B_DATA/logs/local-build.lock)"; elif ( flock -n 9 ) 9>>"$A770B_DATA/logs/local-build.lock"; then echo "run lock: free"; else echo "run lock: HELD — a run, verify, serve or reset is in progress; wait for it"; fi
+  if pid=$(run_pid_alive "$A770B_DATA/logs/run.pid"); then echo "run: pid $pid in progress since $(date -r "$A770B_DATA/logs/run.pid" +%H:%M:%S) — local-build.sh stop-run ends exactly it"; else echo "run: none"; fi
   local n; if [ -d "$A770B_SEAT/.git" ]; then n=$(seat_dirty "$A770B_SEAT" | wc -l); if [ "$n" = 0 ]; then echo "seat: $A770B_SEAT clean"; else echo "seat: $A770B_SEAT has $n uncommitted or ignored entries — local-build.sh reset before a run"; fi; else echo "seat: $A770B_SEAT is not a git clone"; fi
 }
 case "${1:-}" in
@@ -82,6 +83,17 @@ case "${1:-}" in
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   stop)   bash "$SERVE" stop ;;
+  stop-run)
+    # end exactly the run in progress, through its own pid: one TERM to the timeout process ends its whole process
+    # group (measured on this host), and the run then unwinds as a timeout does — the capture is written, the seat reset.
+    # Never by process name: bwrap is also every Flatpak app on the desktop.
+    RUNPID="$A770B_DATA/logs/run.pid"
+    pid=$(run_pid_alive "$RUNPID") || die "no run to stop: $RUNPID names no live timeout process of this harness (a finished run removes the file; a stale or foreign pid is refused, never signalled)"
+    echo "▶ ending run pid $pid (timeout → sandbox → opencode): one TERM, then up to 30 s for the capture and the reset to follow"
+    kill -TERM "$pid" 2>/dev/null || die "could not signal pid $pid"
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
+    echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
     shift; profile=fast; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
@@ -187,5 +199,5 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--serious|--long] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious|long | status | stop | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--serious|--long] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve fast|serious|long | status | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac

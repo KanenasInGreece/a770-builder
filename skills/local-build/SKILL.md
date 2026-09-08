@@ -45,6 +45,7 @@ bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>         
 bash ~/.claude/skills/local-build/scripts/local-build.sh serve fast|serious|long   # start/switch the server only
 bash ~/.claude/skills/local-build/scripts/local-build.sh status               # which model is up, VRAM, health
 bash ~/.claude/skills/local-build/scripts/local-build.sh stop                 # free the card
+bash ~/.claude/skills/local-build/scripts/local-build.sh stop-run             # end the run in progress by its own pid; never kill bwrap by name
 bash ~/.claude/skills/local-build/scripts/local-build.sh reset                # discard everything uncommitted in the seat, ignored files too
 bash ~/.claude/skills/local-build/scripts/local-build.sh --version            # this copy's version vs the project's; warns on mismatch
 bash ~/.claude/skills/local-build/scripts/local-build.sh check-update        # asks GitHub for the latest release, on demand; nothing else calls out

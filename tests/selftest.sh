@@ -82,6 +82,31 @@ if command -v shellcheck >/dev/null 2>&1; then SC="shellcheck"; elif command -v 
 if [ -n "$SC" ]; then
   if $SC -S warning "$here"/harness/*.sh "$here"/skills/local-build/scripts/*.sh "$here"/tests/*.sh "$here"/render_readme.sh "$here"/release.sh; then echo "ok   shellcheck: no finding at warning level or above"; else echo "FAIL shellcheck: findings at warning level or above, listed above"; fail=1; fi
 else echo "skip shellcheck: none on PATH and none in the uv cache (install shellcheck, or once online: uvx --from shellcheck-py shellcheck --version)"; fi
+# the stop-run gate: run_pid_alive is the proof a pid is ours before any signal is sent, proved here without the card
+RUNPID="$A770B_DATA/logs/run.pid"
+rm -f "$RUNPID"
+pid=$(run_pid_alive "$RUNPID" 2>/dev/null); rc=$?
+if [ "$rc" != 0 ] && [ -z "$pid" ]; then echo "ok   gate: no pidfile, no pid"; else echo "FAIL gate: a missing pidfile did not refuse cleanly (rc=$rc pid='$pid')"; fail=1; fi
+sleep 30 & sp=$!
+printf '%s\n' "$sp" > "$RUNPID"
+pid=$(run_pid_alive "$RUNPID" 2>/dev/null)
+if [ -z "$pid" ]; then echo "ok   gate: a foreign pid is refused"; else echo "FAIL gate: a foreign (sleep) pid was accepted"; fail=1; fi
+kill "$sp" 2>/dev/null
+timeout 30 bash -c 'sleep 30' & tp=$!
+printf '%s\n' "$tp" > "$RUNPID"
+pid=$(run_pid_alive "$RUNPID" 2>/dev/null)
+if [ -z "$pid" ]; then echo "ok   gate: a timeout that is not a run is refused"; else echo "FAIL gate: a timeout not naming sandbox_run.sh or opencode run was accepted"; fail=1; fi
+kill "$tp" 2>/dev/null
+timeout 30 bash -c 'true sandbox_run.sh; sleep 30' & rp=$!
+printf '%s\n' "$rp" > "$RUNPID"
+pid=$(run_pid_alive "$RUNPID" 2>/dev/null)
+if [ "$pid" = "$rp" ] && bash "$here/skills/local-build/scripts/local-build.sh" stop-run >/dev/null 2>&1; then
+  for _ in $(seq 1 5); do kill -0 "$rp" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$rp" 2>/dev/null; then echo "FAIL gate: stop-run exited 0 but the run pid is still alive"; fail=1; kill "$rp" 2>/dev/null
+  else echo "ok   gate: stop-run ends exactly the recorded run"; fi
+else echo "FAIL gate: run_pid_alive refused the recorded run, or stop-run did not exit 0"; fail=1; kill "$rp" 2>/dev/null
+fi
+rm -f "$RUNPID"
 rm -rf "$t" "$A770B_DATA"
 if [ "$fail" = 0 ]; then echo "selftest: all passed"; fi
 exit "$fail"

@@ -13,8 +13,10 @@ bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --
 bash skills/local-build/scripts/local-build.sh run <brief.md> --long                     # long profile: the 131k window
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
-bash skills/local-build/scripts/local-build.sh serve fast|serious|long · status · stop · --version · check-update
+bash skills/local-build/scripts/local-build.sh serve fast|serious|long · status · stop · stop-run · --version · check-update
 ```
+
+A run that must be ended early is ended with `stop-run`: the harness records the pid of the run's `timeout` process while it lives, `stop-run` sends exactly that pid one TERM after checking it is a timeout of this harness, and the run then captures what the seat did and resets the seat as an expired timeout does. Never end a run by process name: `bwrap` is also every Flatpak application on the desktop.
 
 `run` refuses anything but the root of a standalone clone that is not a live checkout, refuses a seat that is not clean
 (ignored files included, so nothing from an earlier run can pass as this one's; `reset` clears it), takes the run lock, starts or
