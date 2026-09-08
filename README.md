@@ -10,7 +10,7 @@ given a disposable seat that is a standalone clone of your repository, kept from
 kernel boundary, and judged by the artefact it hands back, never by its exit code.
 
 The idea has three parts, and they only work together: a qualified model, a disposable seat, and a captured result a
-reviewer can verify. A model on its own is a model server, and this card is not a good one. A sandbox on its own
+reviewer can verify. A model on its own is a model server. A sandbox on its own
 contains nothing worth containing. A capture without the boundary is a claim. Together they make a worker an
 orchestrating agent can hand bounded work to, repeatably and cheaply, while keeping the judgement for itself. This is
 not an autonomous coding agent and not a general inference server; it is a qualified local seat underneath an agent
