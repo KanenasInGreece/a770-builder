@@ -3,13 +3,16 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES_JSON = ROOT / "config" / "profiles.json"
+PROFILES_INFERENCE_JSON = ROOT / "config" / "profiles.inference.json"
 PROFILES_PY = ROOT / "harness" / "profiles.py"
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
 def load_base() -> dict:
@@ -74,6 +77,32 @@ def test_check_fails_bad_kv(tmp_path):
     assert any(line.startswith("profiles: ") for line in result.stderr.splitlines())
 
 
+def test_check_fails_bad_kv_v(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["kv_v"] = "q9_9"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: kv_v must be one of f16, q8_0, q4_0" in result.stderr
+
+
+def test_check_fails_bad_mode(tmp_path):
+    data = load_base()
+    data["mode"] = "bogus"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: mode: must be display or inference" in result.stderr
+
+
+def test_check_passes_on_both_shipped_registries():
+    for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+        result = run("check", "--file", str(f))
+        assert result.returncode == 0, result.stderr
+
+
 def test_check_fails_bad_default(tmp_path):
     data = load_base()
     data["default"] = "nonexistent"
@@ -117,6 +146,7 @@ def test_env_matches_expected_lines():
         ': "${A770B_LONG_MODEL:=Qwen3.5-9B-Q4_K_M.gguf}"',
         ': "${A770B_LONG_CTX:=262144}"',
         ': "${A770B_LONG_KV:=q8_0}"',
+        ': "${A770B_LONG_KV_V:=q8_0}"',
         ': "${A770B_LONG_REASONING:=off}"',
         ': "${A770B_LONG_TIMEOUT:=1500}"',
         "[ -n \"${A770B_LONG_EXTRA:-}\" ] || A770B_LONG_EXTRA=''",
@@ -151,6 +181,19 @@ def test_env_roundtrips_extra_and_survives_preset(tmp_path):
     assert bash_result2.stdout.strip() == "1"
 
 
+def test_env_kv_v_defaults_to_kv_and_can_be_set(tmp_path):
+    result = run("env", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    assert ': "${A770B_LONG_KV_V:=q8_0}"' in result.stdout.splitlines()
+
+    data = load_base()
+    data["profiles"]["long"]["kv_v"] = "f16"
+    path = write_json(tmp_path / "p.json", data)
+    result2 = run("env", "--file", str(path))
+    assert result2.returncode == 0, result2.stderr
+    assert ': "${A770B_LONG_KV_V:=f16}"' in result2.stdout.splitlines()
+
+
 def test_env_output_is_valid_shell():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
@@ -163,6 +206,28 @@ def test_card_has_three_profiles():
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert set(data["profiles"].keys()) == {"long", "fast", "serious"}
+
+
+def test_card_carries_mode_and_registry():
+    result = run("card", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["mode"] == "display"
+    assert data["registry"] == str(PROFILES_JSON.resolve())
+
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "long")
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["mode"] == "display"
+    assert data["registry"] == str(PROFILES_JSON.resolve())
+
+
+def test_inference_registry_shape():
+    data = json.loads(PROFILES_INFERENCE_JSON.read_text(encoding="utf-8"))
+    assert data["mode"] == "inference"
+    assert data["default"] == "long"
+    for name in data["profiles"]:
+        assert NAME_RE.match(name), name
 
 
 def test_card_name_fast():
@@ -229,6 +294,58 @@ def test_render_updates_skill_table_and_snippet(tmp_path):
     assert "old snippet" not in snippet_text
 
 
+def test_render_with_inference_file(tmp_path):
+    skill = tmp_path / "SKILL.md"
+    skill.write_text(
+        "before\n<!-- profiles:begin -->\nold\n<!-- profiles:end -->\n"
+        "<!-- profiles-inference:begin -->\nold inf\n<!-- profiles-inference:end -->\nafter\n",
+        encoding="utf-8",
+    )
+    snippet = tmp_path / "snippet.md"
+    snippet.write_text(
+        "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n",
+        encoding="utf-8",
+    )
+
+    result = run(
+        "render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet),
+        "--inference-file", str(PROFILES_INFERENCE_JSON),
+    )
+    assert result.returncode == 0, result.stderr
+
+    skill_text = skill.read_text(encoding="utf-8")
+    assert "before" in skill_text and "after" in skill_text
+    assert "old\n" not in skill_text and "old inf" not in skill_text
+    assert "262,144 (~65k)" in skill_text and "10.35 GiB" in skill_text  # display long row
+    assert "9.49 GiB" in skill_text  # inference long row
+    assert "196,608" in skill_text  # inference serious row's window
+
+    snippet_text = snippet.read_text(encoding="utf-8")
+    lines = [l for l in snippet_text.splitlines() if l.strip() and not l.strip().startswith("<!--")]
+    assert lines[0].startswith("Display-safe (`A770B_CARD_MODE=display`, the default): ")
+    assert lines[1].startswith("Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): ")
+
+
+def test_render_missing_inference_markers_exits_2(tmp_path):
+    skill = tmp_path / "SKILL.md"
+    skill.write_text(
+        "before\n<!-- profiles:begin -->\nold\n<!-- profiles:end -->\nafter\n",
+        encoding="utf-8",
+    )
+    snippet = tmp_path / "snippet.md"
+    snippet.write_text(
+        "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n",
+        encoding="utf-8",
+    )
+
+    result = run(
+        "render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet),
+        "--inference-file", str(PROFILES_INFERENCE_JSON),
+    )
+    assert result.returncode == 2
+    assert f"profiles: no profiles-inference markers in {skill}" in result.stderr
+
+
 def test_render_leaves_file_without_markers_unchanged(tmp_path):
     no_markers = tmp_path / "nomarkers.md"
     original = "just some text\nno markers here\n"
@@ -240,9 +357,9 @@ def test_render_leaves_file_without_markers_unchanged(tmp_path):
     )
 
     result = run("render", "--file", str(PROFILES_JSON), "--skill", str(no_markers), "--snippet", str(snippet))
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 2
     assert no_markers.read_text(encoding="utf-8") == original
-    assert "no markers in" in result.stderr
+    assert f"profiles: no profiles markers in {no_markers}" in result.stderr
 
 
 def test_render_table_has_separator_after_header(tmp_path):

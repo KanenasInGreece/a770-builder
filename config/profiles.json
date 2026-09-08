@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "default": "long",
+  "mode": "display",
   "notes": "Every number is a measurement on the Arc A770 (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. useful_ctx is where prefill falls under 150 tok/s or decode under the profile's floor. capability values are the model card's or the quantiser's own evaluation, named in capability_source. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served.",
   "profiles": {
     "long": {

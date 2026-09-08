@@ -22,14 +22,16 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SPEED_KEYS = {"8k", "32k", "64k", "100k"}
 KV_VALUES = {"f16", "q8_0", "q4_0"}
 ON_OFF_VALUES = {"on", "off"}
+MODE_VALUES = {"display", "inference"}
 
 STRING_KEYS = (
-    "model", "source", "family", "architecture", "quant", "kv", "flash_attention",
+    "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
 )
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s")
 OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability")
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
+OPTIONAL_KEYS = {"kv_v"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -56,11 +58,14 @@ def validate(data) -> list[str]:
         return ["not a JSON object"]
 
     for k in data.keys():
-        if k not in {"schema", "default", "notes", "profiles"}:
+        if k not in {"schema", "default", "notes", "profiles", "mode"}:
             errors.append(f"unknown key {k}")
 
     if data.get("schema") != 1:
         errors.append("schema: must be 1")
+
+    if "mode" in data and data["mode"] not in MODE_VALUES:
+        errors.append("mode: must be display or inference")
 
     profiles = data.get("profiles")
     if not isinstance(profiles, dict) or not profiles:
@@ -82,7 +87,7 @@ def validate(data) -> list[str]:
             if k not in PROFILE_KEYS:
                 errors.append(f"{name}: unknown key {k}")
         for k in PROFILE_KEYS:
-            if k not in prof:
+            if k not in OPTIONAL_KEYS and k not in prof:
                 errors.append(f"{name}: missing key {k}")
 
         for k in STRING_KEYS:
@@ -125,6 +130,9 @@ def validate(data) -> list[str]:
 
         if "kv" in prof and isinstance(prof["kv"], str) and prof["kv"] not in KV_VALUES:
             errors.append(f"{name}: kv must be one of f16, q8_0, q4_0")
+
+        if "kv_v" in prof and isinstance(prof["kv_v"], str) and prof["kv_v"] not in KV_VALUES:
+            errors.append(f"{name}: kv_v must be one of f16, q8_0, q4_0")
 
         for k in ("flash_attention", "reasoning"):
             if k in prof and isinstance(prof[k], str) and prof[k] not in ON_OFF_VALUES:
@@ -203,6 +211,7 @@ def cmd_env(args) -> int:
         print(': "${A770B_%s_MODEL:=%s}"' % (upper, prof["model"]))
         print(': "${A770B_%s_CTX:=%d}"' % (upper, prof["ctx"]))
         print(': "${A770B_%s_KV:=%s}"' % (upper, prof["kv"]))
+        print(': "${A770B_%s_KV_V:=%s}"' % (upper, prof.get("kv_v", prof["kv"])))
         print(': "${A770B_%s_REASONING:=%s}"' % (upper, prof["reasoning"]))
         print(': "${A770B_%s_TIMEOUT:=%d}"' % (upper, prof["timeout_s"]))
         print(
@@ -236,10 +245,14 @@ def _card_warnings(profiles: dict) -> dict:
 
 
 def cmd_card(args) -> int:
-    data, err = _load(Path(args.file))
+    path = Path(args.file)
+    data, err = _load(path)
     if err is not None:
         print(f"profiles: {err}", file=sys.stderr)
         return 2
+
+    data["mode"] = data.get("mode")
+    data["registry"] = str(path.resolve())
 
     profiles = data.get("profiles", {})
     for name, prof in profiles.items():
@@ -248,6 +261,7 @@ def cmd_card(args) -> int:
             "served_model": prof.get("model"),
             "served_ctx": prof.get("ctx"),
             "served_kv": prof.get("kv"),
+            "served_kv_v": prof.get("kv_v", prof.get("kv")),
             "served_reasoning": prof.get("reasoning"),
         }
         if args.served:
@@ -255,6 +269,7 @@ def cmd_card(args) -> int:
                 "served_model": os.environ.get(f"A770B_{upper}_MODEL"),
                 "served_ctx": (int(os.environ[f"A770B_{upper}_CTX"]) if os.environ.get(f"A770B_{upper}_CTX", "").isdigit() else None),
                 "served_kv": os.environ.get(f"A770B_{upper}_KV"),
+                "served_kv_v": os.environ.get(f"A770B_{upper}_KV_V"),
                 "served_reasoning": os.environ.get(f"A770B_{upper}_REASONING"),
             }
             for k, v in overrides.items():
@@ -271,6 +286,8 @@ def cmd_card(args) -> int:
             return 2
         out = dict(profiles[args.name])
         out["name"] = args.name
+        out["mode"] = data["mode"]
+        out["registry"] = data["registry"]
         out["warnings"] = warnings_by_profile.get(args.name, [])
         print(json.dumps(out, indent=2))
         return 0
@@ -285,8 +302,52 @@ def _short_model_name(model: str) -> str:
     return model.replace("-it", "")
 
 
-def _replace_between_markers(path: Path, generated_lines: list[str]) -> bool:
-    """Replace the lines strictly between the begin/end markers with `generated_lines`.
+def _table_rows(data: dict) -> list[str]:
+    """The skill table's header, separator, and one row per profile."""
+    profiles = data["profiles"]
+    default = data["default"]
+
+    lines = [SKILL_HEADER, SKILL_SEPARATOR]
+    for name, prof in profiles.items():
+        ctx_fmt = f"{prof['ctx']:,}"
+        useful_k = prof["useful_ctx"] // 1000
+        decode8k = prof["speed"]["decode_tps"]["8k"]
+        prefill8k = prof["speed"]["prefill_tps"]["8k"]
+
+        display_name = name + (" (default)" if name == default else "")
+        lines.append(
+            f"| {display_name} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
+            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof['use_for']} |"
+        )
+    return lines
+
+
+def _snippet_sentence(data: dict) -> str:
+    """The one-line snippet sentence for a registry."""
+    profiles = data["profiles"]
+    default = data["default"]
+
+    segments = []
+    for name, prof in profiles.items():
+        ctx_fmt = f"{prof['ctx']:,}"
+        useful_k = prof["useful_ctx"] // 1000
+        decode8k = prof["speed"]["decode_tps"]["8k"]
+
+        if name == default:
+            label = f"**{name}** (default)"
+        else:
+            label = f"**--{name}**"
+        decode_round = round(decode8k)
+        segments.append(
+            f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
+            f"(useful to ~{useful_k}k), ~{decode_round} tok/s"
+        )
+
+    return "; ".join(segments) + "."
+
+
+def _replace_between_markers(path: Path, generated_lines: list[str], marker: str = "profiles") -> bool:
+    """Replace the lines strictly between the named begin/end markers with `generated_lines`.
 
     Returns True if the markers were found and the file was rewritten, False if the file
     lacks either marker (in which case it is left unchanged and a message is printed).
@@ -297,18 +358,21 @@ def _replace_between_markers(path: Path, generated_lines: list[str]) -> bool:
         print(f"profiles: cannot read {path}: {e}", file=sys.stderr)
         return False
 
+    begin_marker = f"<!-- {marker}:begin -->"
+    end_marker = f"<!-- {marker}:end -->"
+
     ends_with_newline = text.endswith("\n")
     lines = text.splitlines()
 
     begin_idx = end_idx = None
     for i, line in enumerate(lines):
-        if begin_idx is None and line.strip() == "<!-- profiles:begin -->":
+        if begin_idx is None and line.strip() == begin_marker:
             begin_idx = i
-        elif begin_idx is not None and end_idx is None and line.strip() == "<!-- profiles:end -->":
+        elif begin_idx is not None and end_idx is None and line.strip() == end_marker:
             end_idx = i
 
     if begin_idx is None or end_idx is None:
-        print(f"profiles: no markers in {path}", file=sys.stderr)
+        print(f"profiles: no {marker} markers in {path}", file=sys.stderr)
         return False
 
     new_lines = lines[: begin_idx + 1] + list(generated_lines) + lines[end_idx:]
@@ -325,40 +389,39 @@ def cmd_render(args) -> int:
         print(f"profiles: {err}", file=sys.stderr)
         return 2
 
-    profiles = data["profiles"]
-    default = data["default"]
+    table_lines = _table_rows(data)
+    sentence = _snippet_sentence(data)
 
-    table_lines = [SKILL_HEADER, SKILL_SEPARATOR]
-    snippet_segments = []
+    inf_data = None
+    if args.inference_file:
+        inf_data, err = _load(Path(args.inference_file))
+        if err is not None:
+            print(f"profiles: {err}", file=sys.stderr)
+            return 2
 
-    for name, prof in profiles.items():
-        ctx_fmt = f"{prof['ctx']:,}"
-        useful_k = prof["useful_ctx"] // 1000
-        decode8k = prof["speed"]["decode_tps"]["8k"]
-        prefill8k = prof["speed"]["prefill_tps"]["8k"]
+    ok = True
 
-        display_name = name + (" (default)" if name == default else "")
-        table_lines.append(
-            f"| {display_name} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof['use_for']} |"
-        )
+    if not _replace_between_markers(Path(args.skill), table_lines, marker="profiles"):
+        ok = False
 
-        if name == default:
-            label = f"**{name}** (default)"
-        else:
-            label = f"**--{name}**"
-        decode_round = round(decode8k)
-        snippet_segments.append(
-            f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
-            f"(useful to ~{useful_k}k), ~{decode_round} tok/s"
-        )
+    if inf_data is not None:
+        inf_table_lines = _table_rows(inf_data)
+        if not _replace_between_markers(Path(args.skill), inf_table_lines, marker="profiles-inference"):
+            ok = False
 
-    snippet_line = "; ".join(snippet_segments) + "."
+    if inf_data is None:
+        snippet_lines = [sentence]
+    else:
+        inf_sentence = _snippet_sentence(inf_data)
+        snippet_lines = [
+            f"Display-safe (`A770B_CARD_MODE=display`, the default): {sentence}",
+            f"Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): {inf_sentence}",
+        ]
 
-    _replace_between_markers(Path(args.skill), table_lines)
-    _replace_between_markers(Path(args.snippet), [snippet_line])
+    if not _replace_between_markers(Path(args.snippet), snippet_lines, marker="profiles"):
+        ok = False
 
-    return 0
+    return 0 if ok else 2
 
 
 def main() -> int:
@@ -379,6 +442,7 @@ def main() -> int:
     render_parser = subparsers.add_parser("render", parents=[common], help="Regenerate the skill table and snippet")
     render_parser.add_argument("--skill", required=True, help="Path to the skill file to update")
     render_parser.add_argument("--snippet", required=True, help="Path to the snippet file to update")
+    render_parser.add_argument("--inference-file", help="Path to config/profiles.inference.json, to also render")
 
     args = parser.parse_args()
 
