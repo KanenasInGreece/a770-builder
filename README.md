@@ -27,20 +27,35 @@ The repository holds two things:
 Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.
 
-The skill offers three profiles, and the choice is the task's, not the model's reputation. **long** is Qwen3.5-9B, the
-default for every ordinary change: a small, well-specified edit to named files, done in two or three minutes in the
-repository's own idiom; it is safe to about 64,000 to 72,000 tokens of the 262,144 it serves, its prefill slowing
-under 150 tokens a second past about 64,000. **serious** is Qwen3.8-27B, for a deliverable larger than its brief, tests written from an
-invariant or prose a reviewer will read; it is the best-written output of the matrix at eight tokens a second, and on a
-mechanical edit it produces the long profile's patch at seven times the wall clock, so it is never the profile for
-those; it is served with 131,072 tokens of window by default, useful to about 32,000, since its decode falls under five tokens
-a second by 64,000. **fast** is Gemma 4 E4B with flash attention off, a 131k-token window for the read the long window cannot hold
-and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
-is a capacity, not the depth a model works reliably at, and each profile's row says which depth was measured. No
-profile indexes a large file, which stays a `grep`: where a deterministic tool answers exactly, the seat is not asked to
-approximate it. The profiles are data, not prose: `config/profiles.json` is the registry a caller can read directly. A run specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the
-paths it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
+The seat runs in one of two card modes, chosen by `A770B_CARD_MODE`, each with its own registry: display-safe (the
+default, the tested set, under a 13 GiB cap, for a card that also draws the desktop) and pure-inference (under a
+15.3 GiB cap, for a card that draws nothing). The profiles are the interface, and the choice is the task's, not the
+model's reputation: `run … --profile <name>` names one, and `local-build.sh profiles` prints the card so an
+orchestrating agent can match a brief's scope and the token size of the files it names against what each profile
+actually measured. The display set is **long** (Qwen3.5-9B, the default for every ordinary change, safe to about
+64,000–72,000 tokens of the 262,144 it serves), **fast** (Gemma 4 E4B with flash attention off, for the read the long
+window cannot hold and precise questions about a passage deep in a large file, not for edits), and **serious**
+(Qwen3.8-27B, for a deliverable larger than its brief or tests from an unfamiliar module, useful to about 32,000 as
+its decode falls under five tokens a second by 64,000). The inference set is **long** (the same 9B at its whole
+262,144-token window), **moe** (Qwen3.6-35B-A3B, a deliverable larger than its brief at three times the dense 27B's
+speed, its whole 131,072-token window usable, needing 18 GB of host RAM), and **serious** (the 27B at a larger
+196,608-token window, useful to about 98,000). A window is a capacity, not the depth a model works reliably at, and
+each profile's row says which depth was measured. No profile indexes a large file, which stays a `grep`: where a
+deterministic tool answers exactly, the seat is not asked to approximate it. The profiles are data, not prose: the
+mode's registry (`config/profiles.json`, `config/profiles.inference.json`) is what a caller can read directly. A run
+specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the paths
+it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
 Every profile's output is judged the same way, by its capture and by `verify`.
+
+The seat is built around one card, and what it is built from knows nothing of it: the sandbox, the guard, the
+registries, the ladder, the suite and `verify` see a server on the loopback and a set of measured rows. The card
+enters through five knobs that exist today: `A770B_LLAMA_BIN` (any `llama-server` built with the backend for the
+card presents the same API), `A770B_DEVICE` and `A770B_VK_DEVICE_SELECT` (the pin; the selector is Mesa's and empty
+means unpinned on another backend, which has its own device variable), `A770B_GPU_MATCH` (nvtop's name for the card,
+and nvtop reads NVIDIA, AMD and Intel cards), the cap of each mode (a measurement, not a constant), and
+`A770B_UBATCH`. What does not travel is every number in a registry row and the flash-attention rule per model
+family: they are measurements on one card and one build, and `AGENTS.md` is how they are re-taken on another.
+Measured on the A770 alone so far; nothing else has been tried.
 
 ```text
 your coding agent ── the context, the judgement, the plan
@@ -53,8 +68,9 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       └── llama.cpp (Vulkan) ────┘── the qualified model on the A770
 ```
 
-Built and measured on 2026-09-06 to 08 on a card that also drives the desktop; reviewed adversarially and contained
-the same day, and since then built partly by its own seat. The measured report (matrix, serving lines, method) lives beside the weights: `~/LLM/tested/README.html`.
+Built and measured on 2026-09-06 to 08, first on a card that also drives the desktop and then, once the desktop moved
+to a second card, on the same A770 with nothing else on it: the two modes are one seat, reviewed adversarially and
+contained the same day, and since then built partly by its own seat. The measured report (matrix, serving lines, method) lives beside the weights: `~/LLM/tested/README.html`.
 
 ## Why we made it
 
@@ -102,7 +118,7 @@ Each is installed and configured by its own instructions, linked here; this proj
 | **a Linux host** | the whole harness: the sandbox is bubblewrap, which is Linux kernel namespaces; the VRAM cap reads `nvtop`; the reset watch reads the kernel log; the serving line rests on Mesa's Vulkan driver and the Xe watchdog rules. Measured on Fedora 44 only. On Windows the plausible route is the harness under WSL2 with `llama-server` running natively on Windows and reached over the loopback, but that has not been measured here and the VRAM cap would not see the card; macOS has no bubblewrap | any distribution with user namespaces enabled (the default on Fedora, Ubuntu, Debian, Arch) | `bwrap`, `nvtop`, `journalctl` on `PATH` |
 | Vulkan driver for the card | the GPU backend llama.cpp runs on | your distribution's Mesa Vulkan driver (`mesa-vulkan-drivers`) and `vulkan-tools`; `vulkaninfo --summary` must list the card | `A770B_DEVICE` = the name `llama-server --list-devices` prints |
 | `llama.cpp` with the Vulkan backend | serves the model (`llama-server`) | build it from source per [llama.cpp `docs/build.md`, *Vulkan*](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan) (measured here on b10805) | `A770B_LLAMA_BIN` (default `~/llama.cpp/build/bin/llama-server`) |
-| the three GGUF models | the fast, serious and long profiles | Hugging Face: [`lmstudio-community/Qwen3.5-9B-GGUF`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF), [`ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF) and [`lmstudio-community/gemma-4-E4B-it-GGUF`](https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF); the download lines are in [`docs/OPERATING.md`](docs/OPERATING.md#getting-llamacpp-and-the-models); every model measured on this card is in [`config/models.md`](config/models.md), and a new one enters by the procedure in `docs/OPERATING.md` | `A770B_MODELS` (default `~/LLM/tested`), `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` |
+| the model files of the mode's registry (`config/profiles.json`, `config/profiles.inference.json`) | the profiles of whichever card mode this machine serves | Hugging Face: [`lmstudio-community/Qwen3.5-9B-GGUF`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF), [`ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF), [`lmstudio-community/gemma-4-E4B-it-GGUF`](https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF) and [`unsloth/Qwen3.6-35B-A3B-GGUF`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF); the download lines are in [`docs/OPERATING.md`](docs/OPERATING.md#getting-llamacpp-and-the-models); every model measured on this card is in [`config/models.md`](config/models.md), and a new one enters by the procedure in `docs/OPERATING.md` | `A770B_MODELS` (default `~/LLM/tested`), `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` |
 | [opencode](https://opencode.ai/docs) | the coding agent that runs inside the sandbox | its install script or package, per its docs | found on `PATH`, or `A770B_OPENCODE_BIN` |
 | [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) | the sandbox | your distribution's `bubblewrap` package | on `PATH` |
 | [socat](http://www.dest-unreach.org/socat/) | the loopback bridge to the model server | your distribution's `socat` package | on `PATH` |
@@ -129,10 +145,10 @@ git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builde
 cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env
 #    2. edit it: A770B_REFUSE = your live checkouts (required), A770B_MODELS, A770B_DEVICE/GPU_MATCH if not an A770
 git clone <your target repo> ~/local-ai/seat                        # 3. the seat: a standalone clone, never a linked worktree
-#    4. put the GGUFs named in the profiles into A770B_MODELS (docs/OPERATING.md says where to get them and llama.cpp)
+#    4. put the GGUFs named in the profiles into A770B_MODELS (the profiled models and the exact file of each, per mode, are listed in docs/OPERATING.md, *Getting llama.cpp and the models*; to profile a model of your own, AGENTS.md)
 bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
 npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # 6. install the skill into your agents
-bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md
+bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md --profile long
 ```
 
 The skill follows the [Agent Skills](https://agentskills.io) open standard: a folder `skills/local-build/` holding
@@ -182,7 +198,7 @@ family; the fourth found three holes the first three had missed, and the sixth r
 defects in its refusals, all closed the same day. All of it, with what you must still do yourself and how to report a hole, is in
 [`SECURITY.md`](SECURITY.md).
 
-This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the three model files, and nothing else:
+This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
 no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
 developed alongside the [Shared Memory](https://github.com/KanenasInGreece/Shared_Memory) framework, a sibling project
 that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.

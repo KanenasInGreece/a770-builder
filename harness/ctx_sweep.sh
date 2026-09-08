@@ -3,7 +3,8 @@
 # prompt and the kernel log watched. Answers "does the large window come at a spillover cost". Usage: ctx_sweep.sh [sizes…]
 set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
-URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("$@"); [ "${#SIZES[@]}" -gt 0 ] || SIZES=(8000 32000 64000 100000 120000)
+# default: two points, 8k and the far end (the operator's rule: extrapolate the curve between them, not sweep every window)
+URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("$@"); [ "${#SIZES[@]}" -gt 0 ] || SIZES=(8000 100000)
 CORPUS=$(mktemp); find "$A770B_SEAT" -name '*.py' -size +2k | head -400 | xargs cat 2>/dev/null | tr -cd '\11\12\15\40-\176' > "$CORPUS"
 printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' target tokens ttft_s prefill_tps decode_tps vram_max resets
 for want in "${SIZES[@]}"; do

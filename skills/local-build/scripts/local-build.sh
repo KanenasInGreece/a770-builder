@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # local-build.sh — the A770 builder seat, three profiles. Installed as a skill in every agent's skill dir (copies).
-#   run [<worktree>] <brief.md> [--spec <spec.json>] [--<profile>] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
+#   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve <profile> | status | profiles [--name N] | stop | stop-run (end the run in progress by its own pid) | version (--version)
 #   profiles [--name N]   the registry card (config/profiles.json) with the served values, for a caller choosing a profile
 #   doctor            what this machine lacks to run the seat, one line per check; exit 1 when anything is missing
+#   The mode: A770B_CARD_MODE=display (the default, the tested set under a 13.0 cap) or inference (a card that draws no desktop: its own registry under 15.3)
 #   check-update      ask GitHub for the latest release and compare it with this copy (on demand only; nothing else ever calls out)
 # The installed copy finds the project through A770B_PROJECT: the environment, then
 # ${XDG_CONFIG_HOME:-~/.config}/a770-builder/builder.env, then the default ~/local-ai/A770_Builder. Every other path
@@ -48,13 +49,14 @@ case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_upd
 SERVE="$A770B_PROJECT/harness/serve_a770_llamacpp.sh"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
-profile_vars(){ # sets gguf ctx kv reasoning extra t for a profile named in A770B_PROFILES
+profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t for a profile named in A770B_PROFILES
   a770b_is_profile "$1" || die "profile must be one of: $A770B_PROFILES"
   local m; m=$(a770b_profile_var "$1" MODEL); [ -n "$m" ] || die "profile $1 has no MODEL set (A770B_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')_MODEL is empty)"
   gguf=$(a770b_model_path "$m"); ctx=$(a770b_profile_var "$1" CTX); kv=$(a770b_profile_var "$1" KV)
+  kv_v=$(a770b_profile_var "$1" KV_V)
   reasoning=$(a770b_profile_var "$1" REASONING); extra=$(a770b_profile_var "$1" EXTRA); t=$(a770b_profile_var "$1" TIMEOUT)
 }
-serve(){ local p="$1" gguf ctx kv reasoning extra t; profile_vars "$p"
+serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t; profile_vars "$p"
   [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
   if [ "$(current)" = "$gguf" ] && curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
     if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; return 0; fi
@@ -63,15 +65,15 @@ serve(){ local p="$1" gguf ctx kv reasoning extra t; profile_vars "$p"
   bash "$SERVE" stop >/dev/null 2>&1
   # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
   # shellcheck disable=SC2086
-  KV_K=$kv KV_V=$kv REASONING=$reasoning bash "$SERVE" start "$gguf" "$ctx" $extra || die "server did not start (budget gate or VRAM cap refused — see above)"
+  KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning bash "$SERVE" start "$gguf" "$ctx" $extra || die "server did not start (budget gate or VRAM cap refused — see above)"
   for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || die "server not healthy after 180 s"
-  echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv · $A770B_HOST:$A770B_PORT"
+  echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv/${kv_v:-$kv} · $A770B_HOST:$A770B_PORT"
 }
 status(){ local c; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo
-  echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
+  echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · mode $A770B_CARD_MODE · registry $A770B_PROFILES_FILE · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
   printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s%s = %s ctx %s ·' "$p" "$([ "$p" = "$A770B_DEFAULT_PROFILE" ] && echo ' (default)')" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"
   echo "project $A770B_PROJECT · data $A770B_DATA · seat $A770B_SEAT"
   if ! : 9>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then echo "run lock: unknown (cannot open $A770B_DATA/logs/local-build.lock)"; elif ( flock -n 9 ) 9>>"$A770B_DATA/logs/local-build.lock"; then echo "run lock: free"; else echo "run lock: HELD — a run, verify, serve or reset is in progress; wait for it"; fi
@@ -80,19 +82,49 @@ status(){ local c; c=$(current); version 2>&1
 }
 # doctor — what this machine lacks to run the seat, one line per check; never stops at the first MISSING. No run lock, no server.
 doctor(){
-  local missing=0 t p m mp n warn_list w
+  local missing=0 t p m mp n warn_list w u hint
   command -v python3 >/dev/null 2>&1 && echo "ok   python3: on PATH" || { echo "MISSING python3: install Python 3 (the registry, the renderer and the capture use it)"; missing=$((missing+1)); }
   for t in bwrap socat uv curl git flock timeout; do
     command -v "$t" >/dev/null 2>&1 && echo "ok   $t: on PATH" || { echo "MISSING $t: install $t"; missing=$((missing+1)); }
   done
   [ -x "$A770B_LLAMA_BIN" ] && echo "ok   llama-server at $A770B_LLAMA_BIN" || { echo "MISSING llama-server at $A770B_LLAMA_BIN: build llama.cpp with the Vulkan backend, or set A770B_LLAMA_BIN"; missing=$((missing+1)); }
   if command -v nvtop >/dev/null 2>&1 || [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then echo "ok   nvtop: on PATH or A770B_ALLOW_NO_NVTOP=1"; else echo "MISSING nvtop: install it for VRAM readings, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1)); fi
-  if python3 "$A770B_PROJECT/harness/profiles.py" check >/dev/null 2>&1; then echo "ok   registry: config/profiles.json checks"; else echo "MISSING registry: config/profiles.json does not check (python3 harness/profiles.py check says why)"; missing=$((missing+1)); fi
+  n=$(gpu_match_count)
+  case "$n" in
+    1) echo "ok   card: exactly one nvtop device matches A770B_GPU_MATCH=$A770B_GPU_MATCH" ;;
+    -1)
+      if [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then
+        echo "ok   card: not measured (no VRAM readings)"
+      else
+        echo "MISSING card: no VRAM readings (nvtop absent or its output unreadable); install nvtop, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1))
+      fi ;;
+    *) echo "MISSING card: $n nvtop devices match A770B_GPU_MATCH=$A770B_GPU_MATCH, not 1; set it to a substring naming the builder card alone in 'nvtop -s'"; missing=$((missing+1)) ;;
+  esac
+  if llama_pid_alive "$PIDF" >/dev/null; then
+    echo "ok   mode: $A770B_CARD_MODE, not measured (the seat's server is up)"
+  elif [ "$n" != 1 ]; then
+    echo "ok   mode: $A770B_CARD_MODE, not measured (no VRAM readings or more than one matching card)"
+  else
+    u=$(python3 -c "print(f'{$(gpu_used_gib):.2f}')")
+    case "$A770B_CARD_MODE" in
+      inference)
+        if python3 -c "import sys; sys.exit(0 if float('$u') > 0.5 else 1)"; then
+          echo "MISSING mode: inference, but the builder card holds $u GiB with the seat's server down — something else draws it (a desktop?); set A770B_CARD_MODE=display, or free the card"; missing=$((missing+1))
+        else
+          echo "ok   mode: inference; the builder card holds $u GiB with the seat's server down"
+        fi ;;
+      *)
+        hint=""
+        python3 -c "import sys; sys.exit(0 if float('$u') <= 0.1 else 1)" && hint=" — no desktop measured on it; A770B_CARD_MODE=inference would serve the inference registry under the inference cap (15.3)"
+        echo "ok   mode: display; the builder card holds $u GiB with the seat's server down$hint" ;;
+    esac
+  fi
+  if python3 "$A770B_PROJECT/harness/profiles.py" check --file "$A770B_PROFILES_FILE" >/dev/null 2>&1; then echo "ok   registry: $(basename "$A770B_PROFILES_FILE") checks"; else echo "MISSING registry: $(basename "$A770B_PROFILES_FILE") does not check (python3 harness/profiles.py check says why)"; missing=$((missing+1)); fi
   for p in $A770B_PROFILES; do
     m=$(a770b_profile_var "$p" MODEL); mp=$(a770b_model_path "$m")
     if [ -r "$mp" ]; then echo "ok   model for $p: $mp"; else echo "MISSING model for $p: $mp not found; download it (docs/OPERATING.md) or set A770B_$(printf '%s' "$p" | tr 'a-z-' 'A-Z_')_MODEL"; missing=$((missing+1)); fi
   done
-  warn_list=$(python3 "$A770B_PROJECT/harness/profiles.py" card --file "${A770B_PROFILES_FILE:-$A770B_PROJECT/config/profiles.json}" --served 2>/dev/null | python3 -c 'import json,sys; [print(w) for w in json.load(sys.stdin).get("warnings", [])]' 2>/dev/null)
+  warn_list=$(python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served 2>/dev/null | python3 -c 'import json,sys; [print(w) for w in json.load(sys.stdin).get("warnings", [])]' 2>/dev/null)
   if [ -n "$warn_list" ]; then
     while IFS= read -r w; do echo "MISSING profiles: $w"; missing=$((missing+1)); done <<<"$warn_list"
   else
@@ -115,7 +147,7 @@ case "${1:-}" in
   serve)  run_lock; serve "${2:-$A770B_DEFAULT_PROFILE}" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
-  profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "${A770B_PROFILES_FILE:-$A770B_PROJECT/config/profiles.json}" --served "$@" ;;
+  profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@" ;;
   doctor) doctor ;;
   stop)   bash "$SERVE" stop ;;
   stop-run)
@@ -133,7 +165,7 @@ case "${1:-}" in
     shift; profile=$A770B_DEFAULT_PROFILE; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --*) n=${1#--}; if a770b_is_profile "$n"; then profile=$n; profile_set=1; else case "$1" in --timeout) timeout="$2"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; fi;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; a770b_is_profile "$profile" || die "profile must be one of: $A770B_PROFILES (got '$profile')"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
@@ -234,5 +266,5 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--<profile>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac

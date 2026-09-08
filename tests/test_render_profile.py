@@ -2,6 +2,7 @@
 """Tests for the opencode profile renderer."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -105,6 +106,7 @@ def test_matches_plain_substitution(tmp_path):
         .replace("__PROMPT__", json.dumps(DEFAULT)[1:-1])
         .replace("__EDIT_RULES__", '"*": "allow"')
         .replace("__BASH_ALLOW__", "")
+        .replace("__SAMPLING__", "")  # no --temperature/--top-p given
     )
 
     assert out.read_text() == expected
@@ -164,6 +166,106 @@ def test_output_mode_600(tmp_path):
 
     mode = oct(out.stat().st_mode & 0o777)
     assert mode == "0o600", f"Expected mode 0o600, got {mode}"
+
+
+def render_with_sampling(out: Path, temperature: str = None, top_p: str = None, echo: Path = None) -> subprocess.CompletedProcess:
+    """Render the profile with optional --temperature/--top-p (and optional --echo), no run specification."""
+    cmd = [sys.executable, str(RENDERER)] + COMMON_ARGS + ["--out", str(out)]
+    if temperature is not None:
+        cmd += ["--temperature", temperature]
+    if top_p is not None:
+        cmd += ["--top-p", top_p]
+    if echo is not None:
+        cmd += ["--echo", str(echo)]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def test_sampling_both_values_render_in_agent_block(tmp_path):
+    """Test 25: --temperature and --top-p together render as one line in the agent block."""
+    out = tmp_path / "out.jsonc"
+    result = render_with_sampling(out, temperature="0.6", top_p="0.95")
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    text = out.read_text()
+    assert '"temperature": 0.6, "top_p": 0.95,' in text
+    assert "__SAMPLING__" not in text
+
+    parsed = json.loads(strip_comments(text))
+    assert parsed["agent"]["local-builder"]["temperature"] == 0.6
+    assert parsed["agent"]["local-builder"]["top_p"] == 0.95
+
+
+def test_sampling_temperature_appears_once_in_rendered_text(tmp_path):
+    """The literal token __SAMPLING__ names itself only once in the template, in the agent block (the header
+    comment says it in words instead); a rendered "temperature" key must therefore appear exactly once, not
+    duplicated into a header comment that once also carried the literal placeholder."""
+    out = tmp_path / "out.jsonc"
+    result = render_with_sampling(out, temperature="0.6", top_p="0.95")
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    text = out.read_text()
+    assert text.count('"temperature"') == 1
+
+
+def test_sampling_temperature_only(tmp_path):
+    """Test 26: --temperature alone renders just that key, with its trailing comma."""
+    out = tmp_path / "out.jsonc"
+    result = render_with_sampling(out, temperature="0.6")
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    text = out.read_text()
+    assert '"temperature": 0.6,' in text
+
+    parsed = json.loads(strip_comments(text))
+    assert parsed["agent"]["local-builder"]["temperature"] == 0.6
+    assert "top_p" not in parsed["agent"]["local-builder"]
+
+
+def test_sampling_none_leaves_no_key_or_placeholder(tmp_path):
+    """Test 27: with neither value given, the agent block carries no temperature/top_p key and no placeholder."""
+    out = tmp_path / "out.jsonc"
+    result = render_with_sampling(out)
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    text = out.read_text()
+    assert "__SAMPLING__" not in text
+
+    parsed = json.loads(strip_comments(text))
+    assert "temperature" not in parsed["agent"]["local-builder"]
+    assert "top_p" not in parsed["agent"]["local-builder"]
+
+
+def test_sampling_bad_value_exits_2(tmp_path):
+    """Test 28: an out-of-range --temperature or --top-p is refused."""
+    out = tmp_path / "out.jsonc"
+    result = render_with_sampling(out, temperature="3.0")
+    assert result.returncode == 2
+    assert "render_profile: bad --temperature/--top-p" in result.stderr
+
+    out2 = tmp_path / "out2.jsonc"
+    result2 = render_with_sampling(out2, top_p="0")
+    assert result2.returncode == 2
+    assert "render_profile: bad --temperature/--top-p" in result2.stderr
+
+
+def test_sampling_echo_carries_values(tmp_path):
+    """Test 29: the echo carries the temperature/top_p values (or null when absent)."""
+    out = tmp_path / "out.jsonc"
+    echo = tmp_path / "echo.json"
+    result = render_with_sampling(out, temperature="0.6", top_p="0.95", echo=echo)
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    echo_data = json.loads(echo.read_text())
+    assert echo_data["temperature"] == 0.6
+    assert echo_data["top_p"] == 0.95
+
+    out2 = tmp_path / "out2.jsonc"
+    echo2 = tmp_path / "echo2.json"
+    result2 = render_with_sampling(out2, echo=echo2)
+    assert result2.returncode == 0, f"Render failed: {result2.stderr}"
+    echo_data2 = json.loads(echo2.read_text())
+    assert echo_data2["temperature"] is None
+    assert echo_data2["top_p"] is None
 
 
 def test_check_accepts_minimal_spec(tmp_path):
@@ -519,3 +621,52 @@ def test_check_validates_context_paths(tmp_path):
     result = run_check(spec, seat)
     assert result.returncode == 2
     assert "context.definitions_of" in result.stderr
+
+
+def test_profile_key_checks_against_registry_union_without_env(tmp_path):
+    """With A770B_PROFILES unset, the specification's profile is checked against the union of the profile
+    names in config/profiles.json and config/profiles.inference.json -- moe (inference-only) is accepted."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    env = dict(os.environ)
+    env.pop("A770B_PROFILES", None)
+
+    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "moe"})
+    result_ok = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_ok), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_ok.returncode == 0, result_ok.stderr
+
+    spec_bad = write_spec(tmp_path / "spec_bad.json", {"profile": "middle"})
+    result_bad = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_bad), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_bad.returncode == 2
+    assert "must be one of fast, long, moe, serious" in result_bad.stderr
+
+
+def test_profile_key_checks_against_a770b_profiles_env(tmp_path):
+    """A770B_PROFILES="long middle serious" in the subprocess env: middle accepted, fast refused."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    env = dict(os.environ)
+    env["A770B_PROFILES"] = "long middle serious"
+
+    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "middle"})
+    result_ok = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_ok), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_ok.returncode == 0, result_ok.stderr
+
+    spec_bad = write_spec(tmp_path / "spec_bad.json", {"profile": "fast"})
+    result_bad = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_bad), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_bad.returncode == 2
+    assert "must be one of long, middle, serious" in result_bad.stderr

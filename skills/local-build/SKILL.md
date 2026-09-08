@@ -1,6 +1,6 @@
 ---
 name: local-build
-description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Three profiles — long (Qwen3.5-9B, the default, a 262k window), fast (Gemma 4 E4B, the reader) and serious (Qwen3.8-27B IQ3_XXS). Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout.
+description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Two card modes, each with its registry of profiles: display-safe (long = Qwen3.5-9B, fast = Gemma 4 E4B, serious = Qwen3.8-27B) and pure-inference (the same card with nothing else on it: long at its whole window, a moe row Qwen3.6-35B-A3B, serious at a larger window); the flag is --profile <name>. Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout.
 ---
 
 # local-build — the A770 builder seat
@@ -15,9 +15,12 @@ agent's own model or context: an already-ruled change to a few named files, a te
 file the agent's window cannot hold. It is also the fallback when the online seats are down, rate-limited or too
 expensive for the task. Not for design work, not for anything touching a live checkout.
 
-## Three profiles — pick by the task, know the window you have
+## The profiles — pick by the card, know the window you have
 
-Measured on this A770 (16 GB, also driving the desktop), llama.cpp b10805 Vulkan, on the qualification task:
+Measured on this A770 (16 GB), llama.cpp b10805 Vulkan, on the qualification task. Two registries, one per card mode;
+`A770B_CARD_MODE` selects which one this machine serves:
+
+Display-safe (the default): the card also draws the desktop, cap 13 GiB after load.
 
 <!-- profiles:begin -->
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
@@ -27,21 +30,38 @@ Measured on this A770 (16 GB, also driving the desktop), llama.cpp b10805 Vulkan
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 <!-- profiles:end -->
 
-The profiles are configuration, not fixed: `status` shows what is actually configured on this machine, and the project's
-`config/models.md` is the ledger of every model qualified on this card with its numbers; a new model enters through
-`docs/OPERATING.md`, *Qualifying a new model*. Every file the model reads lands in that window, and prefill is what you pay for: a 17k-token read costs the long
-profile 37 s and the serious profile 4 min. Point briefs at files, not directories. (The seat's `AGENTS.md` is set aside
-for the run and restored after; the skill does that.)
+Pure-inference: the card draws nothing, cap 15.3 GiB after load.
+
+<!-- profiles-inference:begin -->
+| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
+|---|---|---|---|---|---|
+| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
+| moe | Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf | 131,072 (~131k) | 14.1 GiB | 21.8 / 207 tok/s | A deliverable larger than its brief at three times the dense 27B's speed and its whole window at above ten tokens a second; needs 18 GB of host RAM for the run and a CPU that is busy; not beside another large load. |
+| serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+<!-- profiles-inference:end -->
+
+The profiles are configuration, not fixed: `status` shows the mode and the registry actually configured on this
+machine, and the project's `config/models.md` is the ledger of every model qualified on this card with its numbers; a
+new model enters through `docs/OPERATING.md`, *Qualifying a new model*. Every file the model reads lands in that
+window, and prefill is what you pay for: a 17k-token read costs the long profile 37 s and the serious profile 4 min.
+Point briefs at files, not directories. (The seat's `AGENTS.md` is set aside for the run and restored after; the
+skill does that.)
 
 ## Choosing a profile
 
-Read the card before choosing: `local-build.sh profiles`, or `--name <profile>` for one profile alone. Match the brief
-against three things the card states: the edit scope it needs (a change to the files named, several files touched at
-once, tests written from a specification); the token size of the files the brief points at, set against the profile's
-useful window; and the time you can spend, set against its decode and prefill at that depth. Take the least costly
-profile whose card covers all three, not the one with the strongest reputation. Each profile's `use_for` says in words
-what it is not for, and that refusal is as much the card's content as what it is good at; a brief that needs more than
-the strongest card covers should not go to the seat at all.
+Read the card before choosing: `local-build.sh profiles`, or `--name <profile>` for one profile alone. It carries a
+row's `category` (`dense` or `moe`) and weight class; `useful_ctx`, the largest depth at which decode stays above four
+tokens a second by the two measured points, so a window is a capacity, not a promise of that whole depth at speed;
+`speed` (decode and prefill) at 8k and at the far end of the window, set against the time you can spend; `fit`, three
+short strings — `code`, `think`, `write` — each with its source, saying how the row measured on the axis the brief
+needs; `sampling`, the model's own recommended line for the role, already served; and `builder_class`, whether the row
+is useful to at least 81,920 tokens and passed a green task. Match these against the brief's edit scope (a change to
+the files named, several files touched at once, tests written from a specification) and the token size of the files it
+points at, and take the least costly profile whose card covers all three, not the one with the strongest reputation.
+The registry keeps one best-measured row per category and weight class: a row a sibling beats on quality, speed and
+useful window alike is pruned and the ledger says by whom, so a name on the card has already survived that. Each
+profile's `use_for` says in words what it is not for, and that refusal is as much the card's content as what it is
+good at; a brief that needs more than the strongest card covers should not go to the seat at all.
 
 ## How to call it
 
@@ -49,10 +69,11 @@ the strongest card covers should not go to the seat at all.
 # 1. the seat: a STANDALONE CLONE of the target repository (its own .git directory), never a live checkout or a
 #    linked worktree — the script refuses both. Default: A770B_SEAT (~/local-ai/seat).
 # 2. a brief: a Markdown file that names the files, the exact test command, and the stop condition
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md>                       # long (default), on the default seat
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>    # with a run specification (below)
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --fast         # fast, on a given seat: the reader
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --serious             # serious: a deliverable larger than its brief
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile long               # long (default), on the default seat
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>   # with a run specification (below)
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --profile fast        # fast, on a given seat: the reader
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile serious            # serious: a deliverable larger than its brief
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile moe                # inference mode: a deliverable larger than its brief, three times the dense 27B's speed
 bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>                       # re-run a capture's tests in a fresh sandbox
 bash ~/.claude/skills/local-build/scripts/local-build.sh serve <profile>      # start/switch the server only
 bash ~/.claude/skills/local-build/scripts/local-build.sh profiles [--name <profile>]   # the card, one profile or all, with what is actually served
@@ -77,7 +98,7 @@ capture decides. A cheap reviewer prompt for it lives at `~/local-ai/A770_Builde
 The brief is prose. Beside it you may pass `--spec <spec.json>`, every key optional:
 
 ```json
-{ "profile": "fast", "timeout": 1500,
+{ "profile": "long", "timeout": 1500,
   "card": "Local_Documentation/BUILDER_CARD.md",
   "scope": { "edit": ["src/foo.py", "tests/test_foo.py"] },
   "bash_allow": ["make check"],
@@ -97,14 +118,16 @@ an echo of what was rendered as `<label>.echo.json`. A flag on the command line 
 
 ## Rules the card and the harness enforce (do not override)
 
-- **The A770 drives the desktop.** The server refuses to run past 13 GiB after load and holds `-ub 512`. One GPU
-  process on that card at a time.
+- **The cap and the batch are the mode's.** The server refuses to run past 13.0 GiB after load in display mode, 15.3
+  in inference mode, and holds `-ub 512` in both. One GPU process on that card at a time; never raise a cap by hand —
+  a mode is chosen after measuring what else the card holds (`doctor` says).
 - **No speculative decoding** on this card: draft models and MTP heads all made decode slower.
 - **`< /dev/null` on every opencode call** (the script does it); without it opencode hangs after init.
 - **Seat only, inside the sandbox.** The seat must be a standalone clone not listed in `A770B_REFUSE`. The model's
   process sees the seat, a private home and a read-only uv cache; no credentials, no other tree, no network except the
   model server. Every test package a brief needs must be pre-warmed into the uv cache (`harness/warm_cache.sh`).
-- **Timeouts:** fast 1,500 s, serious 3,600 s, long 1,500 s by default (`--timeout` overrides).
+- **Timeouts** are the registry's: each profile's `timeout_s` (1,500 s for long and fast, 3,600 s for serious,
+  1,800 s for the inference registry's moe row); `--timeout` overrides.
 - **Flash attention is per model family.** The Qwen profiles run with it on; the fast profile's Gemma runs with it off,
   because with it on every Gemma 4 measured here collapsed on prefill and reset the GPU. The profile carries the flag.
 
@@ -129,6 +152,8 @@ markers so a later version can replace it. Nothing modifies your agent configura
 ## Configuration
 
 All paths and knobs are defined centrally in the builder environment (`harness/env.sh` defaults, overridden by
-`config/builder.env` in the project or `~/.config/a770-builder/builder.env` per user, then the calling environment). The
+`config/builder.env` in the project or `~/.config/a770-builder/builder.env` per user, then
+`config/builder.<mode>.env` or `~/.config/a770-builder/builder.<mode>.env` for whichever card mode
+`A770B_CARD_MODE` names, then the calling environment; a per-mode file cannot switch the mode that selected it). The
 installed skill finds the project through `A770B_PROJECT`. Where the models go, how to qualify a new one, the card
 knobs and the API key are in the project's `docs/OPERATING.md`.

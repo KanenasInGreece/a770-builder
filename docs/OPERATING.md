@@ -7,10 +7,10 @@ exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) 
 ## Run it
 
 ```bash
-bash skills/local-build/scripts/local-build.sh run <brief.md>                            # long profile (default), on the default seat
-bash skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>         # with a run specification (below)
-bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --serious  # serious profile, on a named seat
-bash skills/local-build/scripts/local-build.sh run <brief.md> --fast                     # fast profile: the reader
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long                     # long profile (default), on the default seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>  # with a run specification (below)
+bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --profile serious  # serious profile, on a named seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile fast                     # fast profile: the reader
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
 bash skills/local-build/scripts/local-build.sh serve <profile> · profiles [--name <profile>] · status · stop · stop-run · --version · check-update
@@ -63,23 +63,29 @@ what the brief named.
 
 ## Profiles
 
-The registry `config/profiles.json` is the single source of every profile's numbers; run `local-build.sh profiles`
-(or `--name <profile>` for one) to see what is actually configured on this machine, `--served` layered over the
-environment. Numbers below are properties of this card, build and quantisation, not of the models in general, measured
-on this A770 (16 GB, also driving the desktop), llama.cpp b10805 with the Vulkan backend, on the qualification task.
-`builder.env` may run the workstation's own IQ3_S card for `serious` at a different window under a larger cap; that row
-is included below.
+The seat runs in one of two card modes, chosen by `A770B_CARD_MODE`: display-safe (the default, the tested set, for a
+card that also draws the desktop) and pure-inference (for a card that draws nothing). Each mode reads its own
+registry, the single source of every profile's numbers — `config/profiles.json` for display,
+`config/profiles.inference.json` for inference — and `local-build.sh profiles` (or `--name <profile>` for one) shows
+what is actually configured on this machine for the mode it is running in, `--served` layered over the environment.
+Numbers in the tables below are properties of this card, build and quantisation, not of the models in general,
+measured with llama.cpp b10805 and the Vulkan backend, on the qualification task.
 
 A `builder.env` written for a release before the registry may name `A770B_FAST_*` or `A770B_LONG_*` for the other
 profile's file: the environment wins over the registry, so such a file inverts fast and long silently. `local-build.sh
 doctor` reports it, and `local-build.sh profiles` shows what is actually served beside what the registry says.
+
+**Display-safe** (the default): measured on this A770 (16 GB, also driving the desktop).
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
 | long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. |
 | fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
-| serious (this workstation, builder.env) | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 114,688 (~32k), needs a 14.1 cap | 13.78 GiB | 8.0 / 72 tok/s | Same use as `serious`, the quantiser's task-lossless file; ~9 min (five tests, 542 s). |
+
+This workstation's own `builder.display.env` runs `serious` on the quantiser's task-lossless file instead, IQ3_S, at
+114,688 under a 14.1 cap: 13.78 GiB after load, peaking at 14.21 GiB during a 32k prompt, ~9 minutes (five tests,
+542 s); `local-build.sh profiles --served` shows it in place of the registry's row.
 
 The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM sampled and the
 kernel log watched. The long profile serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
@@ -104,18 +110,51 @@ The window is the server's. opencode's opening request costs about 5.4k tokens w
 is why it is set aside. Every file the model reads lands in that window, and a 17k-token prefill costs the long profile
 37 s and the serious profile 4 min. Keep briefs pointed at files, not directories.
 
+**Pure-inference**: measured on the same card with nothing else on it.
+
+| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
+|---|---|---|---|---|---|
+| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
+| moe | Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf | 131,072 (~131k) | 14.1 GiB | 21.8 / 207 tok/s | A deliverable larger than its brief at three times the dense 27B's speed and its whole window at above ten tokens a second; needs 18 GB of host RAM for the run and a CPU that is busy; not beside another large load. |
+| serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+
+`useful_ctx` is the largest depth at which decode stays above four tokens a second, taken from the two measured points
+(8k and the far end of the window) by extending the time per token linearly, capped by the depth probe where one
+failed — not a window swept token by token. Beyond the table, `local-build.sh profiles` (`harness/profiles.py card`)
+carries the full card for each row: `speed` at 8k and the far end (decode, prefill, time to first token); `fit`, three
+short strings with their source — `code` (the in-house suite or T1, tests passed and wall), `think` (a reasoning arm
+measured, or the card's GPQA or AIME figure named as the card's), `write` (a reviewer-graded prose brief, or "not
+measured"); `sampling`, the model's own recommended temperature, top_p, top_k, min_p and penalties, with its source;
+and `builder_class`, computed from whether the useful window reaches at least 81,920 tokens and the task is green. The
+orchestrating agent reads these fields against a brief's scope, the token size of the files it names, and the time it
+can spend, and takes the least costly profile whose card covers all three.
+
 ## Configure
 
 All configurable paths and knobs are defined centrally and layered: the defaults in `harness/env.sh`, then
-`<project>/config/builder.env`, then `~/.config/a770-builder/builder.env`, then the calling environment, later winning.
-Copy `config/builder.env.example` to one of those two files and edit only what differs. The defaults are the
-workstation the seat was qualified on (Arc A770 as `Vulkan0`, models in `~/LLM/tested`, data in `~/local-ai`). The
-installed skill copy finds the project via `A770B_PROJECT`.
+`<project>/config/builder.env`, then `~/.config/a770-builder/builder.env`, then `<project>/config/builder.<mode>.env`,
+then `~/.config/a770-builder/builder.<mode>.env`, then the calling environment, later winning; the mode that names the
+two per-mode files is the mode after the two plain `builder.env` files and the environment have been read, so a
+per-mode file cannot switch the mode that selected it. Copy `config/builder.env.example` to one of the plain files and
+edit only what differs, and a per-mode file for whichever override one mode needs and the other does not. The defaults
+are the workstation the seat was qualified on (Arc A770 as `Vulkan0`, models in `~/LLM/tested`, data in `~/local-ai`).
+The installed skill copy finds the project via `A770B_PROJECT`.
+
+**The card mode.** `A770B_CARD_MODE` selects which of the two configurations this machine serves: unset or `display`
+(the default) reads `config/profiles.json` under a 13.0 GiB cap, for a card that also draws the desktop; `inference`
+reads `config/profiles.inference.json` under a 15.3 GiB cap, for a card that draws nothing else. A per-mode file,
+`builder.<mode>.env` beside each `builder.env`, lets one machine keep different overrides for each mode in the load
+order above — this workstation keeps `serious` at IQ3_S under a 14.1 cap only in `builder.display.env`, and drops that
+override in inference mode. `status` prints the mode and the registry file on the builder-card line. `doctor` measures,
+only while the seat's own server is down, what the builder card actually holds: in inference mode a reading above
+0.5 GiB is reported MISSING — something else is still drawing the card; in display mode a reading at or under 0.1 GiB
+gets a hint that inference mode would serve the larger registry under the larger cap. Either mode's cap is raised only
+on a fresh measurement of what else the card holds, never by hand.
 
 **The card.** `A770B_DEVICE` is the name from `llama-server --list-devices`; `A770B_GPU_MATCH` is the substring of that
-card in `nvtop -s`, which the VRAM readings and the cap depend on. On a card that also draws the desktop keep
-`A770B_VRAM_CAP_GIB` (13 of 16) and `A770B_UBATCH` (512): they keep the GPU's job watchdog quiet. The server refuses to
-stay up past the cap after load. No speculative decoding on this card: draft models and MTP heads all made decode slower.
+card in `nvtop -s`, which the VRAM readings and the cap depend on. `A770B_UBATCH` (512) stays the same in both modes:
+it keeps the GPU's job watchdog quiet. The server refuses to stay up past the mode's cap after load. No speculative
+decoding on this card: draft models and MTP heads all made decode slower.
 
 **The device pin.** `A770B_VK_DEVICE_SELECT` (default `8086:56a0!`) pins the server to the builder card by PCI vendor
 and device id rather than by the Vulkan device index `A770B_DEVICE` names, because Vulkan lists the boot card first and
@@ -126,12 +165,16 @@ trailing `!` makes that card the only Vulkan device the server can see. Set it i
 unpins. With the selector set, `llama-server --list-devices` lists exactly one card, the builder's, whatever card the
 machine booted with as its display device. `local-build.sh doctor` checks this with the rest of the installation.
 
-The cap is measured after load, and the public default of 13.0 assumes a desktop share that has never been measured on
-your card. Measure it before raising the cap: run `nvtop -s`, start something that actually draws the card (a video
-playing is enough), and sum every process on it that is not the server. On this workstation that came to 1.0 GiB, so
-the cap here runs at 14.1 in `builder.env` rather than the public 13.0. That extra headroom is what admits the serious
-profile's task-lossless file, IQ3_S, at 114,688, which loads at 13.78 GiB and peaks at 14.21 during a 32k prompt; the long profile's full native window loads
-at 10.35 GiB and fits under either cap.
+The cap is measured after load, in either mode. On a card that also draws the desktop, the public default of 13.0
+assumes a desktop share that has never been measured on your card. Measure it before raising the cap: run `nvtop -s`,
+start something that actually draws the card (a video playing is enough), and sum every process on it that is not the
+server. On this workstation that came to 1.0 GiB, so the cap here runs at 14.1 in `builder.display.env` rather than
+the public 13.0. That extra headroom is what admits the serious profile's task-lossless file, IQ3_S, at 114,688, which
+loads at 13.78 GiB and peaks at 14.21 GiB during a 32k prompt; the long profile's full native window loads at
+10.35 GiB and fits under either cap. On a card that draws nothing, the free card here reported 15.9 GiB total and
+0.08 GiB used besides the server; prefill growth above the after-load reading has measured 0.04 to 0.3 GiB under
+`-ub 512`, so the inference cap is 15.3: 15.9 minus a 0.3 GiB growth allowance minus a 0.3 GiB reserve. Either cap is
+raised only after a fresh measurement, never by guesswork.
 
 **The key.** The server starts with `--api-key-file A770B_API_KEY_FILE` (default `~/.config/a770-builder/api.key`). The
 file is created on the first serve, one line, mode 600; the rendered profile carries the key into the sandbox, and every
@@ -166,14 +209,20 @@ cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j
 
 `A770B_LLAMA_BIN` defaults to `~/llama.cpp/build/bin/llama-server`; point it elsewhere if you built elsewhere.
 
-**The models.** Both profiles' files are public GGUFs on Hugging Face; the harness reads them from `A770B_MODELS`.
-Fetch them with the Hugging Face CLI (no account needed for these), straight into that directory:
+**The models.** These are the exact files each row below was measured with; a different quantisation of the same
+model is a different row, and the registry's own `model` and `source` fields (`config/profiles.json`,
+`config/profiles.inference.json`) are the authority when this list and they differ. Every profiled row's file is a
+public GGUF on Hugging Face; the harness reads them from `A770B_MODELS`. Fetch them with the Hugging Face CLI (no
+account needed for these), straight into that directory, one line per row of the registry it belongs to, in
+registry order:
 
 ```bash
-uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested            # long
-uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested   # serious
-uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested     # serious, this workstation's builder.env, under a 14.1 cap
-uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested       # fast
+uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # display: --profile long (5.6 GB)
+uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested        # display: --profile fast (5.3 GB)
+uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested     # display: --profile serious (10.1 GB)
+uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # inference: --profile long (5.6 GB; the same file as display's long)
+uvx --from huggingface_hub hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --local-dir ~/LLM/tested             # inference: --profile moe (22.4 GB; 18 GB of host RAM at run time)
+uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested       # inference: --profile serious (11.8 GB)
 ```
 
 llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M` downloads into
@@ -194,38 +243,45 @@ llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qw
 
 ## Qualifying a new model
 
-Models keep being released, and a new version of a family is a new model: its window, its speed on this card and its
-behaviour on a real brief are all unmeasured until the harness has run it. The seat is built so that a new model enters
-by measurement, in one sitting, without touching any script:
+Models keep being released, and a new version of a family is a new model: its window, its speed on this card, its
+sampling line and its behaviour on a real brief are all unmeasured until the harness has run it. The seat is built so
+that a new model enters by measurement, in one sitting, without touching any script:
 
 1. **Fetch the GGUF** into `A770B_MODELS` (the download lines above are the pattern) and write your qualification brief
    for your repository if you have not yet; `briefs/T1-sanitize-entity-tests.md` is the shape that works.
-2. **Run the row**: `bash harness/run_one.sh <label> <file.gguf> <ctx> [extra llama-server args]`, with `KV_K`/`KV_V`
-   and `REASONING` in the environment as the model needs. It starts the server under the card's rules, runs the probes
-   (load time, VRAM, the sanity gate, the long prefill, a tool call), refuses to continue if the sanity gate fails, then
-   dispatches the brief through opencode in the seat and writes the capture and a JSON of the numbers to
-   `A770B_DATA/results/<label>.*`. Flash attention is a variable of the row, not a constant of the card: if the long
-   prefill slows with position or the kernel logs an engine reset, run the row again with `-fa off` and `KV_V=f16`
-   before judging the model. Watch the kernel log beside every row (`journalctl -k`) and stop the server on the first
-   reset.
-   For a model meant to hold large files, add three measurements with the server up: `harness/cancel_repro.sh` (a
-   cancelled request must not take the card down), `harness/ctx_sweep.sh` (prefill, decode and VRAM against position)
-   and `harness/depth_probe.sh` (correct answers from deep inside the prompt), and run `briefs/T2-read-a-large-file.md`
-   as a second task.
+2. **Run the row**: `bash harness/run_one.sh <label> <file.gguf> <ctx> [extra llama-server args]`, with `KV_K`/`KV_V`,
+   `REASONING` and the model's own card's sampling flags in the environment as the target profile needs. It starts the
+   server under the mode's cap and `-ub 512`, runs the probes — load and VRAM at the target window, the sanity gate
+   with a budget that holds a full thinking reply when reasoning is on, the long prefill, a tool call — refuses to
+   continue if the sanity gate fails, then dispatches the brief through opencode in the seat and writes the capture and
+   a JSON of the numbers to `A770B_DATA/results/<label>.*`. Flash attention is a variable of the row, not a constant of
+   the card: if the long prefill slows with position or the kernel logs an engine reset, run the row again with
+   `-fa off` and `KV_V=f16` before judging the model. Watch the kernel log beside every row (`journalctl -k`) and stop
+   the server on the first reset.
+   For a model meant to hold large files, add: speed at 8k and the far end of the window (`harness/ctx_sweep.sh`,
+   prefill, decode and VRAM against position), the depth probe once for the model and window (`harness/depth_probe.sh`,
+   correct answers from deep inside the prompt), and the cancel reproduction once (`harness/cancel_repro.sh`, a
+   cancelled request must not take the card down); run `briefs/T2-read-a-large-file.md` as a second task, and the
+   in-house suite (`briefs/suite/`, five bounded units of this repository with hidden graders) for a builder-class
+   candidate.
 3. **Grade the capture** with a reviewer that did not write it: `briefs/REVIEW-prompt.md` is the prompt, the capture is
    its only input. Run `local-build.sh verify <label>` for the proof. Green tests and PASS or PARTIAL qualify.
 4. **Record it**: add the row to `config/models.md` with the measured numbers, the source repository and the caveats.
    A model that failed goes in the *kept out* paragraph with the reason, so nobody measures it twice.
-5. **Give it a profile** if it earns one: it enters `config/profiles.json` with its measured card — model file, window,
-   KV type, the reasoning and extra flags, the timings, and `use_for` in words. `local-build.sh profiles` and `status`
-   show what is configured; `builder.env` may still override a served value per machine (a different quantisation, a
-   larger cap) without touching the registry. If the new profile becomes the project's default, change `default` in
-   `config/profiles.json`, run `python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet
-   skills/local-build/CONSTITUTION_SNIPPET.md` so the skill's table and the snippet pick it up, update the numbers in
-   this file, and bump the version.
+5. **Give it a profile** if it earns one: it enters the mode's registry (`config/profiles.json` for display,
+   `config/profiles.inference.json` for inference) with its measured card — model file, window, KV type, category and
+   weight class, the reasoning and extra flags, the sampling line and its source, the timings, and `use_for` in words.
+   `local-build.sh profiles` and `status` show what is configured; `builder.<mode>.env` may still override a served
+   value per machine (a different quantisation, a larger cap) without touching the registry. If the new profile
+   becomes its mode's default, change `default` in that registry, run `python3 harness/profiles.py render --skill
+   skills/local-build/SKILL.md --snippet skills/local-build/CONSTITUTION_SNIPPET.md --inference-file
+   config/profiles.inference.json` so the skill's tables and the snippet pick it up, update the numbers in this file,
+   and bump the version.
 
-The expectations in the skill's table (window, speed, minutes per small task, what the model did with the repository's
-idioms) are read straight off the ledger row; when the row changes, so do they.
+The expectations in the skill's tables (window, speed, minutes per small task, what the model did with the
+repository's idioms) are read straight off the ledger row; when the row changes, so do they. The full guide for an
+agent that has a GGUF and this harness and wants a model on the list — what a profile is, the ladder as commands in
+order, the bar, and the submission — is [`AGENTS.md`](../AGENTS.md) at the repository root.
 
 ## What is hardcoded now
 
@@ -236,6 +292,14 @@ shape is the harness under WSL2 with `llama-server` native on Windows, reached o
 `A770B_ALLOW_NO_NVTOP=1` because the cap cannot read the card from inside WSL2; it has not been measured and the README
 says so. macOS has no bubblewrap.
 
+Two pieces are Vulkan-specific, both harmless on another Vulkan card and simply unused on a non-Vulkan backend:
+`MESA_VK_DEVICE_SELECT` (the pin Mesa's Vulkan loader reads) and `GGML_VK_DISABLE_COOPMAT` (the flag set proven on
+Arc under Vulkan). The `-ub 512` ceiling is this card's own watchdog rationale — Intel's Xe kernel driver resets the
+GPU past it on a display card; another card's reason for a batch ceiling, if any, is its own and needs its own
+measurement. The reset watch reads the kernel log for the Xe driver's own words (`engine reset`, `timedout`);
+another driver words a reset differently, so `A770B_RESET_PATTERN` is the knob to add when someone brings one — it
+is not there yet.
+
 Beyond that, nothing that matters. Two conventions remain: the opencode alias `local-builder` (the profile template depends on it) and
 the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A770B_OPENCODE_BIN`.
 
@@ -245,10 +309,11 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 |---|---|
 | `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run` with an optional `--spec`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`, `check-update`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
 | `render_readme.sh` | regenerates `README.html` from `README.md`; run after every README edit, the Markdown is the source |
-| `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (13 GiB after load on a display card), `-ub 512`, the API key, model marker |
+| `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (the mode's: 13 GiB after load on a display card, 15.3 on a free one), `-ub 512`, the API key, model marker |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
 | `harness/sandbox_run.sh` | the bubblewrap boundary: only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |
-| `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation; the key and profile helpers |
+| `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation; the card mode, the key and profile helpers |
+| `config/profiles.json` · `config/profiles.inference.json` | the two registries, one per card mode, the single source of every profile's numbers; `harness/profiles.py` validates, exports, inspects and renders them |
 | `harness/render_profile.py` | renders the opencode profile from the template (`render`), checks a run specification against the seat (`check`) and prepares its context into the brief copy (`context`); the echo of what was rendered lands beside the profile; `tests/test_render_profile.py` proves it |
 | `harness/guard.sh` | canonical seat guard, verified pids, the run lock, `safe_git`, the seat reset, the built-in budget gate |
 | `harness/capture_task.sh` | diff + new files + the model's pytest line + server-side TTFT/TPOT distribution, the `.patch` for `verify`, then the seat reset |
@@ -261,7 +326,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `release.sh` | cuts a release: moves the number in its three places (`VERSION`, the skill's `SKILL_VERSION`, the tag) in one commit, pushes, publishes the GitHub Release from a notes file. The first release is 0.1.0; each one after adds 0.0.1, the minor number moves when the patch would pass 99, and a major bump takes `--major` |
 | `LICENSE` | MIT |
 | `tests/selftest.sh` | what the harness proves without the card: every script parses, the health line reads the four kinds of answer and strips a hostile one, the seat's dirty check hides nothing but the harness's own brief copies, a symlink is reported and never read, the capture survives a run that made no file. Run it after a harness edit, from a tree you have read; a builder's patch is proven by `verify`, never by running its tests on the host |
-| `briefs/` | the brief template (`TEMPLATE.md`: named files, verbatim text in quoted blocks, a test command on named files, a stop condition), the qualification task (`T1-…`, a bounded edit), the reading task (`T2-…`, one large file whole, graded against `grep`), the cheap-reviewer prompt, the smoke brief |
+| `briefs/` | the brief template (`TEMPLATE.md`: named files, verbatim text in quoted blocks, a test command on named files, a stop condition), the qualification task (`T1-…`, a bounded edit), the reading task (`T2-…`, one large file whole, graded against `grep`), the cheap-reviewer prompt, the smoke brief, the in-house suite (`briefs/suite/`, five bounded units of this repository with hidden graders) |
 
 Data stays outside this folder on purpose: models in `~/LLM/tested` and `~/LLM/next-card`; the seat (`~/local-ai/seat`,
 a standalone clone of the target repository with no link to its live checkout), results (captures, patches, verify

@@ -1,0 +1,4 @@
+{ "card": {"text": "You are a coding agent in a shell project. Do exactly what the brief says, nothing more, and report in one line."},
+  "bash_allow": ["make check"],
+  "context": { "definitions_of": ["harness/guard.sh"] },
+  "verify": { "test": "uv run --with pytest --with pytest-asyncio python -m pytest -q tests/_hidden_test_smoke_hidden.py", "hidden": ["test_smoke_hidden.py"] } }

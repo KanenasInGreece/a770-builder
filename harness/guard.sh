@@ -90,7 +90,10 @@ run_lock(){
 }
 
 # VRAM on the builder card via nvtop. Refuses to fail open: without nvtop the caller must have set A770B_ALLOW_NO_NVTOP=1.
-_nvtop_field(){ nvtop -s 2>/dev/null | python3 -c "import sys,json; d=[x for x in json.load(sys.stdin) if '$A770B_GPU_MATCH' in x['device_name']]; print(int(d[0]['$1']) if d else -1)" 2>/dev/null || echo -1; }
+# -1 (not just when nvtop is absent) when the number of matching devices is not exactly one — an ambiguous match never picks d[0].
+_nvtop_field(){ nvtop -s 2>/dev/null | python3 -c "import sys,json; d=[x for x in json.load(sys.stdin) if '$A770B_GPU_MATCH' in x['device_name']]; print(int(d[0]['$1']) if len(d) == 1 else -1)" 2>/dev/null || echo -1; }
+# gpu_match_count — the number of nvtop devices whose device_name contains A770B_GPU_MATCH; -1 without readings (nvtop absent or its JSON unreadable).
+gpu_match_count(){ nvtop -s 2>/dev/null | python3 -c "import sys,json; print(len([x for x in json.load(sys.stdin) if '$A770B_GPU_MATCH' in x['device_name']]))" 2>/dev/null || echo -1; }
 require_vram_readings(){
   command -v nvtop >/dev/null && [ "$(_nvtop_field mem_total)" -gt 0 ] && return 0
   [ "$A770B_ALLOW_NO_NVTOP" = 1 ] && { echo "⚠ no VRAM readings (nvtop absent or card '$A770B_GPU_MATCH' not found) — A770B_ALLOW_NO_NVTOP=1, the VRAM cap is NOT enforced" >&2; return 0; }

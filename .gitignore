@@ -4,6 +4,7 @@ logs/
 __pycache__/
 .pytest_cache/
 config/builder.env
+config/builder.*.env
 CLAUDE.md
 sync_local_build.sh
 .claude/

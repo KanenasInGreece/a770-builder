@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "default": "long",
+  "mode": "inference",
+  "notes": "Every number is a measurement on the Arc A770 with nothing else on the card (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. This registry is read when A770B_CARD_MODE=inference; config/profiles.json is read in display mode. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served. useful_ctx is the largest depth at which decode stays above four tokens a second, taken from the 8k and far-end points by extending the time per token linearly, capped by the depth probe where one failed.",
+  "profiles": {
+    "long": {
+      "model": "Qwen3.5-9B-Q4_K_M.gguf",
+      "source": "lmstudio-community/Qwen3.5-9B-GGUF",
+      "family": "qwen3.5",
+      "architecture": "dense, hybrid attention (Gated DeltaNet + gated attention, 4 KV heads)",
+      "quant": "Q4_K_M",
+      "category": "dense",
+      "weight_class": "9b",
+      "params_b": {"total": 9, "active": 9},
+      "ctx": 262144,
+      "useful_ctx": 262144,
+      "kv": "q8_0",
+      "flash_attention": "on",
+      "reasoning": "off",
+      "extra": "--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --presence-penalty 1.5",
+      "sampling": {
+        "temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5,
+        "mode": "instruct", "source": "huggingface.co/Qwen/Qwen3.5-9B, non-thinking general line"
+      },
+      "timeout_s": 1500,
+      "vram_gib_after_load": 9.49,
+      "ram_gb_extra": 0,
+      "speed": {
+        "decode_tps": {"8k": 43.7, "32k": null, "64k": null, "100k": 11.6},
+        "prefill_tps": {"8k": 439, "32k": null, "64k": null, "100k": 147},
+        "far_end": {"tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147, "ttft_s": 626}
+      },
+      "depth_probe_100k": "pass",
+      "task_t1": "pass",
+      "capability": {},
+      "capability_source": "",
+      "fit": {
+        "code": "T1 under the card line: 6 tests green in 122 s",
+        "think": "not measured (the thinking arm is owed)",
+        "write": "not measured"
+      },
+      "use_for": "The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k."
+    },
+    "moe": {
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "source": "unsloth/Qwen3.6-35B-A3B-GGUF",
+      "family": "qwen3.6",
+      "architecture": "mixture of experts, 40 blocks, 256 experts with 8 used, hybrid attention (2 KV heads); 18 expert layers in host RAM (--n-cpu-moe 18), 22 on the card",
+      "quant": "UD-Q4_K_XL",
+      "category": "moe",
+      "weight_class": "35b-a3b",
+      "params_b": {"total": 35, "active": 3},
+      "ctx": 131072,
+      "useful_ctx": 131072,
+      "kv": "q8_0",
+      "flash_attention": "on",
+      "reasoning": "off",
+      "extra": "--n-cpu-moe 18 --temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --presence-penalty 1.5",
+      "sampling": {
+        "temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5,
+        "mode": "instruct", "source": "huggingface.co/Qwen/Qwen3.6-35B-A3B, non-thinking line"
+      },
+      "timeout_s": 1800,
+      "vram_gib_after_load": 14.1,
+      "ram_gb_extra": 18,
+      "speed": {
+        "decode_tps": {"8k": 21.8, "32k": null, "64k": null, "100k": 10.3},
+        "prefill_tps": {"8k": 207, "32k": null, "64k": null, "100k": 80},
+        "far_end": {"tokens": 100000, "decode_tps": 10.3, "prefill_tps": 80, "ttft_s": 1150}
+      },
+      "depth_probe_100k": "not run",
+      "task_t1": "pass",
+      "capability": {"LiveCodeBench_v6": 80.4, "MMLU_Pro": 85.2, "GPQA_Diamond": 86.0},
+      "capability_source": "huggingface.co/Qwen/Qwen3.6-35B-A3B model card (BF16)",
+      "fit": {
+        "code": "T1 under the card line: 10 tests green in 203 s",
+        "think": "thinking mode measured: T1 nine tests green in 254 s under the card's 0.6/0.95 line, against ten in 203 s instruct; GPQA-Diamond 86.0 (the model card, BF16)",
+        "write": "not measured"
+      },
+      "use_for": "A deliverable larger than its brief at three times the dense 27B's speed and its whole window at above ten tokens a second; needs 18 GB of host RAM for the run and a CPU that is busy; not beside another large load."
+    },
+    "serious": {
+      "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+      "source": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+      "family": "qwen3.8",
+      "architecture": "dense, hybrid attention (4 KV heads, 64 blocks)",
+      "quant": "IQ3_S",
+      "category": "dense",
+      "weight_class": "27b",
+      "params_b": {"total": 27, "active": 27},
+      "ctx": 196608,
+      "useful_ctx": 98304,
+      "kv": "q4_0",
+      "flash_attention": "on",
+      "reasoning": "on",
+      "extra": "--chat-template-kwargs {\"reasoning_effort\":\"low\"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0",
+      "sampling": {
+        "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0,
+        "mode": "thinking", "source": "huggingface.co/Qwen/Qwen3.8-27B, thinking mode; reasoning effort low ruled for speed"
+      },
+      "timeout_s": 3600,
+      "vram_gib_after_load": 14.62,
+      "ram_gb_extra": 0,
+      "speed": {
+        "decode_tps": {"8k": 7.9, "32k": 6.2, "64k": 4.9, "100k": null},
+        "prefill_tps": {"8k": 71, "32k": 58, "64k": 42, "100k": null},
+        "far_end": {"tokens": 64000, "decode_tps": 4.9, "prefill_tps": 42, "ttft_s": 753}
+      },
+      "depth_probe_100k": "not run",
+      "task_t1": "pass",
+      "capability": {"LiveCodeBench_v6": 85.71, "GPQA_Diamond": 89.39, "AIME25": 100},
+      "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100; the quantiser's task-lossless file)",
+      "fit": {
+        "code": "T1 under the card line: 10 tests green in 546 s at 196,608 (5 in 664 s at the client's temperature 0)",
+        "think": "GPQA-Diamond 89.39, AIME25 100 (the quantiser's card, IQ3_S vs BF16 89.90 / 100)",
+        "write": "not measured"
+      },
+      "use_for": "A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens."
+    }
+  }
+}

@@ -22,8 +22,10 @@ DEFAULT_PROMPT = (
     "make the change, run the exact test command given, and report the result. Be concise; do not narrate plans."
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_TOP_KEYS = {"profile", "timeout", "card", "scope", "bash_allow", "context", "verify"}
-ALLOWED_PROFILES = {"fast", "serious", "long"}
+DEFAULT_ALLOWED_PROFILES = ["fast", "serious", "long"]
+REGISTRY_FILES = ("config/profiles.json", "config/profiles.inference.json")
 SCOPE_EDIT_RE = re.compile(r"^[A-Za-z0-9._/*-]+$")
 BASH_ALLOW_RE = re.compile(r"^[A-Za-z0-9 ._/*:-]+$")
 BASH_ALLOW_FORBIDDEN_FIRST = {
@@ -34,6 +36,40 @@ BASH_ALLOW_FORBIDDEN_FIRST = {
     "script", "eval", "source", "doas", "unshare", "nsenter", "strace", "ltrace", "gdb", "perl", "ruby", "node",
 }
 VERIFY_HIDDEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _registry_profile_names() -> list[str] | None:
+    """Profile names from config/profiles.json union config/profiles.inference.json under the
+    project root (this module knows its own path), or None if neither file can be read and
+    parsed with a `profiles` object."""
+    names: set[str] = set()
+    found = False
+    for rel in REGISTRY_FILES:
+        try:
+            data = json.loads((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict):
+            names.update(profiles.keys())
+            found = True
+    return sorted(names) if found else None
+
+
+def _allowed_profiles() -> list[str]:
+    """The profile names a specification's `profile` key is checked against.
+
+    `A770B_PROFILES` (space-separated), when set and non-empty, names the running machine's
+    registry; when it is unset, the union of the profile names in config/profiles.json and
+    config/profiles.inference.json under the project root; the old trio is the fallback only
+    when neither registry file can be read (so tests run without env.sh keep passing).
+    """
+    env = os.environ.get("A770B_PROFILES", "")
+    names = env.split()
+    if names:
+        return names
+    registry_names = _registry_profile_names()
+    return registry_names if registry_names else list(DEFAULT_ALLOWED_PROFILES)
 
 
 class SpecError(Exception):
@@ -110,8 +146,9 @@ def validate_and_load(spec_path: str, seat_dir: str):
 
     # Rule 4: profile / timeout.
     if "profile" in data:
-        if data["profile"] not in ALLOWED_PROFILES:
-            raise SpecError("profile", "must be one of fast, serious, long")
+        allowed = _allowed_profiles()
+        if data["profile"] not in allowed:
+            raise SpecError("profile", f"must be one of {', '.join(allowed)}")
     if "timeout" in data:
         t = data["timeout"]
         if isinstance(t, bool) or not isinstance(t, int) or not (1 <= t <= 86400):
@@ -195,7 +232,45 @@ def _write_file(path: str, content: bytes) -> None:
         os.close(fd)
 
 
-def _build_echo(spec: dict, card_text, card_source, apikey: str, rendered_text: str, profile_name: str) -> dict:
+def _fmt_sampling_num(v: float) -> str:
+    """Minimal float text for a sampling number: 0.6, not 0.6000000000000001; 1.0, not 1."""
+    return repr(float(v))
+
+
+def _parse_sampling_args(temperature_arg, top_p_arg):
+    """Return (temperature, top_p, ok): floats or None, and ok=False when a given value fails validation
+    (0 <= temperature <= 2, 0 < top_p <= 1)."""
+    temperature = None
+    top_p = None
+    if temperature_arg is not None:
+        try:
+            temperature = float(temperature_arg)
+        except ValueError:
+            return None, None, False
+        if not (0 <= temperature <= 2):
+            return None, None, False
+    if top_p_arg is not None:
+        try:
+            top_p = float(top_p_arg)
+        except ValueError:
+            return None, None, False
+        if not (0 < top_p <= 1):
+            return None, None, False
+    return temperature, top_p, True
+
+
+def _sampling_line(temperature, top_p):
+    """The __SAMPLING__ replacement text, or None when neither value is given (the placeholder is dropped)."""
+    if temperature is not None and top_p is not None:
+        return f'"temperature": {_fmt_sampling_num(temperature)}, "top_p": {_fmt_sampling_num(top_p)},'
+    if temperature is not None:
+        return f'"temperature": {_fmt_sampling_num(temperature)},'
+    if top_p is not None:
+        return f'"top_p": {_fmt_sampling_num(top_p)},'
+    return None
+
+
+def _build_echo(spec: dict, card_text, card_source, apikey: str, rendered_text: str, profile_name: str, temperature=None, top_p=None) -> dict:
     card_field = None
     if card_text is not None:
         card_field = {
@@ -222,6 +297,8 @@ def _build_echo(spec: dict, card_text, card_source, apikey: str, rendered_text: 
         "hidden": verify.get("hidden") or [],
         "rendered_sha256": rendered_sha256,
         "context": [],
+        "temperature": temperature,
+        "top_p": top_p,
     }
 
 
@@ -342,6 +419,11 @@ def cmd_render(args) -> int:
             print(f"render_profile: {e.key}: {e.reason}", file=sys.stderr)
             return 2
 
+    temperature, top_p, sampling_ok = _parse_sampling_args(args.temperature, args.top_p)
+    if not sampling_ok:
+        print("render_profile: bad --temperature/--top-p", file=sys.stderr)
+        return 2
+
     # Read the template file as UTF-8 text
     template_path = Path(args.template)
     text = template_path.read_text(encoding="utf-8")
@@ -373,6 +455,10 @@ def cmd_render(args) -> int:
     bash_allow_str = "".join(f'{json.dumps(p)}: "allow", ' for p in bash_allow)
     text = text.replace("__BASH_ALLOW__", bash_allow_str)
 
+    # Replace __SAMPLING__ with the given values (either or both, as "key": value, ...), or with nothing.
+    sampling_line = _sampling_line(temperature, top_p)
+    text = text.replace("__SAMPLING__", sampling_line if sampling_line is not None else "")
+
     # Check for any remaining unreplaced placeholders
     pattern = r"__[A-Z][A-Z_]*__"
     if re.search(pattern, text):
@@ -383,7 +469,7 @@ def cmd_render(args) -> int:
     _write_file(args.out, text.encode("utf-8"))
 
     if args.echo:
-        echo_data = _build_echo(spec, card_text, card_source, args.apikey, text, args.name)
+        echo_data = _build_echo(spec, card_text, card_source, args.apikey, text, args.name, temperature, top_p)
         _write_file(args.echo, json.dumps(echo_data).encode("utf-8"))
 
     return 0
@@ -401,6 +487,8 @@ def main() -> int:
     render_parser.add_argument("--ctx", "-c", required=True, help="Context window size")
     render_parser.add_argument("--output", "-m", required=True, help="Output window size")
     render_parser.add_argument("--name", "-n", required=True, help="Agent name")
+    render_parser.add_argument("--temperature", help="Sampling temperature for the agent block (0 <= t <= 2)")
+    render_parser.add_argument("--top-p", dest="top_p", help="Sampling top_p for the agent block (0 < p <= 1)")
     render_parser.add_argument("--spec", help="Path to a run specification JSON (requires --seat)")
     render_parser.add_argument("--seat", help="Path to the seat directory (required with --spec)")
     render_parser.add_argument("--echo", help="Path to write a JSON echo of the resolved specification")

@@ -22,14 +22,29 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SPEED_KEYS = {"8k", "32k", "64k", "100k"}
 KV_VALUES = {"f16", "q8_0", "q4_0"}
 ON_OFF_VALUES = {"on", "off"}
+MODE_VALUES = {"display", "inference"}
+SAMPLING_NUMBER_KEYS = {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"}
+SAMPLING_MODE_VALUES = {"thinking", "instruct"}
+SAMPLING_KEYS = SAMPLING_NUMBER_KEYS | {"mode", "source"}
+CATEGORY_VALUES = {"dense", "moe"}
+WEIGHT_CLASS_RE = re.compile(r"^[0-9]+b(-[ae][0-9]+b)?$")
+FAR_END_KEYS = {"tokens", "decode_tps", "prefill_tps", "ttft_s"}
+FIT_KEYS = {"code", "think", "write"}
+SUITE_KEYS = {"briefs", "runs", "passed", "mean_wall_s", "source"}
+SUITE_REQUIRED_KEYS = {"briefs", "runs", "passed", "source"}
+TEMP_FLAG_RE = re.compile(r"(?:^|\s)--temp(?:\s|=)")
+TOP_P_FLAG_RE = re.compile(r"(?:^|\s)--top-p(?:\s|=)")
+TASK_T1_PASS_RE = re.compile(r"^pass(?:\s*\(.*\))?$", re.IGNORECASE)
 
 STRING_KEYS = (
-    "model", "source", "family", "architecture", "quant", "kv", "flash_attention",
+    "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
+    "category", "weight_class",
 )
-INT_KEYS = ("ctx", "useful_ctx", "timeout_s")
-OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability")
+INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
+OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite")
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
+OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -41,6 +56,11 @@ def _is_number(v) -> bool:
 
 def _is_pos_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _fmt_sampling_num(v) -> str:
+    """Minimal float text for a sampling number: 0.6, not 0.6000000000000001; 1.0, not 1."""
+    return repr(float(v))
 
 
 def sh_single_quote(s: str) -> str:
@@ -56,11 +76,14 @@ def validate(data) -> list[str]:
         return ["not a JSON object"]
 
     for k in data.keys():
-        if k not in {"schema", "default", "notes", "profiles"}:
+        if k not in {"schema", "default", "notes", "profiles", "mode"}:
             errors.append(f"unknown key {k}")
 
     if data.get("schema") != 1:
         errors.append("schema: must be 1")
+
+    if "mode" in data and data["mode"] not in MODE_VALUES:
+        errors.append("mode: must be display or inference")
 
     profiles = data.get("profiles")
     if not isinstance(profiles, dict) or not profiles:
@@ -82,7 +105,7 @@ def validate(data) -> list[str]:
             if k not in PROFILE_KEYS:
                 errors.append(f"{name}: unknown key {k}")
         for k in PROFILE_KEYS:
-            if k not in prof:
+            if k not in OPTIONAL_KEYS and k not in prof:
                 errors.append(f"{name}: missing key {k}")
 
         for k in STRING_KEYS:
@@ -123,8 +146,17 @@ def validate(data) -> list[str]:
                 if _is_number(total) and _is_number(active) and active > total:
                     errors.append(f"{name}: params_b.active must be <= total")
 
+        if "category" in prof and isinstance(prof["category"], str) and prof["category"] not in CATEGORY_VALUES:
+            errors.append(f"{name}: category must be dense or moe")
+
+        if "weight_class" in prof and isinstance(prof["weight_class"], str) and not WEIGHT_CLASS_RE.match(prof["weight_class"]):
+            errors.append(f"{name}: weight_class must look like 9b, 35b-a3b or 8b-e4b")
+
         if "kv" in prof and isinstance(prof["kv"], str) and prof["kv"] not in KV_VALUES:
             errors.append(f"{name}: kv must be one of f16, q8_0, q4_0")
+
+        if "kv_v" in prof and isinstance(prof["kv_v"], str) and prof["kv_v"] not in KV_VALUES:
+            errors.append(f"{name}: kv_v must be one of f16, q8_0, q4_0")
 
         for k in ("flash_attention", "reasoning"):
             if k in prof and isinstance(prof[k], str) and prof[k] not in ON_OFF_VALUES:
@@ -132,7 +164,8 @@ def validate(data) -> list[str]:
 
         if "speed" in prof:
             speed = prof["speed"]
-            if not isinstance(speed, dict) or set(speed.keys()) != {"decode_tps", "prefill_tps"}:
+            speed_allowed = {"decode_tps", "prefill_tps", "far_end"}
+            if not isinstance(speed, dict) or not {"decode_tps", "prefill_tps"} <= set(speed.keys()) or set(speed.keys()) - speed_allowed:
                 errors.append(f"{name}: speed must be an object with decode_tps and prefill_tps")
             else:
                 for sk in ("decode_tps", "prefill_tps"):
@@ -144,6 +177,18 @@ def validate(data) -> list[str]:
                             if vv is not None and not _is_number(vv):
                                 errors.append(f"{name}: speed.{sk}.{kk} must be a number or null")
 
+                if "far_end" in speed:
+                    far_end = speed["far_end"]
+                    if not isinstance(far_end, dict) or set(far_end.keys()) != FAR_END_KEYS:
+                        errors.append(f"{name}: speed.far_end must be an object with tokens, decode_tps, prefill_tps, ttft_s")
+                    else:
+                        if not _is_pos_int(far_end["tokens"]):
+                            errors.append(f"{name}: speed.far_end.tokens must be a positive int")
+                        for kk in ("decode_tps", "prefill_tps", "ttft_s"):
+                            vv = far_end[kk]
+                            if not _is_number(vv) or vv <= 0:
+                                errors.append(f"{name}: speed.far_end.{kk} must be a positive number")
+
         if "capability" in prof:
             cap = prof["capability"]
             if not isinstance(cap, dict):
@@ -152,6 +197,81 @@ def validate(data) -> list[str]:
                 for kk, vv in cap.items():
                     if not _is_number(vv):
                         errors.append(f"{name}: capability.{kk} must be a number")
+
+        if "fit" in prof:
+            fit = prof["fit"]
+            if not isinstance(fit, dict):
+                errors.append(f"{name}: fit must be an object")
+            else:
+                for kk in fit.keys():
+                    if kk not in FIT_KEYS:
+                        errors.append(f"{name}: fit: unknown key {kk}")
+                for kk in FIT_KEYS:
+                    if kk in fit:
+                        vv = fit[kk]
+                        if not isinstance(vv, str) or not vv:
+                            errors.append(f"{name}: fit.{kk} must be a non-empty string")
+
+        if "suite" in prof:
+            suite = prof["suite"]
+            if not isinstance(suite, dict):
+                errors.append(f"{name}: suite must be an object")
+            else:
+                for kk in suite.keys():
+                    if kk not in SUITE_KEYS:
+                        errors.append(f"{name}: suite: unknown key {kk}")
+                for kk in SUITE_REQUIRED_KEYS:
+                    if kk not in suite:
+                        errors.append(f"{name}: suite: missing key {kk}")
+                for kk in ("briefs", "runs"):
+                    if kk in suite and not _is_pos_int(suite[kk]):
+                        errors.append(f"{name}: suite.{kk} must be a positive int")
+                if "passed" in suite:
+                    passed = suite["passed"]
+                    if not isinstance(passed, int) or isinstance(passed, bool):
+                        errors.append(f"{name}: suite.passed must be between 0 and runs")
+                    else:
+                        runs = suite.get("runs")
+                        if _is_pos_int(runs):
+                            if not (0 <= passed <= runs):
+                                errors.append(f"{name}: suite.passed must be between 0 and runs")
+                        elif passed < 0:
+                            errors.append(f"{name}: suite.passed must be between 0 and runs")
+                if "mean_wall_s" in suite:
+                    v = suite["mean_wall_s"]
+                    if not _is_number(v) or v <= 0:
+                        errors.append(f"{name}: suite.mean_wall_s must be a positive number")
+                if "source" in suite:
+                    v = suite["source"]
+                    if not isinstance(v, str) or not v:
+                        errors.append(f"{name}: suite.source must be a non-empty string")
+
+        if "sampling" in prof:
+            sampling = prof["sampling"]
+            if not isinstance(sampling, dict):
+                errors.append(f"{name}: sampling must be an object")
+            else:
+                for kk in sampling.keys():
+                    if kk not in SAMPLING_KEYS:
+                        errors.append(f"{name}: sampling: unknown key {kk}")
+                for kk in SAMPLING_NUMBER_KEYS:
+                    if kk in sampling and not _is_number(sampling[kk]):
+                        errors.append(f"{name}: sampling.{kk} must be a number")
+                if "mode" in sampling and sampling["mode"] not in SAMPLING_MODE_VALUES:
+                    errors.append(f"{name}: sampling.mode must be thinking or instruct")
+                source = sampling.get("source")
+                if not isinstance(source, str) or not source:
+                    errors.append(f"{name}: sampling.source must be a non-empty string")
+
+                if _is_number(sampling.get("temperature")):
+                    extra = prof.get("extra")
+                    if not isinstance(extra, str) or not TEMP_FLAG_RE.search(extra):
+                        errors.append(f"{name}: sampling.temperature is set but extra carries no --temp")
+
+                if _is_number(sampling.get("top_p")):
+                    extra = prof.get("extra")
+                    if not isinstance(extra, str) or not TOP_P_FLAG_RE.search(extra):
+                        errors.append(f"{name}: sampling.top_p is set but extra carries no --top-p")
 
     return errors
 
@@ -203,6 +323,17 @@ def cmd_env(args) -> int:
         print(': "${A770B_%s_MODEL:=%s}"' % (upper, prof["model"]))
         print(': "${A770B_%s_CTX:=%d}"' % (upper, prof["ctx"]))
         print(': "${A770B_%s_KV:=%s}"' % (upper, prof["kv"]))
+        print(': "${A770B_%s_KV_V:=%s}"' % (upper, prof.get("kv_v", prof["kv"])))
+        sampling = prof.get("sampling") or {}
+        temp = sampling.get("temperature")
+        top_p = sampling.get("top_p")
+        temp_str = _fmt_sampling_num(temp) if _is_number(temp) else ""
+        top_p_str = _fmt_sampling_num(top_p) if _is_number(top_p) else ""
+        print(': "${A770B_%s_TEMPERATURE:=%s}"' % (upper, temp_str))
+        print(': "${A770B_%s_TOP_P:=%s}"' % (upper, top_p_str))
+        output_tokens = prof.get("output_tokens")
+        output_tokens_str = str(output_tokens) if _is_pos_int(output_tokens) else ""
+        print(': "${A770B_%s_OUTPUT_TOKENS:=%s}"' % (upper, output_tokens_str))
         print(': "${A770B_%s_REASONING:=%s}"' % (upper, prof["reasoning"]))
         print(': "${A770B_%s_TIMEOUT:=%d}"' % (upper, prof["timeout_s"]))
         print(
@@ -235,11 +366,41 @@ def _card_warnings(profiles: dict) -> dict:
     return warnings
 
 
+def _builder_class(prof: dict) -> bool:
+    """Whether a profile clears the builder-class bar: useful_ctx >= 81920 and a green task.
+
+    Computed by `card`; never stored in the registry file itself.
+    """
+    useful_ctx = prof.get("useful_ctx")
+    if not _is_pos_int(useful_ctx) or useful_ctx < 81920:
+        return False
+
+    task_t1 = prof.get("task_t1")
+    if isinstance(task_t1, str) and TASK_T1_PASS_RE.match(task_t1.strip()):
+        return True
+
+    suite = prof.get("suite")
+    if isinstance(suite, dict):
+        passed, runs = suite.get("passed"), suite.get("runs")
+        if (
+            isinstance(passed, int) and not isinstance(passed, bool)
+            and _is_pos_int(runs)
+            and passed / runs >= 0.8
+        ):
+            return True
+
+    return False
+
+
 def cmd_card(args) -> int:
-    data, err = _load(Path(args.file))
+    path = Path(args.file)
+    data, err = _load(path)
     if err is not None:
         print(f"profiles: {err}", file=sys.stderr)
         return 2
+
+    data["mode"] = data.get("mode")
+    data["registry"] = str(path.resolve())
 
     profiles = data.get("profiles", {})
     for name, prof in profiles.items():
@@ -248,6 +409,7 @@ def cmd_card(args) -> int:
             "served_model": prof.get("model"),
             "served_ctx": prof.get("ctx"),
             "served_kv": prof.get("kv"),
+            "served_kv_v": prof.get("kv_v", prof.get("kv")),
             "served_reasoning": prof.get("reasoning"),
         }
         if args.served:
@@ -255,12 +417,14 @@ def cmd_card(args) -> int:
                 "served_model": os.environ.get(f"A770B_{upper}_MODEL"),
                 "served_ctx": (int(os.environ[f"A770B_{upper}_CTX"]) if os.environ.get(f"A770B_{upper}_CTX", "").isdigit() else None),
                 "served_kv": os.environ.get(f"A770B_{upper}_KV"),
+                "served_kv_v": os.environ.get(f"A770B_{upper}_KV_V"),
                 "served_reasoning": os.environ.get(f"A770B_{upper}_REASONING"),
             }
             for k, v in overrides.items():
                 if v is not None:
                     served[k] = v
         prof.update(served)
+        prof["builder_class"] = _builder_class(prof)
 
     warnings_by_profile = _card_warnings(profiles)
     data["warnings"] = [w for name in profiles for w in warnings_by_profile[name]]
@@ -271,6 +435,8 @@ def cmd_card(args) -> int:
             return 2
         out = dict(profiles[args.name])
         out["name"] = args.name
+        out["mode"] = data["mode"]
+        out["registry"] = data["registry"]
         out["warnings"] = warnings_by_profile.get(args.name, [])
         print(json.dumps(out, indent=2))
         return 0
@@ -285,38 +451,73 @@ def _short_model_name(model: str) -> str:
     return model.replace("-it", "")
 
 
-def _replace_between_markers(path: Path, generated_lines: list[str]) -> bool:
-    """Replace the lines strictly between the begin/end markers with `generated_lines`.
+def _table_rows(data: dict) -> list[str]:
+    """The skill table's header, separator, and one row per profile."""
+    profiles = data["profiles"]
+    default = data["default"]
 
-    Returns True if the markers were found and the file was rewritten, False if the file
-    lacks either marker (in which case it is left unchanged and a message is printed).
-    """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        print(f"profiles: cannot read {path}: {e}", file=sys.stderr)
-        return False
+    lines = [SKILL_HEADER, SKILL_SEPARATOR]
+    for name, prof in profiles.items():
+        ctx_fmt = f"{prof['ctx']:,}"
+        useful_k = prof["useful_ctx"] // 1000
+        decode8k = prof["speed"]["decode_tps"]["8k"]
+        prefill8k = prof["speed"]["prefill_tps"]["8k"]
 
-    ends_with_newline = text.endswith("\n")
-    lines = text.splitlines()
+        display_name = name + (" (default)" if name == default else "")
+        lines.append(
+            f"| {display_name} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
+            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof['use_for']} |"
+        )
+    return lines
+
+
+def _snippet_sentence(data: dict) -> str:
+    """The one-line snippet sentence for a registry."""
+    profiles = data["profiles"]
+    default = data["default"]
+
+    segments = []
+    for name, prof in profiles.items():
+        ctx_fmt = f"{prof['ctx']:,}"
+        useful_k = prof["useful_ctx"] // 1000
+        decode8k = prof["speed"]["decode_tps"]["8k"]
+
+        label = f"**--profile {name}**" + (" (default)" if name == default else "")
+        decode_round = round(decode8k)
+        segments.append(
+            f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
+            f"(useful to ~{useful_k}k), ~{decode_round} tok/s"
+        )
+
+    return "; ".join(segments) + "."
+
+
+def _find_markers(lines: list[str], marker: str) -> tuple[int, int] | None:
+    """Return (begin_idx, end_idx) of the marker pair in `lines`, or None if either is absent."""
+    begin_marker = f"<!-- {marker}:begin -->"
+    end_marker = f"<!-- {marker}:end -->"
 
     begin_idx = end_idx = None
     for i, line in enumerate(lines):
-        if begin_idx is None and line.strip() == "<!-- profiles:begin -->":
+        if begin_idx is None and line.strip() == begin_marker:
             begin_idx = i
-        elif begin_idx is not None and end_idx is None and line.strip() == "<!-- profiles:end -->":
+        elif begin_idx is not None and end_idx is None and line.strip() == end_marker:
             end_idx = i
 
     if begin_idx is None or end_idx is None:
-        print(f"profiles: no markers in {path}", file=sys.stderr)
-        return False
+        return None
+    return begin_idx, end_idx
 
+
+def _apply_between_markers(text: str, begin_idx: int, end_idx: int, generated_lines: list[str]) -> str:
+    """Return `text` with the lines strictly between begin_idx and end_idx replaced."""
+    ends_with_newline = text.endswith("\n")
+    lines = text.splitlines()
     new_lines = lines[: begin_idx + 1] + list(generated_lines) + lines[end_idx:]
     new_text = "\n".join(new_lines)
     if ends_with_newline:
         new_text += "\n"
-    path.write_text(new_text, encoding="utf-8")
-    return True
+    return new_text
 
 
 def cmd_render(args) -> int:
@@ -325,38 +526,62 @@ def cmd_render(args) -> int:
         print(f"profiles: {err}", file=sys.stderr)
         return 2
 
-    profiles = data["profiles"]
-    default = data["default"]
+    table_lines = _table_rows(data)
+    sentence = _snippet_sentence(data)
 
-    table_lines = [SKILL_HEADER, SKILL_SEPARATOR]
-    snippet_segments = []
+    inf_data = None
+    if args.inference_file:
+        inf_data, err = _load(Path(args.inference_file))
+        if err is not None:
+            print(f"profiles: {err}", file=sys.stderr)
+            return 2
 
-    for name, prof in profiles.items():
-        ctx_fmt = f"{prof['ctx']:,}"
-        useful_k = prof["useful_ctx"] // 1000
-        decode8k = prof["speed"]["decode_tps"]["8k"]
-        prefill8k = prof["speed"]["prefill_tps"]["8k"]
+    if inf_data is None:
+        snippet_lines = [sentence]
+    else:
+        inf_sentence = _snippet_sentence(inf_data)
+        snippet_lines = [
+            f"Display-safe (`A770B_CARD_MODE=display`, the default): {sentence}",
+            f"Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): {inf_sentence}",
+        ]
 
-        display_name = name + (" (default)" if name == default else "")
-        table_lines.append(
-            f"| {display_name} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof['use_for']} |"
-        )
+    # Every (path, marker) pair this render needs to touch, in write order. The skill file
+    # can appear twice (the "profiles" table and, with an inference file, "profiles-inference").
+    targets: list[tuple[Path, str, list[str]]] = [(Path(args.skill), "profiles", table_lines)]
+    if inf_data is not None:
+        targets.append((Path(args.skill), "profiles-inference", _table_rows(inf_data)))
+    targets.append((Path(args.snippet), "profiles", snippet_lines))
 
-        if name == default:
-            label = f"**{name}** (default)"
-        else:
-            label = f"**--{name}**"
-        decode_round = round(decode8k)
-        snippet_segments.append(
-            f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
-            f"(useful to ~{useful_k}k), ~{decode_round} tok/s"
-        )
+    texts: dict[Path, str] = {}
+    for path, _marker, _lines in targets:
+        if path not in texts:
+            try:
+                texts[path] = path.read_text(encoding="utf-8")
+            except OSError as e:
+                print(f"profiles: cannot read {path}: {e}", file=sys.stderr)
+                return 2
 
-    snippet_line = "; ".join(snippet_segments) + "."
+    # Check every marker pair before writing anything: a missing pair in any target file
+    # must leave every target file untouched, not just the ones after it.
+    ok = True
+    for path, marker, _lines in targets:
+        if _find_markers(texts[path].splitlines(), marker) is None:
+            print(f"profiles: no {marker} markers in {path}", file=sys.stderr)
+            ok = False
+    if not ok:
+        return 2
 
-    _replace_between_markers(Path(args.skill), table_lines)
-    _replace_between_markers(Path(args.snippet), [snippet_line])
+    # All pairs confirmed present: apply the replacements in memory, then write once per
+    # path. Re-find each marker's position on the current in-memory text, since an earlier
+    # replacement on the same path (e.g. "profiles" before "profiles-inference") can shift
+    # the line numbers a later marker sits at.
+    new_texts = dict(texts)
+    for path, marker, lines in targets:
+        begin_idx, end_idx = _find_markers(new_texts[path].splitlines(), marker)
+        new_texts[path] = _apply_between_markers(new_texts[path], begin_idx, end_idx, lines)
+
+    for path, text in new_texts.items():
+        path.write_text(text, encoding="utf-8")
 
     return 0
 
@@ -379,6 +604,7 @@ def main() -> int:
     render_parser = subparsers.add_parser("render", parents=[common], help="Regenerate the skill table and snippet")
     render_parser.add_argument("--skill", required=True, help="Path to the skill file to update")
     render_parser.add_argument("--snippet", required=True, help="Path to the snippet file to update")
+    render_parser.add_argument("--inference-file", help="Path to config/profiles.inference.json, to also render")
 
     args = parser.parse_args()
 

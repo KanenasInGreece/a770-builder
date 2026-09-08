@@ -7,9 +7,26 @@ here=$(cd "$(dirname "$0")/.." && pwd); fail=0
 for f in "$here"/harness/*.sh "$here"/skills/local-build/scripts/local-build.sh "$here"/release.sh "$here"/sync_local_build.sh; do
   [ -f "$f" ] || continue; bash -n "$f" || { echo "FAIL syntax: $f"; fail=1; }
 done
-export A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="${TMPDIR:-/tmp}/a770b-selftest-$$"
-. "$here/harness/env.sh"; . "$here/harness/guard.sh"
 t=$(mktemp -d)
+# isolation (I11): this machine's own ~/.config/a770-builder/builder(.<mode>).env must never reach the selftest's
+# baseline, whatever mode it selects and whatever the calling shell already exported — clear every exported A770B_*
+# this process carries, then set exactly the baseline the checks below assume: display mode, an empty XDG_CONFIG_HOME.
+for v in $(compgen -A export A770B_); do
+  case $v in A770B_PROJECT|A770B_REFUSE|A770B_DATA) ;; *) unset "$v";; esac
+done
+mkdir -p "$t/xdg"
+export A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="${TMPDIR:-/tmp}/a770b-selftest-$$" A770B_CARD_MODE=display XDG_CONFIG_HOME="$t/xdg"
+. "$here/harness/env.sh"; . "$here/harness/guard.sh"
+# A770B_KEEP / _iso — every I1-I10 check below that switches the mode or the registry re-sources env.sh in its own
+# subshell; _iso clears whatever this process already has exported (this baseline's A770B_CARD_MODE included) except
+# the names in A770B_KEEP, so each subshell resolves fresh from the files and exports it sets itself — nothing here,
+# and nothing inherited from the calling shell, leaks into a check it was not given to.
+A770B_KEEP="A770B_PROJECT A770B_REFUSE A770B_DATA A770B_GPU_MATCH"
+# A770B_PROFILES_FILE and A770B_VRAM_CAP_GIB are no longer exported by env.sh (they must not cross a process
+# boundary, so a script that sources env.sh once in one mode and again in another, in a child process, resolves the
+# child's own registry and cap). Being plain shell variables now, they are not caught by `compgen -A export` and
+# survive a `(...)` subshell's fork from this baseline like any other local variable, so _iso unsets them by name too.
+_iso(){ local v; for v in $(compgen -A export A770B_); do case " $A770B_KEEP " in *" $v "*) ;; *) unset "$v";; esac; done; unset A770B_PROFILES_FILE A770B_VRAM_CAP_GIB; }
 printf '{"status": "degraded", "version": "1"}\n' > "$t/degraded.json"
 printf '{"status":"ok"}\n' > "$t/ok.json"
 printf '{"version":"1"}\n' > "$t/nostatus.json"
@@ -87,6 +104,161 @@ python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles
 [ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = "long" ] && echo "ok   profiles: names and default come from the registry" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='$A770B_DEFAULT_PROFILE'"; fail=1; }
 [ "$(a770b_profile_var long CTX)" = "262144" ] && printf '%s' "$(a770b_profile_var serious EXTRA)" | grep -q reasoning_effort && echo "ok   profiles: the helper reads the registry's variables" || { echo "FAIL profiles: a770b_profile_var did not read the registry"; fail=1; }
 [ "$( (export A770B_LONG_CTX=4096; . "$here/harness/env.sh" >/dev/null 2>&1; a770b_profile_var long CTX) )" = "4096" ] && echo "ok   profiles: the environment wins over the registry" || { echo "FAIL profiles: A770B_LONG_CTX=4096 did not win over the registry default"; fail=1; }
+# ── the card mode (I1-I4, I5a, I7b, I8-I10): a temporary registry/override tree under $t so nothing here reads the
+#    machine's own ~/.config/a770-builder/builder(.<mode>).env; every check that switches the mode, the registry file
+#    or the PATH runs in its own subshell (see _iso above), so nothing — PATH included — leaks into this shell.
+( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1 && [ "$A770B_CARD_MODE" = display ] ) \
+  && echo "ok   mode: I1 unset defaults to display" || { echo "FAIL mode: I1 unset did not default to display"; fail=1; }
+( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1 && [ "$A770B_CARD_MODE" = inference ] ) \
+  && echo "ok   mode: I1 inference is accepted" || { echo "FAIL mode: I1 inference was not accepted"; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=x XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" ) 2>&1 ); rc=$?
+{ [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "must be display or inference (it is 'x')"; } \
+  && echo "ok   mode: I1 an invalid mode refuses (exit 2) and names it" || { echo "FAIL mode: I1 x -> rc=$rc: $out"; fail=1; }
+( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
+  case "$A770B_PROFILES_FILE" in *config/profiles.json) : ;; *) exit 1;; esac
+  [ "$A770B_VRAM_CAP_GIB" = 13.0 ] && [ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = long ]
+) && echo "ok   mode: I2 the v0.1.4 defaults hold with the mode unset" || { echo "FAIL mode: I2 the display defaults did not all hold"; fail=1; }
+( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
+  case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
+  [ "$A770B_VRAM_CAP_GIB" = 15.3 ]
+) && echo "ok   mode: I3 inference defaults to its own registry and a 15.3 cap" || { echo "FAIL mode: I3 inference defaults did not hold"; fail=1; }
+( _iso; export A770B_CARD_MODE=inference A770B_VRAM_CAP_GIB=14.9 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_VRAM_CAP_GIB" = 14.9 ] ) \
+  && echo "ok   mode: I3 the environment's cap wins over the inference default" || { echo "FAIL mode: I3 A770B_VRAM_CAP_GIB=14.9 did not win"; fail=1; }
+( _iso; export A770B_CARD_MODE=inference A770B_PROFILES_FILE="$here/config/profiles.json" XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_PROFILES_FILE" = "$here/config/profiles.json" ] ) \
+  && echo "ok   mode: I3 the environment's registry file wins over the inference default" || { echo "FAIL mode: I3 A770B_PROFILES_FILE override did not win"; fail=1; }
+# A770B_PROFILES_FILE and A770B_VRAM_CAP_GIB must not be exported: a process that sources env.sh once in display mode,
+# then a CHILD process that switches to inference mode and sources env.sh again, must resolve that child's own
+# registry and cap fresh, not inherit the parent's already-computed display values across the process boundary
+( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
+  bash -c 'export A770B_CARD_MODE=inference; . "$A770B_PROJECT/harness/env.sh" >/dev/null 2>&1
+    case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
+    [ "$A770B_VRAM_CAP_GIB" = 15.3 ]'
+) && echo "ok   mode: a second source in another mode takes that mode's registry and cap" \
+  || { echo "FAIL mode: a second source in another mode did not take that mode's registry/cap"; fail=1; }
+i4a="$t/i4a/xdg"; mkdir -p "$i4a/a770-builder"
+printf 'A770B_CARD_MODE=inference\nA770B_VRAM_CAP_GIB=15.0\n' > "$i4a/a770-builder/builder.env"
+printf 'A770B_VRAM_CAP_GIB=14.9\n' > "$i4a/a770-builder/builder.inference.env"
+( _iso; export XDG_CONFIG_HOME="$i4a"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_VRAM_CAP_GIB" = 14.9 ] ) \
+  && echo "ok   mode: I4 the per-mode override file wins over builder.env" || { echo "FAIL mode: I4 the per-mode file did not win over builder.env"; fail=1; }
+( _iso; export A770B_VRAM_CAP_GIB=14.8 XDG_CONFIG_HOME="$i4a"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_VRAM_CAP_GIB" = 14.8 ] ) \
+  && echo "ok   mode: I4 the calling environment wins over the per-mode file" || { echo "FAIL mode: I4 A770B_VRAM_CAP_GIB=14.8 did not win"; fail=1; }
+i4c="$t/i4c/xdg"; mkdir -p "$i4c/a770-builder"
+printf 'A770B_CARD_MODE=inference\n' > "$i4c/a770-builder/builder.env"
+printf 'A770B_VRAM_CAP_GIB=14.7\n' > "$i4c/a770-builder/builder.display.env"
+( _iso; export A770B_CARD_MODE=display XDG_CONFIG_HOME="$i4c"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_CARD_MODE" = display ] && [ "$A770B_VRAM_CAP_GIB" = 14.7 ] ) \
+  && echo "ok   mode: I4 the environment's mode names the per-mode file that lands" || { echo "FAIL mode: I4 builder.display.env did not land"; fail=1; }
+i4d="$t/i4d/xdg"; mkdir -p "$i4d/a770-builder"
+printf 'A770B_CARD_MODE=display\n' > "$i4d/a770-builder/builder.inference.env"
+out=$( ( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$i4d"; . "$here/harness/env.sh" ) 2>&1 ); rc=$?
+{ [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "cannot switch the mode"; } \
+  && echo "ok   mode: I4 a per-mode file naming the other mode is refused" || { echo "FAIL mode: I4 rc=$rc: $out"; fail=1; }
+[ "$(a770b_profile_var long KV_V)" = q8_0 ] \
+  && echo "ok   mode: I5a a770b_profile_var long KV_V defaults to kv under the display baseline" \
+  || { echo "FAIL mode: I5a a770b_profile_var long KV_V='$(a770b_profile_var long KV_V)'"; fail=1; }
+out=$(bash "$here/skills/local-build/scripts/local-build.sh" status 2>&1)
+printf '%s' "$out" | grep -q '· mode display · registry ' \
+  && echo "ok   mode: I8 status prints the mode and registry in display" || { echo "FAIL mode: I8 status (display): $out"; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=inference; bash "$here/skills/local-build/scripts/local-build.sh" status ) 2>&1 )
+printf '%s' "$out" | grep -q '· mode inference · registry ' \
+  && echo "ok   mode: I8 status prints the mode and registry in inference" || { echo "FAIL mode: I8 status (inference): $out"; fail=1; }
+out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile fast ) 2>&1 ); rc=$?
+{ [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "worktree does not exist: /nonexistent-seat"; } \
+  && echo "ok   mode: I7b --profile fast is accepted, the run fails at the guard, naming the seat" || { echo "FAIL mode: I7b fast rc=$rc: $out"; fail=1; }
+out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile nosuch ) 2>&1 )
+printf '%s' "$out" | grep -q "profile must be one of:" \
+  && echo "ok   mode: I7b --profile nosuch is refused before the guard" || { echo "FAIL mode: I7b nosuch: $out"; fail=1; }
+out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --fast ) 2>&1 )
+printf '%s' "$out" | grep -q "unknown arg --fast" \
+  && echo "ok   mode: I7b the removed --fast arm is an unknown argument" || { echo "FAIL mode: I7b --fast: $out"; fail=1; }
+grep -q 'mode \$A770B_CARD_MODE · cap \$A770B_VRAM_CAP_GIB GiB' "$here/harness/serve_a770_llamacpp.sh" \
+  && grep -q 'A770B_CARD_MODE=inference' "$here/harness/serve_a770_llamacpp.sh" \
+  && echo "ok   mode: I10 the server's start and refusal lines name the mode and cap" \
+  || { echo "FAIL mode: I10 serve_a770_llamacpp.sh does not name the mode/cap as expected"; fail=1; }
+grep -q 'the server died during load' "$here/harness/serve_a770_llamacpp.sh" \
+  && echo "ok   harness: serve refuses when the pid dies during load" \
+  || { echo "FAIL harness: serve_a770_llamacpp.sh does not name the death message"; fail=1; }
+grep -q '4096' "$here/harness/bench_model.sh" && grep -q 'REASONING' "$here/harness/bench_model.sh" \
+  && echo "ok   harness: bench_model's probe gate reads REASONING for its 4096 budget" \
+  || { echo "FAIL harness: bench_model.sh does not read REASONING for a 4096 gate"; fail=1; }
+( _iso; export A770B_LONG_OUTPUT_TOKENS=4242 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
+  a770b_render_profile long 4096 "$t/harness-output.jsonc" nokey >/dev/null 2>&1
+  grep -q '"output": 4242' "$t/harness-output.jsonc"
+) && echo "ok   harness: a770b_render_profile carries the profile's own output_tokens" \
+  || { echo "FAIL harness: a770b_render_profile did not carry A770B_LONG_OUTPUT_TOKENS=4242"; fail=1; }
+# I9 — doctor's card: and mode: lines; a fake nvtop prints the JSON file $NVTOP_FAKE names, in 'nvtop -s' shape
+mkdir -p "$t/bin"
+cat > "$t/bin/nvtop" <<'NVEOF'
+#!/bin/sh
+cat "$NVTOP_FAKE"
+NVEOF
+chmod +x "$t/bin/nvtop"
+mkfake(){ # mkfake <path> <mem_used_bytes...> — one nvtop device per argument, its name containing A770B_GPU_MATCH
+  python3 - "$1" "$A770B_GPU_MATCH" "${@:2}" <<'PYEOF'
+import json, sys
+path, match, *used = sys.argv[1:]
+total = 17179869184
+devs = [{"device_name": f"Intel {match} Graphics {i}", "mem_total": str(total), "mem_used": u,
+         "mem_free": str(total - int(u)), "processes": []} for i, u in enumerate(used)]
+json.dump(devs, open(path, "w"))
+PYEOF
+}
+mkfake "$t/nvtop-1g.json" 1073741824
+mkfake "$t/nvtop-005g.json" 52428800
+mkfake "$t/nvtop-015g.json" 161061273
+mkfake "$t/nvtop-2dev.json" 1073741824 1073741824
+# case f needs every tool the doctor path uses (python3 above all — env.sh dies without it) but no nvtop; nvtop can
+# share a directory with those tools (it does on this host), so a symlink farm of everything but nvtop is the only
+# PATH that is both nvtop-free and still lets env.sh, guard.sh and doctor itself run
+mkdir -p "$t/bin-no-nvtop"
+IFS=':' read -ra _path_dirs <<< "$PATH"
+for _d in "${_path_dirs[@]}"; do
+  [ -d "$_d" ] || continue
+  for _f in "$_d"/*; do
+    [ -x "$_f" ] && [ ! -d "$_f" ] || continue
+    _b=$(basename "$_f")
+    [ "$_b" = nvtop ] && continue
+    [ -e "$t/bin-no-nvtop/$_b" ] || ln -s "$_f" "$t/bin-no-nvtop/$_b" 2>/dev/null
+  done
+done
+path_no_nvtop="$t/bin-no-nvtop"
+out=$( ( _iso; export A770B_CARD_MODE=inference PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-1g.json" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 ); rc=$?
+{ [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "MISSING mode: inference, but the builder card holds"; } \
+  && echo "ok   mode: I9a inference over 0.5 GiB with the server down is MISSING (doctor exits 1)" \
+  || { echo "FAIL mode: I9a rc=$rc"; printf '%s\n' "$out" | tail -20; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=inference PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-005g.json" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+printf '%s' "$out" | grep -q "ok   mode: inference; the builder card holds" \
+  && echo "ok   mode: I9b inference under 0.5 GiB with the server down is ok" \
+  || { echo "FAIL mode: I9b"; printf '%s\n' "$out" | tail -20; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-005g.json" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+printf '%s' "$out" | grep -q "no desktop measured on it" \
+  && echo "ok   mode: I9c display at 0.05 GiB hints that inference mode would give more room" \
+  || { echo "FAIL mode: I9c"; printf '%s\n' "$out" | tail -20; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-015g.json" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+{ printf '%s' "$out" | grep -q "ok   mode: display" && ! printf '%s' "$out" | grep -q "no desktop measured"; } \
+  && echo "ok   mode: I9d display at 0.15 GiB gives no hint" \
+  || { echo "FAIL mode: I9d"; printf '%s\n' "$out" | tail -20; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-2dev.json" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+{ printf '%s' "$out" | grep -q "MISSING card: 2 nvtop devices match" \
+  && printf '%s' "$out" | grep -q "not measured (no VRAM readings or more than one matching card)" \
+  && ! printf '%s' "$out" | grep -q "no desktop measured"; } \
+  && echo "ok   mode: I9e two matching devices are MISSING card, and mode reads not measured" \
+  || { echo "FAIL mode: I9e"; printf '%s\n' "$out" | tail -20; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=display PATH="$path_no_nvtop" A770B_ALLOW_NO_NVTOP=1
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+{ printf '%s' "$out" | grep -q "ok   card: not measured" && printf '%s' "$out" | grep -q "ok   mode: display, not measured" \
+  && ! printf '%s' "$out" | grep -q "MISSING card" && ! printf '%s' "$out" | grep -q "MISSING mode"; } \
+  && echo "ok   mode: I9f no nvtop with A770B_ALLOW_NO_NVTOP=1 is not measured, never MISSING" \
+  || { echo "FAIL mode: I9f"; printf '%s\n' "$out" | tail -20; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=display PATH="$path_no_nvtop" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+printf '%s' "$out" | grep -q "MISSING card: no VRAM readings (nvtop absent or its output unreadable); install nvtop, or set A770B_ALLOW_NO_NVTOP=1" \
+  && echo "ok   mode: I9g no nvtop without A770B_ALLOW_NO_NVTOP is MISSING card" \
+  || { echo "FAIL mode: I9g"; printf '%s\n' "$out" | tail -20; fail=1; }
 # the stop-run gate: run_pid_alive is the proof a pid is ours before any signal is sent, proved here without the card
 RUNPID="$A770B_DATA/logs/run.pid"
 rm -f "$RUNPID"
