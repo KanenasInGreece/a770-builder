@@ -44,24 +44,17 @@ a brief to.
 
 ## Why we made it
 
-A workstation full of coding agents depends on online seats that go down, rate-limit, or cost credits mid-build.
-Much of what they are asked to do is bounded work — a change to named files, tests from a specification, the read
-of one large file — that does not need the strongest model available, only one that gets it right in the
-repository's idiom. This card was already in the machine, driving the desktop, and idle. The obvious route was the
-stack Intel's newer cards run, vLLM on the XPU backend, and on this card that route is closed: vLLM's validated XPU
-hardware is the Arc Pro B-Series, its attention path since the 0.9.1 release needs Xe2 cores the A770 does not have,
-GGUF weights cannot be served on an Intel GPU through it at any version, the last line that ran here (0.9.0 on IPEX)
-answered wrongly with NaN logits, and the ipex-llm line that does run was archived in January 2026. llama.cpp with
-the Vulkan backend runs on the distribution's Mesa driver instead, with no oneAPI runtime beneath it; when the
-card's watchdog fires, Vulkan surfaces a device-lost error and the server stops, rather than staying up and
-answering nothing. So the serving line here is llama.cpp over Vulkan.
+A workstation full of coding agents depends on online seats that go down, rate-limit, or cost credits mid-build. Much
+of what those agents are asked to do is bounded work. That work is a change to named files, tests from a
+specification, or the read of one large file. It does not need the strongest model available, only one that does it
+correctly in the repository's idiom. It does not need the orchestrating agent's own context spent on it either. The
+card in the machine was idle. The obvious route for it, vLLM on Intel's XPU backend, is closed on this card. So the
+serving line here is llama.cpp with the Vulkan backend on the distribution's own driver. That is why the project
+measures rather than assumes.
 
-That left two questions, both settled by measurement rather than assumption. Whether a 16 GB card could hold a
-model that actually finishes a small, well-specified change in a real repository: every candidate got the same
-brief on a live codebase, and only the ones whose tests passed kept a place, with the ledger in `config/models.md`
-recording the ones that did not, and why. Whether an agent could hand that model work without giving it the run of
-the host: answered by the harness and the sandbox, and by review of both. A run does not end in an exit code but in
-a capture, and a reviewer can re-run its tests inside a fresh sandbox with `verify` before merging anything.
+Whether a 16 GB card can hold a model that actually finishes a small, well-specified change in a real repository is a
+question. Only measurement answers it. Every candidate is now measured on the kit inside this repository, and only
+what passes earns a place. Earlier rows in the ledger were measured on a sibling repository instead.
 
 ## Install
 
