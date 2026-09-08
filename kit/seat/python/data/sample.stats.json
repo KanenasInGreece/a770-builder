@@ -1,0 +1,18 @@
+{
+  "busiest_minute": "2026-01-01T01:53",
+  "by_component": {
+    "api": 409,
+    "cache": 415,
+    "ingest": 415,
+    "parser": 359,
+    "scheduler": 402
+  },
+  "by_level": {
+    "DEBUG": 598,
+    "ERROR": 128,
+    "INFO": 897,
+    "WARN": 377
+  },
+  "mean_message_length": 18.94,
+  "total_lines": 2000
+}

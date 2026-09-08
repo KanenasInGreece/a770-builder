@@ -1,0 +1,3 @@
+{ "card": {"text": "You are a coding agent writing a one-page design note in a small MIT project. Do exactly what the brief says, nothing more. Read product-brief.md whole before writing. Report in one line."},
+  "scope": { "edit": ["design/DESIGN.md"] },
+  "verify": { "test": "wc -l design/DESIGN.md", "hidden": ["test_s0_design_hidden.py"] } }

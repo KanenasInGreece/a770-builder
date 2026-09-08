@@ -1,0 +1,4 @@
+{ "card": {"text": "You are a coding agent writing a C++ hot path and its ctypes wrapper in a small MIT project. Do exactly what the brief says, nothing more. Warnings are errors. Report in one line per file changed."},
+  "scope": { "edit": ["cpp/logstats.cpp", "python/logstats/fast.py"] },
+  "bash_allow": ["make -C cpp"],
+  "verify": { "test": "make -C cpp && uv run --with pytest python -m pytest -q python/tests", "hidden": ["test_s3_optimise_hidden.py"] } }

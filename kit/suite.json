@@ -1,0 +1,69 @@
+{
+  "suite": "SUITE-1",
+  "seat": "kit/seat",
+  "hidden_root": "kit/hidden",
+  "stages": [
+    {
+      "id": "s0-design",
+      "language": "prose",
+      "brief": "kit/tasks/s0-design.md",
+      "spec": "kit/tasks/s0-design.spec.json",
+      "grader": {
+        "working": "uv run --with pytest python -m pytest -q tests/_hidden_test_s0_design_hidden.py",
+        "conformance": null,
+        "budget_lines": 60,
+        "rubric": "kit/REVIEW-rubric.md"
+      },
+      "hidden": ["test_s0_design_hidden.py"],
+      "axes": ["maintainable", "usable"],
+      "counts_toward_pass": false,
+      "note": "scored outside the pass count (commentary) — see kit/SUITE.md"
+    },
+    {
+      "id": "s1-frontend",
+      "language": "javascript+html",
+      "brief": "kit/tasks/s1-frontend.md",
+      "spec": "kit/tasks/s1-frontend.spec.json",
+      "grader": {
+        "working": "node --test js/tests/*.test.js && uv run --with pytest python -m pytest -q tests/_hidden_test_s1_frontend_hidden.py",
+        "conformance": "node --check js/format.js && node --check js/render.js",
+        "budget_lines": 180,
+        "rubric": "kit/REVIEW-rubric.md"
+      },
+      "hidden": ["test_s1_frontend_hidden.py"],
+      "axes": ["maintainable", "usable"],
+      "counts_toward_pass": true
+    },
+    {
+      "id": "s2-backend",
+      "language": "python",
+      "brief": "kit/tasks/s2-backend.md",
+      "spec": "kit/tasks/s2-backend.spec.json",
+      "grader": {
+        "working": "uv run --with pytest python -m pytest -q python/tests tests/_hidden_test_s2_backend_hidden.py",
+        "conformance": "python3 -m compileall -q python/logstats",
+        "budget_lines": 120,
+        "rubric": "kit/REVIEW-rubric.md"
+      },
+      "hidden": ["test_s2_backend_hidden.py"],
+      "axes": ["maintainable"],
+      "counts_toward_pass": true
+    },
+    {
+      "id": "s3-optimise",
+      "language": "cpp+python",
+      "brief": "kit/tasks/s3-optimise.md",
+      "spec": "kit/tasks/s3-optimise.spec.json",
+      "grader": {
+        "working": "make -C cpp && uv run --with pytest python -m pytest -q python/tests tests/_hidden_test_s3_optimise_hidden.py",
+        "conformance": "make -C cpp (warnings as errors: -Wall -Wextra -Wpedantic -Werror)",
+        "budget_lines": 150,
+        "rubric": "kit/REVIEW-rubric.md"
+      },
+      "hidden": ["test_s3_optimise_hidden.py"],
+      "axes": ["maintainable"],
+      "counts_toward_pass": true
+    }
+  ],
+  "reference": []
+}

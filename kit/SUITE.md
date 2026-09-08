@@ -1,0 +1,65 @@
+# SUITE-1 — the logstats mini-project
+
+One small application, "logstats" (a log-line statistics viewer), built in four stages that
+depend on each other the way a real project does — design, then front end, then backend, then
+a C++ optimisation of the backend's hot path — each stage its own brief
+(`kit/tasks/<stage>.md`), its own run specification (`kit/tasks/<stage>.spec.json`), and its
+own hidden grader (`kit/hidden/test_<stage>_hidden.py`), run in order on one seat
+(`kit/seat/`, exported by `harness/run_suite.sh` as the run's working directory — every path
+in a brief or spec is relative to it, not to this repository's root). `kit/suite.json` is the
+machine-readable form of this file.
+
+## The five axes
+
+Every stage is scored on up to five axes (`kit/suite.json`'s per-stage `axes` list states
+which of the last two apply):
+
+- **working** — the hidden test: pass or fail. S0's does not count toward a row's pass tally
+  (see below); the other three stages' do.
+- **conformance** — the compiler with warnings as errors (S3), `node --check` (S1),
+  `compileall` (S2): pass or fail. S0 has none (prose has no compiler).
+- **concise** — lines written against the stage's budget: a number, not pass/fail.
+- **maintainable** — every stage: a 0–5 reviewer score per `kit/REVIEW-rubric.md`'s
+  maintainable lines, from a reviewer that did not build the change and never sees
+  `kit/hidden/`.
+- **usable** — S0 and S1 only: a 0–5 reviewer score per the rubric's usable lines. S2 and S3
+  have no user-facing surface, so this axis does not apply to them.
+
+## The stages, in run order
+
+1. **S0 design** (prose) — write `design/DESIGN.md` from `product-brief.md`: the data flow,
+   the three components, and the JSON interface restated with a parsing example whose keys
+   match the fixed set exactly. Budget: 60 lines. **Scored outside the pass count**: S0's
+   hidden test is commentary on whether the note met the bar, not a gate the row's overall
+   pass tally includes — a design note is not "working code" the way a passing test suite is,
+   and the interface it restates is fixed by `product-brief.md` regardless of what S0 writes.
+2. **S1 front end** (JavaScript + HTML) — implement `js/format.js`'s three pure functions,
+   write `js/render.js` (JSON in, HTML string out, no DOM), and wire `html/index.html`: fetch
+   `stats.json`, render into `#stats`, filter by the `#level` select, keep the page
+   accessible (a label, `aria-live`, heading order, a working `<select>`). Budget: 180 lines
+   across `js/format.js`, `js/render.js` and `js/tests/format.test.js`.
+3. **S2 backend** (Python) — implement `compute_stats` in `python/logstats/stats.py` to its
+   docstring, using the seeded `parse_line`/`sanitize_component` (from Shared Memory's
+   `sanitize_entity_name`, Apache-2.0), and write `python/tests/test_stats.py`. Parity with
+   the committed `python/data/sample.stats.json` on `python/data/sample.log`. Budget: 120
+   lines.
+4. **S3 optimisation** (C++ + Python) — implement `cpp/logstats.cpp`'s `count_levels` (the
+   per-line, per-level counting loop, re-done in C++) and wire `python/logstats/fast.py` to
+   call it through `ctypes`, falling back to Python when the library is absent. Parity with
+   S2's `by_level`/`total_lines` on well-formed input; builds with
+   `-Wall -Wextra -Wpedantic -Werror`; a timing ratio recorded, never thresholded (this
+   card's CPU is the seat's). Budget: 150 lines.
+
+A stage that every row passes or every row fails is replaced at the next revision of this
+suite (`kit/suite.json`'s `"suite": "SUITE-1"` names the version this row was measured on).
+
+## How a stage is run
+
+```
+A770B_HIDDEN_ROOT=<checkout>/kit/hidden local-build.sh run <seat> kit/tasks/<stage>.md --spec kit/tasks/<stage>.spec.json --profile <name>
+```
+
+where `<seat>` is `kit/seat/` inside a clone of this repository at the release's tag (see
+`kit/README.md`). `harness/run_suite.sh <profile>` runs all four stages in order against one
+clean seat, `verify`s each against its hidden grader, scores the reviewer-graded axes through
+`kit/REVIEW-rubric.md`, and writes `results/<profile>-suite-<date>.json`.
