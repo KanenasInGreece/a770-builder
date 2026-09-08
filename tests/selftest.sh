@@ -103,11 +103,17 @@ else echo "skip shellcheck: none on PATH and none in the uv cache (install shell
 # proved without the card. A throwaway kit/ fixture: three stages (one that verifies PASS, one that verifies FAIL,
 # and one commentary-only stage — "counts_toward_pass": false, always PASS, standing in for S0 — that must NOT
 # move the totals) plus one reference exercise (kit/reference/reference.json, appended after the stages); the
-# fixture never touches the real kit/ another unit is writing. Checks the runner's own export-and-run of kit/seat/,
-# its results JSON (one PASS, one FAIL, the failing id named, the commentary stage present but excluded, the
-# reference entry present) and that suite_report.py --json reports on it.
-ku3="$t/ku3"; mkdir -p "$ku3/seat" "$ku3/tasks" "$ku3/reference"
+# fixture never touches the real kit/ another unit is writing. Checks the runner's own per-stage export of
+# kit/seat/ (kit/hidden/solutions/<id>/ pasted for every preceding stage — s0-pass's solution file must be in the
+# seat by the time s1-fail runs, s1-fail's own solution by the time s2-note runs, and ref-cpp-example's export
+# must carry neither, being a plain export — the fake local-build.sh's run case `ls`s the seat it was given so
+# this can be checked), its results JSON (one PASS, one FAIL, the failing id named, the commentary stage present
+# but excluded, the reference entry present, each stage's "seat_state" naming what was pasted) and that
+# suite_report.py --json reports on it.
+ku3="$t/ku3"; mkdir -p "$ku3/seat" "$ku3/tasks" "$ku3/reference" "$ku3/hidden/solutions/s0-pass" "$ku3/hidden/solutions/s1-fail" "$ku3/seat-ls"
 echo "fixture" > "$ku3/seat/README.md"
+echo "s0-pass solved" > "$ku3/hidden/solutions/s0-pass/SOLVED-s0-pass.marker"
+echo "s1-fail solved" > "$ku3/hidden/solutions/s1-fail/SOLVED-s1-fail.marker"
 for st in s0-pass s1-fail s2-note ref-cpp-example; do
   echo "brief $st" > "$ku3/tasks/$st.md"
   printf '{}' > "$ku3/tasks/$st.spec.json"
@@ -135,6 +141,7 @@ case "${1:-}" in
   run)
     shift; WT="$1"; BRIEF="$2"; shift 2
     label="fake-$(basename "$BRIEF" .md)"
+    ls "$WT" > "$KU3_SEAT_LS_DIR/$label.ls" 2>/dev/null || true
     mkdir -p "$A770B_DATA/results"
     { echo "# fake capture"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
     { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; echo "+line two"; } > "$A770B_DATA/results/$label.patch"
@@ -151,7 +158,7 @@ esac
 FAKE
 chmod +x "$ku3/fake-local-build.sh"
 rm -f "$A770B_DATA"/results/long-suite-*.json
-out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" bash "$here/harness/run_suite.sh" long "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
+out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
 res=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
 if [ "$rc" = 0 ] && [ -n "$res" ] && python3 - "$res" <<'PY'
 import json, sys
@@ -163,10 +170,28 @@ assert s["s0-pass"]["working"] is True, s["s0-pass"]
 assert s["s1-fail"]["working"] is False, s["s1-fail"]
 assert s["s2-note"]["working"] is True and s["s2-note"]["counts_toward_pass"] is False, s["s2-note"]
 assert s["ref-cpp-example"]["working"] is True, s["ref-cpp-example"]
+assert s["s0-pass"]["seat_state"] == [], s["s0-pass"]
+assert s["s1-fail"]["seat_state"] == ["s0-pass"], s["s1-fail"]
+assert s["s2-note"]["seat_state"] == ["s0-pass", "s1-fail"], s["s2-note"]
+assert s["ref-cpp-example"]["seat_state"] == [], s["ref-cpp-example"]
 sys.exit(0)
 PY
-then echo "ok   suite: run_suite.sh records one PASS, one FAIL (s1-fail named), one excluded commentary stage (s2-note) and the reference entry"
+then echo "ok   suite: run_suite.sh records one PASS, one FAIL (s1-fail named), one excluded commentary stage (s2-note), the reference entry, and each stage's seat_state"
 else echo "FAIL suite: run_suite.sh output/results wrong (rc=$rc res=$res)"; printf '%s\n' "$out" | tail -20; fail=1
+fi
+# the per-stage seat export: s1-fail's seat carried s0-pass's solution file (stage two saw stage one's solved
+# work), s2-note's carried both, and ref-cpp-example (a reference exercise) is a plain export carrying neither —
+# the fake local-build.sh's run case recorded an `ls` of the seat it was handed for each stage under $ku3/seat-ls.
+if grep -q '^SOLVED-s0-pass\.marker$' "$ku3/seat-ls/fake-s0-pass.ls" 2>/dev/null; then
+  echo "FAIL suite: s0-pass's own (first) seat already carried a solution file"; fail=1
+elif ! grep -q '^SOLVED-s0-pass\.marker$' "$ku3/seat-ls/fake-s1-fail.ls" 2>/dev/null; then
+  echo "FAIL suite: s1-fail's seat did not carry s0-pass's solution file — $ku3/seat-ls/fake-s1-fail.ls"; fail=1
+elif ! { grep -q '^SOLVED-s0-pass\.marker$' "$ku3/seat-ls/fake-s2-note.ls" 2>/dev/null && grep -q '^SOLVED-s1-fail\.marker$' "$ku3/seat-ls/fake-s2-note.ls" 2>/dev/null; }; then
+  echo "FAIL suite: s2-note's seat did not carry both preceding stages' solution files — $ku3/seat-ls/fake-s2-note.ls"; fail=1
+elif grep -qE '^SOLVED-(s0-pass|s1-fail)\.marker$' "$ku3/seat-ls/fake-ref-cpp-example.ls" 2>/dev/null; then
+  echo "FAIL suite: ref-cpp-example's seat (a reference exercise) carried a main-suite solution file — it must be a plain export"; fail=1
+else
+  echo "ok   suite: the stage-two seat saw the stage-one solution file (and stage three both, and the reference exercise neither)"
 fi
 # the fake local-build.sh's own argv, recorded per call: a "run ... --spec ... --profile long" line and a
 # "verify fake-<id>" line per stage, in order, and no reviewer step (stop/serve) since --reviewer was not given

@@ -41,11 +41,15 @@ A770B_HIDDEN_ROOT=<checkout>/kit/hidden local-build.sh run <seat> kit/tasks/<sta
 ```
 
 `<checkout>` is this repository's own clone (the one `kit/` lives in — not the run's seat);
-`<stage>` is one of `s0-design`, `s1-frontend`, `s2-backend`, `s3-optimise`, run in that order
-against one clean seat, since each stage's brief assumes the previous stage's work is already
-in place. `harness/run_suite.sh <profile>` runs all four in order, `verify`s each, and writes
-`results/<profile>-suite-<date>.json`. The seat for a run is a clone of this repository at the
-release's tag (the kit is versioned with the harness, `kit/suite.json`'s `"suite"` field).
+`<stage>` is one of `s0-design`, `s1-frontend`, `s2-backend`, `s3-optimise`, run in that order,
+since each stage's brief assumes the previous stage's work is already in place.
+`harness/run_suite.sh <profile>` runs all four in order, `verify`s each, and writes
+`results/<profile>-suite-<date>.json`; before each stage it re-exports the seat fresh from
+`kit/seat/` with the REFERENCE solutions of every preceding stage pasted over it
+(`kit/hidden/solutions/<id>/`, never the model's own output), so a stage never needs the
+previous stage's model-written work to be correct for its own to run. The seat for a run is a
+clone of this repository at the release's tag (the kit is versioned with the harness,
+`kit/suite.json`'s `"suite"` field).
 
 ## Findings from building this unit (2026-09-08)
 

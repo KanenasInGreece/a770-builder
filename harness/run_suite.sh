@@ -4,10 +4,15 @@
 # axes through a reviewer profile that is never the builder, and writes one results JSON per run.
 #   run_suite.sh <profile> [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]
 # The seat is NOT a clone of this repository (the model must not read harness/): it is an EXPORT of kit/seat/ — a
-# copy, git-init'ed and committed once as "kit seat" — into <seat> (default $A770B_DATA/kit-seat); a path that
-# already exists and is not empty is refused unless --fresh removes it first. Every stage runs against that one
-# commit; local-build.sh run/verify already reset the worktree to it after each of their calls, so stages carry
-# nothing forward between them by construction — no state of this runner's own to drop.
+# copy, git-init'ed and committed — into <seat> (default $A770B_DATA/kit-seat); a path that already exists and is
+# not empty is refused unless --fresh removes it first. The export is redone PER STAGE, not once for the whole
+# suite: each stage's seat is a fresh copy of kit/seat/ with the REFERENCE solutions of every stage that precedes
+# it in kit/suite.json pasted over it (kit/hidden/solutions/<id>/, never the model's own output — a later stage's
+# brief assumes the earlier stages' work is already in place, the way a real project does), committed as
+# "kit seat for <id>"; a reference exercise (kit/reference/reference.json) gets a plain export with no solutions
+# pasted. The export path is reused stage after stage — removed and recreated every call — so stages still carry
+# nothing forward between them by construction, only what this runner itself pastes back in each time; the results
+# JSON records which solutions each stage's seat carried as "seat_state".
 # --reviewer <profile> scores the maintainable/usable axes with one keyed HTTP request per rubric'd stage, in the
 # shape of harness/depth_probe.sh's probe (temperature 0, no tools, the stage's patch delimited as untrusted data
 # between fixed markers, a fixed two-line reply format). It refuses when the reviewer profile resolves to the same
@@ -52,6 +57,7 @@ LOCAL_BUILD="${A770B_LOCAL_BUILD:-$A770B_PROJECT/skills/local-build/scripts/loca
 SUITE_DIR=$(cd "$(dirname "$SUITE")" && pwd)
 KIT_SEAT_SRC="$SUITE_DIR/seat"
 REFFILE="$SUITE_DIR/reference/reference.json"
+SOLUTIONS_ROOT="$SUITE_DIR/hidden/solutions"
 
 # resolve <path> — a path from the suite/reference file, relative to the project unless already absolute (the
 # same idiom env.sh's a770b_model_path uses for a model name)
@@ -90,6 +96,21 @@ PY
 ) || die "could not read reference exercises from $REFFILE"
 fi
 
+# stage_precedents <id> — the ids from kit/suite.json's OWN "stages" list (file order, never the --stages filter)
+# that precede <id>, one per line; empty for the first main stage and for a reference exercise (its id is not in
+# that list at all, so it always starts from a plain export — see the header comment).
+stage_precedents(){
+  python3 - "$SUITE" "$1" <<'PY'
+import json, sys
+path, sid = sys.argv[1:]
+d = json.load(open(path))
+ids = [s["id"] for s in d.get("stages", [])]
+if sid in ids:
+    for x in ids[:ids.index(sid)]:
+        print(x)
+PY
+}
+
 # stage_vars <srcfile> <key> <id> — sets S_LANGUAGE S_BRIEF S_SPEC S_WORKING_CMD S_CONFORMANCE_CMD S_BUDGET
 # S_RUBRIC S_AXES S_COUNTS (S_COUNTS: "true" unless the stage itself carries "counts_toward_pass": false —
 # S0 and any other commentary-only stage, per kit/SUITE.md; the reviewer's rubric axes are never in "working"
@@ -122,10 +143,29 @@ PY
   S_CONFORMANCE_CMD=${_sv[4]:-}; S_BUDGET=${_sv[5]:-}; S_RUBRIC=${_sv[6]:-}; S_AXES=${_sv[7]:-}; S_COUNTS=${_sv[8]:-true}
 }
 
-# export_kit_seat <seat> <src> — a standalone git clone-shaped copy of kit/seat/ at <seat>, one commit, "kit seat"
+# export_kit_seat <seat> <src> <label> [<solution-dir>...] — a standalone git clone-shaped copy of kit/seat/ at
+# <seat>, with each named solution subtree (kit/hidden/solutions/<id>/, laid out to mirror the seat itself) pasted
+# over it in order, one commit "kit seat for <label>". Always removes and recreates <seat> first: a stage's seat is
+# always freshly derived from kit/seat/ plus the reference solutions named, never a diff against what a previous
+# call left there.
 export_kit_seat(){
-  local seat="$1" src="$2"
+  local seat="$1" src="$2" label="$3"; shift 3
   [ -d "$src" ] || die "kit seat source not found: $src (kit/seat/ is another unit's — is it built yet?)"
+  rm -rf -- "$seat"
+  mkdir -p "$seat"
+  cp -a "$src/." "$seat/"
+  local d
+  for d in "$@"; do cp -a "$d/." "$seat/"; done
+  safe_git "$seat" init -q
+  safe_git "$seat" add -A
+  safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat for $label" >/dev/null
+}
+
+# check_seat_path <seat> — the one-time safety gate before the first per-stage export: a path that already exists
+# and is not empty is refused unless --fresh removes it first. Every export after this one owns the path outright
+# (export_kit_seat itself recreates it each call), so this runs only once, before the stage loop.
+check_seat_path(){
+  local seat="$1"
   if [ -e "$seat" ]; then
     if [ "$FRESH" = 1 ]; then rm -rf -- "$seat"
     else
@@ -133,19 +173,13 @@ export_kit_seat(){
       [ -z "$(ls -A "$seat" 2>/dev/null)" ] || die "seat path exists and is not empty: $seat (pass --fresh to replace it)"
     fi
   fi
-  mkdir -p "$seat"
-  cp -a "$src/." "$seat/"
-  safe_git "$seat" init -q
-  safe_git "$seat" add -A
-  safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat" >/dev/null
 }
 
 if [ "$DRYRUN" = 1 ]; then
-  echo "[dry-run] export kit seat: $KIT_SEAT_SRC -> $SEAT (fresh=$FRESH)"
+  echo "[dry-run] export kit seat per stage: $KIT_SEAT_SRC -> $SEAT (fresh=$FRESH)"
   WT="$SEAT"
 else
-  export_kit_seat "$SEAT" "$KIT_SEAT_SRC"
-  WT=$(guard_worktree "$SEAT") || exit 2
+  check_seat_path "$SEAT"
 fi
 
 OUTFILE="$A770B_DATA/results/${PROFILE}-suite-$(date +%Y%m%d-%H%M%S).json"
@@ -175,7 +209,7 @@ with open(outfile, "w") as f:
 PY
 }
 
-emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass
+emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json
   python3 - "$@" >> "$RESULTS_NDJSON" <<'PY'
 import json, sys
 def num(s):
@@ -188,7 +222,7 @@ def num(s):
 def boolean(s):
     return True if s == "true" else False if s == "false" else None
 (id_, language, label, working, conf, lines, budget, budget_ok,
- score_json, wall, requests, ptok, gtok, axes_json, counts) = sys.argv[1:]
+ score_json, wall, requests, ptok, gtok, axes_json, counts, seat_state_json) = sys.argv[1:]
 rec = {
     "id": id_, "language": language or None, "label": label or None,
     "working": boolean(working), "conformance_exit": num(conf),
@@ -197,6 +231,7 @@ rec = {
     "wall_s": num(wall), "requests": num(requests), "prompt_tokens": num(ptok), "gen_tokens": num(gtok),
     "axes": json.loads(axes_json) if axes_json else None,
     "counts_toward_pass": boolean(counts) if counts else True,
+    "seat_state": json.loads(seat_state_json) if seat_state_json else [],
 }
 print(json.dumps(rec))
 PY
@@ -257,9 +292,19 @@ PY
 process_task(){
   local src="$1" key="$2" id="$3"
   stage_vars "$src" "$key" "$id"
+  mapfile -t PRECEDENTS < <(stage_precedents "$id")
+  local PRECEDENT_DIRS=() SEAT_STATE=() pid pdir
+  for pid in "${PRECEDENTS[@]}"; do
+    pdir="$SOLUTIONS_ROOT/$pid"
+    if [ -d "$pdir" ]; then PRECEDENT_DIRS+=("$pdir"); SEAT_STATE+=("$pid")
+    else echo "⚠ stage $id: no solutions dir for preceding stage $pid ($pdir) — seat will not carry it" >&2; fi
+  done
+  local SEAT_STATE_JSON
+  SEAT_STATE_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${SEAT_STATE[@]}")
   local briefpath specpath
   briefpath=$(resolve "$S_BRIEF"); specpath=$(resolve "$S_SPEC")
   if [ "$DRYRUN" = 1 ]; then
+    echo "[dry-run] $id: export seat (paste: ${SEAT_STATE[*]:-none}) -> git commit -m \"kit seat for $id\""
     echo "[dry-run] $id: $LOCAL_BUILD run $WT $briefpath --spec $specpath --profile $PROFILE"
     if [ -n "$S_WORKING_CMD" ]; then echo "[dry-run] $id: $LOCAL_BUILD verify <label> $WT --test \"$S_WORKING_CMD\""
     else echo "[dry-run] $id: $LOCAL_BUILD verify <label> $WT"; fi
@@ -271,6 +316,8 @@ process_task(){
   fi
   [ -f "$briefpath" ] || die "stage $id: brief not found: $briefpath"
   [ -f "$specpath" ] || die "stage $id: spec not found: $specpath"
+  export_kit_seat "$SEAT" "$KIT_SEAT_SRC" "$id" "${PRECEDENT_DIRS[@]}"
+  WT=$(guard_worktree "$SEAT") || exit 2
   SECONDS=0
   local run_out rrc
   run_out=$(bash "$LOCAL_BUILD" run "$WT" "$briefpath" --spec "$specpath" --profile "$PROFILE" 2>&1); rrc=$?
@@ -289,7 +336,7 @@ process_task(){
   fi
   if [ -z "$label" ]; then
     echo "⚠ stage $id: run exited $rrc with no capture — recording as failed" >&2
-    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS"
+    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON"
     write_results
     echo "stage $id: FAILED (no capture, run exit $rrc)"
     return 0
@@ -327,7 +374,7 @@ process_task(){
     if [ -f "$rubricpath" ]; then score_json=$(review_stage "$rubricpath" "$patchfile")
     else echo "⚠ stage $id: rubric file not found: $rubricpath — no score" >&2; fi
   fi
-  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS"
+  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON"
   write_results
   echo "stage $id: working=$working conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-0} tokens=${prompt_tokens:-0}+${gen_tokens:-0}"
 }

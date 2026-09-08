@@ -60,6 +60,9 @@ A770B_HIDDEN_ROOT=<checkout>/kit/hidden local-build.sh run <seat> kit/tasks/<sta
 ```
 
 where `<seat>` is `kit/seat/` inside a clone of this repository at the release's tag (see
-`kit/README.md`). `harness/run_suite.sh <profile>` runs all four stages in order against one
-clean seat, `verify`s each against its hidden grader, scores the reviewer-graded axes through
-`kit/REVIEW-rubric.md`, and writes `results/<profile>-suite-<date>.json`.
+`kit/README.md`). `harness/run_suite.sh <profile>` runs all four stages in order, `verify`s
+each against its hidden grader, scores the reviewer-graded axes through
+`kit/REVIEW-rubric.md`, and writes `results/<profile>-suite-<date>.json`; before each stage it
+re-exports the seat fresh from `kit/seat/` with the REFERENCE solutions of every stage before it
+pasted over it (`kit/hidden/solutions/<id>/`, never the model's own output), so a later stage's
+brief finds the earlier stages' work already in place, as a real project would.

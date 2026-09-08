@@ -6,9 +6,10 @@
 #   (2) every stage's own grader (kit/suite.json's "grader": "working", which embeds the hidden pytest file
 #       under tests/_hidden_<name>.py, the same convention local-build.sh verify uses) FAILS on an export of
 #       the shipped kit/seat/ stub, unmodified.
-#   (3) the same grader, after pasting that stage's reference solution over the stub, SUCCEEDS. The reference
-#       solutions live under kit/hidden/solutions/<stage>/ (never in kit/seat/, so a model exporting that
-#       subtree cannot read them) — each check below names the file it pasted.
+#   (3) the same grader, after pasting that stage's reference solution over a fresh export that already carries
+#       every earlier stage's solution, SUCCEEDS. The reference solutions live under kit/hidden/solutions/<stage>/,
+#       laid out to mirror kit/seat/'s own directory shape (never in kit/seat/ itself, so a model exporting that
+#       subtree cannot read them).
 #   (4) each of the three reference exercises' own public grader (kit/reference/reference.json's
 #       "grader": "working"), after pasting its .meta/example.* or .meta/proof.ci.js over its stub, SUCCEEDS.
 # tests/selftest.sh is unchanged and stays machine-independent; this script instead skips loudly and exits 0
@@ -62,55 +63,67 @@ else
   bad "toolchain: not all present inside the sandbox: $out"
 fi
 
-# ── (2) and (3): the four mini-project stages, run in order on ONE seat export (as harness/run_suite.sh runs
-# them: each stage's brief assumes the previous stage's work is already in place, so a later stage's solution
-# is pasted and committed on top of the earlier ones, not re-exported from the pristine stub — s3's hidden
-# grader, for instance, calls S2's own compute_stats for parity, so S2's solution must already be in place).
-# stage <id> <grader-working-cmd> <hidden-basename> <solution-dst-in-seat> <solution-src-repo-relative...>
+# ── (2) and (3): the four mini-project stages. Each is checked on its OWN fresh per-stage export, the same
+# mechanism harness/run_suite.sh now uses: a clean copy of kit/seat/ with the REFERENCE solutions of every stage
+# before it pasted over it (kit/hidden/solutions/<id>/, laid out to mirror kit/seat/'s own directory shape, so a
+# plain directory paste lands each file where the seat expects it) and committed — never a seat carried forward
+# with this script's own edits piled onto it. s3's hidden grader, for instance, calls S2's own compute_stats for
+# parity, so S2's solution must already be in the seat; export_stage_seat below is what puts it there.
+SOLUTIONS="$KIT/hidden/solutions"
+STAGE_IDS=(s0-design s1-frontend s2-backend s3-optimise)
+
+# export_stage_seat <dest> <label> <solved-id...> — a fresh git-init'ed, committed copy of kit/seat/ at <dest>,
+# with each named stage's solutions/<id>/ pasted over it in order, one commit "kit seat for <label>".
+export_stage_seat(){
+  local dest="$1" label="$2"; shift 2
+  rm -rf -- "$dest"; mkdir -p "$dest"
+  cp -a "$KIT/seat/." "$dest/"
+  local sid
+  for sid in "$@"; do cp -a "$SOLUTIONS/$sid/." "$dest/"; done
+  git init -q "$dest"
+  git -C "$dest" -c user.name=kit-selftest -c user.email=kit-selftest@localhost add -A
+  git -C "$dest" -c user.name=kit-selftest -c user.email=kit-selftest@localhost commit -q -m "kit seat for $label" >/dev/null
+}
+
+# stage <id> <grader-working-cmd> <hidden-basename>
 stage(){
-  local id="$1" grader="$2" hidden="$3"; shift 3
+  local id="$1" grader="$2" hidden="$3"
+  local solved=() sid
+  for sid in "${STAGE_IDS[@]}"; do [ "$sid" = "$id" ] && break; solved+=("$sid"); done
+  export_stage_seat "$SEAT" "$id" "${solved[@]}"
   copy_hidden "$SEAT" "$hidden"
   if sandboxed "$SEAT" "$grader" >/tmp/kit-selftest-$id-stub.log 2>&1; then
     bad "$id: the clean stub's own grader passed (it must fail) — $(tail -3 /tmp/kit-selftest-$id-stub.log | tr '\n' ' ')"
   else
     ok "$id: the clean stub fails its own grader"
   fi
-  while [ $# -gt 0 ]; do
-    local dst="$1" src="$2"; shift 2
-    cp "$here/$src" "$SEAT/$dst"
-  done
+  # cp -r, never -a: the stub check above may already have built an artifact (S3's make -C cpp) inside the seat;
+  # -a would preserve this solution file's on-disk mtime (older than that artifact), and make would then see the
+  # target as up to date and skip rebuilding it against the solution just pasted in.
+  cp -r "$SOLUTIONS/$id/." "$SEAT/"
   if sandboxed "$SEAT" "$grader" >/tmp/kit-selftest-$id-solved.log 2>&1; then
     ok "$id: the reference solution (kit/hidden/solutions/$id/) makes the grader pass"
   else
     bad "$id: the reference solution did not pass its own grader: $(tail -5 /tmp/kit-selftest-$id-solved.log | tr '\n' ' ')"
   fi
-  git -C "$SEAT" -c user.name=kit-selftest -c user.email=kit-selftest@localhost add -A
-  git -C "$SEAT" -c user.name=kit-selftest -c user.email=kit-selftest@localhost commit -q -m "kit selftest: $id solved" --allow-empty >/dev/null
   rm -f /tmp/kit-selftest-$id-stub.log /tmp/kit-selftest-$id-solved.log
 }
 
 stage s0-design \
   'uv run --with pytest python -m pytest -q tests/_hidden_test_s0_design_hidden.py' \
-  test_s0_design_hidden.py \
-  design/DESIGN.md kit/hidden/solutions/s0-design/DESIGN.md
+  test_s0_design_hidden.py
 
 stage s1-frontend \
   'node --test js/tests/*.test.js && uv run --with pytest python -m pytest -q tests/_hidden_test_s1_frontend_hidden.py' \
-  test_s1_frontend_hidden.py \
-  js/format.js kit/hidden/solutions/s1-frontend/format.js \
-  js/render.js kit/hidden/solutions/s1-frontend/render.js \
-  html/index.html kit/hidden/solutions/s1-frontend/index.html
+  test_s1_frontend_hidden.py
 
 stage s2-backend \
   'uv run --with pytest python -m pytest -q python/tests tests/_hidden_test_s2_backend_hidden.py' \
-  test_s2_backend_hidden.py \
-  python/logstats/stats.py kit/hidden/solutions/s2-backend/stats.py
+  test_s2_backend_hidden.py
 
 stage s3-optimise \
   'make -C cpp && uv run --with pytest python -m pytest -q python/tests tests/_hidden_test_s3_optimise_hidden.py' \
-  test_s3_optimise_hidden.py \
-  cpp/logstats.cpp kit/hidden/solutions/s3-optimise/logstats.cpp \
-  python/logstats/fast.py kit/hidden/solutions/s3-optimise/fast.py
+  test_s3_optimise_hidden.py
 
 # ── (4) the three reference exercises, each's own public grader, proof solution pasted over its stub ──
 # The reference exercises' own seat is this repository's clone (kit/reference/tasks/*.md: "you are in a
