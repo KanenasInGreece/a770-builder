@@ -5,6 +5,7 @@
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve <profile> | status | profiles [--name N] | stop | stop-run (end the run in progress by its own pid) | version (--version)
 #   profiles [--name N]   the registry card (config/profiles.json) with the served values, for a caller choosing a profile
+#   doctor            what this machine lacks to run the seat, one line per check; exit 1 when anything is missing
 #   check-update      ask GitHub for the latest release and compare it with this copy (on demand only; nothing else ever calls out)
 # The installed copy finds the project through A770B_PROJECT: the environment, then
 # ${XDG_CONFIG_HOME:-~/.config}/a770-builder/builder.env, then the default ~/local-ai/A770_Builder. Every other path
@@ -77,11 +78,45 @@ status(){ local c; c=$(current); version 2>&1
   if pid=$(run_pid_alive "$A770B_DATA/logs/run.pid"); then echo "run: pid $pid in progress since $(date -r "$A770B_DATA/logs/run.pid" +%H:%M:%S 2>/dev/null || echo "a moment ago") — local-build.sh stop-run ends exactly it"; else echo "run: none"; fi
   local n; if [ -d "$A770B_SEAT/.git" ]; then n=$(seat_dirty "$A770B_SEAT" | wc -l); if [ "$n" = 0 ]; then echo "seat: $A770B_SEAT clean"; else echo "seat: $A770B_SEAT has $n uncommitted or ignored entries — local-build.sh reset before a run"; fi; else echo "seat: $A770B_SEAT is not a git clone"; fi
 }
+# doctor — what this machine lacks to run the seat, one line per check; never stops at the first MISSING. No run lock, no server.
+doctor(){
+  local missing=0 t p m mp n warn_list w
+  command -v python3 >/dev/null 2>&1 && echo "ok   python3: on PATH" || { echo "MISSING python3: install Python 3 (the registry, the renderer and the capture use it)"; missing=$((missing+1)); }
+  for t in bwrap socat uv curl git flock timeout; do
+    command -v "$t" >/dev/null 2>&1 && echo "ok   $t: on PATH" || { echo "MISSING $t: install $t"; missing=$((missing+1)); }
+  done
+  [ -x "$A770B_LLAMA_BIN" ] && echo "ok   llama-server at $A770B_LLAMA_BIN" || { echo "MISSING llama-server at $A770B_LLAMA_BIN: build llama.cpp with the Vulkan backend, or set A770B_LLAMA_BIN"; missing=$((missing+1)); }
+  if command -v nvtop >/dev/null 2>&1 || [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then echo "ok   nvtop: on PATH or A770B_ALLOW_NO_NVTOP=1"; else echo "MISSING nvtop: install it for VRAM readings, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1)); fi
+  if python3 "$A770B_PROJECT/harness/profiles.py" check >/dev/null 2>&1; then echo "ok   registry: config/profiles.json checks"; else echo "MISSING registry: config/profiles.json does not check (python3 harness/profiles.py check says why)"; missing=$((missing+1)); fi
+  for p in $A770B_PROFILES; do
+    m=$(a770b_profile_var "$p" MODEL); mp=$(a770b_model_path "$m")
+    if [ -r "$mp" ]; then echo "ok   model for $p: $mp"; else echo "MISSING model for $p: $mp not found; download it (docs/OPERATING.md) or set A770B_$(printf '%s' "$p" | tr 'a-z-' 'A-Z_')_MODEL"; missing=$((missing+1)); fi
+  done
+  warn_list=$(python3 "$A770B_PROJECT/harness/profiles.py" card --file "${A770B_PROFILES_FILE:-$A770B_PROJECT/config/profiles.json}" --served 2>/dev/null | python3 -c 'import json,sys; [print(w) for w in json.load(sys.stdin).get("warnings", [])]' 2>/dev/null)
+  if [ -n "$warn_list" ]; then
+    while IFS= read -r w; do echo "MISSING profiles: $w"; missing=$((missing+1)); done <<<"$warn_list"
+  else
+    echo "ok   profiles: the environment does not invert the registry"
+  fi
+  [ -n "$A770B_REFUSE" ] && echo "ok   A770B_REFUSE: set" || { echo "MISSING A770B_REFUSE: list the live checkouts the seat must never touch, colon-separated, in builder.env"; missing=$((missing+1)); }
+  if [ -d "$A770B_SEAT" ] && [ -d "$A770B_SEAT/.git" ] && [ ! -L "$A770B_SEAT/.git" ]; then echo "ok   seat at $A770B_SEAT"; else echo "MISSING seat at $A770B_SEAT: clone the target repository there (git clone <url> $A770B_SEAT)"; missing=$((missing+1)); fi
+  if [ -x "$A770B_LLAMA_BIN" ]; then
+    if [ -z "$A770B_VK_DEVICE_SELECT" ]; then
+      echo "ok   device: selector empty, not pinned"
+    else
+      n=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$A770B_LLAMA_BIN" --list-devices 2>/dev/null | grep -c '^ *Vulkan[0-9]*:')
+      if [ "$n" = 1 ]; then echo "ok   device: selector $A770B_VK_DEVICE_SELECT pins exactly one Vulkan device"; else echo "MISSING device: the selector $A770B_VK_DEVICE_SELECT lists $n Vulkan devices, not 1; set A770B_VK_DEVICE_SELECT to the builder card's vendor:device! from lspci -nn"; missing=$((missing+1)); fi
+    fi
+  fi
+  [ -d "$A770B_UV_CACHE" ] && echo "ok   uv cache at $A770B_UV_CACHE" || { echo "MISSING uv cache at $A770B_UV_CACHE: run bash harness/warm_cache.sh once (the sandbox has no network)"; missing=$((missing+1)); }
+  if [ "$missing" = 0 ]; then echo "ok   doctor: all checks passed"; return 0; else echo "MISSING doctor: $missing missing"; return 1; fi
+}
 case "${1:-}" in
   serve)  run_lock; serve "${2:-$A770B_DEFAULT_PROFILE}" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "${A770B_PROFILES_FILE:-$A770B_PROJECT/config/profiles.json}" --served "$@" ;;
+  doctor) doctor ;;
   stop)   bash "$SERVE" stop ;;
   stop-run)
     # end exactly the run in progress, through its own pid: one TERM to the timeout process ends its whole process
@@ -199,5 +234,5 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--<profile>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--<profile>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac

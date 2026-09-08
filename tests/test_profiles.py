@@ -271,3 +271,30 @@ def test_card_served_ctx_is_an_int(tmp_path):
     assert r.returncode == 0
     assert json.loads(r.stdout)["served_ctx"] == 131072
 
+
+def test_card_warns_on_inverted_profiles():
+    """A builder.env written for an earlier release, with fast and long's files swapped, is caught."""
+    env = dict(os.environ)
+    env["A770B_FAST_MODEL"] = "Qwen3.5-9B-Q4_K_M.gguf"
+    env["A770B_LONG_MODEL"] = "gemma-4-E4B-it-Q4_K_M.gguf"
+    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--served"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    warnings = json.loads(r.stdout)["warnings"]
+    assert len(warnings) == 2
+    assert warnings[0].startswith("profile long serves fast's file (gemma-4-E4B-it-Q4_K_M.gguf)")
+    assert warnings[1].startswith("profile fast serves long's file (Qwen3.5-9B-Q4_K_M.gguf)")
+
+
+def test_card_no_warnings_when_clean():
+    """With no A770B_*_MODEL or A770B_*_CTX overrides, the card carries no warnings."""
+    env = {
+        k: v for k, v in os.environ.items()
+        if not (k.startswith("A770B_") and (k.endswith("_MODEL") or k.endswith("_CTX")))
+    }
+    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--served"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["warnings"] == []
+
+    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--served", "--name", "long"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["warnings"] == []

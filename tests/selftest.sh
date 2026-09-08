@@ -114,6 +114,8 @@ fi
 rm -f "$RUNPID"
 [ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && echo "ok   device: the builder card is pinned by PCI id by default" || { echo "FAIL device: A770B_VK_DEVICE_SELECT default is '$A770B_VK_DEVICE_SELECT'"; fail=1; }
 grep -q '^MESA_VK_DEVICE_SELECT="\$A770B_VK_DEVICE_SELECT" nohup "\$A770B_LLAMA_BIN"' "$here/harness/serve_a770_llamacpp.sh" && echo "ok   device: the server starts under the selector" || { echo "FAIL device: serve_a770_llamacpp.sh does not export the selector to the server"; fail=1; }
+out=$(A770B_FAST_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_LONG_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile fast serves long's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
+out=$(bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "^ok   profiles:" && echo "ok   doctor: a clean environment is not warned about" || { echo "FAIL doctor: warned on a clean environment"; fail=1; }
 rm -rf "$t" "$A770B_DATA"
 if [ "$fail" = 0 ]; then echo "selftest: all passed"; fi
 exit "$fail"

@@ -213,6 +213,28 @@ def cmd_env(args) -> int:
     return 0
 
 
+def _card_warnings(profiles: dict) -> dict:
+    """Per-profile warning strings: a served file that inverts two profiles, or a served ctx above the file's."""
+    file_model_owner = {p.get("model"): n for n, p in profiles.items()}
+    warnings = {}
+    for name in profiles:
+        prof = profiles[name]
+        upper = name.upper().replace("-", "_")
+        w = []
+        served_model = prof.get("served_model")
+        file_model = prof.get("model")
+        if served_model != file_model:
+            other = file_model_owner.get(served_model)
+            if other is not None and other != name:
+                w.append(f"profile {name} serves {other}'s file ({served_model}): A770B_{upper}_MODEL comes from the environment or builder.env and inverts the profiles; an earlier release named them the other way round")
+        served_ctx = prof.get("served_ctx")
+        file_ctx = prof.get("ctx")
+        if isinstance(served_ctx, int) and isinstance(file_ctx, int) and served_ctx > file_ctx:
+            w.append(f"profile {name} serves {served_ctx} tokens, more than the registry's {file_ctx}: the card's numbers were measured at the smaller window")
+        warnings[name] = w
+    return warnings
+
+
 def cmd_card(args) -> int:
     data, err = _load(Path(args.file))
     if err is not None:
@@ -240,12 +262,16 @@ def cmd_card(args) -> int:
                     served[k] = v
         prof.update(served)
 
+    warnings_by_profile = _card_warnings(profiles)
+    data["warnings"] = [w for name in profiles for w in warnings_by_profile[name]]
+
     if args.name is not None:
         if args.name not in profiles:
             print(f"profiles: no profile {args.name}", file=sys.stderr)
             return 2
         out = dict(profiles[args.name])
         out["name"] = args.name
+        out["warnings"] = warnings_by_profile.get(args.name, [])
         print(json.dumps(out, indent=2))
         return 0
 
