@@ -77,6 +77,11 @@ grep -q 'long) CTX=\$A770B_LONG_CTX' "$here/harness/build_local.sh" && echo "ok 
 printf '%s\n' "$t/p.echo.json" > "$A770B_DATA/logs/last-build.echo.path"
 A770B_REFUSE=/nonexistent A770B_SPEC="$t/spec.json" bash "$here/harness/capture_task.sh" selftest-spec "$r" "$t/build.log" >/dev/null 2>&1
 if [ -f "$A770B_DATA/results/selftest-spec.spec.json" ] && [ -f "$A770B_DATA/results/selftest-spec.echo.json" ] && grep -q '## run specification' "$A770B_DATA/results/selftest-spec.task.md" && grep -q 'rendered_sha256' "$A770B_DATA/results/selftest-spec.task.md"; then echo "ok   capture: the specification and its echo are kept beside the patch and printed"; else echo "FAIL capture did not keep or print the specification"; fail=1; fi
+# the linter over every bash file, when a shellcheck can be found: on PATH, or through uvx (shellcheck-py bundles the binary, --offline so the cache decides); inside the sandbox neither exists, and the check reports itself skipped rather than failing offline
+if command -v shellcheck >/dev/null 2>&1; then SC="shellcheck"; elif command -v uvx >/dev/null 2>&1 && uvx --offline --from shellcheck-py shellcheck --version >/dev/null 2>&1; then SC="uvx --offline --from shellcheck-py shellcheck"; else SC=""; fi
+if [ -n "$SC" ]; then
+  if $SC -S warning "$here"/harness/*.sh "$here"/skills/local-build/scripts/*.sh "$here"/tests/*.sh "$here"/render_readme.sh "$here"/release.sh; then echo "ok   shellcheck: no finding at warning level or above"; else echo "FAIL shellcheck: findings at warning level or above, listed above"; fail=1; fi
+else echo "skip shellcheck: none on PATH and none in the uv cache (install shellcheck, or once online: uvx --from shellcheck-py shellcheck --version)"; fi
 rm -rf "$t" "$A770B_DATA"
 if [ "$fail" = 0 ]; then echo "selftest: all passed"; fi
 exit "$fail"
