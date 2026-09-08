@@ -26,6 +26,9 @@ kit/reference/    the three reference exercises (Aider's polyglot set): tasks/, 
 kit/suite.json    the machine-readable form of kit/SUITE.md; kit/reference/reference.json is
                    the reference rung's own machine-readable form
 kit/SUITE.md      the four stages in prose: what each measures, its budget, the run order
+kit/PROFILE.md    how a run of the suite turns into a registry row: which rung fills each
+                   field, how its number is derived, and what it compares with outside this
+                   project
 kit/REVIEW-rubric.md   the reviewer's rubric for the maintainable and usable axes
 kit/SOURCES.md, kit/NOTICE   attribution for every file seeded from the two sibling repositories
                    (each reference exercise carries its own LICENSE and .meta/config.json instead,

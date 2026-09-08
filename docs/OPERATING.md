@@ -64,6 +64,9 @@ what the brief named.
 
 ## Profiles
 
+`kit/PROFILE.md` is the field-by-field derivation of a row: which rung fills a field, how its number is worked
+out, and what it can honestly be compared with outside this project.
+
 The seat runs in one of two card modes, chosen by `A770B_CARD_MODE`: display-safe (the default, the tested set, for a
 card that also draws the desktop) and pure-inference (for a card that draws nothing). Each mode reads its own
 registry, the single source of every profile's numbers — `config/profiles.json` for display,

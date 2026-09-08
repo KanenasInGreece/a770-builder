@@ -15,7 +15,9 @@ the mode that fits.
 
 ## What a profile is
 
-A profile is one row of a registry, what the orchestrating agent reads before it picks a model for a brief. Two
+`kit/PROFILE.md` is the field-by-field derivation: which rung fills a field, how its number is worked out, and
+what a reader can honestly compare it with outside this project. A profile is one row of a registry, what the
+orchestrating agent reads before it picks a model for a brief. Two
 fields place it among rows it might be judged against: `category`, whether the model is `dense` or a mixture of
 experts (`moe`), and `weight_class`, a short label such as `9b`, `12b` or `35b-a3b`. Together they keep the
 registry from carrying two rows that are really the same choice twice.

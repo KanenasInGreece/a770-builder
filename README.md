@@ -39,7 +39,8 @@ The repository holds a coding-worker harness with two card modes — display-saf
 VRAM cap, for a card that also drives the desktop) and pure-inference (under a 15.3 GiB cap, for a card with nothing
 else on it) — each with its own profile registry naming the qualified models (`config/profiles.json`,
 `config/profiles.inference.json`). It also holds the profiling kit and its suite (`kit/`, `harness/run_suite.sh`)
-that a candidate model is qualified against, and the `local-build` skill, the installable front door an agent hands
+that a candidate model is qualified against — `kit/PROFILE.md` says how every field of a row is measured and what
+it compares with — and the `local-build` skill, the installable front door an agent hands
 a brief to.
 
 ## Why we made it
