@@ -99,6 +99,81 @@ if command -v shellcheck >/dev/null 2>&1; then SC="shellcheck"; elif command -v 
 if [ -n "$SC" ]; then
   if $SC -S warning "$here"/harness/*.sh "$here"/skills/local-build/scripts/*.sh "$here"/tests/*.sh "$here"/render_readme.sh "$here"/release.sh; then echo "ok   shellcheck: no finding at warning level or above"; else echo "FAIL shellcheck: findings at warning level or above, listed above"; fail=1; fi
 else echo "skip shellcheck: none on PATH and none in the uv cache (install shellcheck, or once online: uvx --from shellcheck-py shellcheck --version)"; fi
+# KU3 — harness/run_suite.sh: a fake local-build.sh (A770B_LOCAL_BUILD) stands in for the real one, so the runner is
+# proved without the card. A throwaway kit/ fixture: two stages (one that verifies PASS, one that verifies FAIL) plus
+# one reference exercise (kit/reference/reference.json, appended after the stages); the fixture never touches the
+# real kit/ another unit is writing. Checks the runner's own export-and-run of kit/seat/, its results JSON (one
+# PASS, one FAIL, the failing id named, the reference entry present) and that suite_report.py --json reports on it.
+ku3="$t/ku3"; mkdir -p "$ku3/seat" "$ku3/tasks" "$ku3/reference"
+echo "fixture" > "$ku3/seat/README.md"
+for st in s0-pass s1-fail ref-cpp-example; do
+  echo "brief $st" > "$ku3/tasks/$st.md"
+  printf '{}' > "$ku3/tasks/$st.spec.json"
+done
+cat > "$ku3/suite.json" <<JSON
+{"suite": "SUITE-TEST", "stages": [
+  {"id": "s0-pass", "language": "python", "brief": "$ku3/tasks/s0-pass.md", "spec": "$ku3/tasks/s0-pass.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}},
+  {"id": "s1-fail", "language": "python", "brief": "$ku3/tasks/s1-fail.md", "spec": "$ku3/tasks/s1-fail.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}}
+]}
+JSON
+cat > "$ku3/reference/reference.json" <<JSON
+{"reference": [{"id": "ref-cpp-example", "language": "cpp", "brief": "$ku3/tasks/ref-cpp-example.md",
+  "spec": "$ku3/tasks/ref-cpp-example.spec.json", "grader": {"working": null, "conformance": null, "budget_lines": 50, "rubric": null}}]}
+JSON
+cat > "$ku3/fake-local-build.sh" <<'FAKE'
+#!/usr/bin/env bash
+set -uo pipefail
+case "${1:-}" in
+  run)
+    shift; WT="$1"; BRIEF="$2"; shift 2
+    label="fake-$(basename "$BRIEF" .md)"
+    mkdir -p "$A770B_DATA/results"
+    { echo "# fake capture"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
+    { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; echo "+line two"; } > "$A770B_DATA/results/$label.patch"
+    echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
+    exit 0 ;;
+  verify)
+    shift; label="$1"; shift
+    case "$label" in *fail*) rc=1; verdict="FAIL (exit 1)" ;; *) rc=0; verdict="PASS (exit 0)" ;; esac
+    mkdir -p "$A770B_DATA/results"; echo "verdict: $verdict" > "$A770B_DATA/results/$label.verify.md"
+    exit "$rc" ;;
+  stop|serve) exit 0 ;;
+  *) exit 2 ;;
+esac
+FAKE
+chmod +x "$ku3/fake-local-build.sh"
+rm -f "$A770B_DATA"/results/long-suite-*.json
+out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" bash "$here/harness/run_suite.sh" long "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
+res=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
+if [ "$rc" = 0 ] && [ -n "$res" ] && python3 - "$res" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ids = [x["id"] for x in d["stages"]]
+assert ids == ["s0-pass", "s1-fail", "ref-cpp-example"], ids
+s = {x["id"]: x for x in d["stages"]}
+assert s["s0-pass"]["working"] is True, s["s0-pass"]
+assert s["s1-fail"]["working"] is False, s["s1-fail"]
+assert s["ref-cpp-example"]["working"] is True, s["ref-cpp-example"]
+sys.exit(0)
+PY
+then echo "ok   suite: run_suite.sh records one PASS, one FAIL (s1-fail named) and the reference entry"
+else echo "FAIL suite: run_suite.sh output/results wrong (rc=$rc res=$res)"; printf '%s\n' "$out" | tail -20; fail=1
+fi
+if [ -n "$res" ]; then
+  jout=$(python3 "$here/harness/suite_report.py" "$res" --json 2>/dev/null)
+  if printf '%s' "$jout" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+need = {"briefs", "runs", "passed", "mean_wall_s", "source"}
+assert set(d.keys()) == need, d
+assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2, d
+' 2>/dev/null; then echo "ok   suite: suite_report.py --json prints the five totals"
+  else echo "FAIL suite: suite_report.py --json wrong: $jout"; fail=1
+  fi
+else echo "FAIL suite: no results file to report on"; fail=1
+fi
 # the profiles registry: config/profiles.json is the single source now that env.sh evals `harness/profiles.py env`
 python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
 [ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = "long" ] && echo "ok   profiles: names and default come from the registry" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='$A770B_DEFAULT_PROFILE'"; fail=1; }
