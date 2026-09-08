@@ -40,14 +40,28 @@ sandboxed(){ # sandboxed <worktree> <shell-command> — runs inside bwrap, no ne
 ok(){ echo "ok   kit: $1"; }
 bad(){ echo "FAIL kit: $1"; fail=1; }
 
+# copy_tracked <dest> <src> — copies into <dest> only the files git tracks under <src> (same reasoning as
+# harness/run_suite.sh's own copy_tracked: never the build/cache artefacts a prior local run left behind,
+# __pycache__, .pytest_cache, a built .so — those are what made the first exported seat read dirty).
+copy_tracked(){
+  local dest="$1" src="$2"
+  if git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$src" ls-files -z | tar -C "$src" --null -T - -cf - | tar -C "$dest" -xf -
+  else
+    cp -a "$src/." "$dest/"
+  fi
+}
+
 export_seat(){ # export_seat <dest> <src> — a standalone git-init'ed, committed copy, same shape run_suite.sh's
                # export_kit_seat uses (K1: the model never sees a clone of this repository, only this export)
   local dest="$1" src="$2"
   rm -rf "$dest"; mkdir -p "$dest"
-  cp -a "$src/." "$dest/"
+  copy_tracked "$dest" "$src"
   git init -q "$dest"
   git -C "$dest" -c user.name=kit-selftest -c user.email=kit-selftest@localhost add -A
   git -C "$dest" -c user.name=kit-selftest -c user.email=kit-selftest@localhost commit -q -m "kit selftest seat"
+  local dirty; dirty=$(git -C "$dest" status --porcelain --ignored)
+  [ -z "$dirty" ] || { echo "FAIL kit: $dest is not clean right after its own commit — something not git-tracked got in:" >&2; printf '%s\n' "$dirty" >&2; exit 2; }
 }
 
 # copy_hidden <seat> <hidden-basename> — the same tests/_hidden_<name>.py convention
@@ -77,12 +91,14 @@ STAGE_IDS=(s0-design s1-frontend s2-backend s3-optimise)
 export_stage_seat(){
   local dest="$1" label="$2"; shift 2
   rm -rf -- "$dest"; mkdir -p "$dest"
-  cp -a "$KIT/seat/." "$dest/"
+  copy_tracked "$dest" "$KIT/seat"
   local sid
-  for sid in "$@"; do cp -a "$SOLUTIONS/$sid/." "$dest/"; done
+  for sid in "$@"; do copy_tracked "$dest" "$SOLUTIONS/$sid"; done
   git init -q "$dest"
   git -C "$dest" -c user.name=kit-selftest -c user.email=kit-selftest@localhost add -A
   git -C "$dest" -c user.name=kit-selftest -c user.email=kit-selftest@localhost commit -q -m "kit seat for $label" >/dev/null
+  local dirty; dirty=$(git -C "$dest" status --porcelain --ignored)
+  [ -z "$dirty" ] || { echo "FAIL kit: $dest is not clean right after its own commit (label $label) — something not git-tracked got in:" >&2; printf '%s\n' "$dirty" >&2; exit 2; }
 }
 
 # stage <id> <grader-working-cmd> <hidden-basename>

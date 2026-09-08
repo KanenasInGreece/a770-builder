@@ -129,7 +129,7 @@ cat > "$ku3/suite.json" <<JSON
 ]}
 JSON
 cat > "$ku3/reference/reference.json" <<JSON
-{"reference": [{"id": "ref-cpp-example", "language": "cpp", "brief": "$ku3/tasks/ref-cpp-example.md",
+{"entries": [{"id": "ref-cpp-example", "language": "cpp", "brief": "$ku3/tasks/ref-cpp-example.md",
   "spec": "$ku3/tasks/ref-cpp-example.spec.json", "grader": {"working": null, "conformance": null, "budget_lines": 50, "rubric": null}}]}
 JSON
 rm -f "$ku3/argv.log"

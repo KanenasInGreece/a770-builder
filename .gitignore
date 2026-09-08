@@ -1,6 +1,7 @@
 results/
 logs/
 *.log
+!kit/seat/python/data/sample.log
 __pycache__/
 .pytest_cache/
 config/builder.env

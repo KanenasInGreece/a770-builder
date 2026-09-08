@@ -84,16 +84,22 @@ PY
 [ ${#MAIN_IDS[@]} -gt 0 ] || die "no stages selected from $SUITE (filter: ${STAGES_FILTER:-none})"
 
 # ── the reference exercises (kit/reference/reference.json), when present: always in full, never filtered by --stages ──
+# The exercise list lives under the "entries" key (not "reference" — read the file); reader refuses with a clear
+# message, instead of an AttributeError from iterating the wrong thing, when that key is missing or not a list.
 REF_IDS=()
 if [ -f "$REFFILE" ] && [ ! -L "$REFFILE" ]; then
-  mapfile -t REF_IDS < <(python3 - "$REFFILE" <<'PY'
+  REF_OUT=$(python3 - "$REFFILE" <<'PY' 2>&1
 import json,sys
-d=json.load(open(sys.argv[1]))
-items = d.get("reference", d) if isinstance(d, dict) else d
+path = sys.argv[1]
+d = json.load(open(path))
+items = d.get("entries") if isinstance(d, dict) else None
+if not isinstance(items, list):
+    sys.exit(f'{path}: no "entries" list found (kit/reference/reference.json keeps its exercise list under "entries")')
 for x in items:
     print(x.get("id", ""))
 PY
-) || die "could not read reference exercises from $REFFILE"
+) || die "could not read reference exercises from $REFFILE:"$'\n'"$REF_OUT"
+  [ -z "$REF_OUT" ] || mapfile -t REF_IDS <<< "$REF_OUT"
 fi
 
 # stage_precedents <id> — the ids from kit/suite.json's OWN "stages" list (file order, never the --stages filter)
@@ -143,22 +149,40 @@ PY
   S_CONFORMANCE_CMD=${_sv[4]:-}; S_BUDGET=${_sv[5]:-}; S_RUBRIC=${_sv[6]:-}; S_AXES=${_sv[7]:-}; S_COUNTS=${_sv[8]:-true}
 }
 
+# copy_tracked <dest> <src> — copies into <dest> only the files git tracks under <src>, never whatever build or
+# cache artefacts a prior local run left in the working tree (__pycache__, .pytest_cache, a built .so — this is
+# what left the FIRST exported seat carrying host cruft that local-build.sh's seat_dirty check then refused as not
+# clean). <src> not being inside a git working tree at all (a synthetic test fixture with no .git anywhere above
+# it) falls back to a plain recursive copy: there is nothing there for a tracked-only export to filter out.
+copy_tracked(){
+  local dest="$1" src="$2"
+  if git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$src" ls-files -z | tar -C "$src" --null -T - -cf - | tar -C "$dest" -xf -
+  else
+    cp -a "$src/." "$dest/"
+  fi
+}
+
 # export_kit_seat <seat> <src> <label> [<solution-dir>...] — a standalone git clone-shaped copy of kit/seat/ at
 # <seat>, with each named solution subtree (kit/hidden/solutions/<id>/, laid out to mirror the seat itself) pasted
 # over it in order, one commit "kit seat for <label>". Always removes and recreates <seat> first: a stage's seat is
 # always freshly derived from kit/seat/ plus the reference solutions named, never a diff against what a previous
-# call left there.
+# call left there. Only git-tracked files are copied in (copy_tracked); after the commit, a status --ignored over
+# the fresh seat must come back empty, or something got in that wasn't tracked and this dies loudly instead of
+# handing local-build.sh a seat it will refuse anyway.
 export_kit_seat(){
   local seat="$1" src="$2" label="$3"; shift 3
   [ -d "$src" ] || die "kit seat source not found: $src (kit/seat/ is another unit's — is it built yet?)"
   rm -rf -- "$seat"
   mkdir -p "$seat"
-  cp -a "$src/." "$seat/"
+  copy_tracked "$seat" "$src"
   local d
-  for d in "$@"; do cp -a "$d/." "$seat/"; done
+  for d in "$@"; do copy_tracked "$seat" "$d"; done
   safe_git "$seat" init -q
   safe_git "$seat" add -A
   safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat for $label" >/dev/null
+  local dirty; dirty=$(safe_git "$seat" status --porcelain --ignored)
+  [ -z "$dirty" ] || die "export_kit_seat: $seat is not clean right after its own commit (label $label) — something not git-tracked in the source got in:"$'\n'"$dirty"
 }
 
 # check_seat_path <seat> — the one-time safety gate before the first per-stage export: a path that already exists
@@ -386,7 +410,7 @@ for id in "${MAIN_IDS[@]}"; do
 done
 if { [ "$rc" != 2 ] && [ "$rc" != 3 ]; } && [ ${#REF_IDS[@]} -gt 0 ]; then
   for id in "${REF_IDS[@]}"; do
-    process_task "$REFFILE" reference "$id" || rc=$?
+    process_task "$REFFILE" entries "$id" || rc=$?
     [ "$rc" = 2 ] || [ "$rc" = 3 ] && break
   done
 fi
