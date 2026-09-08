@@ -70,7 +70,7 @@ task. Numbers are properties of this card, build and quantisation, not of the mo
 |---|---|---|---|---|---|
 | `fast` (default) | Qwen3.5-9B Q4_K_M | 262,144 · q8_0 (native), safe to about 64–72k | 10.35 GiB | 36.8 tok/s / 571 tok/s at 8k; 11.6 / 147 at 100k | 2–3 min |
 | `--serious` (default) | Qwen3.8-27B GSQ-RCO IQ3_XXS | 131,072 · q4_0, useful to about 32k | 12.25 GiB | 8.1 tok/s / 65 tok/s at 17k; 6.7 tok/s after 17k | 10–25 min |
-| `--serious` (this workstation, builder.env) | Qwen3.8-27B GSQ-RCO IQ3_S | 98,304 · q4_0, needs a 14.0 cap, useful to about 32k | 13.71 GiB | 8.0 tok/s / 72 tok/s at 8k; 4.9 / 42 at 64k | ~9 min (five tests, 542 s) |
+| `--serious` (this workstation, builder.env) | Qwen3.8-27B GSQ-RCO IQ3_S | 114,688 · q4_0, needs a 14.1 cap, useful to about 32k | 13.78 GiB | 8.0 tok/s / 72 tok/s at 8k; 4.9 / 42 at 64k | ~9 min (five tests, 542 s) |
 | `--long` | Gemma 4 E4B Q4_K_M, flash attention off | 131,072 · f16 | 8.1 GiB | 60 tok/s / 796 tok/s, falling to 16 / 280 at 100k | 1.5 min; a cold 100k read 4.5 min |
 
 The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM sampled and the
@@ -79,7 +79,7 @@ flat within 0.3 GiB of its load, but its prefill falls under 150 tokens a second
 so its useful window is about 64k to 72k of what it serves. The three 27B files share one speed profile, decode being
 compute-bound on this card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and under the
 five-tokens-a-second floor by 64k, so the serious profile's useful window is about 32k whether it serves 131,072 or
-98,304, and a brief for it points at files that fit that.
+114,688, and a brief for it points at files that fit that.
 
 The long profile exists for the read, not the edit: files the fast window cannot hold, and the "read this whole thing
 and tell me" step before a brief is written. Its useful depth is about 100k tokens: at that depth it answered a probe's
@@ -112,8 +112,8 @@ stay up past the cap after load. No speculative decoding on this card: draft mod
 The cap is measured after load, and the public default of 13.0 assumes a desktop share that has never been measured on
 your card. Measure it before raising the cap: run `nvtop -s`, start something that actually draws the card (a video
 playing is enough), and sum every process on it that is not the server. On this workstation that came to 1.0 GiB, so
-the cap here runs at 14.0 in `builder.env` rather than the public 13.0. That extra headroom is what admits the serious
-profile's task-lossless file, IQ3_S, at 98,304, which loads at 13.71 GiB; the fast profile's full native window loads
+the cap here runs at 14.1 in `builder.env` rather than the public 13.0. That extra headroom is what admits the serious
+profile's task-lossless file, IQ3_S, at 114,688, which loads at 13.78 GiB and peaks at 14.21 during a 32k prompt; the fast profile's full native window loads
 at 10.35 GiB and fits under either cap.
 
 **The key.** The server starts with `--api-key-file A770B_API_KEY_FILE` (default `~/.config/a770-builder/api.key`). The
@@ -155,7 +155,7 @@ Fetch them with the Hugging Face CLI (no account needed for these), straight int
 ```bash
 uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested            # fast
 uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested   # serious
-uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested     # serious, this workstation's builder.env, under a 14.0 cap
+uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested     # serious, this workstation's builder.env, under a 14.1 cap
 uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested       # long
 ```
 
