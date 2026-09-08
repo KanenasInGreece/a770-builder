@@ -4,6 +4,7 @@
 #                          →  variables already in the environment.
 # Copy config/builder.env.example to one of those two places and edit. Nothing else needs touching.
 A770B_PROJECT="${A770B_PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# shellcheck disable=SC1090 # builder.env is named at run time; the linter cannot follow it and need not
 _a770b_load(){ [ -f "$1" ] && { set -a; . "$1"; set +a; }; return 0; }
 _a770b_snapshot=$(export -p | grep -E '^declare -x A770B_' || true)   # values set by the caller win over files
 _a770b_load "$A770B_PROJECT/config/builder.env"

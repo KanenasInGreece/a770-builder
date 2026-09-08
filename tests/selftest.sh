@@ -2,7 +2,7 @@
 # selftest.sh — what the harness can prove without the card: every script parses; the run specification is refused where it must be and rendered before the floor; the health line reads the four
 # kinds of answer and strips what a hostile answer could put on a terminal; the seat's dirty check hides nothing but the
 # harness's own brief copies; the capture survives a run that created no file. Run: bash tests/selftest.sh
-set -u
+set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd); fail=0
 for f in "$here"/harness/*.sh "$here"/skills/local-build/scripts/local-build.sh "$here"/release.sh "$here"/sync_local_build.sh; do
   [ -f "$f" ] || continue; bash -n "$f" || { echo "FAIL syntax: $f"; fail=1; }

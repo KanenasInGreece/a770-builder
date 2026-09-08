@@ -61,9 +61,10 @@ serve(){ local p="$1" gguf ctx kv reasoning extra t; profile_vars "$p"
     echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
   fi
   bash "$SERVE" stop >/dev/null 2>&1
-  # shellcheck disable=SC2086  (extra is a deliberate word list from the env)
+  # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
+  # shellcheck disable=SC2086
   KV_K=$kv KV_V=$kv REASONING=$reasoning bash "$SERVE" start "$gguf" "$ctx" $extra || die "server did not start (budget gate or VRAM cap refused — see above)"
-  for i in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+  for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || die "server not healthy after 180 s"
   echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv · $A770B_HOST:$A770B_PORT"
 }

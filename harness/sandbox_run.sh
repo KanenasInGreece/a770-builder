@@ -33,7 +33,7 @@ if [ "${A770B_NO_BRIDGE:-0}" != 1 ]; then
   # host side of the bridge: unix socket → the model server; lives only for this run
   rm -f "$SOCK"; socat "UNIX-LISTEN:$SOCK,fork,unlink-early" "TCP:$A770B_HOST:$A770B_PORT" 9>&- 2>>"$A770B_DATA/logs/llama-bridge.log" & BRIDGE=$!
   trap 'kill $BRIDGE 2>/dev/null; rm -f "$SOCK"' EXIT
-  for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.2; done
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.2; done
 fi
 ARGS=(
   --ro-bind /usr /usr --ro-bind /etc /etc

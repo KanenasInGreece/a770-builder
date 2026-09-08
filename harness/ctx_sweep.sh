@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ctx_sweep.sh — prefill and decode against prompt position on the running server, with VRAM sampled during each
 # prompt and the kernel log watched. Answers "does the large window come at a spillover cost". Usage: ctx_sweep.sh [sizes…]
-set -u
+set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
-URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("${@:-8000 32000 64000 100000 120000}")
+URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("$@"); [ "${#SIZES[@]}" -gt 0 ] || SIZES=(8000 32000 64000 100000 120000)
 CORPUS=$(mktemp); find "$A770B_SEAT" -name '*.py' -size +2k | head -400 | xargs cat 2>/dev/null | tr -cd '\11\12\15\40-\176' > "$CORPUS"
 printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' target tokens ttft_s prefill_tps decode_tps vram_max resets
-for want in ${SIZES[@]}; do
+for want in "${SIZES[@]}"; do
   chars=$((want*4)); TXT=$(head -c "$chars" "$CORPUS")
   python3 -c 'import json,sys; t=sys.stdin.read(); print(json.dumps({"model":"local-builder","max_tokens":96,"temperature":0,"messages":[{"role":"user","content":"Read this code and answer in one sentence: what does it do?\n\n"+t}]}))' <<<"$TXT" > "$CORPUS.body"
   b0=$(journalctl -k --since '-1min' 2>/dev/null | grep -ciE 'engine reset|timedout')

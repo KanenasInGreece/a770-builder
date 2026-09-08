@@ -2,7 +2,7 @@
 # depth_probe.sh — quality at depth: a prompt of ~N tokens of real repository code with one unique function planted at
 # ~85 percent of the way in, then three questions whose answers need that depth. Prints the answers, the timings and
 # VRAM. Usage: depth_probe.sh <target_tokens>
-set -u
+set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); want=${1:-100000}
 T=$(mktemp -d); find "$A770B_SEAT" -name '*.py' -size +2k | sort | head -400 | xargs cat 2>/dev/null | tr -cd '\11\12\15\40-\176' > "$T/corpus"
