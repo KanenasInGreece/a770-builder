@@ -58,24 +58,29 @@ since each stage's brief assumes the previous stage's work is already in place.
 `results/<profile>-suite-<date>.json`; before each stage it re-exports the seat fresh from
 `kit/seat/` with the REFERENCE solutions of every preceding stage pasted over it
 (`kit/hidden/solutions/<id>/`, never the model's own output), so a stage never needs the
-previous stage's model-written work to be correct for its own to run. The seat for a run is a
-clone of this repository at the release's tag (the kit is versioned with the harness,
-`kit/suite.json`'s `"suite"` field).
+previous stage's model-written work to be correct for its own to run. The seat for a run is
+NOT a clone of this repository (the model must not read `harness/`): it is an EXPORT of
+`kit/seat/` — a copy, git-init'ed and committed fresh for every stage — for a main stage, or
+of `kit/reference/`'s own `{cpp,javascript,python,js}` subtrees (`.meta/` stripped) for a
+reference exercise; see `harness/run_suite.sh`'s own header comment. The kit itself is
+versioned with the harness (`kit/suite.json`'s `"suite"` field).
 
 ## Findings from building this unit (2026-09-08)
 
-- **`node` cannot be granted through a run specification's `bash_allow`**:
-  `harness/render_profile.py`'s `check` refuses any `bash_allow` pattern whose first word is
-  `node` (rule 7's `BASH_ALLOW_FORBIDDEN_FIRST`, "no wrapper or interpreter" — confirmed with
-  `python3 harness/render_profile.py check --spec <spec-with-a-node-pattern> --seat kit/seat`,
-  which prints `bash_allow: must not start with 'node'` and exits 2). S1's model therefore
-  cannot run `node --test` or `node --check` live in its own shell tool during a run; the
-  brief says so and asks the model to reason carefully instead, and the harness's own
-  `verify` step (outside the model's sandboxed shell tool) runs `node --test` for real after
-  the patch is captured. `uv run …` needs no such grant — it is already allowed by the
-  template (`"uv run *": "allow"`), and adding it via `bash_allow` would itself be refused
-  (`uv` is also in `BASH_ALLOW_FORBIDDEN_FIRST`) — so S2 and S3's specifications omit it.
-- **`node --test <bare-directory>` fails in this sandbox's Node (v24.15.0)**: passing a
+- **`node` no longer needs a run specification's `bash_allow` at all**: a *pattern* whose
+  first word is `node` still cannot be added through a spec's own `bash_allow` list —
+  `harness/render_profile.py`'s `check` refuses it (rule 7's `BASH_ALLOW_FORBIDDEN_FIRST`,
+  "no wrapper or interpreter") — but that is now moot for `node --test` and `node --check`:
+  `config/opencode.profile.template.jsonc` grants both unconditionally in its own permanent
+  floor (`"node --test *": "allow", "node --check *": "allow"`, alongside `"g++ *"` and
+  `"cmake *"`), spliced in ahead of `__BASH_ALLOW__` on every rendered profile regardless of
+  what a spec's `bash_allow` asks for. S1's model can therefore run `node --test` or
+  `node --check` live in its own shell tool during a run. `uv run …` needs no grant either —
+  it is already allowed by the template (`"uv run *": "allow"`), and adding it via
+  `bash_allow` would itself be refused (`uv` is also in `BASH_ALLOW_FORBIDDEN_FIRST`) — so
+  S2 and S3's specifications omit it.
+- **`node --test <bare-directory>` fails in this sandbox's Node (v22, `/usr/bin/node`, bound
+  in read-only from the host — not whatever `node` a developer's own shell resolves to)**: passing a
   directory path directly (`node --test js/tests`, with or without a trailing slash) errors
   `MODULE_NOT_FOUND` trying to `require()` the directory itself, rather than discovering test
   files under it; a quoted or unquoted glob (`node --test js/tests/*.test.js`) and no-argument

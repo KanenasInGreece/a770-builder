@@ -5,11 +5,17 @@ not referenced from anywhere under kit/seat/.
 
 Shells out to `node` (fresh inputs, embedded below — different from js/tests/format.test.js's
 trivial cases, so a model cannot pass by hard-coding the visible test's values) and uses
-`html.parser` on html/index.html for the structural/accessibility check.
+`html.parser` on html/index.html for the structural/accessibility check, plus the page-wiring
+check: the bar-meta.js <script src> and the inline module script's "...render.js" import must
+resolve to real files relative to html/index.html itself (not the seat root), and the module
+script's own text must show a fetch("stats.json") call, a renderStats(...) call feeding
+#stats, and something reacting to the #level select's "change" event — never executed (no DOM
+in this sandbox), so these are static/textual checks, not proof of runtime behaviour.
 """
 
 import html.parser
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -78,7 +84,10 @@ class _PageChecker(html.parser.HTMLParser):
         self.in_select = False
         self.aria_live_ids = []
         self.headings = []
+        self.bar_meta_src = None
+        self.module_script_text = []
         self._current_tag_stack = []
+        self._in_module_script = False
 
     def handle_starttag(self, tag, attrs):
         d = dict(attrs)
@@ -95,10 +104,20 @@ class _PageChecker(html.parser.HTMLParser):
             self.aria_live_ids.append(d.get("id"))
         elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self.headings.append(int(tag[1]))
+        elif tag == "script" and d.get("src") and "bar-meta.js" in d.get("src"):
+            self.bar_meta_src = d.get("src")
+        elif tag == "script" and d.get("type") == "module":
+            self._in_module_script = True
+
+    def handle_data(self, data):
+        if self._in_module_script:
+            self.module_script_text.append(data)
 
     def handle_endtag(self, tag):
         if tag == "select":
             self.in_select = False
+        if tag == "script":
+            self._in_module_script = False
         if self._current_tag_stack and self._current_tag_stack[-1] == tag:
             self._current_tag_stack.pop()
 
@@ -135,3 +154,52 @@ def test_page_heading_order_not_skipped():
     assert p.headings, "no heading elements found"
     for a, b in zip(p.headings, p.headings[1:]):
         assert b <= a + 1, f"heading order skips a level: {p.headings}"
+
+
+def _resolve_from_html(rel_path):
+    """Resolve a path used inside html/index.html (a <script src="...">, or an import
+    specifier inside its inline module script) the way a browser would: relative to
+    html/index.html's own directory, never the seat root."""
+    return (INDEX_HTML.parent / rel_path).resolve()
+
+
+def test_page_bar_meta_script_resolves():
+    p = _parse_page()
+    assert p.bar_meta_src, 'no <script src="...bar-meta.js"> found'
+    target = _resolve_from_html(p.bar_meta_src)
+    assert target.is_file(), f'<script src="{p.bar_meta_src}"> does not resolve to a real file: {target}'
+
+
+def _module_script_text():
+    p = _parse_page()
+    assert p.module_script_text, '<script type="module"> not found'
+    return "".join(p.module_script_text)
+
+
+def test_page_module_script_imports_render_js_and_it_resolves():
+    text = _module_script_text()
+    m = re.search(r'from\s+["\']([^"\']*render\.js)["\']', text)
+    assert m, 'the module script does not import "...render.js"'
+    target = _resolve_from_html(m.group(1))
+    assert target.is_file(), f'import "{m.group(1)}" does not resolve to a real file: {target}'
+
+
+def test_page_module_script_fetches_stats_json():
+    text = _module_script_text()
+    assert re.search(r'fetch\s*\(\s*["\']stats\.json["\']', text), (
+        'the module script does not fetch("stats.json")'
+    )
+
+
+def test_page_module_script_wires_level_select_change_event():
+    text = _module_script_text()
+    assert re.search(r'\blevel\b', text) and re.search(r'\bchange\b', text), (
+        'the module script does not appear to react to the #level select\'s "change" event'
+    )
+
+
+def test_page_module_script_renders_into_stats_section():
+    text = _module_script_text()
+    assert re.search(r'\bstats\b', text) and re.search(r'renderStats\s*\(', text), (
+        'the module script does not call renderStats(...) and write it into #stats'
+    )

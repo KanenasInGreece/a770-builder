@@ -9,6 +9,7 @@ Checks, in order:
      clear reason, when the language's toolchain is not on PATH.
 """
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -245,6 +246,62 @@ def test_python_public_grader_green_with_proof_solution(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "15 passed" in result.stdout
+
+
+def _load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_bst_hidden_wrapper_embeds_its_companions_byte_identical():
+    """verify.hidden only ever copies ONE file (the pytest wrapper itself) into a seat's
+    tests/_hidden_<name> — its companions never travel with it (see the wrapper's own module
+    docstring), so test_bst_hidden.py embeds kit/reference/hidden/bst_hidden_test.cpp and
+    kit/reference/hidden/cpp/CMakeLists.txt verbatim rather than reading them at test time.
+    This is the one guard against the two copies drifting apart."""
+    module = _load_module("kit_ref_hidden_test_bst", KIT_REF / "hidden" / "test_bst_hidden.py")
+    assert module.BST_HIDDEN_TEST_CPP == (KIT_REF / "hidden" / "bst_hidden_test.cpp").read_text(encoding="utf-8")
+    assert module.BST_HIDDEN_CMAKELISTS == (KIT_REF / "hidden" / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
+
+
+def test_forth_hidden_wrapper_embeds_its_companion_byte_identical():
+    """Same guard as test_bst_hidden_wrapper_embeds_its_companions_byte_identical, for
+    test_forth_hidden.py and kit/reference/hidden/forth_hidden.test.mjs."""
+    module = _load_module("kit_ref_hidden_test_forth", KIT_REF / "hidden" / "test_forth_hidden.py")
+    assert module.FORTH_HIDDEN_TEST_MJS == (KIT_REF / "hidden" / "forth_hidden.test.mjs").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(not HAVE_UV, reason="uv not on PATH")
+def test_hidden_wrappers_are_self_contained_without_kit_reference_hidden(tmp_path):
+    """The real harness only ever puts the pytest wrapper itself into a seat's tests/ — never
+    kit/reference/hidden/ (see harness/run_suite.sh's export_reference_seat, which never copies
+    that directory in). Runs the wrappers, copied the way verify.hidden copies them, over a
+    seat that has no kit/reference/hidden/ at all, proof solutions pasted over the stubs, and
+    checks each still passes (or is skipped, if its own toolchain — cmake/g++ or node — is
+    unavailable here; each wrapper's own test carries its own skipif for that)."""
+    work = _copy_exercise_tree(tmp_path, "cpp/binary-search-tree", "javascript/forth", "js", "python/pov")
+    cpp_exercise = work / "kit" / "reference" / "cpp" / "binary-search-tree"
+    shutil.copyfile(cpp_exercise / ".meta" / "example.h", cpp_exercise / "binary_search_tree.h")
+    js_exercise = work / "kit" / "reference" / "javascript" / "forth"
+    shutil.copyfile(js_exercise / ".meta" / "proof.ci.js", js_exercise / "forth.js")
+    py_exercise = work / "kit" / "reference" / "python" / "pov"
+    shutil.copyfile(py_exercise / ".meta" / "example.py", py_exercise / "pov.py")
+
+    tests_dir = work / "tests"
+    tests_dir.mkdir()
+    names = []
+    for hidden_name in ("test_bst_hidden.py", "test_forth_hidden.py", "test_pov_hidden.py"):
+        shutil.copyfile(KIT_REF / "hidden" / hidden_name, tests_dir / f"_hidden_{hidden_name}")
+        names.append(f"tests/_hidden_{hidden_name}")
+    assert not (work / "kit" / "reference" / "hidden").exists()
+
+    result = subprocess.run(
+        ["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q", *names],
+        cwd=work, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.skipif(not HAVE_UV, reason="uv not on PATH")

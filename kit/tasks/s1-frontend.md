@@ -32,9 +32,10 @@ complete, load it as-is) or any file under `python/`, `cpp/` or `design/`.
    and the select's `<option>`s: `"All"` plus one option per level key actually present in
    `product-brief.md`'s worked example (`DEBUG`, `ERROR`, `WARN`).
 4. Replace the second `TODO(S1)` comment with an inline `<script type="module">` that imports
-   `./js/render.js` (and, through it, `./js/format.js`), `fetch`es `"stats.json"`, renders
-   into `#stats`, and re-renders filtered to the selected level on the select's `"change"`
-   event (`"All"` shows the unfiltered totals).
+   `../js/render.js` (and, through it, `../js/format.js` — both are one level up from
+   `html/index.html` itself), `fetch`es `"stats.json"`, renders into `#stats`, and re-renders
+   filtered to the selected level on the select's `"change"` event (`"All"` shows the
+   unfiltered totals).
 5. Give `#stats` `aria-live="polite"` so a screen reader announces re-renders.
 
 Size budget: 180 lines total across `js/format.js`, `js/render.js` and `js/tests/format.test.js`
@@ -72,9 +73,6 @@ together are at or under the 180-line budget. Then print the files you changed.
 
 ## A run specification beside this brief
 
-See `s1-frontend.spec.json`. **FINDING carried into this brief**: `harness/render_profile.py`
-`check` (rule 7, `bash_allow`) refuses any pattern whose first word is `node` (it is in
-`BASH_ALLOW_FORBIDDEN_FIRST`, the "no wrapper or interpreter" rule) — so this run's
-specification cannot grant you `node` in your own shell tool at all; you cannot run the
-Verify command above live. Write and reason about the three files carefully; the harness runs
-`node --test` for you after your patch is captured.
+See `s1-frontend.spec.json`. `node --test` and `node --check` are allowed in your own shell
+tool (the run profile grants both unconditionally): you can and should run the Verify command
+above yourself before you stop, the same way you would run any other command.

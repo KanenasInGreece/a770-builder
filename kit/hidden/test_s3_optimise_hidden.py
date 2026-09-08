@@ -40,7 +40,25 @@ FIXED_INPUT = "\n".join([
     "2026-02-01T10:01:59Z ERROR parser rejected chunk 4 bad header",
     "2026-02-01T10:07:00Z DEBUG cache flushed entry 7",
 ])
-FIXED_EXPECTED = {"DEBUG": 1, "INFO": 2, "WARN": 1, "ERROR": 1, "total": 5}
+
+
+def _reference_level_counts(text):
+    """Independent re-implementation of the level-counting contract, by plain string
+    splitting — never calls count_levels (the seat's C++) or compute_stats (the seat's
+    Python), so it cannot pass by agreeing with a bug either one shares."""
+    counts = {lvl: 0 for lvl in LEVELS}
+    total = 0
+    for line in text.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 2 or parts[1] not in counts:
+            continue
+        counts[parts[1]] += 1
+        total += 1
+    counts["total"] = total
+    return counts
+
+
+FIXED_EXPECTED = _reference_level_counts(FIXED_INPUT)
 
 
 def _call_count_levels(text: str):

@@ -1,0 +1,53 @@
+<title>A770_Builder — recap</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{--ground:#F6F7F9;--surface:#FFFFFF;--surface-2:#EEF1F5;--ink:#141922;--ink-2:#4A5361;--ink-3:#6E7785;--rule:#D6DBE3;--accent:#0B5FBF;--code-bg:#1B222D;--code-ink:#E7ECF3}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--ground:#0F141B;--surface:#161C25;--surface-2:#1E2631;--ink:#E6EAF0;--ink-2:#AEB7C4;--ink-3:#8791A0;--rule:#2A3441;--accent:#5AA9FF;--code-bg:#0B1017;--code-ink:#DCE3EC}}
+:root[data-theme="dark"]{--ground:#0F141B;--surface:#161C25;--surface-2:#1E2631;--ink:#E6EAF0;--ink-2:#AEB7C4;--ink-3:#8791A0;--rule:#2A3441;--accent:#5AA9FF;--code-bg:#0B1017;--code-ink:#DCE3EC}
+*{box-sizing:border-box}body{margin:0;background:var(--ground);color:var(--ink);font-family:"Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:16px;line-height:1.55}
+.wrap{max-width:72rem;margin:0 auto;padding:2.5rem 1.5rem 4rem}
+h1,h2,h3{font-family:"Barlow Semi Condensed","Arial Narrow",sans-serif;text-wrap:balance;line-height:1.1}
+h1{font-size:2.6rem;font-weight:700;letter-spacing:-.01em;margin:0 0 .5rem}h2{font-size:1.45rem;font-weight:700;margin:2.75rem 0 .5rem;padding-top:1.1rem;border-top:2px solid var(--ink)}h3{font-size:1.1rem;font-weight:600;margin:1.5rem 0 .4rem}
+p,li{max-width:72ch}p{margin:.75rem 0}ul,ol{padding-left:1.3rem}li{margin:.3rem 0}
+a{color:var(--accent)}a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+code{font-family:"JetBrains Mono",monospace;font-size:.88em;background:var(--surface-2);padding:.05em .35em;border-radius:2px}
+pre{background:var(--code-bg);color:var(--code-ink);font-family:"JetBrains Mono",monospace;font-size:.8rem;line-height:1.5;padding:1rem 1.1rem;overflow-x:auto;margin:.75rem 0;border-left:3px solid var(--accent)}pre code{background:none;padding:0;font-size:inherit;color:inherit}
+table{border-collapse:collapse;width:100%;font-size:.85rem;font-variant-numeric:tabular-nums;display:block;overflow-x:auto;border:1px solid var(--rule);background:var(--surface);margin:1rem 0}
+th,td{padding:.55rem .7rem;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule)}
+th{font-family:"JetBrains Mono",monospace;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);background:var(--surface-2);white-space:nowrap}
+tr:last-child td{border-bottom:none}blockquote{border-left:3px solid var(--rule);margin:1rem 0;padding:.2rem 1rem;color:var(--ink-2)}
+.note{color:var(--ink-2);font-size:.9rem}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+<div class="wrap">
+<h1>A770_Builder — operator recap</h1>
+<p class="note">Local recap, generated from the repository's own state — not shipped, not the document of record. <code>README.md</code> is the document of record for anyone but the operator.</p>
+<p>An Intel Arc A770 16 GB as a local coding seat for the coding agents already on your workstation. The agent you work with keeps the context, the judgement and the plan. When it meets a piece of work that is bounded and well specified, a change to named files, a test file from an invariant, the read of a file its own window cannot hold, it hands that piece to a local model through the <code>local-build</code> skill and gets back a capture: the diff, the tests the model ran, the timings, and a way to re-run those tests in a fresh sandbox before anything is merged.</p>
+<h2>Card modes and profiles</h2>
+<table>
+<thead><tr><th>mode</th><th>profile</th><th>model</th><th>window (useful)</th><th>VRAM</th><th>decode / prefill @8k</th><th>instrument</th></tr></thead>
+<tbody>
+<tr><td>display</td><td>long</td><td>Qwen3.5-9B-Q4_K_M.gguf</td><td>262,144 (~65,536)</td><td>10.35 GiB</td><td>36.8 / 571 tok/s</td><td>seat: Shared_Memory@3c8e2bb</td></tr>
+<tr><td>display</td><td>fast</td><td>gemma-4-E4B-it-Q4_K_M.gguf</td><td>131,072 (~100,000)</td><td>8.1 GiB</td><td>60 / 796 tok/s</td><td>seat: Shared_Memory@3c8e2bb</td></tr>
+<tr><td>display</td><td>serious</td><td>Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf</td><td>131,072 (~32,768)</td><td>12.25 GiB</td><td>8.1 / 72 tok/s</td><td>seat: Shared_Memory@3c8e2bb</td></tr>
+<tr><td>inference</td><td>long</td><td>Qwen3.5-9B-Q4_K_M.gguf</td><td>262,144 (~262,144)</td><td>9.49 GiB</td><td>43.7 / 439 tok/s</td><td>seat: Shared_Memory@3c8e2bb</td></tr>
+<tr><td>inference</td><td>moe</td><td>Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf</td><td>131,072 (~131,072)</td><td>14.1 GiB</td><td>21.8 / 207 tok/s</td><td>seat: Shared_Memory@3c8e2bb</td></tr>
+<tr><td>inference</td><td>serious</td><td>Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf</td><td>196,608 (~98,304)</td><td>14.62 GiB</td><td>7.9 / 71 tok/s</td><td>seat: Shared_Memory@3c8e2bb</td></tr>
+</tbody></table>
+<h2>Run it</h2>
+<pre><code>bash ~/.claude/skills/local-build/scripts/local-build.sh run &lt;brief.md&gt; --profile long
+bash ~/.claude/skills/local-build/scripts/local-build.sh verify &lt;label&gt;
+bash ~/.claude/skills/local-build/scripts/local-build.sh serve &lt;profile&gt;
+bash harness/run_suite.sh &lt;profile&gt; [&lt;seat&gt;] [--suite kit/suite.json] [--stages s0,s1] [--reviewer &lt;profile&gt;] [--fresh] [--dry-run]</code></pre>
+<h2>Where things live</h2>
+<ul>
+<li><strong>the kit:</strong> <code>kit/</code> — the profiling suite's own seat, tasks and hidden graders</li>
+<li><strong>the registries:</strong> <code>config/profiles.json</code>, <code>config/profiles.inference.json</code> — the two card-mode profile tables</li>
+<li><strong>the ledger:</strong> <code>config/models.md</code> — every model measured on this card, and why</li>
+<li><strong>the guide:</strong> <code>docs/OPERATING.md</code> — day-to-day running of the seat, every knob</li>
+<li><strong>the results directory:</strong> <code>$A770B_DATA/results</code> (default <code>~/local-ai/results</code>) — each run's capture</li>
+<li><strong>the weights directory:</strong> <code>$A770B_MODELS</code> (default <code>~/LLM/tested</code>) — the GGUF files the registries name</li>
+</ul>
+<h2>Version</h2>
+<p>0.1.5 — checkout at <code>v0.1.5-14-g738f629</code>.</p>
+</div>

@@ -56,7 +56,7 @@
       "spec": "kit/tasks/s3-optimise.spec.json",
       "grader": {
         "working": "make -C cpp && uv run --with pytest python -m pytest -q python/tests tests/_hidden_test_s3_optimise_hidden.py",
-        "conformance": "make -C cpp (warnings as errors: -Wall -Wextra -Wpedantic -Werror)",
+        "conformance": "make -C cpp",
         "budget_lines": 150,
         "rubric": "kit/REVIEW-rubric.md"
       },

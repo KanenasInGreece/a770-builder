@@ -1,9 +1,12 @@
 # test_forth_hidden.py — the pytest wrapper for the hidden JavaScript variant of the forth reference
-# exercise. `verify.hidden` in kit/reference/tasks/ref-javascript-forth.spec.json names this file (the harness
-# copies it into tests/_hidden_<name> of the seat and runs pytest on it); the file it shells out to,
-# kit/reference/hidden/forth_hidden.test.mjs, sits beside it, referenced by a path relative to the current
-# working directory (the seat root, the same directory pytest is invoked from), not relative to wherever this
-# wrapper itself ends up.
+# exercise. `verify.hidden` in kit/reference/tasks/ref-javascript-forth.spec.json names this file, and the
+# harness (skills/local-build/scripts/local-build.sh verify) copies ONLY this basename into tests/_hidden_<name>
+# of the seat — its companion .mjs never travels with it. So the fresh hidden spec is embedded below verbatim,
+# kept byte-identical to kit/reference/hidden/forth_hidden.test.mjs (tests/test_kit_reference.py asserts the
+# two stay in sync), rather than read from kit/reference/hidden/ — a directory this wrapper must never require
+# to exist in the model's tree. At test time it is materialised into a throwaway file directly under
+# kit/reference/, mirroring the original kit/reference/hidden/forth_hidden.test.mjs layout its own relative
+# imports assume (../js/expect-shim.mjs, ../javascript/forth/forth.js), and removed again.
 #
 # The node subprocess here is not the model's own shell: it runs inside the harness's own grading step, so it
 # is not subject to the run specification's bash_allow list (that list governs only the coding agent's own
@@ -11,22 +14,23 @@
 # appears in a specification's bash_allow.
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
-HIDDEN_JS_FILE = Path("kit/reference/hidden/forth_hidden.test.mjs")
+FORTH_HIDDEN_TEST_MJS = "// forth_hidden.test.mjs \u2014 the hidden variant of the forth reference exercise (Aider's polyglot benchmark,\n// JavaScript track, MIT/Exercism 2021: see kit/reference/SOURCES.md). Same public interface as the exercise's\n// own forth.spec.js (Forth, evaluate, .stack), but every program string and expected result here is fresh,\n// written for this file, not copied from the exercise's own spec, so a model that has memorised the public\n// spec cannot pass this one by memorisation alone. Uses the same shim as the public grader (../js/expect-shim.mjs)\n// and imports the model's edited module with the extension node's ESM resolver requires \u2014 this file is not\n// the verbatim exercise spec, so it needs no rewrite trick.\nimport '../js/expect-shim.mjs';\nimport { Forth } from '../javascript/forth/forth.js';\n\ndescribe('Forth (hidden)', () => {\n  let forth;\n\n  beforeEach(() => {\n    forth = new Forth();\n  });\n\n  describe('parsing and numbers', () => {\n    test('a longer run of numbers just gets pushed', () => {\n      forth.evaluate('10 -20 30 -40 50 60');\n      expect(forth.stack).toEqual([10, -20, 30, -40, 50, 60]);\n    });\n  });\n\n  describe('addition', () => {\n    test('can add two numbers', () => {\n      forth.evaluate('7 8 +');\n      expect(forth.stack).toEqual([15]);\n    });\n\n    test('errors if there is nothing on the stack', () => {\n      expect(() => {\n        forth.evaluate('+');\n      }).toThrow(new Error('Stack empty'));\n    });\n\n    test('errors if there is only one value on the stack', () => {\n      expect(() => {\n        forth.evaluate('9 +');\n      }).toThrow(new Error('Stack empty'));\n    });\n  });\n\n  describe('subtraction', () => {\n    test('can subtract two numbers', () => {\n      forth.evaluate('10 6 -');\n      expect(forth.stack).toEqual([4]);\n    });\n\n    test('errors if there is only one value on the stack', () => {\n      expect(() => {\n        forth.evaluate('2 -');\n      }).toThrow(new Error('Stack empty'));\n    });\n  });\n\n  describe('multiplication', () => {\n    test('can multiply two numbers', () => {\n      forth.evaluate('6 7 *');\n      expect(forth.stack).toEqual([42]);\n    });\n  });\n\n  describe('division', () => {\n    test('can divide two numbers', () => {\n      forth.evaluate('20 4 /');\n      expect(forth.stack).toEqual([5]);\n    });\n\n    test('performs integer division', () => {\n      forth.evaluate('17 5 /');\n      expect(forth.stack).toEqual([3]);\n    });\n\n    test('errors if dividing by zero', () => {\n      expect(() => {\n        forth.evaluate('9 0 /');\n      }).toThrow(new Error('Division by zero'));\n    });\n  });\n\n  describe('combined arithmetic', () => {\n    test('addition then multiplication', () => {\n      forth.evaluate('2 3 + 4 *');\n      expect(forth.stack).toEqual([20]);\n    });\n  });\n\n  describe('dup, drop, swap, over', () => {\n    test('dup copies the top value', () => {\n      forth.evaluate('9 dup');\n      expect(forth.stack).toEqual([9, 9]);\n    });\n\n    test('drop removes the top value', () => {\n      forth.evaluate('4 5 drop');\n      expect(forth.stack).toEqual([4]);\n    });\n\n    test('swap exchanges the top two values', () => {\n      forth.evaluate('1 2 3 swap');\n      expect(forth.stack).toEqual([1, 3, 2]);\n    });\n\n    test('over copies the second element', () => {\n      forth.evaluate('5 6 over');\n      expect(forth.stack).toEqual([5, 6, 5]);\n    });\n\n    test('drop errors on an empty stack', () => {\n      expect(() => {\n        forth.evaluate('drop');\n      }).toThrow(new Error('Stack empty'));\n    });\n  });\n\n  describe('user-defined words', () => {\n    test('can consist of built-in words', () => {\n      forth.evaluate(': triple dup dup ;');\n      forth.evaluate('2 triple');\n      expect(forth.stack).toEqual([2, 2, 2]);\n    });\n\n    test('execute in the right order', () => {\n      forth.evaluate(': three-numbers 7 8 9 ;');\n      forth.evaluate('three-numbers');\n      expect(forth.stack).toEqual([7, 8, 9]);\n    });\n\n    test('can override a built-in word', () => {\n      forth.evaluate(': dup drop ;');\n      forth.evaluate('1 2 dup');\n      expect(forth.stack).toEqual([1]);\n    });\n\n    test('can override a built-in operator', () => {\n      forth.evaluate(': - + ;');\n      forth.evaluate('5 6 -');\n      expect(forth.stack).toEqual([11]);\n    });\n\n    test('cannot redefine a number', () => {\n      expect(() => {\n        forth.evaluate(': 42 43 ;');\n      }).toThrow(new Error('Invalid definition'));\n    });\n\n    test('errors executing a non-existent word', () => {\n      expect(() => {\n        forth.evaluate('nosuchword');\n      }).toThrow(new Error('Unknown command'));\n    });\n\n    test('two evaluators do not share definitions', () => {\n      const a = new Forth();\n      const b = new Forth();\n      a.evaluate(': + - ;');\n      a.evaluate('5 2 +');\n      b.evaluate('5 2 +');\n      expect(a.stack).toEqual([3]);\n      expect(b.stack).toEqual([7]);\n    });\n  });\n\n  describe('case-insensitivity', () => {\n    test('built-in words are case-insensitive', () => {\n      forth.evaluate('3 DUP Dup dup');\n      expect(forth.stack).toEqual([3, 3, 3, 3]);\n    });\n\n    test('user-defined words are case-insensitive', () => {\n      forth.evaluate(': foo dup ;');\n      forth.evaluate('2 FOO Foo foo');\n      expect(forth.stack).toEqual([2, 2, 2, 2]);\n    });\n  });\n});\n"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
 def test_forth_hidden_passes():
-    assert HIDDEN_JS_FILE.is_file(), (
-        f"{HIDDEN_JS_FILE} is missing relative to the current directory ({Path.cwd()}) — "
+    ref_root = Path("kit/reference")
+    assert ref_root.is_dir(), (
+        f"{ref_root} is missing relative to the current directory ({Path.cwd()}) — "
         "this wrapper must run from the seat root"
     )
-    result = subprocess.run(
-        ["node", "--test", str(HIDDEN_JS_FILE)],
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.TemporaryDirectory(prefix=".forth-hidden-", dir=ref_root) as tmp:
+        js_path = Path(tmp) / "forth_hidden.test.mjs"
+        js_path.write_text(FORTH_HIDDEN_TEST_MJS)
+        result = subprocess.run(["node", "--test", str(js_path)], capture_output=True, text=True)
     assert result.returncode == 0, f"node --test failed:\n{result.stdout}\n{result.stderr}"

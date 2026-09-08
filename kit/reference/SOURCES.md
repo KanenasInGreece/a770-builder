@@ -18,6 +18,9 @@ JavaScript `forth` (8/10), Python `pov` (9/10).
   Cheek" (no source URL given).
 - Carries the exercise's own vendored Catch2 (`test/catch.hpp`, v2.13.6) and `test/tests-main.cpp`, so its
   `cmake … && make`-equivalent build needs no download (Aider's own note, corroborated by reading the file).
+  Catch2 is Copyright (c) 2021 Two Blue Cubes Ltd, licensed under the Boost Software License, Version 1.0 —
+  not MIT, and not this exercise's own `LICENSE` — per `catch.hpp`'s own header comment; the licence text is
+  `test/LICENSE_1_0.txt`, beside the header, the file name `catch.hpp` itself points to.
 
 ## `kit/reference/javascript/forth/`
 

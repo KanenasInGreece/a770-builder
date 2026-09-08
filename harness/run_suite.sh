@@ -9,10 +9,15 @@
 # suite: each stage's seat is a fresh copy of kit/seat/ with the REFERENCE solutions of every stage that precedes
 # it in kit/suite.json pasted over it (kit/hidden/solutions/<id>/, never the model's own output — a later stage's
 # brief assumes the earlier stages' work is already in place, the way a real project does), committed as
-# "kit seat for <id>"; a reference exercise (kit/reference/reference.json) gets a plain export with no solutions
-# pasted. The export path is reused stage after stage — removed and recreated every call — so stages still carry
-# nothing forward between them by construction, only what this runner itself pastes back in each time; the results
-# JSON records which solutions each stage's seat carried as "seat_state".
+# "kit seat for <id>"; a reference exercise (kit/reference/reference.json) instead gets a plain export of
+# kit/reference/'s own {cpp,javascript,python,js} subtrees, nested under kit/reference/ at the seat root (the
+# paths every reference brief, spec and grader name), .meta/ (the exercise's own proof solution) stripped, and
+# no solutions pasted. The export path is reused stage after stage — removed and recreated every call — so
+# stages still carry nothing forward between them by construction, only what this runner itself pastes back in
+# each time; the results JSON records which solutions each stage's seat carried as "seat_state". Each stage's
+# `local-build.sh verify` runs with A770B_HIDDEN_ROOT pointed at that stage's own hidden root — kit/hidden/ for
+# a main stage, kit/reference/hidden/ for a reference exercise — never the caller's ambient default, so
+# `verify.hidden` in the stage's own spec resolves against the right fresh graders.
 # --reviewer <profile> scores the maintainable/usable axes with one keyed HTTP request per rubric'd stage, in the
 # shape of harness/depth_probe.sh's probe (temperature 0, no tools, the stage's patch delimited as untrusted data
 # between fixed markers, a fixed two-line reply format). It refuses when the reviewer profile resolves to the same
@@ -56,8 +61,11 @@ LOCAL_BUILD="${A770B_LOCAL_BUILD:-$A770B_PROJECT/skills/local-build/scripts/loca
 [ -f "$LOCAL_BUILD" ] || die "local-build.sh not found: $LOCAL_BUILD (set A770B_LOCAL_BUILD)"
 SUITE_DIR=$(cd "$(dirname "$SUITE")" && pwd)
 KIT_SEAT_SRC="$SUITE_DIR/seat"
-REFFILE="$SUITE_DIR/reference/reference.json"
+REFDIR="$SUITE_DIR/reference"
+REFFILE="$REFDIR/reference.json"
 SOLUTIONS_ROOT="$SUITE_DIR/hidden/solutions"
+MAIN_HIDDEN_ROOT="$SUITE_DIR/hidden"
+REF_HIDDEN_ROOT="$REFDIR/hidden"
 
 # resolve <path> — a path from the suite/reference file, relative to the project unless already absolute (the
 # same idiom env.sh's a770b_model_path uses for a model name)
@@ -185,6 +193,37 @@ export_kit_seat(){
   [ -z "$dirty" ] || die "export_kit_seat: $seat is not clean right after its own commit (label $label) — something not git-tracked in the source got in:"$'\n'"$dirty"
 }
 
+# export_reference_seat <seat> <label> <refdir> — a standalone git clone-shaped copy of the reference
+# exercises' own tree at <seat>, one commit "kit seat for <label>". Every brief, spec, public grader and
+# hidden wrapper under kit/reference/tasks/ and kit/reference/hidden/ names paths like
+# "kit/reference/cpp/binary-search-tree/..." at the seat root, so this exports <refdir>'s own
+# {cpp,javascript,python,js} subtrees NESTED under kit/reference/ inside the seat — never kit/seat/ (that is
+# a different unit's stub, sharing none of these paths) — mirroring tests/kit_selftest.sh's own REFSEAT
+# assembly. Only git-tracked files are copied in (copy_tracked), and every .meta/ subtree (the exercise's own
+# proof solution — kit_selftest and tests/test_kit_reference.py paste those deliberately to prove the
+# graders; the model must never see them) is stripped right after, before the commit — so a `git status`
+# right after diffs cleanly against what was actually committed, but never carries a live proof answer. Never
+# includes kit/reference/hidden/ (the fresh, undisclosed hidden variants) — those are copied in later, by
+# name only, by the same A770B_HIDDEN_ROOT mechanism the main stages use.
+export_reference_seat(){
+  local seat="$1" label="$2" refdir="$3" d
+  [ -d "$refdir" ] || die "reference source not found: $refdir"
+  rm -rf -- "$seat"
+  mkdir -p "$seat/kit/reference"
+  for d in cpp javascript python js; do
+    if [ -d "$refdir/$d" ]; then
+      mkdir -p "$seat/kit/reference/$d"
+      copy_tracked "$seat/kit/reference/$d" "$refdir/$d"
+    fi
+  done
+  find "$seat" -depth -type d -name '.meta' -exec rm -rf -- {} +
+  safe_git "$seat" init -q
+  safe_git "$seat" add -A
+  safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat for $label" >/dev/null
+  local dirty; dirty=$(safe_git "$seat" status --porcelain --ignored)
+  [ -z "$dirty" ] || die "export_reference_seat: $seat is not clean right after its own commit (label $label) — something not git-tracked in the source got in:"$'\n'"$dirty"
+}
+
 # check_seat_path <seat> — the one-time safety gate before the first per-stage export: a path that already exists
 # and is not empty is refused unless --fresh removes it first. Every export after this one owns the path outright
 # (export_kit_seat itself recreates it each call), so this runs only once, before the stage loop.
@@ -292,10 +331,17 @@ PY
 import json, re, sys
 resp, profile, model, ctx, sha = sys.argv[1:]
 def pick(text):
-    mv = re.search(r'maintainable\s*:\s*([0-9]+)', text, re.I)
-    uv = re.search(r'usable\s*:\s*([0-9]+)', text, re.I)
-    mv = int(mv.group(1)) if mv and mv.group(1) in ("0", "3", "5") else None
-    uv = int(uv.group(1)) if uv and uv.group(1) in ("0", "3", "5") else None
+    # the required shape is exactly two lines ("maintainable: <0|3|5>\nusable: <0|3|5>"), so only the
+    # first two non-empty lines count — a match anywhere else in a chattier reply is not a score, it is
+    # the model missing the format, and must come back as no score, not a guessed one.
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:2]
+    mv = uv = None
+    if len(lines) >= 1:
+        m = re.match(r'maintainable\s*:\s*([0-9]+)\s*$', lines[0], re.I)
+        mv = int(m.group(1)) if m and m.group(1) in ("0", "3", "5") else None
+    if len(lines) >= 2:
+        m = re.match(r'usable\s*:\s*([0-9]+)\s*$', lines[1], re.I)
+        uv = int(m.group(1)) if m and m.group(1) in ("0", "3", "5") else None
     return mv, uv
 maint = usable = None
 try:
@@ -315,6 +361,8 @@ PY
 # returns the run's exit code so the caller can tell a refusal (2 or 3) from an ordinary failure.
 process_task(){
   local src="$1" key="$2" id="$3"
+  local IS_REF=0 HIDDEN_ROOT="$MAIN_HIDDEN_ROOT"
+  [ "$src" = "$REFFILE" ] && { IS_REF=1; HIDDEN_ROOT="$REF_HIDDEN_ROOT"; }
   stage_vars "$src" "$key" "$id"
   mapfile -t PRECEDENTS < <(stage_precedents "$id")
   local PRECEDENT_DIRS=() SEAT_STATE=() pid pdir
@@ -328,11 +376,15 @@ process_task(){
   local briefpath specpath
   briefpath=$(resolve "$S_BRIEF"); specpath=$(resolve "$S_SPEC")
   if [ "$DRYRUN" = 1 ]; then
-    echo "[dry-run] $id: export seat (paste: ${SEAT_STATE[*]:-none}) -> git commit -m \"kit seat for $id\""
+    if [ "$IS_REF" = 1 ]; then
+      echo "[dry-run] $id: export seat ($REFDIR/{cpp,javascript,python,js}, no .meta) -> git commit -m \"kit seat for $id\""
+    else
+      echo "[dry-run] $id: export seat (paste: ${SEAT_STATE[*]:-none}) -> git commit -m \"kit seat for $id\""
+    fi
     echo "[dry-run] $id: $LOCAL_BUILD run $WT $briefpath --spec $specpath --profile $PROFILE"
-    if [ -n "$S_WORKING_CMD" ]; then echo "[dry-run] $id: $LOCAL_BUILD verify <label> $WT --test \"$S_WORKING_CMD\""
-    else echo "[dry-run] $id: $LOCAL_BUILD verify <label> $WT"; fi
-    [ -n "$S_CONFORMANCE_CMD" ] && echo "[dry-run] $id: $LOCAL_BUILD verify <label> $WT --test \"$S_CONFORMANCE_CMD\""
+    if [ -n "$S_WORKING_CMD" ]; then echo "[dry-run] $id: A770B_HIDDEN_ROOT=$HIDDEN_ROOT $LOCAL_BUILD verify <label> $WT --test \"$S_WORKING_CMD\""
+    else echo "[dry-run] $id: A770B_HIDDEN_ROOT=$HIDDEN_ROOT $LOCAL_BUILD verify <label> $WT"; fi
+    [ -n "$S_CONFORMANCE_CMD" ] && echo "[dry-run] $id: $LOCAL_BUILD verify <label>.conformance $WT --test \"$S_CONFORMANCE_CMD\" (no spec beside it, so no hidden tests ride along)"
     if [ -n "$REVIEWER" ] && [ -n "$S_RUBRIC" ]; then
       echo "[dry-run] $id: $LOCAL_BUILD stop; $LOCAL_BUILD serve $REVIEWER; POST /v1/chat/completions with $(resolve "$S_RUBRIC") and the patch"
     fi
@@ -340,7 +392,11 @@ process_task(){
   fi
   [ -f "$briefpath" ] || die "stage $id: brief not found: $briefpath"
   [ -f "$specpath" ] || die "stage $id: spec not found: $specpath"
-  export_kit_seat "$SEAT" "$KIT_SEAT_SRC" "$id" "${PRECEDENT_DIRS[@]}"
+  if [ "$IS_REF" = 1 ]; then
+    export_reference_seat "$SEAT" "$id" "$REFDIR"
+  else
+    export_kit_seat "$SEAT" "$KIT_SEAT_SRC" "$id" "${PRECEDENT_DIRS[@]}"
+  fi
   WT=$(guard_worktree "$SEAT") || exit 2
   SECONDS=0
   local run_out rrc
@@ -383,14 +439,22 @@ process_task(){
   fi
   local vrc working=false
   if [ -n "$S_WORKING_CMD" ]; then
-    bash "$LOCAL_BUILD" verify "$label" "$WT" --test "$S_WORKING_CMD" >/dev/null 2>&1; vrc=$?
+    A770B_HIDDEN_ROOT="$HIDDEN_ROOT" bash "$LOCAL_BUILD" verify "$label" "$WT" --test "$S_WORKING_CMD" >/dev/null 2>&1; vrc=$?
   else
-    bash "$LOCAL_BUILD" verify "$label" "$WT" >/dev/null 2>&1; vrc=$?
+    A770B_HIDDEN_ROOT="$HIDDEN_ROOT" bash "$LOCAL_BUILD" verify "$label" "$WT" >/dev/null 2>&1; vrc=$?
   fi
   [ "$vrc" = 0 ] && working=true
   local conf_exit=""
   if [ -n "$S_CONFORMANCE_CMD" ]; then
-    bash "$LOCAL_BUILD" verify "$label" "$WT" --test "$S_CONFORMANCE_CMD" >/dev/null 2>&1; conf_exit=$?
+    # verify drags the spec's hidden pytest tests along whenever a same-named <patch>.spec.json sits
+    # beside the patch it is verifying — fine for the working command above (it already names the
+    # hidden file itself, when it needs it), wrong for conformance, which must stand or fall on its own
+    # command alone. A patch copy with no such neighbour gets no hidden tests appended, so conf_exit
+    # stays independent of the hidden acceptance suite.
+    local confpatch="$A770B_DATA/results/$label.conformance.patch"
+    cp -f -- "$patchfile" "$confpatch"
+    A770B_HIDDEN_ROOT="$HIDDEN_ROOT" bash "$LOCAL_BUILD" verify "$confpatch" "$WT" --test "$S_CONFORMANCE_CMD" >/dev/null 2>&1; conf_exit=$?
+    rm -f -- "$confpatch"
   fi
   local score_json="null"
   if [ -n "$REVIEWER" ] && [ -n "$S_RUBRIC" ]; then

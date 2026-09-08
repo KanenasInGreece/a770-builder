@@ -25,7 +25,7 @@
   Memory Monitor repository (https://github.com/KanenasInGreece/Shared_Memory_Monitor),
   cut down to a page skeleton (the header bar and its `bar-meta.js` ids only) for the
   logstats project; the dashboard's own body content (hero, drawers, charts) is removed.
-  See ./LICENSE-MIT and ../NOTICE.
+  See ./LICENSE-MIT and ../../NOTICE.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -61,9 +61,9 @@
   <section id="stats" aria-live="polite"></section>
 </main>
 
-<script src="js/bar-meta.js"></script>
+<script src="../js/bar-meta.js"></script>
 <script type="module">
-  import { renderStats } from "./js/render.js";
+  import { renderStats } from "../js/render.js";
 
   const statsSection = document.getElementById("stats");
   const levelSelect = document.getElementById("level");
