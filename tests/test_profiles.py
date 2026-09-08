@@ -254,3 +254,20 @@ def test_render_table_has_separator_after_header(tmp_path):
     lines = skill.read_text().splitlines()
     i = lines.index("| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |")
     assert lines[i + 1] == "|---|---|---|---|---|---|"
+
+
+def test_check_refuses_unknown_top_level_key(tmp_path):
+    """An unknown key at the top level is refused like one inside a profile."""
+    d = json.loads(PROFILES_JSON.read_text()); d["extra_top"] = 1
+    f = tmp_path / "p.json"; f.write_text(json.dumps(d))
+    r = subprocess.run([sys.executable, str(PROFILES_PY), "check", "--file", str(f)], capture_output=True, text=True)
+    assert r.returncode == 2 and "unknown key extra_top" in r.stderr
+
+
+def test_card_served_ctx_is_an_int(tmp_path):
+    """A served window from the environment comes back as a number, like the file's."""
+    env = dict(os.environ); env["A770B_LONG_CTX"] = "131072"
+    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--name", "long", "--served"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["served_ctx"] == 131072
+

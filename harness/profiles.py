@@ -55,6 +55,10 @@ def validate(data) -> list[str]:
     if not isinstance(data, dict):
         return ["not a JSON object"]
 
+    for k in data.keys():
+        if k not in {"schema", "default", "notes", "profiles"}:
+            errors.append(f"unknown key {k}")
+
     if data.get("schema") != 1:
         errors.append("schema: must be 1")
 
@@ -227,7 +231,7 @@ def cmd_card(args) -> int:
         if args.served:
             overrides = {
                 "served_model": os.environ.get(f"A770B_{upper}_MODEL"),
-                "served_ctx": os.environ.get(f"A770B_{upper}_CTX"),
+                "served_ctx": (int(os.environ[f"A770B_{upper}_CTX"]) if os.environ.get(f"A770B_{upper}_CTX", "").isdigit() else None),
                 "served_kv": os.environ.get(f"A770B_{upper}_KV"),
                 "served_reasoning": os.environ.get(f"A770B_{upper}_REASONING"),
             }
