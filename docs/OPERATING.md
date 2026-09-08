@@ -70,6 +70,10 @@ on this A770 (16 GB, also driving the desktop), llama.cpp b10805 with the Vulkan
 `builder.env` may run the workstation's own IQ3_S card for `serious` at a different window under a larger cap; that row
 is included below.
 
+A `builder.env` written for a release before the registry may name `A770B_FAST_*` or `A770B_LONG_*` for the other
+profile's file: the environment wins over the registry, so such a file inverts fast and long silently. `local-build.sh
+doctor` reports it, and `local-build.sh profiles` shows what is actually served beside what the registry says.
+
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
 | long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. |
@@ -115,10 +119,12 @@ stay up past the cap after load. No speculative decoding on this card: draft mod
 
 **The device pin.** `A770B_VK_DEVICE_SELECT` (default `8086:56a0!`) pins the server to the builder card by PCI vendor
 and device id rather than by the Vulkan device index `A770B_DEVICE` names, because Vulkan lists the boot card first and
-an index alone drifts when the desktop moves to another card. Find the id with `lspci -nn`, which prints each card's
-`[vendor:device]` pair; the trailing `!` means the match must be exact, not a prefix. With the selector set,
-`llama-server --list-devices` should list exactly one card, the builder's, whatever card the machine booted with as its
-display device.
+an index alone drifts when the desktop moves to another card. It is Mesa's Vulkan device selector, passed to the server
+as `MESA_VK_DEVICE_SELECT`: find the id with `lspci -nn`, which prints each card's `[vendor:device]` pair, and the
+trailing `!` makes that card the only Vulkan device the server can see. Set it in `builder.env` with single quotes,
+`A770B_VK_DEVICE_SELECT='8086:56a0!'`, since an interactive shell reads a bare `!` as history expansion; an empty value
+unpins. With the selector set, `llama-server --list-devices` lists exactly one card, the builder's, whatever card the
+machine booted with as its display device. `local-build.sh doctor` checks this with the rest of the installation.
 
 The cap is measured after load, and the public default of 13.0 assumes a desktop share that has never been measured on
 your card. Measure it before raising the cap: run `nvtop -s`, start something that actually draws the card (a video
