@@ -345,7 +345,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | path | role |
 |---|---|
 | `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run` with an optional `--spec`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`, `check-update`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
-| `render_readme.sh` | regenerates `README.html` from `README.md`; run after every README edit, the Markdown is the source |
+| `render_readme.sh` | generates the operator's local recap page, `README.html` — gitignored, never shipped; `README.md` is the document of record, written and reviewed first at every change, and the recap is regenerated from the repository's current state afterwards, never instead |
 | `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (the mode's: 13 GiB after load on a display card, 15.3 on a free one), `-ub 512`, the API key, model marker |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
 | `harness/sandbox_run.sh` | the bubblewrap boundary: only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |
