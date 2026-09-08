@@ -2,6 +2,7 @@
 """Tests for the opencode profile renderer."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -608,3 +609,51 @@ def test_check_validates_context_paths(tmp_path):
     result = run_check(spec, seat)
     assert result.returncode == 2
     assert "context.definitions_of" in result.stderr
+
+
+def test_profile_key_checks_against_old_trio_without_env(tmp_path):
+    """With A770B_PROFILES unset, the specification's profile is checked against fast/serious/long."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    env = dict(os.environ)
+    env.pop("A770B_PROFILES", None)
+
+    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "serious"})
+    result_ok = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_ok), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_ok.returncode == 0, result_ok.stderr
+
+    spec_bad = write_spec(tmp_path / "spec_bad.json", {"profile": "middle"})
+    result_bad = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_bad), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_bad.returncode == 2
+    assert "must be one of fast, serious, long" in result_bad.stderr
+
+
+def test_profile_key_checks_against_a770b_profiles_env(tmp_path):
+    """A770B_PROFILES="long middle serious" in the subprocess env: middle accepted, fast refused."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    env = dict(os.environ)
+    env["A770B_PROFILES"] = "long middle serious"
+
+    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "middle"})
+    result_ok = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_ok), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_ok.returncode == 0, result_ok.stderr
+
+    spec_bad = write_spec(tmp_path / "spec_bad.json", {"profile": "fast"})
+    result_bad = subprocess.run(
+        [sys.executable, str(RENDERER), "check", "--spec", str(spec_bad), "--seat", str(seat)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result_bad.returncode == 2
+    assert "must be one of long, middle, serious" in result_bad.stderr

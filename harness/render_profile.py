@@ -23,7 +23,7 @@ DEFAULT_PROMPT = (
 )
 
 ALLOWED_TOP_KEYS = {"profile", "timeout", "card", "scope", "bash_allow", "context", "verify"}
-ALLOWED_PROFILES = {"fast", "serious", "long"}
+DEFAULT_ALLOWED_PROFILES = ["fast", "serious", "long"]
 SCOPE_EDIT_RE = re.compile(r"^[A-Za-z0-9._/*-]+$")
 BASH_ALLOW_RE = re.compile(r"^[A-Za-z0-9 ._/*:-]+$")
 BASH_ALLOW_FORBIDDEN_FIRST = {
@@ -34,6 +34,18 @@ BASH_ALLOW_FORBIDDEN_FIRST = {
     "script", "eval", "source", "doas", "unshare", "nsenter", "strace", "ltrace", "gdb", "perl", "ruby", "node",
 }
 VERIFY_HIDDEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _allowed_profiles() -> list[str]:
+    """The profile names a specification's `profile` key is checked against.
+
+    `A770B_PROFILES` (space-separated), when set and non-empty, names the running machine's
+    registry; the old trio is the fallback when it is unset (so tests run without env.sh keep
+    passing).
+    """
+    env = os.environ.get("A770B_PROFILES", "")
+    names = env.split()
+    return names if names else list(DEFAULT_ALLOWED_PROFILES)
 
 
 class SpecError(Exception):
@@ -110,8 +122,9 @@ def validate_and_load(spec_path: str, seat_dir: str):
 
     # Rule 4: profile / timeout.
     if "profile" in data:
-        if data["profile"] not in ALLOWED_PROFILES:
-            raise SpecError("profile", "must be one of fast, serious, long")
+        allowed = _allowed_profiles()
+        if data["profile"] not in allowed:
+            raise SpecError("profile", f"must be one of {', '.join(allowed)}")
     if "timeout" in data:
         t = data["timeout"]
         if isinstance(t, bool) or not isinstance(t, int) or not (1 <= t <= 86400):

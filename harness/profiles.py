@@ -26,15 +26,25 @@ MODE_VALUES = {"display", "inference"}
 SAMPLING_NUMBER_KEYS = {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"}
 SAMPLING_MODE_VALUES = {"thinking", "instruct"}
 SAMPLING_KEYS = SAMPLING_NUMBER_KEYS | {"mode", "source"}
+CATEGORY_VALUES = {"dense", "moe"}
+WEIGHT_CLASS_RE = re.compile(r"^[0-9]+b(-[ae][0-9]+b)?$")
+FAR_END_KEYS = {"tokens", "decode_tps", "prefill_tps", "ttft_s"}
+FIT_KEYS = {"code", "think", "write"}
+SUITE_KEYS = {"briefs", "runs", "passed", "mean_wall_s", "source"}
+SUITE_REQUIRED_KEYS = {"briefs", "runs", "passed", "source"}
+TEMP_FLAG_RE = re.compile(r"(?:^|\s)--temp(?:\s|=)")
+TOP_P_FLAG_RE = re.compile(r"(?:^|\s)--top-p(?:\s|=)")
+TASK_T1_PASS_RE = re.compile(r"^pass(?:\s*\(.*\))?$", re.IGNORECASE)
 
 STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
+    "category", "weight_class",
 )
-INT_KEYS = ("ctx", "useful_ctx", "timeout_s")
-OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling")
+INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
+OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite")
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
-OPTIONAL_KEYS = {"kv_v", "sampling"}
+OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -136,6 +146,12 @@ def validate(data) -> list[str]:
                 if _is_number(total) and _is_number(active) and active > total:
                     errors.append(f"{name}: params_b.active must be <= total")
 
+        if "category" in prof and isinstance(prof["category"], str) and prof["category"] not in CATEGORY_VALUES:
+            errors.append(f"{name}: category must be dense or moe")
+
+        if "weight_class" in prof and isinstance(prof["weight_class"], str) and not WEIGHT_CLASS_RE.match(prof["weight_class"]):
+            errors.append(f"{name}: weight_class must look like 9b, 35b-a3b or 8b-e4b")
+
         if "kv" in prof and isinstance(prof["kv"], str) and prof["kv"] not in KV_VALUES:
             errors.append(f"{name}: kv must be one of f16, q8_0, q4_0")
 
@@ -148,7 +164,8 @@ def validate(data) -> list[str]:
 
         if "speed" in prof:
             speed = prof["speed"]
-            if not isinstance(speed, dict) or set(speed.keys()) != {"decode_tps", "prefill_tps"}:
+            speed_allowed = {"decode_tps", "prefill_tps", "far_end"}
+            if not isinstance(speed, dict) or not {"decode_tps", "prefill_tps"} <= set(speed.keys()) or set(speed.keys()) - speed_allowed:
                 errors.append(f"{name}: speed must be an object with decode_tps and prefill_tps")
             else:
                 for sk in ("decode_tps", "prefill_tps"):
@@ -160,6 +177,18 @@ def validate(data) -> list[str]:
                             if vv is not None and not _is_number(vv):
                                 errors.append(f"{name}: speed.{sk}.{kk} must be a number or null")
 
+                if "far_end" in speed:
+                    far_end = speed["far_end"]
+                    if not isinstance(far_end, dict) or set(far_end.keys()) != FAR_END_KEYS:
+                        errors.append(f"{name}: speed.far_end must be an object with tokens, decode_tps, prefill_tps, ttft_s")
+                    else:
+                        if not _is_pos_int(far_end["tokens"]):
+                            errors.append(f"{name}: speed.far_end.tokens must be a positive int")
+                        for kk in ("decode_tps", "prefill_tps", "ttft_s"):
+                            vv = far_end[kk]
+                            if not _is_number(vv) or vv <= 0:
+                                errors.append(f"{name}: speed.far_end.{kk} must be a positive number")
+
         if "capability" in prof:
             cap = prof["capability"]
             if not isinstance(cap, dict):
@@ -168,6 +197,54 @@ def validate(data) -> list[str]:
                 for kk, vv in cap.items():
                     if not _is_number(vv):
                         errors.append(f"{name}: capability.{kk} must be a number")
+
+        if "fit" in prof:
+            fit = prof["fit"]
+            if not isinstance(fit, dict):
+                errors.append(f"{name}: fit must be an object")
+            else:
+                for kk in fit.keys():
+                    if kk not in FIT_KEYS:
+                        errors.append(f"{name}: fit: unknown key {kk}")
+                for kk in FIT_KEYS:
+                    if kk in fit:
+                        vv = fit[kk]
+                        if not isinstance(vv, str) or not vv:
+                            errors.append(f"{name}: fit.{kk} must be a non-empty string")
+
+        if "suite" in prof:
+            suite = prof["suite"]
+            if not isinstance(suite, dict):
+                errors.append(f"{name}: suite must be an object")
+            else:
+                for kk in suite.keys():
+                    if kk not in SUITE_KEYS:
+                        errors.append(f"{name}: suite: unknown key {kk}")
+                for kk in SUITE_REQUIRED_KEYS:
+                    if kk not in suite:
+                        errors.append(f"{name}: suite: missing key {kk}")
+                for kk in ("briefs", "runs"):
+                    if kk in suite and not _is_pos_int(suite[kk]):
+                        errors.append(f"{name}: suite.{kk} must be a positive int")
+                if "passed" in suite:
+                    passed = suite["passed"]
+                    if not isinstance(passed, int) or isinstance(passed, bool):
+                        errors.append(f"{name}: suite.passed must be between 0 and runs")
+                    else:
+                        runs = suite.get("runs")
+                        if _is_pos_int(runs):
+                            if not (0 <= passed <= runs):
+                                errors.append(f"{name}: suite.passed must be between 0 and runs")
+                        elif passed < 0:
+                            errors.append(f"{name}: suite.passed must be between 0 and runs")
+                if "mean_wall_s" in suite:
+                    v = suite["mean_wall_s"]
+                    if not _is_number(v) or v <= 0:
+                        errors.append(f"{name}: suite.mean_wall_s must be a positive number")
+                if "source" in suite:
+                    v = suite["source"]
+                    if not isinstance(v, str) or not v:
+                        errors.append(f"{name}: suite.source must be a non-empty string")
 
         if "sampling" in prof:
             sampling = prof["sampling"]
@@ -188,8 +265,13 @@ def validate(data) -> list[str]:
 
                 if _is_number(sampling.get("temperature")):
                     extra = prof.get("extra")
-                    if not isinstance(extra, str) or "--temp " not in extra:
+                    if not isinstance(extra, str) or not TEMP_FLAG_RE.search(extra):
                         errors.append(f"{name}: sampling.temperature is set but extra carries no --temp")
+
+                if _is_number(sampling.get("top_p")):
+                    extra = prof.get("extra")
+                    if not isinstance(extra, str) or not TOP_P_FLAG_RE.search(extra):
+                        errors.append(f"{name}: sampling.top_p is set but extra carries no --top-p")
 
     return errors
 
@@ -249,6 +331,9 @@ def cmd_env(args) -> int:
         top_p_str = _fmt_sampling_num(top_p) if _is_number(top_p) else ""
         print(': "${A770B_%s_TEMPERATURE:=%s}"' % (upper, temp_str))
         print(': "${A770B_%s_TOP_P:=%s}"' % (upper, top_p_str))
+        output_tokens = prof.get("output_tokens")
+        output_tokens_str = str(output_tokens) if _is_pos_int(output_tokens) else ""
+        print(': "${A770B_%s_OUTPUT_TOKENS:=%s}"' % (upper, output_tokens_str))
         print(': "${A770B_%s_REASONING:=%s}"' % (upper, prof["reasoning"]))
         print(': "${A770B_%s_TIMEOUT:=%d}"' % (upper, prof["timeout_s"]))
         print(
@@ -279,6 +364,32 @@ def _card_warnings(profiles: dict) -> dict:
             w.append(f"profile {name} serves {served_ctx} tokens, more than the registry's {file_ctx}: the card's numbers were measured at the smaller window")
         warnings[name] = w
     return warnings
+
+
+def _builder_class(prof: dict) -> bool:
+    """Whether a profile clears the builder-class bar: useful_ctx >= 81920 and a green task.
+
+    Computed by `card`; never stored in the registry file itself.
+    """
+    useful_ctx = prof.get("useful_ctx")
+    if not _is_pos_int(useful_ctx) or useful_ctx < 81920:
+        return False
+
+    task_t1 = prof.get("task_t1")
+    if isinstance(task_t1, str) and TASK_T1_PASS_RE.match(task_t1.strip()):
+        return True
+
+    suite = prof.get("suite")
+    if isinstance(suite, dict):
+        passed, runs = suite.get("passed"), suite.get("runs")
+        if (
+            isinstance(passed, int) and not isinstance(passed, bool)
+            and _is_pos_int(runs)
+            and passed / runs >= 0.8
+        ):
+            return True
+
+    return False
 
 
 def cmd_card(args) -> int:
@@ -313,6 +424,7 @@ def cmd_card(args) -> int:
                 if v is not None:
                     served[k] = v
         prof.update(served)
+        prof["builder_class"] = _builder_class(prof)
 
     warnings_by_profile = _card_warnings(profiles)
     data["warnings"] = [w for name in profiles for w in warnings_by_profile[name]]
@@ -370,10 +482,7 @@ def _snippet_sentence(data: dict) -> str:
         useful_k = prof["useful_ctx"] // 1000
         decode8k = prof["speed"]["decode_tps"]["8k"]
 
-        if name == default:
-            label = f"**{name}** (default)"
-        else:
-            label = f"**--{name}**"
+        label = f"**--profile {name}**" + (" (default)" if name == default else "")
         decode_round = round(decode8k)
         segments.append(
             f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
