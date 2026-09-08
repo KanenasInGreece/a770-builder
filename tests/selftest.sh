@@ -193,6 +193,14 @@ elif grep -qE '^SOLVED-(s0-pass|s1-fail)\.marker$' "$ku3/seat-ls/fake-ref-cpp-ex
 else
   echo "ok   suite: the stage-two seat saw the stage-one solution file (and stage three both, and the reference exercise neither)"
 fi
+# Defect 3 (export_reference_seat half): $t/ku3-seat is whatever the LAST stage of the run above left in place —
+# ref-cpp-example, a reference exercise, so export_reference_seat's own commit — and the fake local-build.sh never
+# touches or resets it, so it still reads exactly as exported. It must carry the build-artefact .gitignore.
+if [ -f "$t/ku3-seat/.gitignore" ] && grep -qx 'CMakeFiles/' "$t/ku3-seat/.gitignore" && grep -qx '__pycache__/' "$t/ku3-seat/.gitignore"; then
+  echo "ok   suite: export_reference_seat's export (ref-cpp-example) carries the build-artefact .gitignore"
+else
+  echo "FAIL suite: $t/ku3-seat has no .gitignore, or it is missing an expected pattern"; fail=1
+fi
 # the fake local-build.sh's own argv, recorded per call: a "run ... --spec ... --profile long" line and a
 # "verify fake-<id>" line per stage, in order, and no reviewer step (stop/serve) since --reviewer was not given
 if [ -f "$ku3/argv.log" ] && python3 - "$ku3/argv.log" <<'PY'
@@ -211,6 +219,28 @@ PY
 then echo "ok   suite: the fake local-build.sh's argv shows run --spec --profile then verify <label>, in order, no reviewer step"
 else echo "FAIL suite: the recorded argv did not match (see $ku3/argv.log)"; [ -f "$ku3/argv.log" ] && cat "$ku3/argv.log"; fail=1
 fi
+# KU3b — Defect 1: --stages must filter kit/reference/reference.json's own entries exactly as it filters
+# kit/suite.json's stages (an exact id, or its prefix before the first "-"). Before the fix, --stages left the
+# reference exercises entirely unfiltered, so a request for one ordinary stage silently pulled in all three of
+# them too — an hour of card time nobody asked for. Same ku3 fixture, reused: a filter naming only the main
+# stage s1-fail must run s1-fail alone (not ref-cpp-example), a filter naming only the reference exercise
+# ref-cpp-example must run it alone (no main stage matches it), and both must be named in a line printed before
+# the first stage starts.
+rm -f "$ku3/argv.log"
+outF=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat-b" --suite "$ku3/suite.json" --stages s1-fail 2>&1); rcF=$?
+if [ "$rcF" = 0 ] && printf '%s\n' "$outF" | grep -q -- '--stages s1-fail selects: s1-fail' \
+  && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] \
+  && grep -q "$ku3/tasks/s1-fail.md" "$ku3/argv.log" && ! grep -q 'ref-cpp-example' "$ku3/argv.log"
+then echo "ok   suite: --stages s1-fail filters the reference exercises exactly as the main stages (s1-fail alone ran, ref-cpp-example did not) and announces the selection before the first stage starts"
+else echo "FAIL suite: --stages s1-fail did not select exactly s1-fail (see $ku3/argv.log, output below)"; printf '%s\n' "$outF" | tail -10; fail=1
+fi
+rm -f "$ku3/argv.log"
+outF2=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat-c" --suite "$ku3/suite.json" --stages ref-cpp-example 2>&1); rcF2=$?
+if [ "$rcF2" = 0 ] && printf '%s\n' "$outF2" | grep -q -- '--stages ref-cpp-example selects: ref-cpp-example' \
+  && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] && grep -q 'ref-cpp-example' "$ku3/argv.log"
+then echo "ok   suite: --stages also selects a reference exercise on its own (ref-cpp-example alone, no main stage matched it)"
+else echo "FAIL suite: --stages ref-cpp-example did not select exactly the reference exercise (see $ku3/argv.log, output below)"; printf '%s\n' "$outF2" | tail -10; fail=1
+fi
 if [ -n "$res" ]; then
   # four stages are in the results (s0-pass, s1-fail, s2-note, ref-cpp-example) but s2-note carries
   # "counts_toward_pass": false, so the totals below must read as if it were never run: briefs=3, runs=3,
@@ -219,14 +249,114 @@ if [ -n "$res" ]; then
   if printf '%s' "$jout" | python3 -c '
 import json, sys
 d = json.loads(sys.stdin.read())
-need = {"briefs", "runs", "passed", "mean_wall_s", "source"}
+need = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source"}
 assert set(d.keys()) == need, d
-assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2, d
-' 2>/dev/null; then echo "ok   suite: suite_report.py --json excludes the counts_toward_pass:false stage from all five totals"
+assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2 and d["timeouts"] == 0, d
+' 2>/dev/null; then echo "ok   suite: suite_report.py --json excludes the counts_toward_pass:false stage from all totals (timeouts=0, none of this fixture's stages timed out)"
   else echo "FAIL suite: suite_report.py --json wrong: $jout"; fail=1
   fi
 else echo "FAIL suite: no results file to report on"; fail=1
 fi
+# KU10 — Defect 2: a capture that genuinely carries no server-side timings line at all (the run's wall clock
+# reached the profile's own timeout before capture_task.sh's own SLOG parse ever had anything to report) must be
+# recorded with requests/prompt_tokens/gen_tokens = null, never 0, and the stage's own "outcome" must read
+# "timeout", not a plain failure — so a reader can tell a slow model from a wrong one — carried through into
+# suite_report.py's table (TIMEOUT, not FAIL) and its --json (a "timeouts" count). A770B_LONG_TIMEOUT=1 shrinks
+# the profile's own timeout window to one second so a two-second fake run trips it without an hour of card time.
+# This fixture's own fresh kit/seat/ export (export_kit_seat, one main stage, never touched by the fake run) also
+# proves the other half of Defect 3: the .gitignore lands there too, not only from export_reference_seat above.
+kut="$t/kutimeout"; mkdir -p "$kut/tasks" "$kut/seat"
+echo "fixture" > "$kut/seat/README.md"
+echo "brief" > "$kut/tasks/t0-slow.md"; printf '{}' > "$kut/tasks/t0-slow.spec.json"
+cat > "$kut/suite.json" <<JSON
+{"suite": "SUITE-TIMEOUT", "stages": [
+  {"id": "t0-slow", "language": "python", "brief": "$kut/tasks/t0-slow.md", "spec": "$kut/tasks/t0-slow.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}}
+]}
+JSON
+cat > "$kut/fake-local-build.sh" <<'FAKE'
+#!/usr/bin/env bash
+set -uo pipefail
+case "${1:-}" in
+  run)
+    shift; WT="$1"; BRIEF="$2"; shift 2
+    sleep 2   # longer than A770B_LONG_TIMEOUT=1 below, so this stage's wall_s trips the timeout comparison
+    label="fake-$(basename "$BRIEF" .md)"
+    mkdir -p "$A770B_DATA/results"
+    echo "# fake capture — no server-side timings line at all (the run never got that far)" > "$A770B_DATA/results/$label.task.md"
+    { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; } > "$A770B_DATA/results/$label.patch"
+    echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
+    exit 0 ;;
+  verify) exit 1 ;;   # the stage never finished — verify fails, same as any incomplete work
+  stop|serve) exit 0 ;;
+  *) exit 2 ;;
+esac
+FAKE
+chmod +x "$kut/fake-local-build.sh"
+rm -f "$A770B_DATA"/results/long-suite-*.json
+outT=$(A770B_LOCAL_BUILD="$kut/fake-local-build.sh" A770B_LONG_TIMEOUT=1 bash "$here/harness/run_suite.sh" long "$t/kutimeout-seat" --suite "$kut/suite.json" 2>&1); rcT=$?
+resT=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
+if [ "$rcT" = 0 ] && [ -n "$resT" ] && python3 - "$resT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = d["stages"][0]
+assert s["id"] == "t0-slow", s
+assert s["requests"] is None and s["prompt_tokens"] is None and s["gen_tokens"] is None, s
+assert s["outcome"] == "timeout", s
+assert s["working"] is False, s
+sys.exit(0)
+PY
+then
+  tbl=$(python3 "$here/harness/suite_report.py" "$resT" 2>&1)
+  jsonT=$(python3 "$here/harness/suite_report.py" "$resT" --json 2>/dev/null)
+  if printf '%s\n' "$tbl" | grep -qE '^t0-slow +TIMEOUT ' && printf '%s' "$jsonT" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+assert d["timeouts"] == 1, d
+' 2>/dev/null
+  then echo "ok   suite: a capture with no timings line at all records requests/tokens as null (never 0) and the stage outcome as timeout; suite_report.py shows TIMEOUT in its table and counts it in --json"
+  else echo "FAIL suite: suite_report.py did not show the timeout distinction — table: $tbl / json: $jsonT"; fail=1
+  fi
+else
+  echo "FAIL suite: run_suite.sh did not record null requests/tokens + a timeout outcome for a captureless-timings stage (rc=$rcT res=$resT)"; printf '%s\n' "$outT" | tail -20; fail=1
+fi
+# Defect 3 (export_kit_seat half): the main-suite export above (kutimeout-seat) must carry the same .gitignore.
+if [ -f "$t/kutimeout-seat/.gitignore" ] && grep -qx 'CMakeFiles/' "$t/kutimeout-seat/.gitignore" && grep -qx '__pycache__/' "$t/kutimeout-seat/.gitignore"; then
+  echo "ok   suite: export_kit_seat's export also carries the build-artefact .gitignore"
+else
+  echo "FAIL suite: $t/kutimeout-seat has no .gitignore, or it is missing an expected pattern"; fail=1
+fi
+# Defect 3, the part that must NOT change: seat_dirty (guard.sh) never hides an ignored file on principle (a model
+# could plant a disguised .venv or config file the same way) — planting build-artefact-shaped files that the new
+# .gitignore matches must still show up there — while capture_task.sh's own "new files"/patch loop, respecting
+# that same .gitignore, must not see them as the model's edits. Both checked on the real (unmodified)
+# seat_dirty and capture_task.sh, over the real seat export_kit_seat just produced above — never a re-typed copy.
+mkdir -p "$t/kutimeout-seat/build-bst/CMakeFiles" "$t/kutimeout-seat/python/logstats/__pycache__"
+echo "generated" > "$t/kutimeout-seat/build-bst/CMakeFiles/foo.txt"
+echo "generated" > "$t/kutimeout-seat/build-bst/CMakeCache.txt"
+: > "$t/kutimeout-seat/python/logstats/__pycache__/stats.cpython-314.pyc"
+echo ".o" > "$t/kutimeout-seat/thing.o"
+dseat=$(seat_dirty "$t/kutimeout-seat")
+if printf '%s\n' "$dseat" | grep -q 'CMakeFiles/foo.txt' && printf '%s\n' "$dseat" | grep -q 'thing.o'; then
+  echo "ok   suite: seat_dirty still reports the planted build artefacts even though the seat's own .gitignore now covers them (it never hides ignored files — see its own header comment)"
+else
+  echo "FAIL suite: seat_dirty hid a planted build artefact it must still report:"; printf '%s\n' "$dseat"; fail=1
+fi
+A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" ku10-gitignore "$t/kutimeout-seat" "$t/build.log" >/dev/null 2>&1
+cap="$A770B_DATA/results/ku10-gitignore.task.md"; patch="$A770B_DATA/results/ku10-gitignore.patch"
+# capture_task.sh's "## new files" section (git ls-files --others --exclude-standard, per-file "### <path>" dumps)
+# must come back empty — none of the planted artefacts are untracked-and-not-ignored any more — and neither must
+# the patch (built from the same listing); the SEPARATE "## ignored files ... left behind" section is expected
+# and correct to still name them (informational only, by capture_task.sh's own header comment: "removed by the
+# reset, never applied by verify") — that section is not what this defect was ever about.
+newfiles=$(sed -n '/^## new files$/,/^## ignored files/p' "$cap" 2>/dev/null | sed '1d;$d')
+if [ -f "$cap" ] && [ -z "$(printf '%s' "$newfiles" | tr -d '[:space:]')" ] \
+  && ! grep -qE '(CMakeFiles/foo\.txt|CMakeCache\.txt|\bthing\.o\b|stats\.cpython)' "$patch" 2>/dev/null \
+  && grep -q 'build-bst/CMakeFiles/foo.txt' "$cap"
+then echo "ok   suite: capture_task.sh, respecting the same .gitignore, never lists or diffs in the planted build artefacts as the model's own new files (they still show, informationally, under ignored files left behind)"
+else echo "FAIL suite: capture_task.sh's new-files section or patch included a gitignored build artefact — new files section: [$newfiles]"; fail=1
+fi
+[ "$(seat_dirty "$t/kutimeout-seat" | wc -l)" = 0 ] && echo "ok   suite: capture_task.sh's reset leaves the seat clean again, build artefacts included" || { echo "FAIL suite: seat left dirty after capture's reset"; fail=1; }
 # KU9 — suite_report.py's delivered speed: a fake capture file (the shape harness/capture_task.sh's server-side
 # timings section actually writes) beside a results JSON whose only per-stage capture record is its label, proving
 # the fallback path (<A770B_DATA>/results/<label>.task.md) and the two lines' parse.

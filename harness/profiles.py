@@ -56,7 +56,7 @@ BENCH_KEYS = {"tool", "prompt", "gen", "flags", "at_depth", "source"}
 BENCH_AT_DEPTH_VALUE_KEYS = {"pp", "tg"}
 DELIVERED_KEYS = {"prefill_tps", "decode_tps", "source"}
 FIT_KEYS = {"code", "think", "write"}
-SUITE_KEYS = {"briefs", "runs", "passed", "mean_wall_s", "source", "instrument", "stages", "reviewer"}
+SUITE_KEYS = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source", "instrument", "stages", "reviewer"}
 SUITE_REQUIRED_KEYS = {"briefs", "runs", "passed", "source"}
 STAGE_KEYS = {
     "id", "working", "conformance", "lines", "budget_lines", "maintainable", "usable", "wall_s", "axes",
@@ -320,6 +320,19 @@ def validate(data) -> list[str]:
                                 errors.append(f"{name}: suite.passed must be between 0 and runs")
                         elif passed < 0:
                             errors.append(f"{name}: suite.passed must be between 0 and runs")
+                if "timeouts" in suite:
+                    # a stage whose outcome is "timeout" (harness/suite_report.py's totals) — a slow model, not a
+                    # wrong one; never more than the runs it came from.
+                    timeouts = suite["timeouts"]
+                    if not isinstance(timeouts, int) or isinstance(timeouts, bool):
+                        errors.append(f"{name}: suite.timeouts must be between 0 and runs")
+                    else:
+                        runs = suite.get("runs")
+                        if _is_pos_int(runs):
+                            if not (0 <= timeouts <= runs):
+                                errors.append(f"{name}: suite.timeouts must be between 0 and runs")
+                        elif timeouts < 0:
+                            errors.append(f"{name}: suite.timeouts must be between 0 and runs")
                 if "mean_wall_s" in suite:
                     v = suite["mean_wall_s"]
                     if not _is_number(v) or v <= 0:

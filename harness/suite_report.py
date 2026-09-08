@@ -3,11 +3,14 @@
 
 Usage: suite_report.py <results.json> [--json]
 
-Default: an "instrument:" header, a table (stage, working, conformance, lines/budget, maintainable, usable, wall,
+Default: an "instrument:" header, a table (stage, outcome, conformance, lines/budget, maintainable, usable, wall,
 tokens), then the totals the registry's `suite` object takes (config/profiles.json SUITE_KEYS: briefs, runs, passed,
-mean_wall_s, source), then the suite's own delivered speed (below).
+timeouts, mean_wall_s, source), then the suite's own delivered speed (below). The outcome column reads PASS, FAIL,
+or TIMEOUT — a stage whose run_suite.sh "outcome" is "timeout" (its wall time reached the profile's own timeout
+budget) is never shown as a plain FAIL: a reader should be able to tell a slow model from a wrong one at a glance.
+A results file recorded before "outcome" existed falls back to the "working" boolean alone (PASS/FAIL/-).
 
---json: prints ONLY those five totals, plus `delivered` when at least one stage's capture yields a reading, as a
+--json: prints ONLY those six totals, plus `delivered` when at least one stage's capture yields a reading, as a
 JSON object — pasteable straight into a profile's `suite` field (and `speed.delivered`) in config/profiles.json —
 and nothing else on stdout (the instrument line, if wanted, goes to stderr so it never lands in the JSON a caller
 parses).
@@ -92,9 +95,13 @@ def totals(doc, source_name):
     briefs = len(counted)
     runs = sum(1 for s in counted if s.get("label"))
     passed = sum(1 for s in counted if s.get("working") is True)
+    # a stage whose run_suite.sh outcome reads "timeout" (its wall time reached the profile's own timeout
+    # budget — see run_suite.sh's stage_outcome) is never a plain FAIL: it is a slow model, not a wrong one, and
+    # is counted here on its own so a caller does not have to re-derive it from wall_s and a profile registry.
+    timeouts = sum(1 for s in counted if s.get("outcome") == "timeout")
     walls = [s["wall_s"] for s in counted if isinstance(s.get("wall_s"), (int, float))]
     mean_wall_s = round(sum(walls) / len(walls), 1) if walls else None
-    t = {"briefs": briefs, "runs": runs, "passed": passed, "source": source_name}
+    t = {"briefs": briefs, "runs": runs, "passed": passed, "timeouts": timeouts, "source": source_name}
     if mean_wall_s is not None:
         t["mean_wall_s"] = mean_wall_s
     return t
@@ -104,11 +111,26 @@ def fmt(v, suffix=""):
     return "-" if v is None else f"{v}{suffix}"
 
 
+def outcome_label(s):
+    """PASS/FAIL/TIMEOUT/- for one stage: the "outcome" field run_suite.sh records (pass/fail/timeout) when
+    present, so a timed-out stage reads distinctly from a plain failure; a results file recorded before
+    "outcome" existed falls back to the "working" boolean alone (PASS/FAIL/-, as before)."""
+    o = s.get("outcome")
+    if o == "timeout":
+        return "TIMEOUT"
+    if o == "pass":
+        return "PASS"
+    if o == "fail":
+        return "FAIL"
+    w = s.get("working")
+    return "PASS" if w is True else "FAIL" if w is False else "-"
+
+
 def print_table(doc):
-    cols = ["stage", "working", "conformance", "lines/budget", "maintainable", "usable", "wall", "tokens"]
+    cols = ["stage", "outcome", "conformance", "lines/budget", "maintainable", "usable", "wall", "tokens"]
     rows = []
     for s in doc.get("stages") or []:
-        working = "PASS" if s.get("working") is True else "FAIL" if s.get("working") is False else "-"
+        working = outcome_label(s)
         conformance = fmt(s.get("conformance_exit"))
         lines = s.get("lines")
         budget = s.get("budget_lines")
@@ -156,7 +178,7 @@ def main():
         print(f"seat: {seat}")
     print_table(doc)
     print()
-    parts = [f"{k}={t[k]}" for k in ("briefs", "runs", "passed", "mean_wall_s", "source") if k in t]
+    parts = [f"{k}={t[k]}" for k in ("briefs", "runs", "passed", "timeouts", "mean_wall_s", "source") if k in t]
     print("totals: " + " ".join(parts))
     for stage_id, prefill, decode in per_stage:
         print(f"delivered ({stage_id}): prefill {fmt(prefill, ' tok/s')} · decode {fmt(decode, ' tok/s')}")

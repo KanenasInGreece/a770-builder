@@ -852,6 +852,29 @@ def test_check_fails_suite_passed_out_of_range(tmp_path):
     assert "profiles: long: suite.passed must be between 0 and runs" in result.stderr
 
 
+def test_check_fails_suite_timeouts_out_of_range(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {"briefs": 5, "runs": 15, "passed": 12, "timeouts": 16, "source": "s"}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.timeouts must be between 0 and runs" in result.stderr
+
+
+def test_check_passes_valid_suite_with_timeouts(tmp_path):
+    """timeouts (harness/suite_report.py's count of "timeout"-outcome stages) is optional, and a valid count
+    between 0 and runs passes."""
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 5, "runs": 15, "passed": 12, "timeouts": 2, "mean_wall_s": 120.5, "source": "in-house suite",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
 def test_check_passes_valid_suite(tmp_path):
     data = load_base()
     data["profiles"]["long"]["suite"] = {
