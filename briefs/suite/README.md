@@ -49,9 +49,10 @@ verify <label>
 ```
 
 to re-grade it against the hidden test in a fresh sandbox — the capture's exit code is never the verdict, the
-grader's re-run is. Do this for all five briefs. The pass count and the wall time of each brief go into the row's
-`suite` object, one entry per brief, and the summary of the five feeds the row's `fit.code` string: tests passed and
-wall, the same shape the single T1 task uses for `fit.code` when the suite is not run.
+grader's re-run is. Do this for all five briefs. The row's `suite` object is one summary of the five runs together,
+not one entry per brief: `briefs` (the count, 5), `runs` (how many were actually run), `passed`, `mean_wall_s` and
+`source`. That summary also feeds the row's `fit.code` string: tests passed and wall, the same shape the single T1
+task uses for `fit.code` when the suite is not run.
 
 A row's suite result means something only beside another row's suite result measured the same way: compare a row on
 this suite only against rows that were themselves measured on all five of these briefs, at the commits or branches

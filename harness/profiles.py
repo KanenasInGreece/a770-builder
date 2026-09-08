@@ -492,23 +492,10 @@ def _snippet_sentence(data: dict) -> str:
     return "; ".join(segments) + "."
 
 
-def _replace_between_markers(path: Path, generated_lines: list[str], marker: str = "profiles") -> bool:
-    """Replace the lines strictly between the named begin/end markers with `generated_lines`.
-
-    Returns True if the markers were found and the file was rewritten, False if the file
-    lacks either marker (in which case it is left unchanged and a message is printed).
-    """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        print(f"profiles: cannot read {path}: {e}", file=sys.stderr)
-        return False
-
+def _find_markers(lines: list[str], marker: str) -> tuple[int, int] | None:
+    """Return (begin_idx, end_idx) of the marker pair in `lines`, or None if either is absent."""
     begin_marker = f"<!-- {marker}:begin -->"
     end_marker = f"<!-- {marker}:end -->"
-
-    ends_with_newline = text.endswith("\n")
-    lines = text.splitlines()
 
     begin_idx = end_idx = None
     for i, line in enumerate(lines):
@@ -518,15 +505,19 @@ def _replace_between_markers(path: Path, generated_lines: list[str], marker: str
             end_idx = i
 
     if begin_idx is None or end_idx is None:
-        print(f"profiles: no {marker} markers in {path}", file=sys.stderr)
-        return False
+        return None
+    return begin_idx, end_idx
 
+
+def _apply_between_markers(text: str, begin_idx: int, end_idx: int, generated_lines: list[str]) -> str:
+    """Return `text` with the lines strictly between begin_idx and end_idx replaced."""
+    ends_with_newline = text.endswith("\n")
+    lines = text.splitlines()
     new_lines = lines[: begin_idx + 1] + list(generated_lines) + lines[end_idx:]
     new_text = "\n".join(new_lines)
     if ends_with_newline:
         new_text += "\n"
-    path.write_text(new_text, encoding="utf-8")
-    return True
+    return new_text
 
 
 def cmd_render(args) -> int:
@@ -545,16 +536,6 @@ def cmd_render(args) -> int:
             print(f"profiles: {err}", file=sys.stderr)
             return 2
 
-    ok = True
-
-    if not _replace_between_markers(Path(args.skill), table_lines, marker="profiles"):
-        ok = False
-
-    if inf_data is not None:
-        inf_table_lines = _table_rows(inf_data)
-        if not _replace_between_markers(Path(args.skill), inf_table_lines, marker="profiles-inference"):
-            ok = False
-
     if inf_data is None:
         snippet_lines = [sentence]
     else:
@@ -564,10 +545,45 @@ def cmd_render(args) -> int:
             f"Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): {inf_sentence}",
         ]
 
-    if not _replace_between_markers(Path(args.snippet), snippet_lines, marker="profiles"):
-        ok = False
+    # Every (path, marker) pair this render needs to touch, in write order. The skill file
+    # can appear twice (the "profiles" table and, with an inference file, "profiles-inference").
+    targets: list[tuple[Path, str, list[str]]] = [(Path(args.skill), "profiles", table_lines)]
+    if inf_data is not None:
+        targets.append((Path(args.skill), "profiles-inference", _table_rows(inf_data)))
+    targets.append((Path(args.snippet), "profiles", snippet_lines))
 
-    return 0 if ok else 2
+    texts: dict[Path, str] = {}
+    for path, _marker, _lines in targets:
+        if path not in texts:
+            try:
+                texts[path] = path.read_text(encoding="utf-8")
+            except OSError as e:
+                print(f"profiles: cannot read {path}: {e}", file=sys.stderr)
+                return 2
+
+    # Check every marker pair before writing anything: a missing pair in any target file
+    # must leave every target file untouched, not just the ones after it.
+    ok = True
+    for path, marker, _lines in targets:
+        if _find_markers(texts[path].splitlines(), marker) is None:
+            print(f"profiles: no {marker} markers in {path}", file=sys.stderr)
+            ok = False
+    if not ok:
+        return 2
+
+    # All pairs confirmed present: apply the replacements in memory, then write once per
+    # path. Re-find each marker's position on the current in-memory text, since an earlier
+    # replacement on the same path (e.g. "profiles" before "profiles-inference") can shift
+    # the line numbers a later marker sits at.
+    new_texts = dict(texts)
+    for path, marker, lines in targets:
+        begin_idx, end_idx = _find_markers(new_texts[path].splitlines(), marker)
+        new_texts[path] = _apply_between_markers(new_texts[path], begin_idx, end_idx, lines)
+
+    for path, text in new_texts.items():
+        path.write_text(text, encoding="utf-8")
+
+    return 0
 
 
 def main() -> int:

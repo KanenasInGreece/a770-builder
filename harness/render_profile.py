@@ -22,8 +22,10 @@ DEFAULT_PROMPT = (
     "make the change, run the exact test command given, and report the result. Be concise; do not narrate plans."
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_TOP_KEYS = {"profile", "timeout", "card", "scope", "bash_allow", "context", "verify"}
 DEFAULT_ALLOWED_PROFILES = ["fast", "serious", "long"]
+REGISTRY_FILES = ("config/profiles.json", "config/profiles.inference.json")
 SCOPE_EDIT_RE = re.compile(r"^[A-Za-z0-9._/*-]+$")
 BASH_ALLOW_RE = re.compile(r"^[A-Za-z0-9 ._/*:-]+$")
 BASH_ALLOW_FORBIDDEN_FIRST = {
@@ -36,16 +38,38 @@ BASH_ALLOW_FORBIDDEN_FIRST = {
 VERIFY_HIDDEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
+def _registry_profile_names() -> list[str] | None:
+    """Profile names from config/profiles.json union config/profiles.inference.json under the
+    project root (this module knows its own path), or None if neither file can be read and
+    parsed with a `profiles` object."""
+    names: set[str] = set()
+    found = False
+    for rel in REGISTRY_FILES:
+        try:
+            data = json.loads((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict):
+            names.update(profiles.keys())
+            found = True
+    return sorted(names) if found else None
+
+
 def _allowed_profiles() -> list[str]:
     """The profile names a specification's `profile` key is checked against.
 
     `A770B_PROFILES` (space-separated), when set and non-empty, names the running machine's
-    registry; the old trio is the fallback when it is unset (so tests run without env.sh keep
-    passing).
+    registry; when it is unset, the union of the profile names in config/profiles.json and
+    config/profiles.inference.json under the project root; the old trio is the fallback only
+    when neither registry file can be read (so tests run without env.sh keep passing).
     """
     env = os.environ.get("A770B_PROFILES", "")
     names = env.split()
-    return names if names else list(DEFAULT_ALLOWED_PROFILES)
+    if names:
+        return names
+    registry_names = _registry_profile_names()
+    return registry_names if registry_names else list(DEFAULT_ALLOWED_PROFILES)
 
 
 class SpecError(Exception):

@@ -1,6 +1,6 @@
 ---
 name: local-build
-description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Two card modes, each with its registry of profiles: display-safe (long = Qwen3.5-9B, fast = Gemma 4 E4B, serious = Qwen3.8-27B) and pure-inference (the same card with nothing else on it: long at a larger quant, a moe row Qwen3.6-35B-A3B, serious at a larger window); the flag is --profile <name>. Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout.
+description: Dispatch a coding task to the LOCAL builder model on the Arc A770 (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Two card modes, each with its registry of profiles: display-safe (long = Qwen3.5-9B, fast = Gemma 4 E4B, serious = Qwen3.8-27B) and pure-inference (the same card with nothing else on it: long at its whole window, a moe row Qwen3.6-35B-A3B, serious at a larger window); the flag is --profile <name>. Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout.
 ---
 
 # local-build — the A770 builder seat
@@ -69,8 +69,8 @@ good at; a brief that needs more than the strongest card covers should not go to
 # 1. the seat: a STANDALONE CLONE of the target repository (its own .git directory), never a live checkout or a
 #    linked worktree — the script refuses both. Default: A770B_SEAT (~/local-ai/seat).
 # 2. a brief: a Markdown file that names the files, the exact test command, and the stop condition
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md>                              # long (default), on the default seat
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>           # with a run specification (below)
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile long               # long (default), on the default seat
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>   # with a run specification (below)
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --profile fast        # fast, on a given seat: the reader
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile serious            # serious: a deliverable larger than its brief
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile moe                # inference mode: a deliverable larger than its brief, three times the dense 27B's speed

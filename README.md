@@ -47,6 +47,16 @@ specification beside the brief lets the calling agent set, for that run, the sea
 it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
 Every profile's output is judged the same way, by its capture and by `verify`.
 
+The seat is built around one card, and what it is built from knows nothing of it: the sandbox, the guard, the
+registries, the ladder, the suite and `verify` see a server on the loopback and a set of measured rows. The card
+enters through five knobs that exist today: `A770B_LLAMA_BIN` (any `llama-server` built with the backend for the
+card presents the same API), `A770B_DEVICE` and `A770B_VK_DEVICE_SELECT` (the pin; the selector is Mesa's and empty
+means unpinned on another backend, which has its own device variable), `A770B_GPU_MATCH` (nvtop's name for the card,
+and nvtop reads NVIDIA, AMD and Intel cards), the cap of each mode (a measurement, not a constant), and
+`A770B_UBATCH`. What does not travel is every number in a registry row and the flash-attention rule per model
+family: they are measurements on one card and one build, and `AGENTS.md` is how they are re-taken on another.
+Measured on the A770 alone so far; nothing else has been tried.
+
 ```text
 your coding agent ── the context, the judgement, the plan
       │  local-build skill (a brief in, a capture out)
@@ -135,10 +145,10 @@ git clone git@github.com:KanenasInGreece/a770-builder.git ~/local-ai/A770_Builde
 cp ~/local-ai/A770_Builder/config/builder.env.example ~/.config/a770-builder/builder.env
 #    2. edit it: A770B_REFUSE = your live checkouts (required), A770B_MODELS, A770B_DEVICE/GPU_MATCH if not an A770
 git clone <your target repo> ~/local-ai/seat                        # 3. the seat: a standalone clone, never a linked worktree
-#    4. put the GGUFs named in the profiles into A770B_MODELS (docs/OPERATING.md says where to get them and llama.cpp)
+#    4. put the GGUFs named in the profiles into A770B_MODELS (the profiled models and the exact file of each, per mode, are listed in docs/OPERATING.md, *Getting llama.cpp and the models*; to profile a model of your own, AGENTS.md)
 bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
 npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # 6. install the skill into your agents
-bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md
+bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md --profile long
 ```
 
 The skill follows the [Agent Skills](https://agentskills.io) open standard: a folder `skills/local-build/` holding

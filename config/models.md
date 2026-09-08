@@ -71,6 +71,10 @@ card, which this table has none of.
 | Qwen3.8-27B, `-ub 1024` (`serious`'s window) | 14.94 GiB | — | measured, not adopted: loads under the 15.3 cap; its row is owed to a later cycle |
 | Qwen3.8-27B, `-ub 2048` (`serious`'s window) | 15.68 GiB | — | refused: exceeds the 15.3 cap |
 | gemma-4-12B-it Q6_K, 81,920, K q8_0, V f16, `-fa off` | 15.19 GiB (15.28 peak) | 14.3 / 133 tok/s (8.7 / 138 at 73,728, 503 s to first token) | measured, not adopted: useful to its whole 81,920 by the four-tokens-a-second rule and clears the builder bar (five tests, 528 s, 17.3 tok/s decode and 171 prefill at a 17k prompt), but dominated on every axis by the MoE row (more window, more speed, less VRAM, a faster task) and by the 9B as a builder |
+| Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 16 expert layers in host RAM (24 on the card) | 15.01 GiB | 23.8 / 158 tok/s (prefill at 17k) | measured, not adopted: does not fit under 15.3 GiB with margin; 18 expert layers in host RAM is the row |
+| Qwen3.5-9B Q4_K_M, thinking mode (the card's precise-coding line: 0.6/0.95/20/0, reasoning on, output 32,768) | — | — | measured, kept out: the probes pass on the first two prompts with about 480 characters of reasoning each; on the third (a one-line hello world) the model reasons for 13,588 characters, about 4,000 tokens and 96 s, and exhausts a 4,096-token budget with no answer — without an effort control the 9B's thinking mode over-thinks small prompts; the instruct line keeps the row |
+| Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 18 expert layers in RAM, thinking mode under the card's precise-coding line (temperature 0.6, top_p 0.95, top_k 20, min_p 0, presence 0) | 14.1 GiB | 22.3 / 154 tok/s (prefill at 17k; 51.7 ms per token after it) | measured, not adopted: probes 3 of 3 with short reasoning; T1 nine tests green in 254 s, against the instruct line's ten in 203 s — thinking costs a quarter of the wall for nothing on this task; the instruct line keeps the row |
+| Qwen3.8-27B GSQ-RCO IQ3_S, 196,608, q4_0 KV, `-ub 1024` | 14.94 GiB (15.11 peak during an 8k prompt) | 7.9 / 74 tok/s | measured, not adopted: four percent more prefill than `-ub 512` (71 tok/s, 7.9 decode, 14.77 GiB peak) for 0.34 GiB more peak; ubatch stays 512 in both modes |
 
 ## Measured and kept out
 
@@ -97,7 +101,10 @@ said; every display-registry row above was measured at that client-side greedy t
 which is why its rows' notes say so. Every row now carries an optional `sampling` object naming the model's own card's
 recommended line for the role its profile fills, served in `extra` on the server and rendered into the opencode agent
 block's own `temperature` and `top_p` so the client no longer overrides it silently; the source is named beside the
-numbers.
+numbers. Every inference row and the display serious row carry a sampling line; the display long and fast rows were
+measured at the client's default and carry none until re-measured. The display serious row's task was measured at the
+client's temperature 0, and the same file at 196,608 under this line wrote ten tests in 546 s where temperature 0 gave
+five in 664 s, so the display row carries the line too.
 
 ## How a model earns the fast profile
 

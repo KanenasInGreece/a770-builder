@@ -92,7 +92,12 @@ doctor(){
   n=$(gpu_match_count)
   case "$n" in
     1) echo "ok   card: exactly one nvtop device matches A770B_GPU_MATCH=$A770B_GPU_MATCH" ;;
-    -1) echo "ok   card: not measured (no VRAM readings)" ;;
+    -1)
+      if [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then
+        echo "ok   card: not measured (no VRAM readings)"
+      else
+        echo "MISSING card: no VRAM readings (nvtop absent or its output unreadable); install nvtop, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1))
+      fi ;;
     *) echo "MISSING card: $n nvtop devices match A770B_GPU_MATCH=$A770B_GPU_MATCH, not 1; set it to a substring naming the builder card alone in 'nvtop -s'"; missing=$((missing+1)) ;;
   esac
   if llama_pid_alive "$PIDF" >/dev/null; then
@@ -160,7 +165,7 @@ case "${1:-}" in
     shift; profile=$A770B_DEFAULT_PROFILE; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; a770b_is_profile "$profile" || die "profile must be one of: $A770B_PROFILES (got '$profile')"; profile_set=1; shift;; --timeout) timeout="$2"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; a770b_is_profile "$profile" || die "profile must be one of: $A770B_PROFILES (got '$profile')"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted

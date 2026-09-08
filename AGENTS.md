@@ -1,13 +1,17 @@
 # Qualifying a new model — the profiling guide
 
 This file is for the agent, or person, who has a GGUF and this harness and wants that model on the list of
-profiles the orchestrating seat can propose. It is not read by the model that builds this repository: the harness
+profiles the orchestrating seat can propose. The models that already have profiles, and the exact file of each, are
+in `docs/OPERATING.md`; this guide is for a model that is not yet on that list. It is not read by the model that
+builds this repository: the harness
 sets a seat's own copy of this file aside for the length of a build and restores it after. It exists for the
 separate act of profiling — climbing the ladder below and deciding whether a model earns a row.
 
 The project's offer is the ladder itself. A model does not enter the registry by reputation, a benchmark someone
 else ran, or its own model card's claim: it enters by being measured on this card, every number written down, and
-a row is only ever compared against other rows measured the same way.
+a row is only ever compared against other rows measured the same way. A row is a measurement on one card and one
+build; on another card the same ladder produces that card's rows, and the registry may hold them beside these under
+the mode that fits.
 
 ## What a profile is
 
@@ -29,8 +33,10 @@ source: `code` (the suite or T1, tests passed and wall time), `think` (a reasoni
 else the model's own card's GPQA or AIME figure, named as the card's), and `write` (a reviewer-graded prose brief
 where one exists, else plainly "not measured" — a missing number is never invented).
 
-Every row also carries the sampling line the model's own card recommends for the role it fills — temperature,
-top_p, top_k, min_p, the penalties — and where that line was read. The served flags carry it into the server; the
+Every inference row and the display serious row carry the sampling line the model's own card recommends for the
+role it fills — temperature, top_p, top_k, min_p, the penalties — and where that line was read; the display long
+and fast rows were measured at the client's default and carry none until re-measured. The served flags carry it
+into the server; the
 same numbers are rendered into the client's own agent block too, because the client otherwise supplies its own
 temperature and silently overrides the server's. A row needing more than the card's VRAM states that as RAM beyond
 VRAM — a mixture-of-experts row that keeps some layers off the card costs host memory the VRAM figure does not show.
@@ -74,8 +80,10 @@ fails an earlier one.
    and counting down from a high N until it loads.
 2. **The probes and the 17k summary** — `harness/bench_model.sh <label> <gguf> <ctx> [flags]`: greedy sanity
    answers, a tool call, a coherent summary after roughly 17k tokens of prefill. The gate's budget holds a full
-   thinking reply when `REASONING=on`. About twenty minutes for a 9B-class file with the T1 task below, forty-five
-   for a 27B-class one.
+   thinking reply when `REASONING=on`. The ladder's wall time is dominated by rung 5's T1 and rung 3's far-end
+   sweep: T1 measured 121 s for the 9B, 203 s for the MoE, 546 s for the 27B; the sweep's far-end time to first
+   token measured 626 s for the 9B at 100k, 1,150 s for the MoE at 100k, 753 s for the 27B at 64k. The ladder's
+   cost is those two numbers plus the loads and the probes.
 3. **Speed at 8k and the far end** — `harness/ctx_sweep.sh 8000 100000` (or the window less 8k when under about
    110k): decode and prefill against position, VRAM sampled, the kernel log watched for a reset. Decides KV type
    and ubatch, and is the source of `useful_ctx`.
@@ -94,8 +102,8 @@ fails an earlier one.
 
 ## The bar
 
-A builder-class row is useful to at least 81,920 tokens, and green on the T1 task; every probe in the ladder
-passed, and no engine reset happened anywhere in the run. A row that misses this bar is not a builder, whatever
+A builder-class row is useful to at least 81,920 tokens AND has a green task: T1 passed, or the in-house suite at
+80 percent or better; every probe in the ladder passed, and no engine reset happened anywhere in the run. A row that misses this bar is not a builder, whatever
 else is true of it — but it can still earn a place as a reader or a reviewer, and its `use_for` says so plainly.
 
 ## The comparison

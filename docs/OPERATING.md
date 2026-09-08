@@ -7,8 +7,8 @@ exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) 
 ## Run it
 
 ```bash
-bash skills/local-build/scripts/local-build.sh run <brief.md>                                    # long profile (default), on the default seat
-bash skills/local-build/scripts/local-build.sh run <brief.md> --spec <spec.json>                 # with a run specification (below)
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long                     # long profile (default), on the default seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>  # with a run specification (below)
 bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --profile serious  # serious profile, on a named seat
 bash skills/local-build/scripts/local-build.sh run <brief.md> --profile fast                     # fast profile: the reader
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
@@ -209,14 +209,20 @@ cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j
 
 `A770B_LLAMA_BIN` defaults to `~/llama.cpp/build/bin/llama-server`; point it elsewhere if you built elsewhere.
 
-**The models.** Both profiles' files are public GGUFs on Hugging Face; the harness reads them from `A770B_MODELS`.
-Fetch them with the Hugging Face CLI (no account needed for these), straight into that directory:
+**The models.** These are the exact files each row below was measured with; a different quantisation of the same
+model is a different row, and the registry's own `model` and `source` fields (`config/profiles.json`,
+`config/profiles.inference.json`) are the authority when this list and they differ. Every profiled row's file is a
+public GGUF on Hugging Face; the harness reads them from `A770B_MODELS`. Fetch them with the Hugging Face CLI (no
+account needed for these), straight into that directory, one line per row of the registry it belongs to, in
+registry order:
 
 ```bash
-uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested            # long
-uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested   # serious
-uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested     # serious, this workstation's builder.env, under a 14.1 cap
-uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested       # fast
+uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # display: --profile long (5.6 GB)
+uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested        # display: --profile fast (5.3 GB)
+uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested     # display: --profile serious (10.1 GB)
+uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # inference: --profile long (5.6 GB; the same file as display's long)
+uvx --from huggingface_hub hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --local-dir ~/LLM/tested             # inference: --profile moe (22.4 GB; 18 GB of host RAM at run time)
+uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested       # inference: --profile serious (11.8 GB)
 ```
 
 llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M` downloads into
@@ -285,6 +291,14 @@ the Xe kernel driver, and the display-card rules are that driver's watchdog. Win
 shape is the harness under WSL2 with `llama-server` native on Windows, reached over the loopback bridge, with
 `A770B_ALLOW_NO_NVTOP=1` because the cap cannot read the card from inside WSL2; it has not been measured and the README
 says so. macOS has no bubblewrap.
+
+Two pieces are Vulkan-specific, both harmless on another Vulkan card and simply unused on a non-Vulkan backend:
+`MESA_VK_DEVICE_SELECT` (the pin Mesa's Vulkan loader reads) and `GGML_VK_DISABLE_COOPMAT` (the flag set proven on
+Arc under Vulkan). The `-ub 512` ceiling is this card's own watchdog rationale — Intel's Xe kernel driver resets the
+GPU past it on a display card; another card's reason for a batch ceiling, if any, is its own and needs its own
+measurement. The reset watch reads the kernel log for the Xe driver's own words (`engine reset`, `timedout`);
+another driver words a reset differently, so `A770B_RESET_PATTERN` is the knob to add when someone brings one — it
+is not there yet.
 
 Beyond that, nothing that matters. Two conventions remain: the opencode alias `local-builder` (the profile template depends on it) and
 the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A770B_OPENCODE_BIN`.

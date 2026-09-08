@@ -22,7 +22,11 @@ export A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="${TMPDIR:-/tm
 # the names in A770B_KEEP, so each subshell resolves fresh from the files and exports it sets itself — nothing here,
 # and nothing inherited from the calling shell, leaks into a check it was not given to.
 A770B_KEEP="A770B_PROJECT A770B_REFUSE A770B_DATA A770B_GPU_MATCH"
-_iso(){ local v; for v in $(compgen -A export A770B_); do case " $A770B_KEEP " in *" $v "*) ;; *) unset "$v";; esac; done; }
+# A770B_PROFILES_FILE and A770B_VRAM_CAP_GIB are no longer exported by env.sh (they must not cross a process
+# boundary, so a script that sources env.sh once in one mode and again in another, in a child process, resolves the
+# child's own registry and cap). Being plain shell variables now, they are not caught by `compgen -A export` and
+# survive a `(...)` subshell's fork from this baseline like any other local variable, so _iso unsets them by name too.
+_iso(){ local v; for v in $(compgen -A export A770B_); do case " $A770B_KEEP " in *" $v "*) ;; *) unset "$v";; esac; done; unset A770B_PROFILES_FILE A770B_VRAM_CAP_GIB; }
 printf '{"status": "degraded", "version": "1"}\n' > "$t/degraded.json"
 printf '{"status":"ok"}\n' > "$t/ok.json"
 printf '{"version":"1"}\n' > "$t/nostatus.json"
@@ -122,6 +126,15 @@ out=$( ( _iso; export A770B_CARD_MODE=x XDG_CONFIG_HOME="$t/xdg"; . "$here/harne
   && echo "ok   mode: I3 the environment's cap wins over the inference default" || { echo "FAIL mode: I3 A770B_VRAM_CAP_GIB=14.9 did not win"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference A770B_PROFILES_FILE="$here/config/profiles.json" XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_PROFILES_FILE" = "$here/config/profiles.json" ] ) \
   && echo "ok   mode: I3 the environment's registry file wins over the inference default" || { echo "FAIL mode: I3 A770B_PROFILES_FILE override did not win"; fail=1; }
+# A770B_PROFILES_FILE and A770B_VRAM_CAP_GIB must not be exported: a process that sources env.sh once in display mode,
+# then a CHILD process that switches to inference mode and sources env.sh again, must resolve that child's own
+# registry and cap fresh, not inherit the parent's already-computed display values across the process boundary
+( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
+  bash -c 'export A770B_CARD_MODE=inference; . "$A770B_PROJECT/harness/env.sh" >/dev/null 2>&1
+    case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
+    [ "$A770B_VRAM_CAP_GIB" = 15.3 ]'
+) && echo "ok   mode: a second source in another mode takes that mode's registry and cap" \
+  || { echo "FAIL mode: a second source in another mode did not take that mode's registry/cap"; fail=1; }
 i4a="$t/i4a/xdg"; mkdir -p "$i4a/a770-builder"
 printf 'A770B_CARD_MODE=inference\nA770B_VRAM_CAP_GIB=15.0\n' > "$i4a/a770-builder/builder.env"
 printf 'A770B_VRAM_CAP_GIB=14.9\n' > "$i4a/a770-builder/builder.inference.env"
@@ -241,6 +254,11 @@ out=$( ( _iso; export A770B_CARD_MODE=display PATH="$path_no_nvtop" A770B_ALLOW_
   && ! printf '%s' "$out" | grep -q "MISSING card" && ! printf '%s' "$out" | grep -q "MISSING mode"; } \
   && echo "ok   mode: I9f no nvtop with A770B_ALLOW_NO_NVTOP=1 is not measured, never MISSING" \
   || { echo "FAIL mode: I9f"; printf '%s\n' "$out" | tail -20; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=display PATH="$path_no_nvtop" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+printf '%s' "$out" | grep -q "MISSING card: no VRAM readings (nvtop absent or its output unreadable); install nvtop, or set A770B_ALLOW_NO_NVTOP=1" \
+  && echo "ok   mode: I9g no nvtop without A770B_ALLOW_NO_NVTOP is MISSING card" \
+  || { echo "FAIL mode: I9g"; printf '%s\n' "$out" | tail -20; fail=1; }
 # the stop-run gate: run_pid_alive is the proof a pid is ours before any signal is sent, proved here without the card
 RUNPID="$A770B_DATA/logs/run.pid"
 rm -f "$RUNPID"

@@ -433,16 +433,14 @@ def test_render_with_inference_file(tmp_path):
 
 
 def test_render_missing_inference_markers_exits_2(tmp_path):
+    """A skill file with the profiles pair but not the profiles-inference pair, plus a snippet
+    with its pair: exit 2, and NOTHING written -- not even the skill file's own valid pair."""
     skill = tmp_path / "SKILL.md"
-    skill.write_text(
-        "before\n<!-- profiles:begin -->\nold\n<!-- profiles:end -->\nafter\n",
-        encoding="utf-8",
-    )
+    skill_original = "before\n<!-- profiles:begin -->\nold\n<!-- profiles:end -->\nafter\n"
+    skill.write_text(skill_original, encoding="utf-8")
     snippet = tmp_path / "snippet.md"
-    snippet.write_text(
-        "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n",
-        encoding="utf-8",
-    )
+    snippet_original = "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n"
+    snippet.write_text(snippet_original, encoding="utf-8")
 
     result = run(
         "render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet),
@@ -450,6 +448,8 @@ def test_render_missing_inference_markers_exits_2(tmp_path):
     )
     assert result.returncode == 2
     assert f"profiles: no profiles-inference markers in {skill}" in result.stderr
+    assert skill.read_text(encoding="utf-8") == skill_original
+    assert snippet.read_text(encoding="utf-8") == snippet_original
 
 
 def test_render_leaves_file_without_markers_unchanged(tmp_path):

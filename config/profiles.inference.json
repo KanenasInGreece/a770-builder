@@ -75,7 +75,7 @@
       "capability_source": "huggingface.co/Qwen/Qwen3.6-35B-A3B model card (BF16)",
       "fit": {
         "code": "T1 under the card line: 10 tests green in 203 s",
-        "think": "GPQA-Diamond 86.0 (the model card, BF16)",
+        "think": "thinking mode measured: T1 nine tests green in 254 s under the card's 0.6/0.95 line, against ten in 203 s instruct; GPQA-Diamond 86.0 (the model card, BF16)",
         "write": "not measured"
       },
       "use_for": "A deliverable larger than its brief at three times the dense 27B's speed and its whole window at above ten tokens a second; needs 18 GB of host RAM for the run and a CPU that is busy; not beside another large load."

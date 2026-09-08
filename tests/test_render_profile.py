@@ -195,6 +195,18 @@ def test_sampling_both_values_render_in_agent_block(tmp_path):
     assert parsed["agent"]["local-builder"]["top_p"] == 0.95
 
 
+def test_sampling_temperature_appears_once_in_rendered_text(tmp_path):
+    """The literal token __SAMPLING__ names itself only once in the template, in the agent block (the header
+    comment says it in words instead); a rendered "temperature" key must therefore appear exactly once, not
+    duplicated into a header comment that once also carried the literal placeholder."""
+    out = tmp_path / "out.jsonc"
+    result = render_with_sampling(out, temperature="0.6", top_p="0.95")
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    text = out.read_text()
+    assert text.count('"temperature"') == 1
+
+
 def test_sampling_temperature_only(tmp_path):
     """Test 26: --temperature alone renders just that key, with its trailing comma."""
     out = tmp_path / "out.jsonc"
@@ -611,15 +623,16 @@ def test_check_validates_context_paths(tmp_path):
     assert "context.definitions_of" in result.stderr
 
 
-def test_profile_key_checks_against_old_trio_without_env(tmp_path):
-    """With A770B_PROFILES unset, the specification's profile is checked against fast/serious/long."""
+def test_profile_key_checks_against_registry_union_without_env(tmp_path):
+    """With A770B_PROFILES unset, the specification's profile is checked against the union of the profile
+    names in config/profiles.json and config/profiles.inference.json -- moe (inference-only) is accepted."""
     seat = tmp_path / "seat"
     seat.mkdir()
 
     env = dict(os.environ)
     env.pop("A770B_PROFILES", None)
 
-    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "serious"})
+    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "moe"})
     result_ok = subprocess.run(
         [sys.executable, str(RENDERER), "check", "--spec", str(spec_ok), "--seat", str(seat)],
         capture_output=True, text=True, env=env,
@@ -632,7 +645,7 @@ def test_profile_key_checks_against_old_trio_without_env(tmp_path):
         capture_output=True, text=True, env=env,
     )
     assert result_bad.returncode == 2
-    assert "must be one of fast, serious, long" in result_bad.stderr
+    assert "must be one of fast, long, moe, serious" in result_bad.stderr
 
 
 def test_profile_key_checks_against_a770b_profiles_env(tmp_path):

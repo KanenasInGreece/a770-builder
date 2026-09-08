@@ -30,11 +30,12 @@
       "task_t1": "pass",
       "capability": {},
       "capability_source": "",
+      "fit": {"code": "T1: 11 tests green in 121 s, the repository's test idiom followed unprompted (measured at the client's temperature 0)", "think": "not measured", "write": "not measured"},
       "use_for": "The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there."
     },
     "fast": {
       "model": "gemma-4-E4B-it-Q4_K_M.gguf",
-      "source": "google/gemma-4-E4B-it (GGUF Q4_K_M)",
+      "source": "lmstudio-community/gemma-4-E4B-it-GGUF",
       "family": "gemma4",
       "architecture": "dense, sliding window 512 on five of six layers",
       "quant": "Q4_K_M",
@@ -58,6 +59,7 @@
       "task_t1": "weak: one of three edits made on a shell brief, three reported",
       "capability": {"LiveCodeBench_v6": 52.0, "MMLU_Pro": 69.4, "GPQA_Diamond": 58.6},
       "capability_source": "google/gemma-4 model card",
+      "fit": {"code": "T1: green twice and partial once (17, 6, 6 tests) at 74 to 82 s; on the harness's own brief one edit of three made, three reported (measured at temperature 0)", "think": "not measured", "write": "not measured"},
       "use_for": "The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits."
     },
     "serious": {
@@ -86,6 +88,8 @@
       "task_t1": "pass",
       "capability": {"LiveCodeBench_v6": 84.57, "GPQA_Diamond": 88.89, "AIME25": 100},
       "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100)",
+      "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "mode": "thinking", "source": "huggingface.co/Qwen/Qwen3.8-27B, thinking mode; reasoning effort low"},
+      "fit": {"code": "T1: 5 tests green in 1,492 s (measured at temperature 0); the same file at 196,608 under its card line: 10 in 546 s", "think": "GPQA-Diamond 88.89, AIME25 100 (the quantiser's card)", "write": "not measured"},
       "use_for": "A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env."
     }
   }
