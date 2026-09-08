@@ -90,15 +90,17 @@ a770b_render_profile(){
   rm -f "$out" "$out.echo.json"
   # the profile's own sampling (env.sh's TEMPERATURE/TOP_P defaults, or an override): an empty value adds no argument
   local -a sampling_args=()
-  local temp top_p
+  local temp top_p output
   temp=$(a770b_profile_var "$profile" TEMPERATURE)
   top_p=$(a770b_profile_var "$profile" TOP_P)
   [ -n "$temp" ] && sampling_args+=(--temperature "$temp")
   [ -n "$top_p" ] && sampling_args+=(--top-p "$top_p")
+  # the profile's own output_tokens (U2d) when set, else the global A770B_OUTPUT_TOKENS
+  output=$(a770b_profile_var "$profile" OUTPUT_TOKENS); [ -n "$output" ] || output="$A770B_OUTPUT_TOKENS"
   if [ -n "${A770B_SPEC:-}" ] && [ -z "${4:-}" ]; then
-    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile" "${sampling_args[@]}" --spec "$A770B_SPEC" --seat "${A770B_RENDER_SEAT:?the seat the specification is checked against}" --echo "$out.echo.json"
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$output" --name "$profile" "${sampling_args[@]}" --spec "$A770B_SPEC" --seat "${A770B_RENDER_SEAT:?the seat the specification is checked against}" --echo "$out.echo.json"
   else
-    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile" "${sampling_args[@]}"
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$output" --name "$profile" "${sampling_args[@]}"
   fi
 }
 a770b_opencode_bin(){ if [ -n "$A770B_OPENCODE_BIN" ]; then printf '%s\n' "$A770B_OPENCODE_BIN"; else dirname "$(readlink -f "$(command -v opencode)")"; fi; }

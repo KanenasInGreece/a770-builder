@@ -161,6 +161,17 @@ grep -q 'mode \$A770B_CARD_MODE · cap \$A770B_VRAM_CAP_GIB GiB' "$here/harness/
   && grep -q 'A770B_CARD_MODE=inference' "$here/harness/serve_a770_llamacpp.sh" \
   && echo "ok   mode: I10 the server's start and refusal lines name the mode and cap" \
   || { echo "FAIL mode: I10 serve_a770_llamacpp.sh does not name the mode/cap as expected"; fail=1; }
+grep -q 'the server died during load' "$here/harness/serve_a770_llamacpp.sh" \
+  && echo "ok   harness: serve refuses when the pid dies during load" \
+  || { echo "FAIL harness: serve_a770_llamacpp.sh does not name the death message"; fail=1; }
+grep -q '4096' "$here/harness/bench_model.sh" && grep -q 'REASONING' "$here/harness/bench_model.sh" \
+  && echo "ok   harness: bench_model's probe gate reads REASONING for its 4096 budget" \
+  || { echo "FAIL harness: bench_model.sh does not read REASONING for a 4096 gate"; fail=1; }
+( _iso; export A770B_LONG_OUTPUT_TOKENS=4242 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
+  a770b_render_profile long 4096 "$t/harness-output.jsonc" nokey >/dev/null 2>&1
+  grep -q '"output": 4242' "$t/harness-output.jsonc"
+) && echo "ok   harness: a770b_render_profile carries the profile's own output_tokens" \
+  || { echo "FAIL harness: a770b_render_profile did not carry A770B_LONG_OUTPUT_TOKENS=4242"; fail=1; }
 # I9 — doctor's card: and mode: lines; a fake nvtop prints the JSON file $NVTOP_FAKE names, in 'nvtop -s' shape
 mkdir -p "$t/bin"
 cat > "$t/bin/nvtop" <<'NVEOF'

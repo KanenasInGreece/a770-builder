@@ -27,10 +27,11 @@ def chat(msgs,max_tokens=64,**kw):
     b={"model":"local-builder","messages":msgs,"temperature":0,"max_tokens":max_tokens}; b.update(kw); return post('/v1/chat/completions',b)
 r={"label":os.environ['LABEL'],"gguf":os.environ['GGUF'],"ctx":int(os.environ['CTX']),"load_s":round(float(os.environ['load_s']),1),"vram_gib_after_load":float(os.environ['vram']),"ts":time.strftime('%Y-%m-%dT%H:%M:%S')}
 q=[]
+# max_tokens 256 (was 48), 4096 when REASONING=on: reasoning models (gpt-oss harmony, or this server's own --reasoning on)
+# spend their budget in reasoning_content before the answer; the gate reads the CONTENT field only — a builder must deliver in content.
+GATE_MAX_TOKENS=4096 if os.environ.get("REASONING","off")=="on" else 256
 for p,exp in [("What is 2+2? Answer with the number only.","4"),("What is the capital of Greece? One word.","Athens"),("Write a Python one-liner that prints hello world. Code only.","print(")]:
-    # max_tokens 256 (was 48): reasoning models (gpt-oss harmony) spend tokens in reasoning_content before the answer;
-    # the gate reads the CONTENT field only — a builder must deliver in content.
-    d,ms=chat([{"role":"user","content":p}],max_tokens=256); c=(d['choices'][0]['message'].get('content') or '').strip(); q.append({"prompt":p,"answer":c[:120],"ok":exp.lower() in c.lower(),"ms":round(ms),"reasoning_chars":len(d['choices'][0]['message'].get('reasoning_content') or '')})
+    d,ms=chat([{"role":"user","content":p}],max_tokens=GATE_MAX_TOKENS); c=(d['choices'][0]['message'].get('content') or '').strip(); q.append({"prompt":p,"answer":c[:120],"ok":exp.lower() in c.lower(),"ms":round(ms),"reasoning_chars":len(d['choices'][0]['message'].get('reasoning_content') or '')})
 r["quality"]=q; r["quality_ok"]=all(x['ok'] for x in q)
 d,ms=chat([{"role":"user","content":"Write a 200-word paragraph about git worktrees."}],max_tokens=256)
 t=d.get('timings',{}); r["short"]={"prompt_tokens":t.get('prompt_n'),"ttft_ms":round(t.get('prompt_ms',0)),"gen_tokens":t.get('predicted_n'),"tpot_ms":round(t.get('predicted_per_token_ms',0),2),"decode_tps":round(t.get('predicted_per_second',0),1),"wall_ms":round(ms)}
