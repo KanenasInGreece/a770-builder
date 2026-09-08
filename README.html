@@ -44,19 +44,24 @@ that already understands the larger job.</p>
 </ol>
 <p>Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.</p>
-<p>The skill offers three profiles, and the choice is the task's, not the model's reputation. <strong>long</strong> is Qwen3.5-9B, the
-default for every ordinary change: a small, well-specified edit to named files, done in two or three minutes in the
-repository's own idiom; it is safe to about 64,000 to 72,000 tokens of the 262,144 it serves, its prefill slowing
-under 150 tokens a second past about 64,000. <strong>serious</strong> is Qwen3.8-27B, for a deliverable larger than its brief, tests written from an
-invariant or prose a reviewer will read; it is the best-written output of the matrix at eight tokens a second, and on a
-mechanical edit it produces the long profile's patch at seven times the wall clock, so it is never the profile for
-those; it is served with 131,072 tokens of window by default, useful to about 32,000, since its decode falls under five tokens
-a second by 64,000. <strong>fast</strong> is Gemma 4 E4B with flash attention off, a 131k-token window for the read the long window cannot hold
-and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
-is a capacity, not the depth a model works reliably at, and each profile's row says which depth was measured. No
-profile indexes a large file, which stays a <code>grep</code>: where a deterministic tool answers exactly, the seat is not asked to
-approximate it. The profiles are data, not prose: <code>config/profiles.json</code> is the registry a caller can read directly. A run specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the
-paths it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
+<p>The seat runs in one of two card modes, chosen by <code>A770B_CARD_MODE</code>, each with its own registry: display-safe (the
+default, the tested set, under a 13 GiB cap, for a card that also draws the desktop) and pure-inference (under a
+15.3 GiB cap, for a card that draws nothing). The profiles are the interface, and the choice is the task's, not the
+model's reputation: <code>run … --profile &lt;name&gt;</code> names one, and <code>local-build.sh profiles</code> prints the card so an
+orchestrating agent can match a brief's scope and the token size of the files it names against what each profile
+actually measured. The display set is <strong>long</strong> (Qwen3.5-9B, the default for every ordinary change, safe to about
+64,000–72,000 tokens of the 262,144 it serves), <strong>fast</strong> (Gemma 4 E4B with flash attention off, for the read the long
+window cannot hold and precise questions about a passage deep in a large file, not for edits), and <strong>serious</strong>
+(Qwen3.8-27B, for a deliverable larger than its brief or tests from an unfamiliar module, useful to about 32,000 as
+its decode falls under five tokens a second by 64,000). The inference set is <strong>long</strong> (the same 9B at its whole
+262,144-token window), <strong>moe</strong> (Qwen3.6-35B-A3B, a deliverable larger than its brief at three times the dense 27B's
+speed, its whole 131,072-token window usable, needing 18 GB of host RAM), and <strong>serious</strong> (the 27B at a larger
+196,608-token window, useful to about 98,000). A window is a capacity, not the depth a model works reliably at, and
+each profile's row says which depth was measured. No profile indexes a large file, which stays a <code>grep</code>: where a
+deterministic tool answers exactly, the seat is not asked to approximate it. The profiles are data, not prose: the
+mode's registry (<code>config/profiles.json</code>, <code>config/profiles.inference.json</code>) is what a caller can read directly. A run
+specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the paths
+it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
 Every profile's output is judged the same way, by its capture and by <code>verify</code>.</p>
 <pre><code class="language-text">your coding agent ── the context, the judgement, the plan
       │  local-build skill (a brief in, a capture out)
@@ -67,8 +72,9 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       │                          │ loopback bridge, the only network
       └── llama.cpp (Vulkan) ────┘── the qualified model on the A770
 </code></pre>
-<p>Built and measured on 2026-09-06 to 08 on a card that also drives the desktop; reviewed adversarially and contained
-the same day, and since then built partly by its own seat. The measured report (matrix, serving lines, method) lives beside the weights: <code>~/LLM/tested/README.html</code>.</p>
+<p>Built and measured on 2026-09-06 to 08, first on a card that also drives the desktop and then, once the desktop moved
+to a second card, on the same A770 with nothing else on it: the two modes are one seat, reviewed adversarially and
+contained the same day, and since then built partly by its own seat. The measured report (matrix, serving lines, method) lives beside the weights: <code>~/LLM/tested/README.html</code>.</p>
 <h2 id="why-we-made-it">Why we made it</h2>
 <p>A workstation full of coding agents depends on online seats that go down, rate-limit, or cost credits in the middle of
 a build. Much of what those agents are asked to do is bounded work: a change to named files, tests from a
@@ -131,9 +137,9 @@ re-qualified the same way instead of trusted.</p>
 <td><code>A770B_LLAMA_BIN</code> (default <code>~/llama.cpp/build/bin/llama-server</code>)</td>
 </tr>
 <tr>
-<td>the three GGUF models</td>
-<td>the fast, serious and long profiles</td>
-<td>Hugging Face: <a href="https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF"><code>lmstudio-community/Qwen3.5-9B-GGUF</code></a>, <a href="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"><code>ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF</code></a> and <a href="https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF"><code>lmstudio-community/gemma-4-E4B-it-GGUF</code></a>; the download lines are in <a href="docs/OPERATING.md#getting-llamacpp-and-the-models"><code>docs/OPERATING.md</code></a>; every model measured on this card is in <a href="config/models.md"><code>config/models.md</code></a>, and a new one enters by the procedure in <code>docs/OPERATING.md</code></td>
+<td>the model files of the mode's registry (<code>config/profiles.json</code>, <code>config/profiles.inference.json</code>)</td>
+<td>the profiles of whichever card mode this machine serves</td>
+<td>Hugging Face: <a href="https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF"><code>lmstudio-community/Qwen3.5-9B-GGUF</code></a>, <a href="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"><code>ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF</code></a>, <a href="https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF"><code>lmstudio-community/gemma-4-E4B-it-GGUF</code></a> and <a href="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF"><code>unsloth/Qwen3.6-35B-A3B-GGUF</code></a>; the download lines are in <a href="docs/OPERATING.md#getting-llamacpp-and-the-models"><code>docs/OPERATING.md</code></a>; every model measured on this card is in <a href="config/models.md"><code>config/models.md</code></a>, and a new one enters by the procedure in <code>docs/OPERATING.md</code></td>
 <td><code>A770B_MODELS</code> (default <code>~/LLM/tested</code>), <code>A770B_FAST_MODEL</code>, <code>A770B_SERIOUS_MODEL</code>, <code>A770B_LONG_MODEL</code></td>
 </tr>
 <tr>
@@ -270,7 +276,7 @@ a capture's tests inside a fresh sandbox when you want proof. Six reviews have r
 family; the fourth found three holes the first three had missed, and the sixth read the run specification and found two
 defects in its refusals, all closed the same day. All of it, with what you must still do yourself and how to report a hole, is in
 <a href="SECURITY.md"><code>SECURITY.md</code></a>.</p>
-<p>This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the three model files, and nothing else:
+<p>This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
 no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
 developed alongside the <a href="https://github.com/KanenasInGreece/Shared_Memory">Shared Memory</a> framework, a sibling project
 that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.
