@@ -6,6 +6,29 @@ long, serious). This tool: validates the file (`check`); prints the shell defaul
 harness `eval`s (`env`); prints the file as JSON, optionally with what is actually served
 (`card`); and regenerates the profile table in the skill and the one-line snippet from the
 data (`render`).
+
+A row's `speed` object may carry two more, both optional and both filled by hand from a
+measurement, never computed by this tool:
+
+- `speed.bench`: the standard llama-bench instrument run at the row's own served flags
+  (`harness/bench_speed.sh <profile>`) — `tool` (the build id llama-bench itself reports),
+  `prompt`/`gen` (its `-p`/`-n`), `flags` (the full command line), `at_depth` (one entry per
+  `-d` depth measured, keyed by the depth as a digit string, each `{"pp": ..., "tg": ...}`
+  in tokens/second), and `source` (the results file under `A770B_DATA/results/` it came
+  from).
+- `speed.delivered`: the standard suite's own as-delivered medians (`harness/suite_report.py`
+  on a `run_suite.sh` results file) — `prefill_tps`, `decode_tps`, and `source` (the suite
+  results file).
+
+`speed.decode_tps` and `speed.prefill_tps` keep their four keys (`8k`, `32k`, `64k`,
+`100k`) exactly as before this pair was added; when a row also carries `speed.bench`, those
+four keys MAY be filled from `bench.at_depth` by depth: `8k` from `at_depth["8192"]`, `32k`
+from `at_depth["32768"]`, `64k` from `at_depth["65536"]`, `100k` from `at_depth["100000"]`
+(or, on a window that ends before 110k, from whichever depth the row's own far end used) —
+`decode_tps.<k>` from that depth's `tg`, `prefill_tps.<k>` from its `pp`. This tool never
+performs that fill itself: a row's author reads `bench.at_depth` and writes the four keys by
+hand, the same way every other number in the registry is a human transcription of a
+measurement, not a derived value.
 """
 
 import argparse
@@ -29,6 +52,9 @@ SAMPLING_KEYS = SAMPLING_NUMBER_KEYS | {"mode", "source"}
 CATEGORY_VALUES = {"dense", "moe"}
 WEIGHT_CLASS_RE = re.compile(r"^[0-9]+b(-[ae][0-9]+b)?$")
 FAR_END_KEYS = {"tokens", "decode_tps", "prefill_tps", "ttft_s"}
+BENCH_KEYS = {"tool", "prompt", "gen", "flags", "at_depth", "source"}
+BENCH_AT_DEPTH_VALUE_KEYS = {"pp", "tg"}
+DELIVERED_KEYS = {"prefill_tps", "decode_tps", "source"}
 FIT_KEYS = {"code", "think", "write"}
 SUITE_KEYS = {"briefs", "runs", "passed", "mean_wall_s", "source", "instrument", "stages", "reviewer"}
 SUITE_REQUIRED_KEYS = {"briefs", "runs", "passed", "source"}
@@ -176,7 +202,7 @@ def validate(data) -> list[str]:
 
         if "speed" in prof:
             speed = prof["speed"]
-            speed_allowed = {"decode_tps", "prefill_tps", "far_end"}
+            speed_allowed = {"decode_tps", "prefill_tps", "far_end", "bench", "delivered"}
             if not isinstance(speed, dict) or not {"decode_tps", "prefill_tps"} <= set(speed.keys()) or set(speed.keys()) - speed_allowed:
                 errors.append(f"{name}: speed must be an object with decode_tps and prefill_tps")
             else:
@@ -200,6 +226,46 @@ def validate(data) -> list[str]:
                             vv = far_end[kk]
                             if not _is_number(vv) or vv <= 0:
                                 errors.append(f"{name}: speed.far_end.{kk} must be a positive number")
+
+                if "bench" in speed:
+                    bench = speed["bench"]
+                    if not isinstance(bench, dict) or set(bench.keys()) != BENCH_KEYS:
+                        errors.append(f"{name}: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source")
+                    else:
+                        for kk in ("tool", "flags", "source"):
+                            vv = bench.get(kk)
+                            if not isinstance(vv, str) or not vv:
+                                errors.append(f"{name}: speed.bench.{kk} must be a non-empty string")
+                        for kk in ("prompt", "gen"):
+                            if not _is_pos_int(bench.get(kk)):
+                                errors.append(f"{name}: speed.bench.{kk} must be a positive int")
+                        at_depth = bench.get("at_depth")
+                        if not isinstance(at_depth, dict) or not at_depth:
+                            errors.append(f"{name}: speed.bench.at_depth must be a non-empty object")
+                        else:
+                            for dk, dv in at_depth.items():
+                                if not isinstance(dk, str) or not dk.isdigit():
+                                    errors.append(f"{name}: speed.bench.at_depth: key {dk!r} must be a digit string")
+                                if not isinstance(dv, dict) or set(dv.keys()) != BENCH_AT_DEPTH_VALUE_KEYS:
+                                    errors.append(f"{name}: speed.bench.at_depth.{dk} must be an object with pp, tg")
+                                else:
+                                    for vk in BENCH_AT_DEPTH_VALUE_KEYS:
+                                        vv = dv[vk]
+                                        if vv is not None and not _is_number(vv):
+                                            errors.append(f"{name}: speed.bench.at_depth.{dk}.{vk} must be a number or null")
+
+                if "delivered" in speed:
+                    delivered = speed["delivered"]
+                    if not isinstance(delivered, dict) or set(delivered.keys()) != DELIVERED_KEYS:
+                        errors.append(f"{name}: speed.delivered must be an object with prefill_tps, decode_tps, source")
+                    else:
+                        for kk in ("prefill_tps", "decode_tps"):
+                            vv = delivered.get(kk)
+                            if not _is_number(vv) or vv <= 0:
+                                errors.append(f"{name}: speed.delivered.{kk} must be a positive number")
+                        src = delivered.get("source")
+                        if not isinstance(src, str) or not src:
+                            errors.append(f"{name}: speed.delivered.source must be a non-empty string")
 
         if "capability" in prof:
             cap = prof["capability"]

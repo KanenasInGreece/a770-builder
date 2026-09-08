@@ -22,8 +22,13 @@ registry from carrying two rows that are really the same choice twice.
 
 The window has two numbers. `ctx` is what the model is served at — the largest window that loads under the mode's
 cap. `useful_ctx` is the largest depth at which decode still holds above four tokens a second: taken from the time
-per token at two measured points, 8k and the far end of the window (100k, or the window less 8k when the window is
-under about 110k), extended linearly between them, then capped wherever the depth probe actually failed to answer
+per token at two measured points, 8k and the far end of the window (a target of 100k, or the window less 8k when
+the window is under about 110k — a target, not a promise: `ctx_sweep.sh` sizes its corpus slice by the harness's
+own four-bytes-a-token rule, and this kit's corpus is dense real source, not prose, so that rule understates —
+a sweep asking for 8,000 tokens sent 12,718 (measured 2026-09-08). The far end recorded for a row is whatever token
+count its reply actually measured, never the number typed on the command line, and a row too slow to answer inside
+the run's time ceiling leaves no far-end reading to record at all: the 27B's own 100k attempt exceeded a 3,600 s
+ceiling with no answer), extended linearly between them, then capped wherever the depth probe actually failed to answer
 from deep in the prompt. A row can serve a large `ctx` and still have a much smaller `useful_ctx` once decode falls
 under that floor.
 
@@ -122,9 +127,20 @@ fails an earlier one.
    sweep: T1 measured 121 s for the 9B, 203 s for the MoE, 546 s for the 27B; the sweep's far-end time to first
    token measured 626 s for the 9B at 100k, 1,150 s for the MoE at 100k, 753 s for the 27B at 64k. The ladder's
    cost is those two numbers plus the loads and the probes.
-3. **Speed at 8k and the far end** — `harness/ctx_sweep.sh 8000 100000` (or the window less 8k when under about
-   110k): decode and prefill against position, VRAM sampled, the kernel log watched for a reset. Decides KV type
-   and ubatch, and is the source of `useful_ctx`.
+3. **Speed at 0, 8k, 32k and the far end** — `harness/bench_speed.sh <profile>`: llama-bench built from the row's
+   own served flags (`-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe`), at depths 0, 8192, 32768 and the far
+   end. This is the standard number: one command a reader can reproduce byte for byte and set beside another row's,
+   written into the registry as `speed.bench`. `harness/ctx_sweep.sh 8000 100000` (or the window less 8k when under
+   about 110k) stays in the ladder for what llama-bench does not watch — VRAM sampled during each prompt and the
+   kernel log watched for a reset — and is still the source of `useful_ctx`; its own decode and prefill readings are
+   no longer the standard figure, only the safety read for the peak and the reset. Its own "8000" and "100000" are
+   targets, not measurements — the corpus slice is sized by four bytes a token, and this kit's dense source corpus
+   makes that rule understate, so a sweep asking for 8,000 tokens sent 12,718 — and a row can be too slow to answer
+   at all before the run's own time ceiling, in which case there is nothing to record at that depth (the 27B's own
+   100k attempt ran past a 3,600 s ceiling with no answer). The standard suite's own
+   as-delivered speed (`harness/suite_report.py` on a `run_suite.sh` results file, `speed.delivered`) is recorded
+   beside the llama-bench number, labelled, never alone: the two answer different questions — what the row can do
+   at that flag set on its own, and what it actually delivered inside a real coding run, contention and all.
 4. **The depth probe, once per model and window** — `harness/depth_probe.sh <tokens>`: a detail planted about 85
    percent of the way into a large prompt, graded on whether it is actually pulled from that depth. Where it fails,
    `useful_ctx` is capped there regardless of what the arithmetic would otherwise say.

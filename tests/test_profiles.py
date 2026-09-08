@@ -620,6 +620,189 @@ def test_check_passes_valid_far_end(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+# --- KU9: speed.bench (llama-bench), speed.delivered (the suite's own as-delivered speed) ---
+
+
+def _valid_bench(**overrides) -> dict:
+    bench = {
+        "tool": "llama-bench b10805",
+        "prompt": 8192,
+        "gen": 128,
+        "flags": "-fa on -ctk q4_0 -ctv q4_0 -ub 512 -d 0,8192,32768 -o json",
+        "at_depth": {"0": {"pp": 620.0, "tg": 40.0}, "8192": {"pp": 571.0, "tg": 36.8}, "32768": {"pp": 274.0, "tg": 23.1}},
+        "source": "long-bench-20260908-120000.json",
+    }
+    bench.update(overrides)
+    return bench
+
+
+def test_check_fails_bench_missing_key(tmp_path):
+    data = load_base()
+    bench = _valid_bench()
+    del bench["gen"]
+    data["profiles"]["long"]["speed"]["bench"] = bench
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
+
+
+def test_check_fails_bench_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(bogus=1)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
+
+
+def test_check_fails_bench_empty_string_field(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(tool="")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.tool must be a non-empty string" in result.stderr
+
+
+def test_check_fails_bench_bad_prompt_type(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(prompt="8192")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.prompt must be a positive int" in result.stderr
+
+
+def test_check_fails_bench_at_depth_not_object(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth=[])
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth must be a non-empty object" in result.stderr
+
+
+def test_check_fails_bench_at_depth_bad_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"8k": {"pp": 1, "tg": 1}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth: key '8k' must be a digit string" in result.stderr
+
+
+def test_check_fails_bench_at_depth_value_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": 1, "tg": 1, "bogus": 1}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth.0 must be an object with pp, tg" in result.stderr
+
+
+def test_check_fails_bench_at_depth_value_bad_type(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": "1", "tg": 1}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth.0.pp must be a number or null" in result.stderr
+
+
+def test_check_passes_bench_at_depth_null_values(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": None, "tg": None}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_passes_valid_bench(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench()
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_delivered_missing_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {"prefill_tps": 500.0}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
+
+
+def test_check_fails_delivered_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json", "bogus": 1,
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
+
+
+def test_check_fails_delivered_bad_value(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": -1.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered.prefill_tps must be a positive number" in result.stderr
+
+
+def test_check_fails_delivered_empty_source(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {"prefill_tps": 500.0, "decode_tps": 30.0, "source": ""}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered.source must be a non-empty string" in result.stderr
+
+
+def test_check_passes_valid_delivered(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_passes_bench_and_delivered_together(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
 def test_check_fails_fit_unknown_key(tmp_path):
     data = load_base()
     data["profiles"]["long"]["fit"] = {"code": "T1: 6 tests green in 122 s", "bogus": "x"}

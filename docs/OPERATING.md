@@ -130,6 +130,22 @@ and `builder_class`, computed from whether the useful window reaches at least 81
 orchestrating agent reads these fields against a brief's scope, the token size of the files it names, and the time it
 can spend, and takes the least costly profile whose card covers all three.
 
+The standard speed number for a row is `harness/bench_speed.sh <profile>`: llama-bench run at the row's own served
+flags — `-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe` — at depths 0, 8k, 32k and the far end, one command a
+reader can run unchanged and compare against another row's, recorded in the registry as `speed.bench`. `--dry-run`
+prints that command without touching the card. It writes `$A770B_DATA/results/<profile>-bench-<date>.json` and
+refuses outright while the harness's own server is up, one GPU process on the card at a time; `harness/ctx_sweep.sh`
+stays the tool for what llama-bench does not watch — the VRAM peak during a prompt and the kernel log's reset count.
+Its own far end is a target, not a measurement: the corpus slice it asks for is sized by four bytes a token, and
+this kit's corpus is dense real source rather than prose, so that rule understates — a sweep asking for 8,000 tokens
+sent 12,718. The far end actually recorded for a row is whatever token count its reply measured, never the number
+typed on the command line, and a row too slow to answer inside the run's own time ceiling leaves nothing to record
+at that depth at all (the 27B's own 100k attempt ran past a 3,600 s ceiling with no answer).
+Beside the llama-bench number sits the standard suite's own as-delivered speed, `harness/suite_report.py` reading a
+`run_suite.sh` results file's per-stage capture, recorded as `speed.delivered` — labelled, never given alone, since
+it answers a different question: not what the row can do at that flag set in isolation, but what it delivered inside
+a real coding run.
+
 ## Configure
 
 All configurable paths and knobs are defined centrally and layered: the defaults in `harness/env.sh`, then

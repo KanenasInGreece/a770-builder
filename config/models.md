@@ -28,7 +28,17 @@ A model qualifies when it clears four gates on the same harness, in one run of `
    16 GB card (13 GiB on one that also draws the desktop, 15.3 on one that draws nothing), with zero GPU engine resets.
 2. **It answers**: correct greedy answers on a three-prompt sanity gate and a coherent one-sentence summary after a
    prefill of about 17k tokens of source.
-3. **It is fast enough**: decode at or above 5 tok/s at long context, and tool calls that llama-server parses.
+3. **It is fast enough**: decode at or above 5 tok/s at long context, and tool calls that llama-server parses. The
+   standard number behind this gate is `harness/bench_speed.sh <profile>` — llama-bench at the row's own served
+   flags (`-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe`), at depths 0, 8k, 32k and the far end, one command a
+   reader can reproduce and compare row to row, recorded as `speed.bench`; the standard suite's own as-delivered
+   speed, `harness/suite_report.py` on a `run_suite.sh` results file, sits beside it as `speed.delivered`, labelled
+   and never alone, since it is the row's speed under a real coding run rather than the flag set on its own. The far
+   end itself is a target `harness/ctx_sweep.sh` sizes by four bytes a token, not a promise: this kit's corpus is
+   dense real source rather than prose, so that rule understates — a sweep asking for 8,000 tokens sent 12,718 — and
+   a row too slow to answer inside the run's own time ceiling leaves no far-end reading to record at all (the 27B's
+   own 100k attempt ran past a 3,600 s ceiling with no answer), so the far end recorded for a row is whatever token
+   count its reply actually measured, not the number asked for.
 4. **It does the coding task**: the qualification brief on a real repository (the seat is a standalone clone of the
    public `https://github.com/KanenasInGreece/Shared_Memory` at commit `3c8e2bb`), run through opencode in the seat;
    it wrote the test file, ran the given test command, and a cheap reviewer reading the capture graded the run green.

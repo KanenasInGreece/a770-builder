@@ -227,6 +227,31 @@ assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2, d
   fi
 else echo "FAIL suite: no results file to report on"; fail=1
 fi
+# KU9 — suite_report.py's delivered speed: a fake capture file (the shape harness/capture_task.sh's server-side
+# timings section actually writes) beside a results JSON whose only per-stage capture record is its label, proving
+# the fallback path (<A770B_DATA>/results/<label>.task.md) and the two lines' parse.
+ku9="$t/ku9"; mkdir -p "$ku9" "$A770B_DATA/results"
+cat > "$A770B_DATA/results/ku9-stage.task.md" <<'CAP'
+requests=3 prompt_tokens_total=9000 gen_tokens_total=300
+TTFT ms (prompt eval): median=210 p90=260 max=300   largest prompt=3200 tokens
+TPOT ms: median=22.0 p90=26.0   decode tok/s median=45.5
+prefill tok/s over all prompts=612
+CAP
+cat > "$ku9/results.json" <<'JSON'
+{"instrument": "SUITE-TEST", "stages": [{"id": "ku9-stage", "label": "ku9-stage", "working": true, "wall_s": 9.0}]}
+JSON
+sout=$(python3 "$here/harness/suite_report.py" "$ku9/results.json" 2>&1)
+jout9=$(python3 "$here/harness/suite_report.py" "$ku9/results.json" --json 2>/dev/null)
+if printf '%s\n' "$sout" | grep -q 'delivered (ku9-stage): prefill 612.0 tok/s · decode 45.5 tok/s' \
+  && printf '%s\n' "$sout" | grep -q 'delivered: prefill 612.0 tok/s · decode 45.5 tok/s' \
+  && printf '%s' "$jout9" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+assert d["delivered"] == {"prefill_tps": 612.0, "decode_tps": 45.5, "source": "results.json"}, d
+' 2>/dev/null
+then echo "ok   selftest: suite_report.py reads a capture (fallen back to <label>.task.md) and reports delivered speed, in the table and --json alike"
+else echo "FAIL selftest: suite_report.py delivered speed did not parse — stdout: $sout"; fail=1
+fi
 # the profiles registry: config/profiles.json is the single source now that env.sh evals `harness/profiles.py env`
 python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
 [ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = "long" ] && echo "ok   profiles: names and default come from the registry" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='$A770B_DEFAULT_PROFILE'"; fail=1; }
