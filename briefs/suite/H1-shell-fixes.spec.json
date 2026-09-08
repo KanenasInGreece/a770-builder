@@ -1,0 +1,3 @@
+{ "card": {"text": "You are a coding agent in a bash project. Do exactly what the brief says, row by row, nothing more. Read only the lines the brief names. Report in one line per file changed."},
+  "scope": { "edit": ["harness/bench_model.sh", "harness/sandbox_run.sh", "harness/serve_a770_llamacpp.sh", "skills/local-build/scripts/local-build.sh", "harness/ctx_sweep.sh", "harness/env.sh", "harness/depth_probe.sh", "harness/cancel_repro.sh", "tests/selftest.sh"] },
+  "verify": { "test": "bash tests/selftest.sh", "hidden": ["test_h1_shell_fixes_hidden.py"] } }

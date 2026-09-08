@@ -1,0 +1,4 @@
+{ "card": {"text": "You are a coding agent in a bash and Python project. Do exactly what the brief says, nothing more. Read only the lines the brief names. Start no server. Report in one line per file changed."},
+  "scope": { "edit": ["harness/profiles.py", "tests/test_profiles.py", "skills/local-build/scripts/local-build.sh", "tests/selftest.sh"] },
+  "bash_allow": ["uv run --with pytest python -m pytest -q tests/test_profiles.py", "uvx --from shellcheck-py shellcheck -S warning skills/local-build/scripts/local-build.sh tests/selftest.sh"],
+  "verify": { "test": "uv run --with pytest python -m pytest -q tests/test_profiles.py && bash tests/selftest.sh", "hidden": ["test_f1_doctor_hidden.py"] } }
