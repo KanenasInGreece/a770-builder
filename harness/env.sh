@@ -76,10 +76,17 @@ a770b_render_profile(){
   local profile="$1" ctx="$2" out="$3" key
   if [ -n "${4:-}" ]; then key="no-key-for-this-run"; else key=$(a770b_api_key) || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; return 1; }; fi
   rm -f "$out" "$out.echo.json"
+  # the profile's own sampling (env.sh's TEMPERATURE/TOP_P defaults, or an override): an empty value adds no argument
+  local -a sampling_args=()
+  local temp top_p
+  temp=$(a770b_profile_var "$profile" TEMPERATURE)
+  top_p=$(a770b_profile_var "$profile" TOP_P)
+  [ -n "$temp" ] && sampling_args+=(--temperature "$temp")
+  [ -n "$top_p" ] && sampling_args+=(--top-p "$top_p")
   if [ -n "${A770B_SPEC:-}" ] && [ -z "${4:-}" ]; then
-    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile" --spec "$A770B_SPEC" --seat "${A770B_RENDER_SEAT:?the seat the specification is checked against}" --echo "$out.echo.json"
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile" "${sampling_args[@]}" --spec "$A770B_SPEC" --seat "${A770B_RENDER_SEAT:?the seat the specification is checked against}" --echo "$out.echo.json"
   else
-    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile"
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$A770B_OUTPUT_TOKENS" --name "$profile" "${sampling_args[@]}"
   fi
 }
 a770b_opencode_bin(){ if [ -n "$A770B_OPENCODE_BIN" ]; then printf '%s\n' "$A770B_OPENCODE_BIN"; else dirname "$(readlink -f "$(command -v opencode)")"; fi; }

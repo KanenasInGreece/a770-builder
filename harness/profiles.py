@@ -23,15 +23,18 @@ SPEED_KEYS = {"8k", "32k", "64k", "100k"}
 KV_VALUES = {"f16", "q8_0", "q4_0"}
 ON_OFF_VALUES = {"on", "off"}
 MODE_VALUES = {"display", "inference"}
+SAMPLING_NUMBER_KEYS = {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"}
+SAMPLING_MODE_VALUES = {"thinking", "instruct"}
+SAMPLING_KEYS = SAMPLING_NUMBER_KEYS | {"mode", "source"}
 
 STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
 )
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s")
-OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability")
+OTHER_KEYS = ("vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling")
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
-OPTIONAL_KEYS = {"kv_v"}
+OPTIONAL_KEYS = {"kv_v", "sampling"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -43,6 +46,11 @@ def _is_number(v) -> bool:
 
 def _is_pos_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _fmt_sampling_num(v) -> str:
+    """Minimal float text for a sampling number: 0.6, not 0.6000000000000001; 1.0, not 1."""
+    return repr(float(v))
 
 
 def sh_single_quote(s: str) -> str:
@@ -161,6 +169,28 @@ def validate(data) -> list[str]:
                     if not _is_number(vv):
                         errors.append(f"{name}: capability.{kk} must be a number")
 
+        if "sampling" in prof:
+            sampling = prof["sampling"]
+            if not isinstance(sampling, dict):
+                errors.append(f"{name}: sampling must be an object")
+            else:
+                for kk in sampling.keys():
+                    if kk not in SAMPLING_KEYS:
+                        errors.append(f"{name}: sampling: unknown key {kk}")
+                for kk in SAMPLING_NUMBER_KEYS:
+                    if kk in sampling and not _is_number(sampling[kk]):
+                        errors.append(f"{name}: sampling.{kk} must be a number")
+                if "mode" in sampling and sampling["mode"] not in SAMPLING_MODE_VALUES:
+                    errors.append(f"{name}: sampling.mode must be thinking or instruct")
+                source = sampling.get("source")
+                if not isinstance(source, str) or not source:
+                    errors.append(f"{name}: sampling.source must be a non-empty string")
+
+                if _is_number(sampling.get("temperature")):
+                    extra = prof.get("extra")
+                    if not isinstance(extra, str) or "--temp " not in extra:
+                        errors.append(f"{name}: sampling.temperature is set but extra carries no --temp")
+
     return errors
 
 
@@ -212,6 +242,13 @@ def cmd_env(args) -> int:
         print(': "${A770B_%s_CTX:=%d}"' % (upper, prof["ctx"]))
         print(': "${A770B_%s_KV:=%s}"' % (upper, prof["kv"]))
         print(': "${A770B_%s_KV_V:=%s}"' % (upper, prof.get("kv_v", prof["kv"])))
+        sampling = prof.get("sampling") or {}
+        temp = sampling.get("temperature")
+        top_p = sampling.get("top_p")
+        temp_str = _fmt_sampling_num(temp) if _is_number(temp) else ""
+        top_p_str = _fmt_sampling_num(top_p) if _is_number(top_p) else ""
+        print(': "${A770B_%s_TEMPERATURE:=%s}"' % (upper, temp_str))
+        print(': "${A770B_%s_TOP_P:=%s}"' % (upper, top_p_str))
         print(': "${A770B_%s_REASONING:=%s}"' % (upper, prof["reasoning"]))
         print(': "${A770B_%s_TIMEOUT:=%d}"' % (upper, prof["timeout_s"]))
         print(

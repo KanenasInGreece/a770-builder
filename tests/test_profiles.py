@@ -97,6 +97,109 @@ def test_check_fails_bad_mode(tmp_path):
     assert "profiles: mode: must be display or inference" in result.stderr
 
 
+def test_check_fails_sampling_not_object(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["sampling"] = "hot"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: sampling must be an object" in result.stderr
+
+
+def test_check_fails_sampling_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["sampling"] = {"source": "x", "bogus": 1}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: sampling: unknown key bogus" in result.stderr
+
+
+def test_check_fails_sampling_key_not_number(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["sampling"] = {"source": "x", "temperature": True}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: sampling.temperature must be a number" in result.stderr
+
+
+def test_check_fails_sampling_bad_mode(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["sampling"] = {"source": "x", "mode": "bogus"}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: sampling.mode must be thinking or instruct" in result.stderr
+
+
+def test_check_fails_sampling_missing_source(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["sampling"] = {"temperature": 0.6}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: sampling.source must be a non-empty string" in result.stderr
+
+
+def test_check_fails_sampling_empty_source(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["sampling"] = {"source": "", "top_k": 20}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: sampling.source must be a non-empty string" in result.stderr
+
+
+def test_check_fails_sampling_temperature_without_extra_temp(tmp_path):
+    """The honesty check: a sampling.temperature with no --temp in extra is refused."""
+    data = load_base()
+    data["profiles"]["long"]["sampling"] = {"source": "test card", "temperature": 0.6}
+    assert "--temp" not in data["profiles"]["long"]["extra"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: sampling.temperature is set but extra carries no --temp" in result.stderr
+
+
+def test_check_passes_valid_sampling(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["extra"] = "--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0"
+    data["profiles"]["long"]["sampling"] = {
+        "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0,
+        "mode": "thinking", "source": "Qwen3.5-9B model card",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_env_temperature_top_p_empty_on_shipped_display_registry():
+    result = run("env", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    assert ': "${A770B_LONG_TEMPERATURE:=}"' in result.stdout.splitlines()
+    assert ': "${A770B_LONG_TOP_P:=}"' in result.stdout.splitlines()
+
+
+def test_env_temperature_from_sampling(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["extra"] = "--temp 0.6"
+    data["profiles"]["long"]["sampling"] = {"temperature": 0.6, "source": "test card"}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("env", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    assert ': "${A770B_LONG_TEMPERATURE:=0.6}"' in result.stdout.splitlines()
+
+
 def test_check_passes_on_both_shipped_registries():
     for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
         result = run("check", "--file", str(f))
@@ -147,6 +250,8 @@ def test_env_matches_expected_lines():
         ': "${A770B_LONG_CTX:=262144}"',
         ': "${A770B_LONG_KV:=q8_0}"',
         ': "${A770B_LONG_KV_V:=q8_0}"',
+        ': "${A770B_LONG_TEMPERATURE:=}"',
+        ': "${A770B_LONG_TOP_P:=}"',
         ': "${A770B_LONG_REASONING:=off}"',
         ': "${A770B_LONG_TIMEOUT:=1500}"',
         "[ -n \"${A770B_LONG_EXTRA:-}\" ] || A770B_LONG_EXTRA=''",
