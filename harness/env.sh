@@ -17,9 +17,9 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_MODELS:=$HOME/LLM/tested}"                   # where the GGUFs live (the server reads them; the sandbox never sees them)
 : "${A770B_REFUSE:=}"                                   # REQUIRED: colon-separated live checkouts the seat must never touch (guard refuses to run while empty)
 # ── the three profiles ─────────────────────────────────────────────────────────────────────────────────────────
-: "${A770B_FAST_MODEL:=Qwen3.5-9B-Q4_K_M.gguf}";            : "${A770B_FAST_CTX:=81920}";    : "${A770B_FAST_KV:=q8_0}"
+: "${A770B_FAST_MODEL:=Qwen3.5-9B-Q4_K_M.gguf}";            : "${A770B_FAST_CTX:=262144}";    : "${A770B_FAST_KV:=q8_0}"
 : "${A770B_FAST_REASONING:=off}";                            : "${A770B_FAST_EXTRA:=}"
-: "${A770B_SERIOUS_MODEL:=Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf}"; : "${A770B_SERIOUS_CTX:=158000}"; : "${A770B_SERIOUS_KV:=q4_0}"
+: "${A770B_SERIOUS_MODEL:=Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf}"; : "${A770B_SERIOUS_CTX:=131072}"; : "${A770B_SERIOUS_KV:=q4_0}"
 : "${A770B_SERIOUS_REASONING:=on}"
 # the serious default is set in two statements: a brace inside a ${…:=…} expansion ends the expansion at the JSON's first '}'
 [ -n "${A770B_SERIOUS_EXTRA:-}" ] || A770B_SERIOUS_EXTRA='--chat-template-kwargs {"reasoning_effort":"low"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0'
@@ -36,7 +36,7 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot
 : "${A770B_DEVICE:=Vulkan0}"                             # llama-server --list-devices names the cards; pick the builder card
 : "${A770B_GPU_MATCH:=DG2}"                             # substring of the card's name in `nvtop -s`, for VRAM readings and the cap
 : "${A770B_PORT:=8093}";  : "${A770B_HOST:=127.0.0.1}";  : "${A770B_ALIAS:=local-builder}"
-: "${A770B_UBATCH:=512}";  : "${A770B_BATCH:=2048}";     : "${A770B_VRAM_CAP_GIB:=13.0}"
+: "${A770B_UBATCH:=512}";  : "${A770B_BATCH:=2048}";     : "${A770B_VRAM_CAP_GIB:=13.0}"    # after load; 13.0 leaves an unmeasured desktop 3 GiB — measure yours (this project's operator measured 1.0 GiB and runs 14.0 in builder.env)
 : "${A770B_API_KEY_FILE:=${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/api.key}"   # the server's API key (one line, mode 600); created on first serve
 : "${A770B_ALLOW_NO_NVTOP:=0}"                           # 1 = start without VRAM readings (NOT on a card that draws a desktop)
 : "${GGML_VK_DISABLE_COOPMAT:=1}"; export GGML_VK_DISABLE_COOPMAT

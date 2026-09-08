@@ -49,7 +49,7 @@ default for every ordinary change: a small, well-specified edit to named files, 
 repository's own idiom. <strong>serious</strong> is Qwen3.8-27B, for a deliverable larger than its brief, tests written from an
 invariant or prose a reviewer will read; it is the best-written output of the matrix at eight tokens a second, and on a
 mechanical edit it produces the fast profile's patch at seven times the wall clock, so it is never the profile for
-those; it is served with 158,000 tokens of window but useful to about 32,000, since its decode falls under five tokens
+those; it is served with 131,072 tokens of window by default, useful to about 32,000, since its decode falls under five tokens
 a second by 64,000. The fast profile is safe across its whole window, its prefill slowing under 150 tokens a second
 past about 64,000. <strong>long</strong> is Gemma 4 E4B with flash attention off, a 131k-token window for the read the fast window cannot hold
 and for precise questions about a passage deep in a large file; it is not the profile for multi-file edits. A window
