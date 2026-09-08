@@ -5,8 +5,8 @@
 # Env (see config/builder.env.example): A770B_DEVICE, A770B_VK_DEVICE_SELECT, A770B_PORT, A770B_UBATCH, A770B_VRAM_CAP_GIB; per call KV_K/KV_V
 # and REASONING. Flags baked in (measured on the A770 under Vulkan): -fa on, --no-mmap, -ngl 99, --parallel 1,
 # quantised KV, --jinja, GGML_VK_DISABLE_COOPMAT=1 (the flag set proven on Arc under Vulkan).
-# ⚠ On a card that also drives a desktop: the VRAM cap (default 13 of 16 GiB after load) and the ubatch ceiling (512)
-# are what keep the Xe 5 s job watchdog quiet. Raise them only on a card that draws nothing.
+# ⚠ The cap and the ubatch are the card mode's (A770B_CARD_MODE): 13.0 GiB after load on a card that also draws a
+# desktop, 15.3 on one that draws nothing, -ub 512 in both, because the Xe job watchdog is what both protect.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; LOG="$A770B_DATA/logs/llamacpp-a770.log"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
@@ -28,8 +28,8 @@ MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" nohup "$A770B_LLAMA_BIN" -m "$MO
   -ngl 99 -c "$CTX" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --no-mmap -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
   --jinja --reasoning "${REASONING:-off}" --reasoning-format deepseek "$@" > "$LOG" 2>&1 9>&- &   # 9>&-: never inherit the run lock
 echo $! > "$PIDFILE"; printf '%s\n' "$MODEL" > "$MARK"
-echo "▶ started llama-server pid $! on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} — log $LOG"
+echo "▶ started llama-server pid $! on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB — log $LOG"
 for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; kill -0 "$(cat "$PIDFILE")" 2>/dev/null || break; sleep 2; done
 used=$(gpu_used_gib)
-if python3 -c "import sys; sys.exit(0 if float('$used') > float('$A770B_VRAM_CAP_GIB') else 1)"; then kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE" "$MARK"; echo "⛔ VRAM after load ${used} GiB > cap $A770B_VRAM_CAP_GIB GiB — server STOPPED; use a smaller context, q4 KV, or raise A770B_VRAM_CAP_GIB on a card that draws no desktop"; exit 3; fi
+if python3 -c "import sys; sys.exit(0 if float('$used') > float('$A770B_VRAM_CAP_GIB') else 1)"; then kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE" "$MARK"; echo "⛔ VRAM after load ${used} GiB > cap $A770B_VRAM_CAP_GIB GiB — server STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"; exit 3; fi
 echo "✓ VRAM after load: ${used} GiB ≤ cap $A770B_VRAM_CAP_GIB GiB"
