@@ -27,7 +27,7 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_LLAMA_BIN:=${LLAMA_BIN:-$HOME/llama.cpp/build/bin/llama-server}}"
 : "${A770B_DEVICE:=Vulkan0}"                             # llama-server --list-devices names the cards; pick the builder card
-: "${A770B_VK_DEVICE_SELECT:=8086:56a0!}"                # Mesa device selector, vendor:device of the builder card with '!' = the only Vulkan device the server sees (A770 = 8086:56a0); Vulkan lists the boot card first, so an index alone drifts when the desktop moves
+: "${A770B_VK_DEVICE_SELECT=8086:56a0!}"                # Mesa device selector, vendor:device of the builder card with '!' = the only Vulkan device the server sees (A770 = 8086:56a0); Vulkan lists the boot card first, so an index alone drifts when the desktop moves
 : "${A770B_GPU_MATCH:=DG2}"                             # substring of the card's name in `nvtop -s`, for VRAM readings and the cap
 : "${A770B_PORT:=8093}";  : "${A770B_HOST:=127.0.0.1}";  : "${A770B_ALIAS:=local-builder}"
 : "${A770B_UBATCH:=512}";  : "${A770B_BATCH:=2048}";     : "${A770B_VRAM_CAP_GIB:=13.0}"    # after load; 13.0 leaves an unmeasured desktop 3 GiB — measure yours (this project's operator measured 1.0 GiB and runs 14.0 in builder.env)
