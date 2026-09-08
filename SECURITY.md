@@ -118,9 +118,9 @@ the renderer's placeholder guard unable to match two of its own placeholders, an
 hidden root, a hidden test placed but never run beside a caller's test command, and an echo that named the wished-for
 profile rather than the one used; all closed in the same fix round with the reviewers' mutation checks run. Every
 change to the boundary since the first has gone through a branch, a read-only adversarial review by a model that did
-not write it, and the mutation checks re-run before merge. This cycle added `node --test *`, `node --check *` and
-`g++ *` to the template's own allow list, admitting the kit's JavaScript and C++ iteration commands under the boundary
-review of another family.
+not write it, and the mutation checks re-run before merge. This cycle added `node --test *`, `node --check *`,
+`g++ *` and `cmake *` to the template's own allow list, admitting the kit's JavaScript and C++ iteration commands
+under the boundary review of another family.
 
 ## What is still open
 

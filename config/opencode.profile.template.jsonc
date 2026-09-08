@@ -36,10 +36,12 @@
       "mkdir *": "allow", "touch *": "allow", "cp *": "allow", "mv *": "allow",
       "python3 *": "allow", "python *": "allow", "pytest *": "allow", "python3 -m pytest *": "allow", "bash tests/*": "allow", "bash ./tests/*": "allow",
       "uv run *": "allow",
-      // These three admit the kit's own iteration commands for its JavaScript and C++ stages (the graders run
-      // through `verify`, outside the profile); `make`, `cmake` and `ctest` come from each task's specification
-      // instead. The floor's denies below match a whole command string and are not chain-proof.
-      "node --test *": "allow", "node --check *": "allow", "g++ *": "allow",
+      // These four admit the kit's own iteration commands for its JavaScript and C++ stages (the graders run
+      // through `verify`, outside the profile); `cmake` joins them here (not per-task) because its own configure
+      // step needs a `-D…=1` flag, and the specification's pattern rule refuses a pattern containing `=`; `make`
+      // and `ctest` come from each task's specification instead. The floor's denies below match a whole command
+      // string and are not chain-proof.
+      "node --test *": "allow", "node --check *": "allow", "g++ *": "allow", "cmake *": "allow",
       "git status*": "allow", "git diff*": "allow", "git log*": "allow", "git show*": "allow", "git ls-files*": "allow", "git grep*": "allow", "git blame*": "allow",
       __BASH_ALLOW__"git commit*": "deny", "git push*": "deny", "git reset*": "deny", "git checkout*": "deny", "git switch*": "deny",
       "git merge*": "deny", "git rebase*": "deny", "git stash*": "deny", "git clean*": "deny", "git branch*": "deny", "git tag*": "deny",

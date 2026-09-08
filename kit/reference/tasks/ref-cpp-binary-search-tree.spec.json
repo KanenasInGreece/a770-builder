@@ -1,6 +1,6 @@
 {
+  "card": {"text": "You are a coding agent solving a single C++ exercise (Exercism's binary-search-tree, its Catch2 test vendored in test/catch.hpp); nothing is installed beyond the sandbox's own toolchain (cmake, make, g++), no network. Copy the exercise's own test file as the idiom -- do not edit it. Run `cmake -S kit/reference/cpp/binary-search-tree -B build-bst -DEXERCISM_RUN_ALL_TESTS=1 && cmake --build build-bst`. Do exactly what the brief says, nothing more. Report in one line."},
   "scope": { "edit": ["kit/reference/cpp/binary-search-tree/binary_search_tree.h"] },
-  "bash_allow": ["cmake --build build-bst"],
   "verify": {
     "test": "cmake -S kit/reference/cpp/binary-search-tree -B build-bst -DEXERCISM_RUN_ALL_TESTS=1 && cmake --build build-bst",
     "hidden": ["test_bst_hidden.py"]

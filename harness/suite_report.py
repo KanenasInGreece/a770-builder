@@ -24,11 +24,16 @@ def load(path):
 
 
 def totals(doc, source_name):
+    # a stage carrying "counts_toward_pass": false (S0's design note, or any other commentary-only stage,
+    # per kit/SUITE.md) is excluded from briefs/runs/passed/mean_wall_s entirely, not just from "passed" —
+    # otherwise a perfect model could never reach 100% (the reviewer's rubric axes need no flag of their own:
+    # they live in "score", never in "working", so they were never part of "passed" to begin with).
     stages = doc.get("stages") or []
-    briefs = len(stages)
-    runs = sum(1 for s in stages if s.get("label"))
-    passed = sum(1 for s in stages if s.get("working") is True)
-    walls = [s["wall_s"] for s in stages if isinstance(s.get("wall_s"), (int, float))]
+    counted = [s for s in stages if s.get("counts_toward_pass", True) is not False]
+    briefs = len(counted)
+    runs = sum(1 for s in counted if s.get("label"))
+    passed = sum(1 for s in counted if s.get("working") is True)
+    walls = [s["wall_s"] for s in counted if isinstance(s.get("wall_s"), (int, float))]
     mean_wall_s = round(sum(walls) / len(walls), 1) if walls else None
     t = {"briefs": briefs, "runs": runs, "passed": passed, "source": source_name}
     if mean_wall_s is not None:

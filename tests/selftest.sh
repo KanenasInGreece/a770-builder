@@ -100,13 +100,15 @@ if [ -n "$SC" ]; then
   if $SC -S warning "$here"/harness/*.sh "$here"/skills/local-build/scripts/*.sh "$here"/tests/*.sh "$here"/render_readme.sh "$here"/release.sh; then echo "ok   shellcheck: no finding at warning level or above"; else echo "FAIL shellcheck: findings at warning level or above, listed above"; fail=1; fi
 else echo "skip shellcheck: none on PATH and none in the uv cache (install shellcheck, or once online: uvx --from shellcheck-py shellcheck --version)"; fi
 # KU3 — harness/run_suite.sh: a fake local-build.sh (A770B_LOCAL_BUILD) stands in for the real one, so the runner is
-# proved without the card. A throwaway kit/ fixture: two stages (one that verifies PASS, one that verifies FAIL) plus
-# one reference exercise (kit/reference/reference.json, appended after the stages); the fixture never touches the
-# real kit/ another unit is writing. Checks the runner's own export-and-run of kit/seat/, its results JSON (one
-# PASS, one FAIL, the failing id named, the reference entry present) and that suite_report.py --json reports on it.
+# proved without the card. A throwaway kit/ fixture: three stages (one that verifies PASS, one that verifies FAIL,
+# and one commentary-only stage — "counts_toward_pass": false, always PASS, standing in for S0 — that must NOT
+# move the totals) plus one reference exercise (kit/reference/reference.json, appended after the stages); the
+# fixture never touches the real kit/ another unit is writing. Checks the runner's own export-and-run of kit/seat/,
+# its results JSON (one PASS, one FAIL, the failing id named, the commentary stage present but excluded, the
+# reference entry present) and that suite_report.py --json reports on it.
 ku3="$t/ku3"; mkdir -p "$ku3/seat" "$ku3/tasks" "$ku3/reference"
 echo "fixture" > "$ku3/seat/README.md"
-for st in s0-pass s1-fail ref-cpp-example; do
+for st in s0-pass s1-fail s2-note ref-cpp-example; do
   echo "brief $st" > "$ku3/tasks/$st.md"
   printf '{}' > "$ku3/tasks/$st.spec.json"
 done
@@ -115,16 +117,20 @@ cat > "$ku3/suite.json" <<JSON
   {"id": "s0-pass", "language": "python", "brief": "$ku3/tasks/s0-pass.md", "spec": "$ku3/tasks/s0-pass.spec.json",
    "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}},
   {"id": "s1-fail", "language": "python", "brief": "$ku3/tasks/s1-fail.md", "spec": "$ku3/tasks/s1-fail.spec.json",
-   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}}
+   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}},
+  {"id": "s2-note", "language": "prose", "brief": "$ku3/tasks/s2-note.md", "spec": "$ku3/tasks/s2-note.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 60, "rubric": null}, "counts_toward_pass": false}
 ]}
 JSON
 cat > "$ku3/reference/reference.json" <<JSON
 {"reference": [{"id": "ref-cpp-example", "language": "cpp", "brief": "$ku3/tasks/ref-cpp-example.md",
   "spec": "$ku3/tasks/ref-cpp-example.spec.json", "grader": {"working": null, "conformance": null, "budget_lines": 50, "rubric": null}}]}
 JSON
+rm -f "$ku3/argv.log"
 cat > "$ku3/fake-local-build.sh" <<'FAKE'
 #!/usr/bin/env bash
 set -uo pipefail
+printf '%s\n' "$*" >> "$KU3_ARGV_LOG"
 case "${1:-}" in
   run)
     shift; WT="$1"; BRIEF="$2"; shift 2
@@ -145,23 +151,45 @@ esac
 FAKE
 chmod +x "$ku3/fake-local-build.sh"
 rm -f "$A770B_DATA"/results/long-suite-*.json
-out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" bash "$here/harness/run_suite.sh" long "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
+out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" bash "$here/harness/run_suite.sh" long "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
 res=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
 if [ "$rc" = 0 ] && [ -n "$res" ] && python3 - "$res" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 ids = [x["id"] for x in d["stages"]]
-assert ids == ["s0-pass", "s1-fail", "ref-cpp-example"], ids
+assert ids == ["s0-pass", "s1-fail", "s2-note", "ref-cpp-example"], ids
 s = {x["id"]: x for x in d["stages"]}
 assert s["s0-pass"]["working"] is True, s["s0-pass"]
 assert s["s1-fail"]["working"] is False, s["s1-fail"]
+assert s["s2-note"]["working"] is True and s["s2-note"]["counts_toward_pass"] is False, s["s2-note"]
 assert s["ref-cpp-example"]["working"] is True, s["ref-cpp-example"]
 sys.exit(0)
 PY
-then echo "ok   suite: run_suite.sh records one PASS, one FAIL (s1-fail named) and the reference entry"
+then echo "ok   suite: run_suite.sh records one PASS, one FAIL (s1-fail named), one excluded commentary stage (s2-note) and the reference entry"
 else echo "FAIL suite: run_suite.sh output/results wrong (rc=$rc res=$res)"; printf '%s\n' "$out" | tail -20; fail=1
 fi
+# the fake local-build.sh's own argv, recorded per call: a "run ... --spec ... --profile long" line and a
+# "verify fake-<id>" line per stage, in order, and no reviewer step (stop/serve) since --reviewer was not given
+if [ -f "$ku3/argv.log" ] && python3 - "$ku3/argv.log" <<'PY'
+import re, sys
+lines = [l for l in open(sys.argv[1]).read().splitlines() if l.strip()]
+ids = ["s0-pass", "s1-fail", "s2-note", "ref-cpp-example"]
+assert len(lines) == 2 * len(ids), lines
+run_re = re.compile(r"^run \S+ \S+ --spec \S+ --profile long$")
+for i, id_ in enumerate(ids):
+    run_line, verify_line = lines[2 * i], lines[2 * i + 1]
+    assert run_re.match(run_line), (id_, run_line)
+    assert verify_line.startswith(f"verify fake-{id_} "), (id_, verify_line)
+assert not any(l.split()[0] in ("stop", "serve") for l in lines), "reviewer step present with no --reviewer"
+sys.exit(0)
+PY
+then echo "ok   suite: the fake local-build.sh's argv shows run --spec --profile then verify <label>, in order, no reviewer step"
+else echo "FAIL suite: the recorded argv did not match (see $ku3/argv.log)"; [ -f "$ku3/argv.log" ] && cat "$ku3/argv.log"; fail=1
+fi
 if [ -n "$res" ]; then
+  # four stages are in the results (s0-pass, s1-fail, s2-note, ref-cpp-example) but s2-note carries
+  # "counts_toward_pass": false, so the totals below must read as if it were never run: briefs=3, runs=3,
+  # passed=2 (s0-pass and ref-cpp-example), exactly as if only the three counted stages existed.
   jout=$(python3 "$here/harness/suite_report.py" "$res" --json 2>/dev/null)
   if printf '%s' "$jout" | python3 -c '
 import json, sys
@@ -169,7 +197,7 @@ d = json.loads(sys.stdin.read())
 need = {"briefs", "runs", "passed", "mean_wall_s", "source"}
 assert set(d.keys()) == need, d
 assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2, d
-' 2>/dev/null; then echo "ok   suite: suite_report.py --json prints the five totals"
+' 2>/dev/null; then echo "ok   suite: suite_report.py --json excludes the counts_toward_pass:false stage from all five totals"
   else echo "FAIL suite: suite_report.py --json wrong: $jout"; fail=1
   fi
 else echo "FAIL suite: no results file to report on"; fail=1

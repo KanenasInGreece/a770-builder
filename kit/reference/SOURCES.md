@@ -27,16 +27,14 @@ JavaScript `forth` (8/10), Python `pov` (9/10).
 - `.meta/config.json`: authors `matthewmorgan`; contributors `brendanmckeown`, `slaymance`, `SleeplessByte`,
   `tejasbubane`, `tgujar`, `xarxziux`.
 - `.docs/instructions.md` cites Wikipedia: <https://en.wikipedia.org/wiki/Forth_%28programming_language%29>.
-- **FINDING — the reference grader's assertion count is not Aider's own number.** `forth.spec.js` is Exercism's
-  own spec file: only its first test (`numbers just get pushed onto the stack`) is a plain `test`; every other
-  case is `xtest`, which the Exercism JavaScript track's Jest tooling exposes for progressive unlocking during
-  learning. `kit/reference/js/expect-shim.mjs` (per the brief that ordered it: "xtest → test.skip") maps
-  `xtest` onto `node:test`'s `test.skip`, i.e. it reproduces Exercism's own default (1 enabled, 48 skipped) —
-  it does not reproduce Aider's own preprocessing (Aider's polyglot-benchmark harness un-skips `xtest` before
-  grading, so its published pass counts for this exercise are out of a larger denominator). So a row's
-  `ref-javascript-forth` grader result is Exercism's own assertion, run under node's built-in test runner
-  through this kit's shim, not Aider's number byte for byte; `kit/reference/hidden/forth_hidden.test.mjs`
-  (25 fresh assertions, all enabled) is unaffected by this and is the number to trust for full coverage.
+- `forth.spec.js` is Exercism's own spec file: only its first test (`numbers just get pushed onto the stack`)
+  is a plain `test`; every other case is `xtest`, which the Exercism JavaScript track's Jest tooling exposes
+  for progressive unlocking during learning. Aider's own polyglot-benchmark harness flips every `xtest` to
+  `test` before grading, so `kit/reference/js/expect-shim.mjs` maps `xtest` onto `node:test`'s own `test`
+  (not `test.skip`): the shim reproduces Aider's all-enabled run, not Exercism's progressive-unlock default,
+  and the proof run shows all 49 of the exercise's cases enabled (`tests/test_kit_reference.py` asserts
+  `pass 49`). `kit/reference/hidden/forth_hidden.test.mjs` (25 fresh assertions, all enabled) is a separate,
+  unaffected number for full coverage.
 
 ## `kit/reference/python/pov/`
 

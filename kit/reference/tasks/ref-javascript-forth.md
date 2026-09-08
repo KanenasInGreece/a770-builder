@@ -56,9 +56,9 @@ definition')` when a definition's name is a number, `new Error('Unknown command'
 node --test kit/reference/javascript/forth/run.test.mjs
 ```
 
-Expected: `ℹ pass 1` and `ℹ fail 0` (only the one enabled `test` in `forth.spec.js` runs; the rest of that file
-is `xtest`, which the shim maps to `test.skip`, so a passing run reports 1 pass and many skipped — see the note
-in `kit/reference/SOURCES.md` on why this count is not Aider's own number). `EXIT=0`.
+Expected: `ℹ pass 49` and `ℹ fail 0` (every case in `forth.spec.js` runs; the shim maps `xtest` onto `node:test`'s
+own `test`, reproducing Aider's own grading, which flips every `xtest` to `test` before scoring — see the note
+in `kit/reference/SOURCES.md`). `EXIT=0`.
 
 ## Rules
 
@@ -67,7 +67,7 @@ switch). No docker, no systemctl, no network. Keep every edit on one physical li
 
 ## Stop when
 
-`node --test kit/reference/javascript/forth/run.test.mjs` exits 0 with `pass 1` and `fail 0`. Then print the
+`node --test kit/reference/javascript/forth/run.test.mjs` exits 0 with `pass 49` and `fail 0`. Then print the
 list of files you changed.
 
 ## A run specification beside this brief

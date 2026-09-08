@@ -1,4 +1,5 @@
 {
+  "card": {"text": "You are a coding agent solving a single JavaScript exercise (Exercism's forth, graded through a Jest-compatible shim over node:test); nothing is installed beyond the sandbox's own toolchain (node), no network. Copy the exercise's own spec file forth.spec.js as the idiom -- do not edit it. Run `node --test kit/reference/javascript/forth/run.test.mjs`. Do exactly what the brief says, nothing more. Report in one line."},
   "scope": { "edit": ["kit/reference/javascript/forth/forth.js"] },
   "verify": {
     "test": "node --test kit/reference/javascript/forth/run.test.mjs",

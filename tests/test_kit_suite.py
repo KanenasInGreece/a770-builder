@@ -6,8 +6,8 @@ every stage's stub fails its own hidden grader on the clean, shipped seat. The c
 kit/seat/python/data/sample.stats.json is proven against an independent stdlib
 re-computation of sample.log written directly in this file, never trusted as committed.
 
-Does not touch kit/corpus.py, kit/corpus/, kit/reference/ or harness/run_suite.sh — those are
-other units' material.
+Does not touch kit/corpus.py, kit/corpus/, harness/run_suite.sh, or any kit/reference/ file
+other than its tasks/*.spec.json `card` field — those are other units' material.
 """
 
 import json
@@ -23,6 +23,18 @@ KIT = REPO_ROOT / "kit"
 SEAT = KIT / "seat"
 HIDDEN = KIT / "hidden"
 RENDER_PROFILE = REPO_ROOT / "harness" / "render_profile.py"
+
+# Every stage spec's card must name the whole mini-project's language mix; every reference
+# exercise spec's card must name that exercise's own single language instead.
+CARD_LANGUAGE_SPECS = {
+    KIT / "tasks" / "s0-design.spec.json": ["Python", "C++", "JavaScript", "HTML"],
+    KIT / "tasks" / "s1-frontend.spec.json": ["Python", "C++", "JavaScript", "HTML"],
+    KIT / "tasks" / "s2-backend.spec.json": ["Python", "C++", "JavaScript", "HTML"],
+    KIT / "tasks" / "s3-optimise.spec.json": ["Python", "C++", "JavaScript", "HTML"],
+    KIT / "reference" / "tasks" / "ref-cpp-binary-search-tree.spec.json": ["C++"],
+    KIT / "reference" / "tasks" / "ref-javascript-forth.spec.json": ["JavaScript"],
+    KIT / "reference" / "tasks" / "ref-python-pov.spec.json": ["Python"],
+}
 
 HIDDEN_BASENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -103,6 +115,32 @@ def test_no_seat_file_references_kit_hidden():
             if name in text:
                 offenders.append(f"{p}: references hidden grader name '{name}'")
     assert not offenders, "\n".join(offenders)
+
+
+def test_every_spec_card_names_its_language_and_is_at_most_600_chars():
+    """Every kit/tasks/ and kit/reference/tasks/ specification carries a `card` text naming its
+    language(s) — the whole mix (Python, C++, JavaScript, HTML) for a mini-project stage, or the
+    one exercise language for a reference task — at most 600 characters."""
+    for spec_path, languages in CARD_LANGUAGE_SPECS.items():
+        assert spec_path.is_file(), f"missing spec {spec_path}"
+        data = json.loads(spec_path.read_text(encoding="utf-8"))
+        card = data.get("card")
+        assert card, f"{spec_path}: no card"
+        text = card["text"] if isinstance(card, dict) else card
+        assert isinstance(text, str) and text, f"{spec_path}: card has no text"
+        assert len(text) <= 600, f"{spec_path}: card is {len(text)} chars, over the 600 limit"
+        for lang in languages:
+            assert lang in text, f"{spec_path}: card does not name '{lang}'"
+
+
+def test_no_grading_script_lives_under_kit_seat():
+    """No grading script (an HTML parser check, an index grader, or anything else that scores the model's
+    work) may live under kit/seat/: a model exporting that subtree could read its own grader. Any such
+    script belongs under kit/hidden/ as a pytest file (or folded into an existing one). Flags any file
+    under kit/seat/ whose basename names 'grade', 'check' or 'hidden' (case-insensitive)."""
+    forbidden = re.compile(r"grade|check|hidden", re.IGNORECASE)
+    offenders = [p for p in SEAT.rglob("*") if p.is_file() and forbidden.search(p.name)]
+    assert not offenders, "\n".join(str(p) for p in offenders)
 
 
 # ---------------------------------------------------------------------------

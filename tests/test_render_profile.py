@@ -691,7 +691,7 @@ def test_template_bash_allow_keys_pinned(tmp_path):
         "mkdir *", "touch *", "cp *", "mv *",
         "python3 *", "python *", "pytest *", "python3 -m pytest *", "bash tests/*", "bash ./tests/*",
         "uv run *",
-        "node --test *", "node --check *", "g++ *",
+        "node --test *", "node --check *", "g++ *", "cmake *",
         "git status*", "git diff*", "git log*", "git show*", "git ls-files*", "git grep*", "git blame*",
     ]
 

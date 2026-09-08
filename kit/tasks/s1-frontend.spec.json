@@ -1,3 +1,3 @@
-{ "card": {"text": "You are a coding agent writing the front end of a small MIT project. Do exactly what the brief says, nothing more. No DOM access in render.js. Report in one line per file changed."},
+{ "card": {"text": "You are a coding agent in the seat of a small application in Python, C++, JavaScript and HTML; nothing is installed beyond the sandbox's own toolchain (python, uv, node, g++, cmake, make, ctest), no network. Write the front end. Copy js/tests/format.test.js's idiom: node:test plus node:assert/strict. Run `node --test js/tests/*.test.js`. No DOM access in render.js. Do exactly what the brief says, nothing more. Report in one line per file changed."},
   "scope": { "edit": ["js/format.js", "js/render.js", "js/tests/format.test.js", "html/index.html"] },
   "verify": { "test": "node --test js/tests/*.test.js", "hidden": ["test_s1_frontend_hidden.py"] } }

@@ -1,6 +1,8 @@
 // expect-shim.mjs — a minimal Jest-compatible surface over node:test / node:assert, just enough to run
 // the polyglot-benchmark JavaScript reference exercise's own spec file unmodified under `node --test`.
-// Supplies exactly what forth.spec.js uses: describe, test, xtest (-> test.skip), beforeEach, and
+// Supplies exactly what forth.spec.js uses: describe, test, xtest (-> test, since Aider's own grading flips
+// every xtest to test before running the suite, so the shim reproduces that all-enabled run rather than
+// Exercism's own progressive-unlock default), beforeEach, and
 // expect(x) with toEqual, toBe, toThrow, toBeUndefined, toBeNull, toBeTruthy. Nothing more.
 //
 // Import this module for its side effect (it installs the names on globalThis), before importing the
@@ -11,7 +13,7 @@ import assert from 'node:assert/strict';
 
 globalThis.describe = nodeDescribe;
 globalThis.test = nodeTest;
-globalThis.xtest = (name, fn) => nodeTest.skip(name, fn);
+globalThis.xtest = nodeTest;
 globalThis.beforeEach = nodeBeforeEach;
 
 function toEqual(actual, expected) {

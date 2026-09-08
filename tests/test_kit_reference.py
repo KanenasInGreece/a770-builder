@@ -206,6 +206,10 @@ def test_js_public_grader_green_with_proof_solution(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "fail 0" in result.stdout or "fail 0" in result.stderr
+    # Aider flips every `xtest` to `test` before grading; the shim maps xtest onto node:test's own `test`
+    # (not `test.skip`), so the proof run must show all 49 of forth.spec.js's cases, not Exercism's own
+    # progressive-unlock default of 1 enabled.
+    assert "pass 49" in result.stdout or "pass 49" in result.stderr
 
 
 @pytest.mark.skipif(not HAVE_NODE, reason="node not on PATH")

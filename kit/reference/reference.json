@@ -33,7 +33,7 @@
       "licence": "MIT (Exercism)",
       "source_commit": "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f",
       "track_licence": "MIT (Exercism, 2021, javascript track)",
-      "contamination_note": "Both forth.spec.js (the reference grader, run through the kit's shim under node's built-in test runner, not Jest) and its canonical inputs are public. A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_forth_hidden.py, fresh programs in kit/reference/hidden/forth_hidden.test.mjs) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way. See also the SOURCES.md note that the reference grader's assertion count is Exercism's own default (one enabled `test`, the rest `xtest`), not Aider's own preprocessed count."
+      "contamination_note": "Both forth.spec.js (the reference grader, run through the kit's shim under node's built-in test runner, not Jest) and its canonical inputs are public. A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_forth_hidden.py, fresh programs in kit/reference/hidden/forth_hidden.test.mjs) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way. See also the SOURCES.md note that the shim maps `xtest` onto `node:test`'s own `test` (not `test.skip`), reproducing Aider's own all-enabled grading run (49 cases), not Exercism's progressive-unlock default."
     },
     {
       "id": "ref-python-pov",

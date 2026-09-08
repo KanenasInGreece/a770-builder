@@ -90,7 +90,10 @@ PY
 ) || die "could not read reference exercises from $REFFILE"
 fi
 
-# stage_vars <srcfile> <key> <id> — sets S_LANGUAGE S_BRIEF S_SPEC S_WORKING_CMD S_CONFORMANCE_CMD S_BUDGET S_RUBRIC S_AXES
+# stage_vars <srcfile> <key> <id> — sets S_LANGUAGE S_BRIEF S_SPEC S_WORKING_CMD S_CONFORMANCE_CMD S_BUDGET
+# S_RUBRIC S_AXES S_COUNTS (S_COUNTS: "true" unless the stage itself carries "counts_toward_pass": false —
+# S0 and any other commentary-only stage, per kit/SUITE.md; the reviewer's rubric axes are never in "working"
+# at all, so they need no flag of their own to stay outside the pass count)
 stage_vars(){
   local src="$1" key="$2" id="$3"
   mapfile -t _sv < <(python3 - "$src" "$key" "$id" <<'PY'
@@ -112,10 +115,11 @@ out(g.get("conformance"))
 out(g.get("budget_lines"))
 out(g.get("rubric"))
 out(json.dumps(s.get("axes")) if s.get("axes") is not None else "")
+out("false" if s.get("counts_toward_pass") is False else "true")
 PY
 ) || die "stage not found or invalid in $src [$key]: $id"
   S_LANGUAGE=${_sv[0]:-}; S_BRIEF=${_sv[1]:-}; S_SPEC=${_sv[2]:-}; S_WORKING_CMD=${_sv[3]:-}
-  S_CONFORMANCE_CMD=${_sv[4]:-}; S_BUDGET=${_sv[5]:-}; S_RUBRIC=${_sv[6]:-}; S_AXES=${_sv[7]:-}
+  S_CONFORMANCE_CMD=${_sv[4]:-}; S_BUDGET=${_sv[5]:-}; S_RUBRIC=${_sv[6]:-}; S_AXES=${_sv[7]:-}; S_COUNTS=${_sv[8]:-true}
 }
 
 # export_kit_seat <seat> <src> — a standalone git clone-shaped copy of kit/seat/ at <seat>, one commit, "kit seat"
@@ -171,7 +175,7 @@ with open(outfile, "w") as f:
 PY
 }
 
-emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json
+emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass
   python3 - "$@" >> "$RESULTS_NDJSON" <<'PY'
 import json, sys
 def num(s):
@@ -184,7 +188,7 @@ def num(s):
 def boolean(s):
     return True if s == "true" else False if s == "false" else None
 (id_, language, label, working, conf, lines, budget, budget_ok,
- score_json, wall, requests, ptok, gtok, axes_json) = sys.argv[1:]
+ score_json, wall, requests, ptok, gtok, axes_json, counts) = sys.argv[1:]
 rec = {
     "id": id_, "language": language or None, "label": label or None,
     "working": boolean(working), "conformance_exit": num(conf),
@@ -192,6 +196,7 @@ rec = {
     "score": json.loads(score_json) if score_json and score_json != "null" else None,
     "wall_s": num(wall), "requests": num(requests), "prompt_tokens": num(ptok), "gen_tokens": num(gtok),
     "axes": json.loads(axes_json) if axes_json else None,
+    "counts_toward_pass": boolean(counts) if counts else True,
 }
 print(json.dumps(rec))
 PY
@@ -284,7 +289,7 @@ process_task(){
   fi
   if [ -z "$label" ]; then
     echo "⚠ stage $id: run exited $rrc with no capture — recording as failed" >&2
-    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES"
+    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS"
     write_results
     echo "stage $id: FAILED (no capture, run exit $rrc)"
     return 0
@@ -322,7 +327,7 @@ process_task(){
     if [ -f "$rubricpath" ]; then score_json=$(review_stage "$rubricpath" "$patchfile")
     else echo "⚠ stage $id: rubric file not found: $rubricpath — no score" >&2; fi
   fi
-  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES"
+  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS"
   write_results
   echo "stage $id: working=$working conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-0} tokens=${prompt_tokens:-0}+${gen_tokens:-0}"
 }
