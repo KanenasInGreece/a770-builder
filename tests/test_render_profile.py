@@ -670,3 +670,41 @@ def test_profile_key_checks_against_a770b_profiles_env(tmp_path):
     )
     assert result_bad.returncode == 2
     assert "must be one of long, middle, serious" in result_bad.stderr
+
+
+def test_template_bash_allow_keys_pinned(tmp_path):
+    """The rendered profile's bash allow keys (no run specification, so __BASH_ALLOW__ splices to empty) equal
+    an explicit expected list, in order, so any future widening of the template's own allow set must be edited
+    into this test deliberately."""
+    out = tmp_path / "out.jsonc"
+    result = render_to(out)
+    assert result.returncode == 0, f"Render failed: {result.stderr}"
+
+    parsed = json.loads(strip_comments(out.read_text()))
+    bash = parsed["permission"]["bash"]
+    allow_keys = [k for k, v in bash.items() if v == "allow"]
+
+    expected = [
+        "ls *", "ls", "pwd", "cat *", "head *", "tail *", "wc *",
+        "grep *", "rg *", "find *", "tree *", "diff *", "stat *", "file *",
+        "echo *", "printf *", "true", "sed -n *", "awk *", "sort *", "uniq *",
+        "mkdir *", "touch *", "cp *", "mv *",
+        "python3 *", "python *", "pytest *", "python3 -m pytest *", "bash tests/*", "bash ./tests/*",
+        "uv run *",
+        "node --test *", "node --check *", "g++ *",
+        "git status*", "git diff*", "git log*", "git show*", "git ls-files*", "git grep*", "git blame*",
+    ]
+
+    assert allow_keys == expected
+
+
+def test_bash_allow_refuses_node_test_from_specification(tmp_path):
+    """A run specification can never open a door of its own onto the interpreter: `node --test tests` in
+    bash_allow is refused (the rule stands: the template is the only door for an interpreter)."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+
+    spec = write_spec(tmp_path / "spec.json", {"bash_allow": ["node --test tests"]})
+    result = run_check(spec, seat)
+    assert result.returncode == 2
+    assert "bash_allow" in result.stderr
