@@ -99,6 +99,159 @@ if command -v shellcheck >/dev/null 2>&1; then SC="shellcheck"; elif command -v 
 if [ -n "$SC" ]; then
   if $SC -S warning "$here"/harness/*.sh "$here"/skills/local-build/scripts/*.sh "$here"/tests/*.sh "$here"/render_readme.sh "$here"/release.sh; then echo "ok   shellcheck: no finding at warning level or above"; else echo "FAIL shellcheck: findings at warning level or above, listed above"; fail=1; fi
 else echo "skip shellcheck: none on PATH and none in the uv cache (install shellcheck, or once online: uvx --from shellcheck-py shellcheck --version)"; fi
+# KU3 — harness/run_suite.sh: a fake local-build.sh (A770B_LOCAL_BUILD) stands in for the real one, so the runner is
+# proved without the card. A throwaway kit/ fixture: three stages (one that verifies PASS, one that verifies FAIL,
+# and one commentary-only stage — "counts_toward_pass": false, always PASS, standing in for S0 — that must NOT
+# move the totals) plus one reference exercise (kit/reference/reference.json, appended after the stages); the
+# fixture never touches the real kit/ another unit is writing. Checks the runner's own per-stage export of
+# kit/seat/ (kit/hidden/solutions/<id>/ pasted for every preceding stage — s0-pass's solution file must be in the
+# seat by the time s1-fail runs, s1-fail's own solution by the time s2-note runs, and ref-cpp-example's export
+# must carry neither, being a plain export — the fake local-build.sh's run case `ls`s the seat it was given so
+# this can be checked), its results JSON (one PASS, one FAIL, the failing id named, the commentary stage present
+# but excluded, the reference entry present, each stage's "seat_state" naming what was pasted) and that
+# suite_report.py --json reports on it.
+ku3="$t/ku3"; mkdir -p "$ku3/seat" "$ku3/tasks" "$ku3/reference" "$ku3/hidden/solutions/s0-pass" "$ku3/hidden/solutions/s1-fail" "$ku3/seat-ls"
+echo "fixture" > "$ku3/seat/README.md"
+echo "s0-pass solved" > "$ku3/hidden/solutions/s0-pass/SOLVED-s0-pass.marker"
+echo "s1-fail solved" > "$ku3/hidden/solutions/s1-fail/SOLVED-s1-fail.marker"
+for st in s0-pass s1-fail s2-note ref-cpp-example; do
+  echo "brief $st" > "$ku3/tasks/$st.md"
+  printf '{}' > "$ku3/tasks/$st.spec.json"
+done
+cat > "$ku3/suite.json" <<JSON
+{"suite": "SUITE-TEST", "stages": [
+  {"id": "s0-pass", "language": "python", "brief": "$ku3/tasks/s0-pass.md", "spec": "$ku3/tasks/s0-pass.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}},
+  {"id": "s1-fail", "language": "python", "brief": "$ku3/tasks/s1-fail.md", "spec": "$ku3/tasks/s1-fail.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}},
+  {"id": "s2-note", "language": "prose", "brief": "$ku3/tasks/s2-note.md", "spec": "$ku3/tasks/s2-note.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 60, "rubric": null}, "counts_toward_pass": false}
+]}
+JSON
+cat > "$ku3/reference/reference.json" <<JSON
+{"entries": [{"id": "ref-cpp-example", "language": "cpp", "brief": "$ku3/tasks/ref-cpp-example.md",
+  "spec": "$ku3/tasks/ref-cpp-example.spec.json", "grader": {"working": null, "conformance": null, "budget_lines": 50, "rubric": null}}]}
+JSON
+rm -f "$ku3/argv.log"
+cat > "$ku3/fake-local-build.sh" <<'FAKE'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >> "$KU3_ARGV_LOG"
+case "${1:-}" in
+  run)
+    shift; WT="$1"; BRIEF="$2"; shift 2
+    label="fake-$(basename "$BRIEF" .md)"
+    ls "$WT" > "$KU3_SEAT_LS_DIR/$label.ls" 2>/dev/null || true
+    mkdir -p "$A770B_DATA/results"
+    { echo "# fake capture"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
+    { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; echo "+line two"; } > "$A770B_DATA/results/$label.patch"
+    echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
+    exit 0 ;;
+  verify)
+    shift; label="$1"; shift
+    case "$label" in *fail*) rc=1; verdict="FAIL (exit 1)" ;; *) rc=0; verdict="PASS (exit 0)" ;; esac
+    mkdir -p "$A770B_DATA/results"; echo "verdict: $verdict" > "$A770B_DATA/results/$label.verify.md"
+    exit "$rc" ;;
+  stop|serve) exit 0 ;;
+  *) exit 2 ;;
+esac
+FAKE
+chmod +x "$ku3/fake-local-build.sh"
+rm -f "$A770B_DATA"/results/long-suite-*.json
+out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
+res=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
+if [ "$rc" = 0 ] && [ -n "$res" ] && python3 - "$res" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ids = [x["id"] for x in d["stages"]]
+assert ids == ["s0-pass", "s1-fail", "s2-note", "ref-cpp-example"], ids
+s = {x["id"]: x for x in d["stages"]}
+assert s["s0-pass"]["working"] is True, s["s0-pass"]
+assert s["s1-fail"]["working"] is False, s["s1-fail"]
+assert s["s2-note"]["working"] is True and s["s2-note"]["counts_toward_pass"] is False, s["s2-note"]
+assert s["ref-cpp-example"]["working"] is True, s["ref-cpp-example"]
+assert s["s0-pass"]["seat_state"] == [], s["s0-pass"]
+assert s["s1-fail"]["seat_state"] == ["s0-pass"], s["s1-fail"]
+assert s["s2-note"]["seat_state"] == ["s0-pass", "s1-fail"], s["s2-note"]
+assert s["ref-cpp-example"]["seat_state"] == [], s["ref-cpp-example"]
+sys.exit(0)
+PY
+then echo "ok   suite: run_suite.sh records one PASS, one FAIL (s1-fail named), one excluded commentary stage (s2-note), the reference entry, and each stage's seat_state"
+else echo "FAIL suite: run_suite.sh output/results wrong (rc=$rc res=$res)"; printf '%s\n' "$out" | tail -20; fail=1
+fi
+# the per-stage seat export: s1-fail's seat carried s0-pass's solution file (stage two saw stage one's solved
+# work), s2-note's carried both, and ref-cpp-example (a reference exercise) is a plain export carrying neither —
+# the fake local-build.sh's run case recorded an `ls` of the seat it was handed for each stage under $ku3/seat-ls.
+if grep -q '^SOLVED-s0-pass\.marker$' "$ku3/seat-ls/fake-s0-pass.ls" 2>/dev/null; then
+  echo "FAIL suite: s0-pass's own (first) seat already carried a solution file"; fail=1
+elif ! grep -q '^SOLVED-s0-pass\.marker$' "$ku3/seat-ls/fake-s1-fail.ls" 2>/dev/null; then
+  echo "FAIL suite: s1-fail's seat did not carry s0-pass's solution file — $ku3/seat-ls/fake-s1-fail.ls"; fail=1
+elif ! { grep -q '^SOLVED-s0-pass\.marker$' "$ku3/seat-ls/fake-s2-note.ls" 2>/dev/null && grep -q '^SOLVED-s1-fail\.marker$' "$ku3/seat-ls/fake-s2-note.ls" 2>/dev/null; }; then
+  echo "FAIL suite: s2-note's seat did not carry both preceding stages' solution files — $ku3/seat-ls/fake-s2-note.ls"; fail=1
+elif grep -qE '^SOLVED-(s0-pass|s1-fail)\.marker$' "$ku3/seat-ls/fake-ref-cpp-example.ls" 2>/dev/null; then
+  echo "FAIL suite: ref-cpp-example's seat (a reference exercise) carried a main-suite solution file — it must be a plain export"; fail=1
+else
+  echo "ok   suite: the stage-two seat saw the stage-one solution file (and stage three both, and the reference exercise neither)"
+fi
+# the fake local-build.sh's own argv, recorded per call: a "run ... --spec ... --profile long" line and a
+# "verify fake-<id>" line per stage, in order, and no reviewer step (stop/serve) since --reviewer was not given
+if [ -f "$ku3/argv.log" ] && python3 - "$ku3/argv.log" <<'PY'
+import re, sys
+lines = [l for l in open(sys.argv[1]).read().splitlines() if l.strip()]
+ids = ["s0-pass", "s1-fail", "s2-note", "ref-cpp-example"]
+assert len(lines) == 2 * len(ids), lines
+run_re = re.compile(r"^run \S+ \S+ --spec \S+ --profile long$")
+for i, id_ in enumerate(ids):
+    run_line, verify_line = lines[2 * i], lines[2 * i + 1]
+    assert run_re.match(run_line), (id_, run_line)
+    assert verify_line.startswith(f"verify fake-{id_} "), (id_, verify_line)
+assert not any(l.split()[0] in ("stop", "serve") for l in lines), "reviewer step present with no --reviewer"
+sys.exit(0)
+PY
+then echo "ok   suite: the fake local-build.sh's argv shows run --spec --profile then verify <label>, in order, no reviewer step"
+else echo "FAIL suite: the recorded argv did not match (see $ku3/argv.log)"; [ -f "$ku3/argv.log" ] && cat "$ku3/argv.log"; fail=1
+fi
+if [ -n "$res" ]; then
+  # four stages are in the results (s0-pass, s1-fail, s2-note, ref-cpp-example) but s2-note carries
+  # "counts_toward_pass": false, so the totals below must read as if it were never run: briefs=3, runs=3,
+  # passed=2 (s0-pass and ref-cpp-example), exactly as if only the three counted stages existed.
+  jout=$(python3 "$here/harness/suite_report.py" "$res" --json 2>/dev/null)
+  if printf '%s' "$jout" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+need = {"briefs", "runs", "passed", "mean_wall_s", "source"}
+assert set(d.keys()) == need, d
+assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2, d
+' 2>/dev/null; then echo "ok   suite: suite_report.py --json excludes the counts_toward_pass:false stage from all five totals"
+  else echo "FAIL suite: suite_report.py --json wrong: $jout"; fail=1
+  fi
+else echo "FAIL suite: no results file to report on"; fail=1
+fi
+# KU9 — suite_report.py's delivered speed: a fake capture file (the shape harness/capture_task.sh's server-side
+# timings section actually writes) beside a results JSON whose only per-stage capture record is its label, proving
+# the fallback path (<A770B_DATA>/results/<label>.task.md) and the two lines' parse.
+ku9="$t/ku9"; mkdir -p "$ku9" "$A770B_DATA/results"
+cat > "$A770B_DATA/results/ku9-stage.task.md" <<'CAP'
+requests=3 prompt_tokens_total=9000 gen_tokens_total=300
+TTFT ms (prompt eval): median=210 p90=260 max=300   largest prompt=3200 tokens
+TPOT ms: median=22.0 p90=26.0   decode tok/s median=45.5
+prefill tok/s over all prompts=612
+CAP
+cat > "$ku9/results.json" <<'JSON'
+{"instrument": "SUITE-TEST", "stages": [{"id": "ku9-stage", "label": "ku9-stage", "working": true, "wall_s": 9.0}]}
+JSON
+sout=$(python3 "$here/harness/suite_report.py" "$ku9/results.json" 2>&1)
+jout9=$(python3 "$here/harness/suite_report.py" "$ku9/results.json" --json 2>/dev/null)
+if printf '%s\n' "$sout" | grep -q 'delivered (ku9-stage): prefill 612.0 tok/s · decode 45.5 tok/s' \
+  && printf '%s\n' "$sout" | grep -q 'delivered: prefill 612.0 tok/s · decode 45.5 tok/s' \
+  && printf '%s' "$jout9" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+assert d["delivered"] == {"prefill_tps": 612.0, "decode_tps": 45.5, "source": "results.json"}, d
+' 2>/dev/null
+then echo "ok   selftest: suite_report.py reads a capture (fallen back to <label>.task.md) and reports delivered speed, in the table and --json alike"
+else echo "FAIL selftest: suite_report.py delivered speed did not parse — stdout: $sout"; fail=1
+fi
 # the profiles registry: config/profiles.json is the single source now that env.sh evals `harness/profiles.py env`
 python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
 [ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = "long" ] && echo "ok   profiles: names and default come from the registry" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='$A770B_DEFAULT_PROFILE'"; fail=1; }

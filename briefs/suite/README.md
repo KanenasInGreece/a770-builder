@@ -1,5 +1,15 @@
 # The in-house suite
 
+This is this repository's own regression suite, distinct from the profiling kit (`kit/`, `kit/SUITE.md`): it grades
+five bounded units of this repository's own history against this repository's own hidden tests, and a row measured
+on it carries `seat: <this repository>@<commit>` as its instrument, never comparable with a row measured on the
+kit. It has one known limit the kit does not share: the seat for a brief here is a clone of this repository at the
+commit the brief names, so the same tree that carries `briefs/suite/hidden/` is what the model's seat is cloned
+from — a seat that reads outside the paths a brief names could in principle read its own hidden test. The kit's
+seat is an export of `kit/seat/` alone, with `kit/hidden/` never part of that export at all, which is why the kit
+does not have this limit; this suite's graders stay under `briefs/suite/hidden/` until they move to the same export
+model.
+
 A profiling run needs more than one task to know what a model is good for. A single brief tells you whether a
 model can follow one instruction once; it says nothing about whether the model still reads carefully on the third
 file of a change, or holds a literal block in place while it edits around it, or keeps three files consistent with

@@ -3,7 +3,13 @@
 This file is the ledger of every model that has been put through the seat's qualification on this card, and how it
 measured. It matters because the profiles in the mode's registry are configuration, not a promise: a model earns a
 profile here first, with numbers, and a model that is not in this table has not been measured on this card, whatever
-its reputation elsewhere. The seat runs in one of two card modes, and each reads its own registry. Display-safe reads
+its reputation elsewhere. Every row below carries an instrument — every row in this table so far was measured with
+the seat being a standalone clone of the public Shared Memory repository at commit `3c8e2bb` (`seat:
+Shared_Memory@3c8e2bb`, recorded in the registry's own `instrument` field), and stays comparable only with the other
+rows measured on that same seat and commit; the profiling guide (`AGENTS.md`) says the current models are not
+re-measured in this release, and the next model profiled enters on the kit inside this repository instead
+(`instrument: SUITE-1@0.2.0`), a different instrument again. The seat runs in one of two card modes, and each reads
+its own registry. Display-safe reads
 `config/profiles.json`: **long** = Qwen3.5-9B Q4_K_M, the default for every ordinary change; **serious** = Qwen3.8-27B
 GSQ-RCO IQ3_XXS, for a deliverable larger than its brief; **fast** = Gemma 4 E4B Q4_K_M with flash attention off, for
 the read the long window cannot hold. Pure-inference reads `config/profiles.inference.json`, measured on the same
@@ -22,7 +28,17 @@ A model qualifies when it clears four gates on the same harness, in one run of `
    16 GB card (13 GiB on one that also draws the desktop, 15.3 on one that draws nothing), with zero GPU engine resets.
 2. **It answers**: correct greedy answers on a three-prompt sanity gate and a coherent one-sentence summary after a
    prefill of about 17k tokens of source.
-3. **It is fast enough**: decode at or above 5 tok/s at long context, and tool calls that llama-server parses.
+3. **It is fast enough**: decode at or above 5 tok/s at long context, and tool calls that llama-server parses. The
+   standard number behind this gate is `harness/bench_speed.sh <profile>` — llama-bench at the row's own served
+   flags (`-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe`), at depths 0, 8k, 32k and the far end, one command a
+   reader can reproduce and compare row to row, recorded as `speed.bench`; the standard suite's own as-delivered
+   speed, `harness/suite_report.py` on a `run_suite.sh` results file, sits beside it as `speed.delivered`, labelled
+   and never alone, since it is the row's speed under a real coding run rather than the flag set on its own. The far
+   end itself is a target `harness/ctx_sweep.sh` sizes by four bytes a token, not a promise: this kit's corpus is
+   dense real source rather than prose, so that rule understates — a sweep asking for 8,000 tokens sent 12,718 — and
+   a row too slow to answer inside the run's own time ceiling leaves no far-end reading to record at all (the 27B's
+   own 100k attempt ran past a 3,600 s ceiling with no answer), so the far end recorded for a row is whatever token
+   count its reply actually measured, not the number asked for.
 4. **It does the coding task**: the qualification brief on a real repository (the seat is a standalone clone of the
    public `https://github.com/KanenasInGreece/Shared_Memory` at commit `3c8e2bb`), run through opencode in the seat;
    it wrote the test file, ran the given test command, and a cheap reviewer reading the capture graded the run green.
@@ -31,6 +47,8 @@ A red run or a failing grade keeps a model out; a style deviation with green tes
 with its caveat.
 
 ## Qualified on the Intel Arc A770 16 GB (llama.cpp b10805, Vulkan, 2026-09-06/07)
+
+Every row below: instrument `seat: Shared_Memory@3c8e2bb`.
 
 | model file | source | ctx / KV | VRAM after load | decode short / after 17k | prefill (17k) | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
@@ -42,7 +60,8 @@ with its caveat.
 | `gpt-oss-20b-UD-Q4_K_XL.gguf` | `unsloth/gpt-oss-20b-GGUF` | 81,920 / K q8_0 + V q4_0, `--chat-template-kwargs '{"reasoning_effort":"low"}'` | 11.7 GiB | 42.1 / 27 tok/s | 585 tok/s, 28 s | PARTIAL (green), 5 tests, 79 s | qualified alternative | fastest prefill and fastest task; improvised an import scaffold instead of the repository's idiom, which a reviewer catches; always reasons, keep the output limit generous |
 | `gemma-4-E4B-it-Q4_K_M.gguf` | `lmstudio-community/gemma-4-E4B-it-GGUF` | 131,072 / f16, **`-fa off`** (its condition, see below) | 6.8 GiB at 80k, 8.1 GiB at 131k | 60 / 38 tok/s | 796 tok/s, 29 s | PASS ×2 and PARTIAL ×1 (17, 6, 6 tests; the PARTIAL one `isinstance` assertion), 74–82 s; green at 131k after one fix | **fast** | the largest window at speed on this card: cold read of 107k tokens in 273 s, exact on a planted detail at 85% depth of a 100k prompt, approximate on broad recall (asked for three other functions it blended real names into ones that do not exist), a wrong number at 120k; decode 44 → 16 tok/s from 8k to 100k; VRAM flat at 8.4 GiB (sliding window); five client-cancel rounds clean, zero resets across nine rows. Not for multi-file shell edits: on the harness's own brief it made one of three edits and reported all three done. On the reading task (T2: index every top-level definition of a 6,300-line, 100k-token file): E4B paged through 60% of it in 9 min and listed 40 names, 34 of them real definitions, 19 with the right line; the 9B paged through all of it in 15.5 min and listed 57 module-level constants instead of definitions, none right. Neither seat indexes a large file; the fast profile's value is a precise question about a passage, which the long profile cannot reach at all. |
 
-The rows below are the campaign's, measured with nothing else on the card (`config/profiles.inference.json`):
+The rows below are the campaign's, measured with nothing else on the card (`config/profiles.inference.json`). Every
+row below: instrument `seat: Shared_Memory@3c8e2bb`.
 
 | model file | source | ctx / KV | VRAM after load | decode 8k / far end | prefill 8k / far end | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
@@ -54,7 +73,7 @@ The rows below are the campaign's, measured with nothing else on the card (`conf
 
 One row per file and window the campaign measured on the free card, adopted or not; VRAM is after load unless a peak
 is named. The display registry's own after-load readings above were taken with the desktop's 0.65 to 0.9 GiB on the
-card, which this table has none of.
+card, which this table has none of. Every row below: instrument `seat: Shared_Memory@3c8e2bb`.
 
 | file, window | VRAM after load (peak) | decode / prefill at 8k | profile or verdict |
 |---|---|---|---|
@@ -118,7 +137,11 @@ request can take the card down. `briefs/T2-read-a-large-file.md` is the reading 
 ## How a model enters
 
 The full guide for an agent that has a GGUF and this harness and wants a model on the list is
-[`AGENTS.md`](../AGENTS.md) at the repository root. In one line: put the GGUF in
-`A770B_MODELS`, run `harness/run_one.sh`, have a reviewer grade the capture, add the row here with its numbers, then give
-it a profile in the mode's registry (`config/profiles.json` or `config/profiles.inference.json`) with its measured
-card, render the skill's tables from it, and move the version.
+[`AGENTS.md`](../AGENTS.md) at the repository root. In one line: put the GGUF in `A770B_MODELS`, run
+`harness/run_suite.sh <profile>` against the kit inside this repository (`kit/`, the ladder's task rung from this
+release on — no second repository needed), have a reviewer profile grade the reviewer-scored axes and a reviewer
+grade the capture, add the row here with its numbers and its instrument (`instrument: SUITE-1@0.2.0`), then give it
+a profile in the mode's registry (`config/profiles.json` or `config/profiles.inference.json`) with its measured
+card and its `suite` object, render the skill's tables from it, and move the version. A row reproducing one of the
+rows above instead runs `harness/run_one.sh` against the pinned Shared Memory seat and carries `seat:
+Shared_Memory@3c8e2bb`, comparable only with the rows already in this ledger, never with a kit row.

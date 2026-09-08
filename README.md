@@ -1,61 +1,28 @@
 # A770_Builder
 
-An Intel Arc A770 16 GB as a local coding seat for the coding agents already on your workstation. The agent you work
-with keeps the context, the judgement and the plan. When it meets a piece of work that is bounded and well specified, a
-change to named files, a test file from an invariant, the read of a file its own window cannot hold, it hands that piece
-to a local model through the `local-build` skill and gets back a capture: the diff, the tests the model ran, the
-timings, and a way to re-run those tests in a fresh sandbox before anything is merged. The local model is not trusted
-because it runs locally. It is an untrusted coding worker: qualified on a real coding task before it earns a profile,
-given a disposable seat that is a standalone clone of your repository, kept from everything else on the machine by a
-kernel boundary, and judged by the artefact it hands back, never by its exit code.
+If you run Claude, OpenCode or other agentic tools locally, you probably already have the obvious problem: your
+expensive agent is doing work that a much cheaper local model could do — if you knew which model was actually good
+enough, how to run it safely, and what kind of work you could trust it with.
 
-The idea has three parts, and they only work together: a qualified model, a disposable seat, and a captured result a
-reviewer can verify. A model on its own is a model server. A sandbox on its own
-contains nothing worth containing. A capture without the boundary is a claim. Together they make a worker an
-orchestrating agent can hand bounded work to, repeatably and cheaply, while keeping the judgement for itself. This is
-not an autonomous coding agent and not a general inference server; it is a qualified local seat underneath an agent
-that already understands the larger job.
+a770-builder is a Linux-only local coding-worker harness. It takes a local GPU, qualifies models by making them do
+real repository work, isolates the worker, controls its resources, and verifies the artefact it produces. It isn't
+another model server or chat UI; it gives your orchestrator a bounded, tested subagent capability.
 
-The repository holds two things:
+Why bother? Because "this model fits in VRAM" tells you almost nothing about whether it can be a useful coding
+worker. This project turns that uncertainty into something measurable. If you have spare GPU capacity and use
+agents, it is a way to turn that hardware into a cheap, replaceable worker — without handing your main agent a
+black box and hoping for the best.
 
-1. **`local-build`**, the installable skill in the [Agent Skills](https://agentskills.io) format. Any compatible coding
-   agent can install it and hand the seat a brief; the agent decides what to hand over.
-2. **The A770 builder runtime** the skill calls: the harness, the sandbox, the serving lines, and the three models that
-   earned their place: two by passing a real test-writing task on a live codebase, one by reading a hundred thousand
-   tokens of it and answering from the far end.
+It started out a night's project for an old Intel Arc A770. Under the hood, the worker is not just "a model running
+locally." The build runs inside a bubblewrap kernel sandbox, with filesystem, network and process boundaries, so an
+untrusted coding model gets a disposable seat rather than access to your workstation.
 
-Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
-this project, which must be present on the machine.
+Every candidate model is profiled and qualified on actual coding tasks: what it can complete, how fast it runs, how
+much memory it consumes, and where it starts to fail. The result is a capability profile, not a benchmark score.
 
-The seat runs in one of two card modes, chosen by `A770B_CARD_MODE`, each with its own registry: display-safe (the
-default, the tested set, under a 13 GiB cap, for a card that also draws the desktop) and pure-inference (under a
-15.3 GiB cap, for a card that draws nothing). The profiles are the interface, and the choice is the task's, not the
-model's reputation: `run … --profile <name>` names one, and `local-build.sh profiles` prints the card so an
-orchestrating agent can match a brief's scope and the token size of the files it names against what each profile
-actually measured. The display set is **long** (Qwen3.5-9B, the default for every ordinary change, safe to about
-64,000–72,000 tokens of the 262,144 it serves), **fast** (Gemma 4 E4B with flash attention off, for the read the long
-window cannot hold and precise questions about a passage deep in a large file, not for edits), and **serious**
-(Qwen3.8-27B, for a deliverable larger than its brief or tests from an unfamiliar module, useful to about 32,000 as
-its decode falls under five tokens a second by 64,000). The inference set is **long** (the same 9B at its whole
-262,144-token window), **moe** (Qwen3.6-35B-A3B, a deliverable larger than its brief at three times the dense 27B's
-speed, its whole 131,072-token window usable, needing 18 GB of host RAM), and **serious** (the 27B at a larger
-196,608-token window, useful to about 98,000). A window is a capacity, not the depth a model works reliably at, and
-each profile's row says which depth was measured. No profile indexes a large file, which stays a `grep`: where a
-deterministic tool answers exactly, the seat is not asked to approximate it. The profiles are data, not prose: the
-mode's registry (`config/profiles.json`, `config/profiles.inference.json`) is what a caller can read directly. A run
-specification beside the brief lets the calling agent set, for that run, the seat's standing instructions, the paths
-it may edit, the commands it may run and the tests that prove the result, inside a floor the harness never lowers.
-Every profile's output is judged the same way, by its capture and by `verify`.
-
-The seat is built around one card, and what it is built from knows nothing of it: the sandbox, the guard, the
-registries, the ladder, the suite and `verify` see a server on the loopback and a set of measured rows. The card
-enters through five knobs that exist today: `A770B_LLAMA_BIN` (any `llama-server` built with the backend for the
-card presents the same API), `A770B_DEVICE` and `A770B_VK_DEVICE_SELECT` (the pin; the selector is Mesa's and empty
-means unpinned on another backend, which has its own device variable), `A770B_GPU_MATCH` (nvtop's name for the card,
-and nvtop reads NVIDIA, AMD and Intel cards), the cap of each mode (a measurement, not a constant), and
-`A770B_UBATCH`. What does not travel is every number in a registry row and the flash-attention rule per model
-family: they are measurements on one card and one build, and `AGENTS.md` is how they are re-taken on another.
-Measured on the A770 alone so far; nothing else has been tried.
+That profile is what makes the system useful to an orchestrator: instead of asking "which model should I use?", it
+can ask "which local worker is qualified for this job, within these latency and resource constraints?" The GPU will
+be replaceable. The measured capability is the interface.
 
 ```text
 your coding agent ── the context, the judgement, the plan
@@ -68,56 +35,37 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       └── llama.cpp (Vulkan) ────┘── the qualified model on the A770
 ```
 
-Built and measured on 2026-09-06 to 08, first on a card that also drives the desktop and then, once the desktop moved
-to a second card, on the same A770 with nothing else on it: the two modes are one seat, reviewed adversarially and
-contained the same day, and since then built partly by its own seat. The measured report (matrix, serving lines, method) lives beside the weights: `~/LLM/tested/README.html`.
+The repository holds a coding-worker harness with two card modes — display-safe (the tested default, under a 13 GiB
+VRAM cap, for a card that also drives the desktop) and pure-inference (under a 15.3 GiB cap, for a card with nothing
+else on it) — each with its own profile registry naming the qualified models (`config/profiles.json`,
+`config/profiles.inference.json`). It also holds the profiling kit and its suite (`kit/`, `harness/run_suite.sh`)
+that a candidate model is qualified against, and the `local-build` skill, the installable front door an agent hands
+a brief to.
 
 ## Why we made it
 
-A workstation full of coding agents depends on online seats that go down, rate-limit, or cost credits in the middle of
-a build. Much of what those agents are asked to do is bounded work: a change to named files, tests from a
-specification, the read of one large file. It does not need the strongest model available, only one that does it
-correctly in the repository's idiom, and it does not need the orchestrating agent's own context spent on it. This card
-was already in the machine, driving the desktop, and idle.
+A workstation full of coding agents depends on online seats that go down, rate-limit, or cost credits mid-build. Much
+of what those agents are asked to do is bounded work. That work is a change to named files, tests from a
+specification, or the read of one large file. It does not need the strongest model available, only one that does it
+correctly in the repository's idiom. It does not need the orchestrating agent's own context spent on it either. The
+card in the machine was idle. The obvious route for it, vLLM on Intel's XPU backend, is closed on this card. So the
+serving line here is llama.cpp with the Vulkan backend on the distribution's own driver. That is why the project
+measures rather than assumes.
 
-The obvious way to use it was the stack Intel's newer cards run, vLLM on the XPU backend, and on this card that route
-is closed. Intel's inference stacks have moved on to newer Arc hardware: vLLM's validated XPU hardware today is the
-Arc Pro B-Series; its attention path after the 0.9.1 release needs Xe2 cores the A770 does not have; GGUF weights
-cannot be served on an Intel GPU through it at any version; the last line that served here, 0.9.0 on IPEX, answered
-wrongly with NaN logits; and the ipex-llm line that does run was archived in January 2026. None of that is a
-complaint, the card is old for that stack. It is the reason to ask the card a narrower question. llama.cpp with the
-Vulkan backend runs on the distribution's Mesa driver, the one already drawing the desktop, with no oneAPI runtime
-beneath it, and when the card's job watchdog fires, Vulkan surfaces a device-lost error and the server stops. The SYCL
-backend was not measured here; the reports we read of the same reset on that path describe a server that stays up and
-answers nothing, which is the worse failure for a seat judged by what it returns. So the serving line is llama.cpp
-over Vulkan, and every number here was measured on it.
-
-That left two questions. Whether a 16 GB Arc could hold a model that actually finishes a small, well-specified change
-in a real repository was answered by measurement: every candidate got the same brief on a live codebase, and only the
-ones whose tests passed under a cheap reviewer's eye kept a place; the ledger in `config/models.md` records the ones
-that did not, and why. Whether an agent could hand it that work without giving a local model the run of the host was
-answered by the harness and the sandbox, and by six reviews of them, two by a second model family.
-A run does not end in an exit code but in a capture, and a reviewer can re-run its tests inside a fresh sandbox with
-`verify` before merging anything.
-
-The division of labour follows from that. The orchestrating agent decides what the seat is for; the skill tells it
-what each profile was measured to do and not do, and the deciding stays with the agent that has the context. Where a
-deterministic tool exists, it wins: the fast profile reads a file the long profile cannot hold, and asked to index every
-definition of a 6,300-line file it read sixty percent and named thirty-four of forty correctly, where `grep`
-names all forty in a second. What is here is the result of all of that, so the next card, model or build can be
-re-qualified the same way instead of trusted.
+Whether a 16 GB card can hold a model that actually finishes a small, well-specified change in a real repository is a
+question. Only measurement answers it. Every candidate is now measured on the kit inside this repository, and only
+what passes earns a place. Earlier rows in the ledger were measured on a sibling repository instead.
 
 ## Install
 
 ### Prerequisites
-
-Each is installed and configured by its own instructions, linked here; this project only needs to know where it landed.
 
 | prerequisite | what it is for here | where to get it | where this project looks |
 |---|---|---|---|
 | **a Linux host** | the whole harness: the sandbox is bubblewrap, which is Linux kernel namespaces; the VRAM cap reads `nvtop`; the reset watch reads the kernel log; the serving line rests on Mesa's Vulkan driver and the Xe watchdog rules. Measured on Fedora 44 only. On Windows the plausible route is the harness under WSL2 with `llama-server` running natively on Windows and reached over the loopback, but that has not been measured here and the VRAM cap would not see the card; macOS has no bubblewrap | any distribution with user namespaces enabled (the default on Fedora, Ubuntu, Debian, Arch) | `bwrap`, `nvtop`, `journalctl` on `PATH` |
 | Vulkan driver for the card | the GPU backend llama.cpp runs on | your distribution's Mesa Vulkan driver (`mesa-vulkan-drivers`) and `vulkan-tools`; `vulkaninfo --summary` must list the card | `A770B_DEVICE` = the name `llama-server --list-devices` prints |
 | `llama.cpp` with the Vulkan backend | serves the model (`llama-server`) | build it from source per [llama.cpp `docs/build.md`, *Vulkan*](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan) (measured here on b10805) | `A770B_LLAMA_BIN` (default `~/llama.cpp/build/bin/llama-server`) |
+| `node`, `cmake`, `make`, `g++`, `ctest` | the toolchain the profiling kit's own graders build and test against, inside the sandbox, nothing else installed | your distribution's packages (Node.js, `cmake`, `make`, `gcc-c++`) | on `PATH`; `tests/kit_selftest.sh` and `local-build.sh doctor` both check the sandboxed toolchain is reachable |
 | the model files of the mode's registry (`config/profiles.json`, `config/profiles.inference.json`) | the profiles of whichever card mode this machine serves | Hugging Face: [`lmstudio-community/Qwen3.5-9B-GGUF`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF), [`ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF), [`lmstudio-community/gemma-4-E4B-it-GGUF`](https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF) and [`unsloth/Qwen3.6-35B-A3B-GGUF`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF); the download lines are in [`docs/OPERATING.md`](docs/OPERATING.md#getting-llamacpp-and-the-models); every model measured on this card is in [`config/models.md`](config/models.md), and a new one enters by the procedure in `docs/OPERATING.md` | `A770B_MODELS` (default `~/LLM/tested`), `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` |
 | [opencode](https://opencode.ai/docs) | the coding agent that runs inside the sandbox | its install script or package, per its docs | found on `PATH`, or `A770B_OPENCODE_BIN` |
 | [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) | the sandbox | your distribution's `bubblewrap` package | on `PATH` |
@@ -127,16 +75,14 @@ Each is installed and configured by its own instructions, linked here; this proj
 | `git`, `curl`, `python3`, `flock`, `ss` | the harness itself | base packages (util-linux, iproute2) | on `PATH` |
 | [Node.js](https://nodejs.org) | only for the `npx skills` install route | its installer or your package manager | not needed by the harness |
 
-On Fedora, for example, everything but llama.cpp, opencode, uv and the models is one line:
+Each is installed and configured by its own instructions, linked in the table above; this project only needs to know
+where it landed. On Fedora, for example, everything but llama.cpp, opencode, uv and the models is one line:
 `sudo dnf install mesa-vulkan-drivers vulkan-tools vulkan-headers vulkan-loader-devel glslc cmake gcc-c++ bubblewrap socat nvtop git curl python3 util-linux iproute`.
-
-**Versions this was measured and reviewed with** (2026-09-08): Fedora 44, kernel 7.1.13, Mesa 26.1.8 (Vulkan 1.4.354) on
-the Intel Arc A770 16 GB; llama.cpp b10805 (Vulkan); opencode 1.18.29; bubblewrap 0.12.0; socat 1.8.1.1; uv 0.12.3;
-nvtop 3.3.2; git 2.55.0; Python 3.14.7; Node 24.15.0 with `skills` CLI 1.5.24. Newer versions of the tools should work;
-a different llama.cpp build or model quantisation is a different measurement, and its numbers should be re-taken with
-`harness/run_one.sh` before being believed. The project and the installed skill carry the same version number
-(`VERSION`, `local-build.sh --version`), so an installed copy can tell when the project moved on, and
-`local-build.sh check-update` asks GitHub for the latest release when you want to know; nothing else in the skill calls out.
+This was measured and reviewed against Fedora 44 (kernel 7.1.13), Mesa 26.1.8 (Vulkan 1.4.354) on an Intel Arc A770
+16 GB, llama.cpp b10805 (Vulkan), opencode 1.18.29, bubblewrap 0.12.0, socat 1.8.1.1, uv 0.12.3, nvtop 3.3.2,
+git 2.55.0, Python 3.14.7, and Node 24.15.0 with the `skills` CLI 1.5.24; newer tool versions should work, but a
+different llama.cpp build or model quantisation is a different measurement, and its numbers should be re-taken with
+`harness/run_one.sh` before being believed.
 
 ### Steps
 
@@ -152,24 +98,16 @@ bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Bui
 ```
 
 The skill follows the [Agent Skills](https://agentskills.io) open standard: a folder `skills/local-build/` holding
-`SKILL.md` (name + description in the front matter, instructions in the body), `scripts/` and an optional constitution
-snippet. The standard defines the skill's format, not how it is installed; install it with the open `skills` CLI or by
-copying the folder into any Agent Skills-compatible agent. Tested here on 2026-09-07 with the five agents below, both routes:
-
-**1. The open skills CLI** — detects the agents you have installed and copies the skill into each of them.
-```bash
-npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # from GitHub, user-level, real copies
-npx skills add KanenasInGreece/a770-builder --list                          # browse first (tested: finds local-build in the public repository)
-npx skills add /path/to/A770_Builder --skill local-build -g --copy          # from a local clone (tested)
-```
-`-g` installs under your home (`~/.claude/skills`, `~/.codex/skills`, …); without it the CLI installs into the current
-project's `.claude/skills`. `--copy` matters: the default is a symlink, and a skill that carries scripts should be a copy.
-
-**2. By hand** — copy `skills/local-build/` into your agent's skill directory.
-
-Whichever route: the skill is a front door; it needs this project (`harness/`, `config/`) reachable at `A770B_PROJECT`
-(default `~/local-ai/A770_Builder`, see *Configure*), a llama.cpp build with the Vulkan backend, `bubblewrap`, `uv` and
-opencode on the host, and the model files in `A770B_MODELS`.
+`SKILL.md` (name and description in its front matter, instructions in the body), `scripts/`, and an optional
+constitution snippet; the standard defines the skill's format, not how it is installed. Install it with the open
+`skills` CLI — `npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy` (`-g` for a user-level
+install under `~/.claude/skills`, `~/.codex/skills`, and the like, rather than the current project's `.claude/skills`;
+`--copy` for a real copy rather than the CLI's default symlink, since a skill that carries scripts should be a copy;
+`--list` browses first, and a local clone path works in place of the GitHub slug) — or by hand, copying
+`skills/local-build/` into your agent's own skill directory. Tested here with the five agents below, both routes.
+Whichever route: the skill is a front door; it needs this project (`harness/`, `config/`) reachable at
+`A770B_PROJECT` (default `~/local-ai/A770_Builder`), a llama.cpp build with the Vulkan backend, `bubblewrap`, `uv`
+and opencode on the host, and the model files in `A770B_MODELS`.
 
 ### Per agent, as tested on this workstation
 
@@ -181,25 +119,25 @@ opencode on the host, and the model files in `A770B_MODELS`.
 | Codex CLI | `~/.codex/skills/local-build` | present in its skills directory | Codex cannot use the local model as its own brain (Responses API), it dispatches the seat |
 | grok CLI | `~/.grok/skills/local-build` | present in its skills directory | grok is x.ai-bound; it dispatches the seat through the script |
 
-`CONSTITUTION_SNIPPET.md` is optional: a short standing reminder for an agent that will use the seat repeatedly, which
-the agent's operator adds to its own constitution file if wanted (`SKILL.md` says how). Nothing writes into any agent's
-home. Licence: MIT (`LICENSE`).
-
-Operating detail (how a run and a `verify` work, the three profiles and their numbers, every knob, how to build llama.cpp
-with Vulkan and fetch the models, what each file is) lives in [`docs/OPERATING.md`](docs/OPERATING.md).
+`CONSTITUTION_SNIPPET.md` is optional: a short standing reminder for an agent that will use the seat repeatedly,
+added to that agent's own constitution file by its operator if wanted (`SKILL.md` says how); nothing the skill
+installs writes into any agent's home. The project is MIT-licensed (`LICENSE`). Day-to-day operating detail — how a
+run and a `verify` work, the three profiles and their numbers, every knob, building llama.cpp with Vulkan and
+fetching the models, and what each file is — lives in [`docs/OPERATING.md`](docs/OPERATING.md).
 
 ## Security
 
-The model's process runs inside bubblewrap with the seat as its only writable tree, no credentials, no other checkout,
-and no network access except the model server, which itself requires a key. The guard refuses every live checkout you
-list, every linked worktree, symlink and agent home; the capture executes nothing the model wrote, and `verify` re-runs
-a capture's tests inside a fresh sandbox when you want proof. Six reviews have read the boundary and what sits on it, two of them by a second model
-family; the fourth found three holes the first three had missed, and the sixth read the run specification and found two
-defects in its refusals, all closed the same day. All of it, with what you must still do yourself and how to report a hole, is in
-[`SECURITY.md`](SECURITY.md).
+The model's process runs inside bubblewrap (a kernel-namespace sandbox) with the seat as its only writable tree, no
+credentials, no other checkout, and no network access except the model server, which itself requires a key. The
+guard refuses every live checkout you list, every linked worktree, symlink and agent home; the capture executes
+nothing the model wrote, and `verify` re-runs a capture's tests inside a fresh sandbox when you want proof. Six
+reviews have read the boundary and what sits on it, two of them by a second model family, and found and closed real
+holes. All of it, with what you must still do yourself and how to report a hole, is in [`SECURITY.md`](SECURITY.md).
 
 This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
-no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
+no database, no account, no memory system, and no network call of its own except the model server on loopback. The
+profiling kit is the same way: it needs no second repository, since its own seat, corners and hidden graders all
+live inside `kit/` here. It was
 developed alongside the [Shared Memory](https://github.com/KanenasInGreece/Shared_Memory) framework, a sibling project
 that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.
 If you run that framework, or any other service, on the same host: the seat never reads or writes it, the sandbox has no

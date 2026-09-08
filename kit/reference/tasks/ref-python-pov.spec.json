@@ -1,0 +1,8 @@
+{
+  "card": {"text": "You are a coding agent solving a single Python exercise (Exercism's pov); nothing is installed beyond the sandbox's own toolchain (python, uv), no network. Copy the exercise's own test file pov_test.py as the idiom -- do not edit it. Run `uv run --with pytest python -m pytest -q kit/reference/python/pov/pov_test.py`. Do exactly what the brief says, nothing more. Report in one line."},
+  "scope": { "edit": ["kit/reference/python/pov/pov.py"] },
+  "verify": {
+    "test": "uv run --with pytest python -m pytest -q kit/reference/python/pov/pov_test.py",
+    "hidden": ["test_pov_hidden.py"]
+  }
+}

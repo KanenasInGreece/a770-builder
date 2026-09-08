@@ -1,0 +1,3 @@
+{ "card": {"text": "You are a coding agent in the seat of a small application in Python, C++, JavaScript and HTML; nothing is installed beyond the sandbox's own toolchain (python, uv, node, g++, cmake, make, ctest), no network. Write the Python backend. Copy python/tests/test_parse.py's idiom. Run `uv run --with pytest python -m pytest -q python/tests`. Read the docstring you implement against before writing code. Do exactly what the brief says, nothing more. Report in one line per file changed."},
+  "scope": { "edit": ["python/logstats/stats.py", "python/tests/test_stats.py"] },
+  "verify": { "test": "uv run --with pytest python -m pytest -q python/tests", "hidden": ["test_s2_backend_hidden.py"] } }

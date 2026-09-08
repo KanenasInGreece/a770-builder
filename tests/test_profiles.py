@@ -620,6 +620,189 @@ def test_check_passes_valid_far_end(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+# --- KU9: speed.bench (llama-bench), speed.delivered (the suite's own as-delivered speed) ---
+
+
+def _valid_bench(**overrides) -> dict:
+    bench = {
+        "tool": "llama-bench b10805",
+        "prompt": 8192,
+        "gen": 128,
+        "flags": "-fa on -ctk q4_0 -ctv q4_0 -ub 512 -d 0,8192,32768 -o json",
+        "at_depth": {"0": {"pp": 620.0, "tg": 40.0}, "8192": {"pp": 571.0, "tg": 36.8}, "32768": {"pp": 274.0, "tg": 23.1}},
+        "source": "long-bench-20260908-120000.json",
+    }
+    bench.update(overrides)
+    return bench
+
+
+def test_check_fails_bench_missing_key(tmp_path):
+    data = load_base()
+    bench = _valid_bench()
+    del bench["gen"]
+    data["profiles"]["long"]["speed"]["bench"] = bench
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
+
+
+def test_check_fails_bench_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(bogus=1)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
+
+
+def test_check_fails_bench_empty_string_field(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(tool="")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.tool must be a non-empty string" in result.stderr
+
+
+def test_check_fails_bench_bad_prompt_type(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(prompt="8192")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.prompt must be a positive int" in result.stderr
+
+
+def test_check_fails_bench_at_depth_not_object(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth=[])
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth must be a non-empty object" in result.stderr
+
+
+def test_check_fails_bench_at_depth_bad_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"8k": {"pp": 1, "tg": 1}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth: key '8k' must be a digit string" in result.stderr
+
+
+def test_check_fails_bench_at_depth_value_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": 1, "tg": 1, "bogus": 1}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth.0 must be an object with pp, tg" in result.stderr
+
+
+def test_check_fails_bench_at_depth_value_bad_type(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": "1", "tg": 1}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.bench.at_depth.0.pp must be a number or null" in result.stderr
+
+
+def test_check_passes_bench_at_depth_null_values(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": None, "tg": None}})
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_passes_valid_bench(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench()
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_delivered_missing_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {"prefill_tps": 500.0}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
+
+
+def test_check_fails_delivered_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json", "bogus": 1,
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
+
+
+def test_check_fails_delivered_bad_value(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": -1.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered.prefill_tps must be a positive number" in result.stderr
+
+
+def test_check_fails_delivered_empty_source(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {"prefill_tps": 500.0, "decode_tps": 30.0, "source": ""}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: speed.delivered.source must be a non-empty string" in result.stderr
+
+
+def test_check_passes_valid_delivered(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_passes_bench_and_delivered_together(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["speed"]["bench"] = _valid_bench()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
 def test_check_fails_fit_unknown_key(tmp_path):
     data = load_base()
     data["profiles"]["long"]["fit"] = {"code": "T1: 6 tests green in 122 s", "bogus": "x"}
@@ -768,6 +951,412 @@ def test_env_inference_registry_first_line():
     result = run("env", "--file", str(PROFILES_INFERENCE_JSON))
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[0] == ': "${A770B_PROFILES:=long moe serious}"'
+
+
+# --- KU8: suite.stages, suite.reviewer, suite.instrument, profile-level instrument, comparable_with ---
+
+
+def test_check_fails_missing_instrument(tmp_path):
+    data = load_base()
+    del data["profiles"]["long"]["instrument"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: missing key instrument" in result.stderr
+
+
+def test_check_fails_empty_instrument(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["instrument"] = ""
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: instrument must be a non-empty string" in result.stderr
+
+
+def test_check_fails_bad_instrument_type(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["instrument"] = 1
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: instrument must be a non-empty string" in result.stderr
+
+
+def test_check_fails_suite_instrument_empty(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 5, "runs": 15, "passed": 12, "source": "kit", "instrument": "",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.instrument must be a non-empty string" in result.stderr
+
+
+def test_check_passes_valid_suite_instrument(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 5, "runs": 15, "passed": 12, "source": "kit", "instrument": "SUITE-1@0.2.0",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def _valid_stage(**overrides) -> dict:
+    stage = {
+        "id": "s0-design", "working": True, "conformance": True, "lines": 40, "budget_lines": 60,
+        "maintainable": 5, "usable": 3, "wall_s": 12.5, "axes": ["working", "conformance"],
+    }
+    stage.update(overrides)
+    return stage
+
+
+def test_check_fails_stages_not_a_list(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": "nope",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages must be a list" in result.stderr
+
+
+def test_check_fails_stage_not_an_object(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": ["nope"],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0] must be an object" in result.stderr
+
+
+def test_check_fails_stage_unknown_key(tmp_path):
+    data = load_base()
+    stage = _valid_stage(bogus=1)
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0]: unknown key bogus" in result.stderr
+
+
+def test_check_fails_stage_missing_key(tmp_path):
+    data = load_base()
+    stage = _valid_stage()
+    del stage["wall_s"]
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0]: missing key wall_s" in result.stderr
+
+
+def test_check_fails_stage_bad_id(tmp_path):
+    data = load_base()
+    stage = _valid_stage(id="")
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].id must be a non-empty string" in result.stderr
+
+
+def test_check_fails_stage_bad_working(tmp_path):
+    data = load_base()
+    stage = _valid_stage(working="yes")
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].working must be a bool" in result.stderr
+
+
+def test_check_fails_stage_bad_conformance(tmp_path):
+    data = load_base()
+    stage = _valid_stage(conformance="pass")
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].conformance must be a bool or null" in result.stderr
+
+
+def test_check_passes_stage_conformance_null(tmp_path):
+    data = load_base()
+    stage = _valid_stage(conformance=None)
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_stage_bad_lines(tmp_path):
+    data = load_base()
+    stage = _valid_stage(lines="40")
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].lines must be an int or null" in result.stderr
+
+
+def test_check_fails_stage_bad_budget_lines(tmp_path):
+    data = load_base()
+    stage = _valid_stage(budget_lines=60.5)
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].budget_lines must be an int or null" in result.stderr
+
+
+def test_check_fails_stage_bad_maintainable(tmp_path):
+    data = load_base()
+    stage = _valid_stage(maintainable=4)
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].maintainable must be 0, 3, 5 or null" in result.stderr
+
+
+def test_check_fails_stage_bool_not_maintainable(tmp_path):
+    """A bool is never 0, 3 or 5, even though False == 0 in Python."""
+    data = load_base()
+    stage = _valid_stage(maintainable=False)
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].maintainable must be 0, 3, 5 or null" in result.stderr
+
+
+def test_check_fails_stage_bad_usable(tmp_path):
+    data = load_base()
+    stage = _valid_stage(usable=2)
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].usable must be 0, 3, 5 or null" in result.stderr
+
+
+def test_check_fails_stage_bad_wall_s(tmp_path):
+    data = load_base()
+    stage = _valid_stage(wall_s="12.5")
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].wall_s must be a number" in result.stderr
+
+
+def test_check_fails_stage_bad_axes(tmp_path):
+    data = load_base()
+    stage = _valid_stage(axes=["working", 1])
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].axes must be a list of strings" in result.stderr
+
+
+def test_check_passes_valid_stages_list(tmp_path):
+    data = load_base()
+    stages = [
+        _valid_stage(id="s0-design", axes=["design"], working=True),
+        _valid_stage(id="s1-frontend", axes=["working", "conformance"], working=True),
+        _valid_stage(id="s4-rubric", axes=["maintainable", "usable"], working=False, maintainable=5, usable=5),
+    ]
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 3, "runs": 3, "passed": 2, "source": "kit", "instrument": "SUITE-1@0.2.0", "stages": stages,
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_reviewer_not_an_object(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "reviewer": "nope",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.reviewer must be an object" in result.stderr
+
+
+def test_check_fails_reviewer_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit",
+        "reviewer": {"profile": "long", "bogus": 1},
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.reviewer: unknown key bogus" in result.stderr
+
+
+def test_check_fails_reviewer_bad_value_type(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit",
+        "reviewer": {"profile": "long", "rubric_sha256": True},
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.reviewer.rubric_sha256 must be a string or int" in result.stderr
+
+
+def test_check_passes_valid_reviewer(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit",
+        "reviewer": {
+            "profile": "serious", "model": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf", "ctx": 32768,
+            "sampling": "temp 0, thinking off", "rubric_sha256": "abc123",
+        },
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_builder_class_from_stages_working_axis_only(tmp_path):
+    """Pass rate is computed from stages whose axes include "working"; the design stage and
+    the rubric (no "working" in axes) never count, even though one of them is marked False."""
+    data = load_base()
+    data["profiles"]["long"]["useful_ctx"] = 100000
+    data["profiles"]["long"]["task_t1"] = "weak: not the row's own task"
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 3, "runs": 3, "passed": 2, "source": "kit",
+        "stages": [
+            _valid_stage(id="s0-design", axes=["design"], working=False),
+            _valid_stage(id="s1-frontend", axes=["working", "conformance"], working=True),
+            _valid_stage(id="s2-backend", axes=["working", "conformance"], working=True),
+        ],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("card", "--file", str(path), "--name", "long")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["builder_class"] is True
+
+
+def test_builder_class_false_from_stages_when_working_axis_fails(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["useful_ctx"] = 100000
+    data["profiles"]["long"]["task_t1"] = "weak: not the row's own task"
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 2, "runs": 2, "passed": 1, "source": "kit",
+        "stages": [
+            _valid_stage(id="s1-frontend", axes=["working", "conformance"], working=True),
+            _valid_stage(id="s2-backend", axes=["working", "conformance"], working=False),
+        ],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("card", "--file", str(path), "--name", "long")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["builder_class"] is False
+
+
+def test_comparable_with_on_display_registry():
+    """The shipped display registry: every row lists the other two as comparable (same instrument)."""
+    result = run("card", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    for name in ("long", "fast", "serious"):
+        others = sorted(n for n in ("long", "fast", "serious") if n != name)
+        assert sorted(data["profiles"][name]["comparable_with"]) == others, name
+
+
+def test_comparable_with_on_inference_registry():
+    """The shipped inference registry: every row lists the other two as comparable (same instrument)."""
+    result = run("card", "--file", str(PROFILES_INFERENCE_JSON))
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    for name in ("long", "moe", "serious"):
+        others = sorted(n for n in ("long", "moe", "serious") if n != name)
+        assert sorted(data["profiles"][name]["comparable_with"]) == others, name
+
+
+def test_comparable_with_excludes_differing_instrument(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["instrument"] = "SUITE-1@0.2.0"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("card", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    data_out = json.loads(result.stdout)
+    assert data_out["profiles"]["long"]["comparable_with"] == []
+    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]
+    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]
+
+
+def test_card_prints_instrument():
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "long")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["instrument"] == "seat: Shared_Memory@3c8e2bb"
 
 
 def test_snippet_labels_use_profile_flag(tmp_path):

@@ -17,7 +17,8 @@ curl -sf $A770B_HOST:$A770B_PORT/health >/dev/null || { echo "not ready"; exit 1
 load_s=$(echo "$(date +%s.%N) - $t0" | bc)
 vram=$(gpu_used_gib)
 A770B_KEY=$(a770b_api_key); export LABEL GGUF CTX load_s vram OUT A770B_KEY
-python3 - "$A770B_PROBE_CORPUS" <<'PY'
+echo "summary corpus: $A770B_SUMMARY_CORPUS (the seat's own source — this rung is judged, never the kit's generated corpus)"
+python3 - "$A770B_SUMMARY_CORPUS" <<'PY'
 import json,os,sys,time,urllib.request,subprocess,glob
 U=f"http://{os.environ['A770B_HOST']}:{os.environ['A770B_PORT']}"
 def post(path,body,timeout=600):

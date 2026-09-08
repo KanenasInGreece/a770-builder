@@ -5,8 +5,15 @@
 set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); want=${1:-100000}
-T=$(mktemp -d); find "$A770B_SEAT" -name '*.py' -size +2k | sort | head -400 | xargs cat 2>/dev/null | tr -cd '\11\12\15\40-\176' > "$T/corpus"
+T=$(mktemp -d)
+if [ -n "${A770B_CORPUS_FILE:-}" ] && [ -f "$A770B_CORPUS_FILE" ]; then
+  cp "$A770B_CORPUS_FILE" "$T/corpus"; echo "corpus: kit generator ($A770B_CORPUS_FILE)"
+else
+  find "$A770B_SEAT" -name '*.py' -size +2k | sort | head -400 | xargs cat 2>/dev/null | tr -cd '\11\12\15\40-\176' > "$T/corpus"; echo "corpus: seat glob ($A770B_SEAT/**/*.py, today's fallback — kit/corpus.py has not generated $A770B_CORPUS_FILE)"
+fi
 chars=$((want*4)); pos=$((chars*85/100))
+corpus_bytes=$(wc -c < "$T/corpus")
+[ "$corpus_bytes" -ge "$chars" ] || { echo "⛔ corpus has $corpus_bytes bytes, need $chars for target $want tokens — refusing (head -c would silently short-fill)" >&2; rm -rf "$T"; exit 2; }
 PLANT='
 
 def orbital_checksum_v7(payload: bytes, salt: int = 4171) -> int:

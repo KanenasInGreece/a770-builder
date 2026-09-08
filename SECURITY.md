@@ -57,7 +57,11 @@ that runs another command, case-folded), and the profile's deny
 block, the floor, is rendered after them. That floor is defence in depth and nothing more: the profile already lets the
 model run python, so a model that wants a git verb has one; what stops it is the read-only `.git` mount, the unshared
 network and the reset, which are not the specification's to touch. The capture keeps the snapshot and an echo of what
-was rendered, hash included, so a reviewer sees what the run was allowed as well as what it did.
+was rendered, hash included, so a reviewer sees what the run was allowed as well as what it did. A specification can
+only add patterns, never remove one: a pattern granted in the template is granted to every run of every project that
+consumes it, whichever specification is in play. The floor's deny patterns match a whole command string, not a chain,
+so a chained command is admitted by its first word alone — which is why a brief names one command per line, leaving
+the sandbox itself as the boundary.
 
 | surface | inside the sandbox |
 |---|---|
@@ -114,7 +118,15 @@ the renderer's placeholder guard unable to match two of its own placeholders, an
 hidden root, a hidden test placed but never run beside a caller's test command, and an echo that named the wished-for
 profile rather than the one used; all closed in the same fix round with the reviewers' mutation checks run. Every
 change to the boundary since the first has gone through a branch, a read-only adversarial review by a model that did
-not write it, and the mutation checks re-run before merge.
+not write it, and the mutation checks re-run before merge. This cycle added `node --test *`, `node --check *`,
+`g++ *` and `cmake *` to the template's own allow list, admitting the kit's JavaScript and C++ iteration commands
+under the boundary review of another family; `make *` and `ctest *`, which the kit's multi-file C++ stage needs for
+its configure step, go in per-task specifications instead, never the template. None of these patterns touch how a
+row is actually graded: the kit's own hidden graders run through `verify`, outside the profile and its allow-list
+entirely, exactly as every other hidden test does. And the seat a kit run gives the model is never a clone or
+checkout of this repository: it is an export of `kit/seat/` alone, git-init'ed fresh, so the hidden graders under
+`kit/hidden/` — the ones the allow-list changes above exist to run — are never part of the model's own tree at any
+point in a run.
 
 ## What is still open
 

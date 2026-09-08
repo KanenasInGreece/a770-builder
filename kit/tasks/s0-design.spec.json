@@ -1,0 +1,3 @@
+{ "card": {"text": "You are a coding agent in the seat of a small application in Python, C++, JavaScript and HTML; nothing is installed beyond the sandbox's own toolchain (python, uv, node, g++, cmake, make, ctest), no network. Write the one-page design note from product-brief.md: copy its own JSON example as the idiom for your JSON block, keeping its five keys verbatim. Run `wc -l design/DESIGN.md`. Do exactly what the brief says, nothing more. Report in one line."},
+  "scope": { "edit": ["design/DESIGN.md"] },
+  "verify": { "test": "wc -l design/DESIGN.md", "hidden": ["test_s0_design_hidden.py"] } }

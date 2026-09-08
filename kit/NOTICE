@@ -1,0 +1,31 @@
+logstats (the profiling kit's mini-project, `kit/`)
+Copyright 2026 Xenofon S. Motsenigos
+
+This directory contains, alongside fresh MIT material, files seeded from two other
+repositories under their own licences. See kit/SOURCES.md for the full table; this file is
+the Apache License's required NOTICE for the one Apache-2.0-derived file below.
+
+--------------------------------------------------------------------------------
+
+kit/seat/python/logstats/parse.py
+
+Derived from `sanitize_entity_name` in `shared-memory/scripts/ontology.py` (lines 226-254) of
+the Shared Memory repository (https://github.com/KanenasInGreece/Shared_Memory).
+
+Copyright 2026 Xenofon S. Motsenigos
+Licensed under the Apache License, Version 2.0 (see kit/seat/python/logstats/LICENSE-APACHE).
+
+Modified: renamed `sanitize_entity_name` to `sanitize_component`, its noise-word set reduced
+to what a log component name needs, and a `parse_line` function added around it. The
+modification notice is carried in the file's own header per License section 4(b).
+
+--------------------------------------------------------------------------------
+
+Files seeded from the Shared Memory Monitor repository
+(https://github.com/KanenasInGreece/Shared_Memory_Monitor), MIT License, Copyright (c) 2026
+Shared Memory Monitor contributors — see kit/seat/js/LICENSE-MIT and
+kit/seat/html/LICENSE-MIT for the full licence text carried beside each:
+
+- kit/seat/js/bar-meta.js — copied verbatim, unmodified, from `static/bar-meta.js`.
+- kit/seat/html/index.html — a reduced fragment of `static/dashboard.html` (the header bar
+  and its `bar-meta.js` ids only; the dashboard's own body content is not carried over).

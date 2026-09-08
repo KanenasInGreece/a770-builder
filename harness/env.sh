@@ -60,6 +60,10 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_TASK_BRIEF:=$A770B_PROJECT/briefs/T1-sanitize-entity-tests.md}"   # the coding task every candidate model gets — write your own for your repo
 : "${A770B_PROBE_CORPUS:=$A770B_SEAT/**/*.py}"          # glob of source files for the long-context prefill probe
 : "${A770B_TASK_TEST_FILE:=tests/test_sanitize_entity_name_matrix.py}"      # the file the task brief asks for (capture reports on it)
+# ── the profiling kit (kit/corpus.py, harness/ctx_sweep.sh, harness/depth_probe.sh) ────────────────────────
+: "${A770B_KIT:=$A770B_PROJECT/kit}"                     # the profiling kit's own tree, versioned with the harness
+: "${A770B_CORPUS_FILE:=$A770B_KIT/corpus/large.py}"     # kit/corpus.py's generated file: real source only, sized for the display serious profile's window
+: "${A770B_SUMMARY_CORPUS:=$A770B_SEAT/**/*.py}"         # bench_model.sh's judged 17k summary rung: the SEAT's own source, never the kit's generated corpus
 export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE
 export A770B_PROFILES A770B_DEFAULT_PROFILE
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true

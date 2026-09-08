@@ -22,8 +22,13 @@ registry from carrying two rows that are really the same choice twice.
 
 The window has two numbers. `ctx` is what the model is served at — the largest window that loads under the mode's
 cap. `useful_ctx` is the largest depth at which decode still holds above four tokens a second: taken from the time
-per token at two measured points, 8k and the far end of the window (100k, or the window less 8k when the window is
-under about 110k), extended linearly between them, then capped wherever the depth probe actually failed to answer
+per token at two measured points, 8k and the far end of the window (a target of 100k, or the window less 8k when
+the window is under about 110k — a target, not a promise: `ctx_sweep.sh` sizes its corpus slice by the harness's
+own four-bytes-a-token rule, and this kit's corpus is dense real source, not prose, so that rule understates —
+a sweep asking for 8,000 tokens sent 12,718 (measured 2026-09-08). The far end recorded for a row is whatever token
+count its reply actually measured, never the number typed on the command line, and a row too slow to answer inside
+the run's time ceiling leaves no far-end reading to record at all: the 27B's own 100k attempt exceeded a 3,600 s
+ceiling with no answer), extended linearly between them, then capped wherever the depth probe actually failed to answer
 from deep in the prompt. A row can serve a large `ctx` and still have a much smaller `useful_ctx` once decode falls
 under that floor.
 
@@ -69,29 +74,43 @@ from a seat that is a clone of the target repository, never a live checkout. Con
 reports all ok, and confirm which card mode you are profiling for — display, under the 13.0 cap, or inference,
 under the 15.3 cap — since the two modes keep separate registries and a row belongs to one of them.
 
-Every number in the ledger and the registries below was measured with the seat being a standalone clone of the
-public Shared Memory repository, `https://github.com/KanenasInGreece/Shared_Memory`, at commit `3c8e2bb` (its
-release v0.9.94): the qualification task `briefs/T1-sanitize-entity-tests.md` names that repository's function
-`sanitize_entity_name` in `shared-memory/scripts/ontology.py` and its `tests/` idiom; the long-context corpus for
-the sweep and the depth probe is that clone's Python files (`A770B_PROBE_CORPUS`, default every `*.py` under the
-seat); the 17k summary prompt reads the same files. The in-house suite under `briefs/suite/` runs against a
-separate clone of this repository at the commit each brief names. Both are public, and the seat needs nothing from
-either repository at run time beyond what the brief names: each is the target of the task, not a dependency of the
-harness. Set the two seats up with:
+From this release the ladder's task rung is measured on the kit inside this repository, `kit/`: a small,
+self-contained application in Python, C++, JavaScript and HTML, with its own hidden graders and three reference
+exercises, needing no second repository at all. `harness/run_suite.sh <profile>` exports `kit/seat/` — never a
+live checkout of this repository and never a clone of it either, since the model must not read `harness/` — as the
+run's own working tree, runs each stage of the standard suite (the design note, the front end, the backend, the
+C++ optimisation) and the three reference exercises through the skill and `verify`, and writes a results file that
+names its instrument. A row's task numbers carry that instrument (`instrument: SUITE-1@0.2.0`, or `seat:
+kit/seat@<commit>`) and are compared only against rows carrying the same one; see *The standard suite* below.
+
+Every number in the ledger and the registries measured before this release carries a different instrument: the
+seat was a standalone clone of the public Shared Memory repository, `https://github.com/KanenasInGreece/Shared_Memory`,
+at commit `3c8e2bb` (its release v0.9.94): the qualification task `briefs/T1-sanitize-entity-tests.md` names that
+repository's function `sanitize_entity_name` in `shared-memory/scripts/ontology.py` and its `tests/` idiom; the
+long-context corpus for the sweep and the depth probe was that clone's Python files (`A770B_PROBE_CORPUS`, default
+every `*.py` under the seat); the 17k summary prompt read the same files. Those rows stay in the ledger and the
+registries, recorded as measured on the sibling repository at its commit (`seat: Shared_Memory@3c8e2bb`), and stay
+comparable only with each other. The clone-the-sibling instruction below stays only as the record of how they were
+taken, for a reader who wants to reproduce one of them, not as an instruction for a new row:
 
 ```
 git clone https://github.com/KanenasInGreece/Shared_Memory ~/local-ai/seat && git -C ~/local-ai/seat checkout 3c8e2bb
+```
+
+The in-house suite under `briefs/suite/` is a third, separate thing again: the harness's own regression suite, run
+against a clone of this repository at whatever commit each brief names, never the profiling suite —
+
+```
 git clone https://github.com/KanenasInGreece/a770-builder <a second seat> && git -C <that seat> checkout <the commit the brief names>
 ```
 
-the first is the seat the rows below were measured on — the harness runs the seat's own tests inside the sandbox,
-and the repository's own test dependencies come from the warm uv cache (`harness/warm_cache.sh`); the second is for
-a brief under `briefs/suite/`, at whatever commit that brief names. Comparability is the point of pinning both: a
-different seat or a different commit is a different instrument, and the ledger only ever takes rows measured on the
-same one. A reader who profiles a model of their own against these same seats and commits gets numbers comparable
-with the ledger; a reader who only wants a row for their own repository writes their own brief from the template
-and states plainly that the numbers are not comparable — the row is still theirs, and the profile is still the
-interface, but it is a different instrument.
+— the harness needs nothing from either repository at run time beyond what a brief names: each is the target of a
+task, not a dependency of the harness. Comparability is the point of pinning an instrument: a different seat, a
+different commit or a different suite version is a different instrument, and a row is only ever set beside another
+row measured on the same one. A reader who profiles a model of their own against the kit at the same release's tag
+gets numbers comparable with the ledger; a reader who only wants a row for their own repository writes their own
+brief from the template and states plainly that the numbers are not comparable — the row is still theirs, and the
+profile is still the interface, but it is a different instrument.
 
 ## The ladder
 
@@ -108,26 +127,91 @@ fails an earlier one.
    sweep: T1 measured 121 s for the 9B, 203 s for the MoE, 546 s for the 27B; the sweep's far-end time to first
    token measured 626 s for the 9B at 100k, 1,150 s for the MoE at 100k, 753 s for the 27B at 64k. The ladder's
    cost is those two numbers plus the loads and the probes.
-3. **Speed at 8k and the far end** — `harness/ctx_sweep.sh 8000 100000` (or the window less 8k when under about
-   110k): decode and prefill against position, VRAM sampled, the kernel log watched for a reset. Decides KV type
-   and ubatch, and is the source of `useful_ctx`.
+3. **Speed at 0, 8k, 32k and the far end** — `harness/bench_speed.sh <profile>`: llama-bench built from the row's
+   own served flags (`-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe`), at depths 0, 8192, 32768 and the far
+   end. This is the standard number: one command a reader can reproduce byte for byte and set beside another row's,
+   written into the registry as `speed.bench`. `harness/ctx_sweep.sh 8000 100000` (or the window less 8k when under
+   about 110k) stays in the ladder for what llama-bench does not watch — VRAM sampled during each prompt and the
+   kernel log watched for a reset — and is still the source of `useful_ctx`; its own decode and prefill readings are
+   no longer the standard figure, only the safety read for the peak and the reset. Its own "8000" and "100000" are
+   targets, not measurements — the corpus slice is sized by four bytes a token, and this kit's dense source corpus
+   makes that rule understate, so a sweep asking for 8,000 tokens sent 12,718 — and a row can be too slow to answer
+   at all before the run's own time ceiling, in which case there is nothing to record at that depth (the 27B's own
+   100k attempt ran past a 3,600 s ceiling with no answer). The standard suite's own
+   as-delivered speed (`harness/suite_report.py` on a `run_suite.sh` results file, `speed.delivered`) is recorded
+   beside the llama-bench number, labelled, never alone: the two answer different questions — what the row can do
+   at that flag set on its own, and what it actually delivered inside a real coding run, contention and all.
 4. **The depth probe, once per model and window** — `harness/depth_probe.sh <tokens>`: a detail planted about 85
    percent of the way into a large prompt, graded on whether it is actually pulled from that depth. Where it fails,
    `useful_ctx` is capped there regardless of what the arithmetic would otherwise say.
-5. **The task, under the model's own card line** — `harness/run_one.sh <label> <gguf> <ctx> [flags]`, with the
-   card's recommended server flags in `[flags]` and a profile row carrying a `sampling` object so the renderer puts
-   temperature and top_p into the agent block too. Run T1 once. Run the in-house suite (`briefs/suite/README.md`,
-   five bounded briefs each with a hidden grader) once for a row meant to carry a suite result, three times only
-   when two arms of one model are being told apart — thinking against instruct, one quantisation against another.
-   The suite adds roughly five briefs' worth of wall time.
+5. **The task, under the model's own card line** — `harness/run_suite.sh <profile>`, with the card's recommended
+   server flags served ahead of it and a profile row carrying a `sampling` object so the renderer puts temperature
+   and top_p into the agent block too. Runs the standard suite once (*The standard suite*, below) and writes the
+   results file that names the row's instrument. For a row meant to reproduce one of the earlier, sibling-repository
+   rows instead, `harness/run_one.sh <label> <gguf> <ctx> [flags]` runs `A770B_TASK_BRIEF` (T1 by default) once, and
+   the in-house suite (`briefs/suite/README.md`, five bounded briefs of this repository each with a hidden grader,
+   not the profiling suite) runs the same way for a row meant to carry that suite's result. Either way: once for a
+   row carrying a result, three times only when two arms of one model are being told apart — thinking against
+   instruct, one quantisation against another.
 6. **The cancel reproduction, once** — `harness/cancel_repro.sh`: a request cancelled mid-flight while the slot is
    held must not take the card down. Watch the kernel log across every rung above; a reset anywhere is
    disqualifying, whatever the other numbers say.
 
+## The standard suite (SUITE-1)
+
+The kit's standard suite is one small application, "logstats", built across four stages that depend on each other
+the way a real project does: a design note, a front end, a Python backend, and a C++ optimisation of its hot path.
+Each stage has its own brief and its own hidden grader, and each stage's seat carries the reference solution of
+every stage before it, never the model's own earlier output — so a later stage is graded on work that is actually
+correct, not on what this run's own model happened to write two stages back; the stages are independent of each
+other by construction. Every stage is scored on up to five axes: **working** (the hidden test, pass or fail),
+**conformance** (the compiler with warnings as errors, `node --check`, `compileall`, pass or fail), **concise**
+(lines against a stated budget, a number), and, by a reviewer that did not build the change, **maintainable**
+(every stage) and **usable** (the design note and the front end only — the backend and the C++ stage have no
+user-facing surface for that axis to grade). The design note's own hidden check and every stage's reviewer score
+are scored outside the pass count: a design note is commentary on whether the fixed interface was restated and
+justified, not "working code" the way a passing test suite is.
+
+The reviewer pass runs after the builder's own server is stopped, through a separate profile the runner refuses to
+let resolve to the builder's own model, with each stage's patch delimited as untrusted data and a fixed prompt at
+temperature 0; the reviewer's own profile, window and sampling, and the rubric's hash, are pinned beside the score
+in the results file, so a reader can tell which model graded a row and against which version of the rubric.
+
+Beside the mini-project sits a reference rung: one exercise per language — C++, JavaScript and Python — from
+Aider's own polyglot benchmark, chosen from each track's harder tier, graded the way Aider grades them (the
+exercise's own public tests, run by the language's own runner with nothing installed) plus a hidden variant with
+fresh inputs, because the exercise and its tests are public and a model may already have seen them. A row states
+both numbers per language side by side: the public exercise, relatable to Aider's own leaderboard, and the kit's
+own hidden stage, which is what actually counts. The pair is a contamination indicator, not two correctness
+scores, and its null is stated plainly: both passing carries no information about memorisation either way — the
+signal, if there is one, is a public pass beside a hidden fail.
+
+The window instrument is the sweep and the depth probe run over `kit/corpus.py`'s own generated file: real source
+only, no synthetic filler — the kit's own seat and reference material and this repository's own harness and
+documents, concatenated deterministically with a floor stated in bytes, large enough on its own that the display
+serious profile's 131,072-token window can be swept and probed all the way to its far end on any configuration. The
+sweep and the probe both refuse a corpus shorter than the prompt they are asked to cut rather than silently
+short-filling it; the 17k summary rung keeps its own separate knob on real project source, unchanged.
+
+Inside the sandbox, the toolchain the kit's graders need is already there and nothing more is installed: the
+system's own `node` (22 on this host — a version manager an interactive shell might carry is not what the sandbox
+sees), `cmake`, `make`, `g++` and `python` with the warm uv cache (`harness/warm_cache.sh`); no network, no package
+install, at run time or at grading time. Of that toolchain the model itself may only run `node`, `g++` and `cmake`
+directly, because those come from the profile template's own allow list; `make` and `ctest` are granted per task
+through that task's own specification, since a multi-file C++ stage needs a configure step the single-header one
+does not. Every grader itself runs outside the model's own shell tool entirely, through `verify`, with no
+allow-list of its own — the allow-list is for the model's own iteration, not for how a row is actually graded.
+
+A public suite has a shelf life: SUITE-1 is revised about once a year, with its hidden inputs regenerated, so a
+version that has stood a while is not assumed still uncontaminated. "Hidden" means hidden from the running model,
+never from the corpus itself.
+
 ## The bar
 
-A builder-class row is useful to at least 81,920 tokens AND has a green task: T1 passed, or the in-house suite at
-80 percent or better; every probe in the ladder passed, and no engine reset happened anywhere in the run. A row that misses this bar is not a builder, whatever
+A builder-class row is useful to at least 81,920 tokens AND has a green task — for a row measured on the kit, the
+standard suite's stages that count toward the pass tally at 80 percent or better; for a row measured on the
+sibling repository, T1 passed or the in-house suite at 80 percent or better — every probe in the ladder passed, and
+no engine reset happened anywhere in the run. A row that misses this bar is not a builder, whatever
 else is true of it — but it can still earn a place as a reader or a reviewer, and its `use_for` says so plainly.
 
 ## The comparison
