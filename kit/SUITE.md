@@ -53,6 +53,22 @@ which of the last two apply):
 A stage that every row passes or every row fails is replaced at the next revision of this
 suite (`kit/suite.json`'s `"suite": "SUITE-1"` names the version this row was measured on).
 
+## The reference rung
+
+Beside the four stages, `kit/reference/` carries one exercise per language from Aider's own
+public polyglot benchmark (`kit/reference/reference.json`), chosen from each track's harder
+tier: C++ `binary-search-tree`, JavaScript `forth` (through a small shim over `node:test`),
+Python `pov`. Each is graded the way Aider grades it — the exercise's own public tests, run by
+the language's own runner with nothing installed — plus a hidden variant with fresh inputs,
+because the exercise and its tests are public and a model may already have seen them. A row
+states both numbers per language side by side, next to the mini-project's own stage for that
+language: the public exercise (relatable to Aider's own leaderboard) and the kit's hidden
+variant (what actually counts). The pair is a contamination indicator, not two correctness
+scores, and its null is stated plainly: both passing carries no information about
+memorisation either way — the signal, if there is one, is a public pass beside a hidden fail.
+Each exercise carries its own `LICENSE` and `.meta/config.json` (MIT, Exercism, 2021, per its
+own track), unmodified, rather than an entry in `kit/SOURCES.md`.
+
 ## How a stage is run
 
 ```

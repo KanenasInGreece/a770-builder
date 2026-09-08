@@ -120,7 +120,13 @@ profile rather than the one used; all closed in the same fix round with the revi
 change to the boundary since the first has gone through a branch, a read-only adversarial review by a model that did
 not write it, and the mutation checks re-run before merge. This cycle added `node --test *`, `node --check *`,
 `g++ *` and `cmake *` to the template's own allow list, admitting the kit's JavaScript and C++ iteration commands
-under the boundary review of another family.
+under the boundary review of another family; `make *` and `ctest *`, which the kit's multi-file C++ stage needs for
+its configure step, go in per-task specifications instead, never the template. None of these patterns touch how a
+row is actually graded: the kit's own hidden graders run through `verify`, outside the profile and its allow-list
+entirely, exactly as every other hidden test does. And the seat a kit run gives the model is never a clone or
+checkout of this repository: it is an export of `kit/seat/` alone, git-init'ed fresh, so the hidden graders under
+`kit/hidden/` — the ones the allow-list changes above exist to run — are never part of the model's own tree at any
+point in a run.
 
 ## What is still open
 

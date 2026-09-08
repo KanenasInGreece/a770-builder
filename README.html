@@ -42,6 +42,11 @@ that already understands the larger job.</p>
    earned their place: two by passing a real test-writing task on a live codebase, one by reading a hundred thousand
    tokens of it and answering from the far end.</li>
 </ol>
+<p>The profiling kit itself lives inside this repository (<code>kit/</code>): a small application in four languages — Python,
+C++, JavaScript and HTML — with its own hidden graders and three reference exercises from Aider's public polyglot
+benchmark, so a candidate model is measured on a mixed real project rather than on one language and one task shape.
+A row's numbers always name the instrument they were measured on, because a row is only ever compared against
+another row measured the same way.</p>
 <p>Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.</p>
 <p>The seat runs in one of two card modes, chosen by <code>A770B_CARD_MODE</code>, each with its own registry: display-safe (the
@@ -144,6 +149,12 @@ re-qualified the same way instead of trusted.</p>
 <td>serves the model (<code>llama-server</code>)</td>
 <td>build it from source per <a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan">llama.cpp <code>docs/build.md</code>, <em>Vulkan</em></a> (measured here on b10805)</td>
 <td><code>A770B_LLAMA_BIN</code> (default <code>~/llama.cpp/build/bin/llama-server</code>)</td>
+</tr>
+<tr>
+<td><code>node</code>, <code>cmake</code>, <code>make</code>, <code>g++</code>, <code>ctest</code></td>
+<td>the toolchain the profiling kit's own graders build and test against, inside the sandbox, nothing else installed</td>
+<td>your distribution's packages (Node.js, <code>cmake</code>, <code>make</code>, <code>gcc-c++</code>)</td>
+<td>on <code>PATH</code>; <code>tests/kit_selftest.sh</code> and <code>local-build.sh doctor</code> both check the sandboxed toolchain is reachable</td>
 </tr>
 <tr>
 <td>the model files of the mode's registry (<code>config/profiles.json</code>, <code>config/profiles.inference.json</code>)</td>
@@ -286,7 +297,9 @@ family; the fourth found three holes the first three had missed, and the sixth r
 defects in its refusals, all closed the same day. All of it, with what you must still do yourself and how to report a hole, is in
 <a href="SECURITY.md"><code>SECURITY.md</code></a>.</p>
 <p>This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
-no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
+no database, no account, no memory system, and no network call of its own except the model server on loopback. The
+profiling kit is the same way: it needs no second repository, since its own seat, corners and hidden graders all
+live inside <code>kit/</code> here. It was
 developed alongside the <a href="https://github.com/KanenasInGreece/Shared_Memory">Shared Memory</a> framework, a sibling project
 that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.
 If you run that framework, or any other service, on the same host: the seat never reads or writes it, the sandbox has no

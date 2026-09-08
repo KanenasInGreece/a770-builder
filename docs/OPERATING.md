@@ -11,6 +11,7 @@ bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long    
 bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>  # with a run specification (below)
 bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --profile serious  # serious profile, on a named seat
 bash skills/local-build/scripts/local-build.sh run <brief.md> --profile fast                     # fast profile: the reader
+bash harness/run_suite.sh <profile>                                                      # the standard suite (kit/), stage by stage, one results file
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
 bash skills/local-build/scripts/local-build.sh serve <profile> · profiles [--name <profile>] · status · stop · stop-run · --version · check-update
@@ -209,6 +210,13 @@ cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j
 
 `A770B_LLAMA_BIN` defaults to `~/llama.cpp/build/bin/llama-server`; point it elsewhere if you built elsewhere.
 
+**The kit's own toolchain.** `harness/run_suite.sh` needs nothing installed beyond what a normal development host
+already has on its path: `node` (the system one; a version manager an interactive shell layers on top of it is not
+what the sandbox sees), `cmake`, `make`, `g++` and `python` with the warm uv cache (`harness/warm_cache.sh`
+pre-fills whatever `pytest` needs). No package is installed at run time or at grading time, and no network is used;
+`local-build.sh doctor` and `tests/kit_selftest.sh` both check the sandboxed toolchain is actually reachable before
+a row is trusted.
+
 **The models.** These are the exact files each row below was measured with; a different quantisation of the same
 model is a different row, and the registry's own `model` and `source` fields (`config/profiles.json`,
 `config/profiles.inference.json`) are the authority when this list and they differ. Every profiled row's file is a
@@ -247,28 +255,36 @@ Models keep being released, and a new version of a family is a new model: its wi
 sampling line and its behaviour on a real brief are all unmeasured until the harness has run it. The seat is built so
 that a new model enters by measurement, in one sitting, without touching any script:
 
-1. **Fetch the GGUF** into `A770B_MODELS` (the download lines above are the pattern) and write your qualification brief
-   for your repository if you have not yet; `briefs/T1-sanitize-entity-tests.md` is the shape that works. Every
-   number in the ledger was measured with the seat being a standalone clone of the public Shared Memory repository
-   at a pinned commit — `git clone https://github.com/KanenasInGreece/Shared_Memory ~/local-ai/seat && git -C
-   ~/local-ai/seat checkout 3c8e2bb` — and a row measured on a different seat or commit is a different instrument,
-   comparable only against other rows measured on that same one. `A770B_PROBE_CORPUS` and `A770B_TASK_BRIEF` are the
-   knobs that point the sweep, the depth probe and the qualification task at a seat and brief of your own.
-2. **Run the row**: `bash harness/run_one.sh <label> <file.gguf> <ctx> [extra llama-server args]`, with `KV_K`/`KV_V`,
-   `REASONING` and the model's own card's sampling flags in the environment as the target profile needs. It starts the
-   server under the mode's cap and `-ub 512`, runs the probes — load and VRAM at the target window, the sanity gate
-   with a budget that holds a full thinking reply when reasoning is on, the long prefill, a tool call — refuses to
-   continue if the sanity gate fails, then dispatches the brief through opencode in the seat and writes the capture and
-   a JSON of the numbers to `A770B_DATA/results/<label>.*`. Flash attention is a variable of the row, not a constant of
-   the card: if the long prefill slows with position or the kernel logs an engine reset, run the row again with
-   `-fa off` and `KV_V=f16` before judging the model. Watch the kernel log beside every row (`journalctl -k`) and stop
-   the server on the first reset.
+1. **Fetch the GGUF** into `A770B_MODELS` (the download lines above are the pattern). The ladder's task rung is now
+   the kit inside this repository (`kit/`): put a clone of this repository at the release's tag where
+   `A770B_PROJECT` points, and `harness/run_suite.sh <profile>` runs the standard suite against it — no second
+   repository, no brief of your own to write. `A770B_CORPUS_FILE` (`kit/corpus.py`'s own generated file) is what
+   the sweep and the depth probe read by default. A row measured on the kit at a different release's tag, or
+   against a revised suite version, is a different instrument, comparable only against other rows measured on that
+   same one. To reproduce one of the rows measured before this release instead — comparable only with each other,
+   never with a kit row — pin the seat the way they were pinned: `git clone
+   https://github.com/KanenasInGreece/Shared_Memory ~/local-ai/seat && git -C ~/local-ai/seat checkout 3c8e2bb`,
+   with `A770B_PROBE_CORPUS` and `A770B_TASK_BRIEF` pointing the sweep, the depth probe and the qualification task
+   at that seat and `briefs/T1-sanitize-entity-tests.md`.
+2. **Run the row**: `bash harness/run_suite.sh <profile>`, with `KV_K`/`KV_V`, `REASONING` and the model's own
+   card's sampling flags in the environment as the target profile needs. It starts the server under the mode's cap
+   and `-ub 512`, exports `kit/seat/` fresh per stage with every earlier stage's reference solution already pasted
+   in, dispatches each stage's brief through opencode in that export and `verify`s it against its hidden grader,
+   scores the reviewer-graded axes through a separate profile that is never the builder, and writes
+   `results/<profile>-suite-<date>.json` naming the row's instrument. Flash attention is a variable of the row, not
+   a constant of the card: if the long prefill slows with position or the kernel logs an engine reset, run the row
+   again with `-fa off` and `KV_V=f16` before judging the model. Watch the kernel log beside every run
+   (`journalctl -k`) and stop the server on the first reset.
    For a model meant to hold large files, add: speed at 8k and the far end of the window (`harness/ctx_sweep.sh`,
    prefill, decode and VRAM against position), the depth probe once for the model and window (`harness/depth_probe.sh`,
    correct answers from deep inside the prompt), and the cancel reproduction once (`harness/cancel_repro.sh`, a
-   cancelled request must not take the card down); run `briefs/T2-read-a-large-file.md` as a second task, and the
-   in-house suite (`briefs/suite/`, five bounded units of this repository with hidden graders) for a builder-class
-   candidate.
+   cancelled request must not take the card down) — all three now read `kit/corpus.py`'s own generated corpus by
+   default; run `briefs/T2-read-a-large-file.md` as a second task. To reproduce a row on the earlier instrument
+   instead, `bash harness/run_one.sh <label> <file.gguf> <ctx> [extra llama-server args]` runs the probes and the
+   single task against the pinned Shared Memory seat, refusing to continue if the sanity gate fails and writing its
+   capture and numbers to `A770B_DATA/results/<label>.*`; the in-house suite (`briefs/suite/`, five bounded units of
+   this repository with hidden graders, not the profiling suite) runs beside it for a builder-class candidate on
+   that instrument.
 3. **Grade the capture** with a reviewer that did not write it: `briefs/REVIEW-prompt.md` is the prompt, the capture is
    its only input. Run `local-build.sh verify <label>` for the proof. Green tests and PASS or PARTIAL qualify.
 4. **Record it**: add the row to `config/models.md` with the measured numbers, the source repository and the caveats.
@@ -324,6 +340,10 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `harness/capture_task.sh` | diff + new files + the model's pytest line + server-side TTFT/TPOT distribution, the `.patch` for `verify`, then the seat reset |
 | `harness/bench_model.sh` · `run_one.sh` · `measure_overhead.sh` | the qualification row: probes → gate → task → capture; opencode opening-request cost (testing only, run by the operator) |
 | `harness/cancel_repro.sh` · `ctx_sweep.sh` · `depth_probe.sh` | the long-context qualification: a cancelled request while the slot is held; prefill, decode and VRAM against position; correct answers from 85% of the way into a large prompt (run by the operator against a server that is up) |
+| `kit/` | the profiling suite's own seat: `kit/seat/` (the exported working tree), `kit/tasks/` (each stage's brief and specification), `kit/hidden/` (each stage's one hidden pytest grader, and the reference solutions `run_suite.sh` pastes over a fresh export), `kit/reference/` (the three Aider polyglot exercises), `kit/corpus.py` (the deterministic long-context corpus), `kit/SUITE.md` · `kit/suite.json` (the standard suite in prose and as data), `kit/SOURCES.md` · `kit/NOTICE` (attribution) |
+| `harness/run_suite.sh` | exports `kit/seat/` as its own standalone git repository, never a clone or checkout of this one, runs every stage of the standard suite and the reference exercises through the skill and `verify`, scores the reviewer-graded axes through a separate profile, and writes `results/<profile>-suite-<date>.json` |
+| `harness/suite_report.py` | reads one of those results files and prints the instrument, a per-stage table, and the totals a profile's `suite` object takes (`--json` for just the totals, pasteable into the registry) |
+| `tests/kit_selftest.sh` | proves the kit inside the real sandbox boundary, never on the host: the toolchain is found, every stage's shipped stub fails its own grader, every reference solution passes it, and every reference exercise's own public grader passes over its `.meta` solution; skips loudly without `bwrap` or the warm uv cache, so `tests/selftest.sh` stays machine-independent |
 | `config/opencode.profile.template.jsonc` | the ONLY opencode config the sandbox sees, rendered per run with the server URL, the key, the profile's window, a default-deny bash allow-list, the run specification's card, scope and additions, and a floor of deny rules rendered after every allow |
 | `harness/warm_cache.sh` | pre-fills the read-only uv cache the sandbox mounts (it has no network) |
 | `SECURITY.md` · `SANDBOX-PLAN.md` | the boundary as it stands; the problem, the plan and what was done |

@@ -6,7 +6,12 @@ model profiled. It exists so a profile is not measured on Python test-writing al
 project mixes Python, C++, JavaScript and HTML, and this kit gives the ladder one of each,
 built as a single coherent application rather than four disconnected exercises. It is scored
 on five axes per stage: working code, conformance, conciseness against a budget, and
-reviewer-graded maintainability and (where it applies) usability — see `kit/SUITE.md`.
+reviewer-graded maintainability and (where it applies) usability — see `kit/SUITE.md`. Beside
+the mini-project, `kit/reference/` carries one exercise per language from Aider's own public
+polyglot benchmark (a reference rung, not the mini-project's own stages): a row states the
+public exercise's number next to the kit's own hidden stage for the same language, a
+contamination indicator whose null is that both passing carries no information — see
+`kit/reference/reference.json` and `kit/SUITE.md`.
 
 ## Layout
 
@@ -14,11 +19,17 @@ reviewer-graded maintainability and (where it applies) usability — see `kit/SU
 kit/seat/         everything a stage's model may see and edit — the exported seat (below)
 kit/tasks/        each stage's brief and run specification (outside the seat; never copied in)
 kit/hidden/       each stage's ONE hidden pytest grader (outside the seat; never copied in
-                   until after a run's patch applies, then only as tests/_hidden_<name>.py)
-kit/suite.json    the machine-readable form of kit/SUITE.md
+                   until after a run's patch applies, then only as tests/_hidden_<name>.py);
+                   kit/hidden/solutions/<id>/ carries the reference solution of each stage
+kit/reference/    the three reference exercises (Aider's polyglot set): tasks/, and the
+                   per-language exercise directories, each with its own hidden variant
+kit/suite.json    the machine-readable form of kit/SUITE.md; kit/reference/reference.json is
+                   the reference rung's own machine-readable form
 kit/SUITE.md      the four stages in prose: what each measures, its budget, the run order
 kit/REVIEW-rubric.md   the reviewer's rubric for the maintainable and usable axes
 kit/SOURCES.md, kit/NOTICE   attribution for every file seeded from the two sibling repositories
+                   (each reference exercise carries its own LICENSE and .meta/config.json instead,
+                   per Exercism's own convention — see kit/reference/reference.json)
 ```
 
 ## The seat

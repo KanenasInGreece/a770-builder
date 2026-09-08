@@ -24,6 +24,12 @@ The repository holds two things:
    earned their place: two by passing a real test-writing task on a live codebase, one by reading a hundred thousand
    tokens of it and answering from the far end.
 
+The profiling kit itself lives inside this repository (`kit/`): a small application in four languages — Python,
+C++, JavaScript and HTML — with its own hidden graders and three reference exercises from Aider's public polyglot
+benchmark, so a candidate model is measured on a mixed real project rather than on one language and one task shape.
+A row's numbers always name the instrument they were measured on, because a row is only ever compared against
+another row measured the same way.
+
 Installing the skill does not install llama.cpp, the models, the sandbox or the runtime; the skill is the front door to
 this project, which must be present on the machine.
 
@@ -118,6 +124,7 @@ Each is installed and configured by its own instructions, linked here; this proj
 | **a Linux host** | the whole harness: the sandbox is bubblewrap, which is Linux kernel namespaces; the VRAM cap reads `nvtop`; the reset watch reads the kernel log; the serving line rests on Mesa's Vulkan driver and the Xe watchdog rules. Measured on Fedora 44 only. On Windows the plausible route is the harness under WSL2 with `llama-server` running natively on Windows and reached over the loopback, but that has not been measured here and the VRAM cap would not see the card; macOS has no bubblewrap | any distribution with user namespaces enabled (the default on Fedora, Ubuntu, Debian, Arch) | `bwrap`, `nvtop`, `journalctl` on `PATH` |
 | Vulkan driver for the card | the GPU backend llama.cpp runs on | your distribution's Mesa Vulkan driver (`mesa-vulkan-drivers`) and `vulkan-tools`; `vulkaninfo --summary` must list the card | `A770B_DEVICE` = the name `llama-server --list-devices` prints |
 | `llama.cpp` with the Vulkan backend | serves the model (`llama-server`) | build it from source per [llama.cpp `docs/build.md`, *Vulkan*](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan) (measured here on b10805) | `A770B_LLAMA_BIN` (default `~/llama.cpp/build/bin/llama-server`) |
+| `node`, `cmake`, `make`, `g++`, `ctest` | the toolchain the profiling kit's own graders build and test against, inside the sandbox, nothing else installed | your distribution's packages (Node.js, `cmake`, `make`, `gcc-c++`) | on `PATH`; `tests/kit_selftest.sh` and `local-build.sh doctor` both check the sandboxed toolchain is reachable |
 | the model files of the mode's registry (`config/profiles.json`, `config/profiles.inference.json`) | the profiles of whichever card mode this machine serves | Hugging Face: [`lmstudio-community/Qwen3.5-9B-GGUF`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF), [`ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF), [`lmstudio-community/gemma-4-E4B-it-GGUF`](https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF) and [`unsloth/Qwen3.6-35B-A3B-GGUF`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF); the download lines are in [`docs/OPERATING.md`](docs/OPERATING.md#getting-llamacpp-and-the-models); every model measured on this card is in [`config/models.md`](config/models.md), and a new one enters by the procedure in `docs/OPERATING.md` | `A770B_MODELS` (default `~/LLM/tested`), `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` |
 | [opencode](https://opencode.ai/docs) | the coding agent that runs inside the sandbox | its install script or package, per its docs | found on `PATH`, or `A770B_OPENCODE_BIN` |
 | [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) | the sandbox | your distribution's `bubblewrap` package | on `PATH` |
@@ -199,7 +206,9 @@ defects in its refusals, all closed the same day. All of it, with what you must 
 [`SECURITY.md`](SECURITY.md).
 
 This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
-no database, no account, no memory system, and no network call of its own except the model server on loopback. It was
+no database, no account, no memory system, and no network call of its own except the model server on loopback. The
+profiling kit is the same way: it needs no second repository, since its own seat, corners and hidden graders all
+live inside `kit/` here. It was
 developed alongside the [Shared Memory](https://github.com/KanenasInGreece/Shared_Memory) framework, a sibling project
 that kept the record of its decisions and reviews; none of that is needed to use it and none of it is in this repository.
 If you run that framework, or any other service, on the same host: the seat never reads or writes it, the sandbox has no

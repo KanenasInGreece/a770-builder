@@ -3,7 +3,13 @@
 This file is the ledger of every model that has been put through the seat's qualification on this card, and how it
 measured. It matters because the profiles in the mode's registry are configuration, not a promise: a model earns a
 profile here first, with numbers, and a model that is not in this table has not been measured on this card, whatever
-its reputation elsewhere. The seat runs in one of two card modes, and each reads its own registry. Display-safe reads
+its reputation elsewhere. Every row below carries an instrument — every row in this table so far was measured with
+the seat being a standalone clone of the public Shared Memory repository at commit `3c8e2bb` (`seat:
+Shared_Memory@3c8e2bb`, recorded in the registry's own `instrument` field), and stays comparable only with the other
+rows measured on that same seat and commit; the profiling guide (`AGENTS.md`) says the current models are not
+re-measured in this release, and the next model profiled enters on the kit inside this repository instead
+(`instrument: SUITE-1@0.2.0`), a different instrument again. The seat runs in one of two card modes, and each reads
+its own registry. Display-safe reads
 `config/profiles.json`: **long** = Qwen3.5-9B Q4_K_M, the default for every ordinary change; **serious** = Qwen3.8-27B
 GSQ-RCO IQ3_XXS, for a deliverable larger than its brief; **fast** = Gemma 4 E4B Q4_K_M with flash attention off, for
 the read the long window cannot hold. Pure-inference reads `config/profiles.inference.json`, measured on the same
@@ -32,6 +38,8 @@ with its caveat.
 
 ## Qualified on the Intel Arc A770 16 GB (llama.cpp b10805, Vulkan, 2026-09-06/07)
 
+Every row below: instrument `seat: Shared_Memory@3c8e2bb`.
+
 | model file | source | ctx / KV | VRAM after load | decode short / after 17k | prefill (17k) | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
 | `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 81,920 / q8_0 (131,072 / q4_0 also passes) | 6.9 GiB | 45.2 / 33.0 tok/s | 464 tok/s, 37 s | PASS, 11 tests first try, 121 s | **long** (the window before the registry) | followed the repository's test idiom unprompted; the only self-sufficient builder of the matrix; 6 GiB of headroom. Sweep 2026-09-08 (prefill and decode against position, VRAM sampled): 8k 568 / 36.8 tok/s, 32k 274 / 23.1, 64k 150 / 16.0, 71k 125 / 14.8; VRAM flat at 7.2 GiB; zero resets — the whole 81,920 window is safe, prefill under 150 tok/s past about 64k. As a builder of this repository's own skill (2026-09-08): four bounded units from exact briefs in one run each, applied unchanged; a behavioural unit of nine rules not in two runs |
@@ -42,7 +50,8 @@ with its caveat.
 | `gpt-oss-20b-UD-Q4_K_XL.gguf` | `unsloth/gpt-oss-20b-GGUF` | 81,920 / K q8_0 + V q4_0, `--chat-template-kwargs '{"reasoning_effort":"low"}'` | 11.7 GiB | 42.1 / 27 tok/s | 585 tok/s, 28 s | PARTIAL (green), 5 tests, 79 s | qualified alternative | fastest prefill and fastest task; improvised an import scaffold instead of the repository's idiom, which a reviewer catches; always reasons, keep the output limit generous |
 | `gemma-4-E4B-it-Q4_K_M.gguf` | `lmstudio-community/gemma-4-E4B-it-GGUF` | 131,072 / f16, **`-fa off`** (its condition, see below) | 6.8 GiB at 80k, 8.1 GiB at 131k | 60 / 38 tok/s | 796 tok/s, 29 s | PASS ×2 and PARTIAL ×1 (17, 6, 6 tests; the PARTIAL one `isinstance` assertion), 74–82 s; green at 131k after one fix | **fast** | the largest window at speed on this card: cold read of 107k tokens in 273 s, exact on a planted detail at 85% depth of a 100k prompt, approximate on broad recall (asked for three other functions it blended real names into ones that do not exist), a wrong number at 120k; decode 44 → 16 tok/s from 8k to 100k; VRAM flat at 8.4 GiB (sliding window); five client-cancel rounds clean, zero resets across nine rows. Not for multi-file shell edits: on the harness's own brief it made one of three edits and reported all three done. On the reading task (T2: index every top-level definition of a 6,300-line, 100k-token file): E4B paged through 60% of it in 9 min and listed 40 names, 34 of them real definitions, 19 with the right line; the 9B paged through all of it in 15.5 min and listed 57 module-level constants instead of definitions, none right. Neither seat indexes a large file; the fast profile's value is a precise question about a passage, which the long profile cannot reach at all. |
 
-The rows below are the campaign's, measured with nothing else on the card (`config/profiles.inference.json`):
+The rows below are the campaign's, measured with nothing else on the card (`config/profiles.inference.json`). Every
+row below: instrument `seat: Shared_Memory@3c8e2bb`.
 
 | model file | source | ctx / KV | VRAM after load | decode 8k / far end | prefill 8k / far end | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
@@ -54,7 +63,7 @@ The rows below are the campaign's, measured with nothing else on the card (`conf
 
 One row per file and window the campaign measured on the free card, adopted or not; VRAM is after load unless a peak
 is named. The display registry's own after-load readings above were taken with the desktop's 0.65 to 0.9 GiB on the
-card, which this table has none of.
+card, which this table has none of. Every row below: instrument `seat: Shared_Memory@3c8e2bb`.
 
 | file, window | VRAM after load (peak) | decode / prefill at 8k | profile or verdict |
 |---|---|---|---|
@@ -118,7 +127,11 @@ request can take the card down. `briefs/T2-read-a-large-file.md` is the reading 
 ## How a model enters
 
 The full guide for an agent that has a GGUF and this harness and wants a model on the list is
-[`AGENTS.md`](../AGENTS.md) at the repository root. In one line: put the GGUF in
-`A770B_MODELS`, run `harness/run_one.sh`, have a reviewer grade the capture, add the row here with its numbers, then give
-it a profile in the mode's registry (`config/profiles.json` or `config/profiles.inference.json`) with its measured
-card, render the skill's tables from it, and move the version.
+[`AGENTS.md`](../AGENTS.md) at the repository root. In one line: put the GGUF in `A770B_MODELS`, run
+`harness/run_suite.sh <profile>` against the kit inside this repository (`kit/`, the ladder's task rung from this
+release on — no second repository needed), have a reviewer profile grade the reviewer-scored axes and a reviewer
+grade the capture, add the row here with its numbers and its instrument (`instrument: SUITE-1@0.2.0`), then give it
+a profile in the mode's registry (`config/profiles.json` or `config/profiles.inference.json`) with its measured
+card and its `suite` object, render the skill's tables from it, and move the version. A row reproducing one of the
+rows above instead runs `harness/run_one.sh` against the pinned Shared Memory seat and carries `seat:
+Shared_Memory@3c8e2bb`, comparable only with the rows already in this ledger, never with a kit row.
