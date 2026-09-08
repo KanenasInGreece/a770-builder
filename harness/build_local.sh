@@ -37,8 +37,9 @@ set +e
 AGENT_ARGS=(); [ -n "${LOCAL_AGENT:-}" ] && AGENT_ARGS=(--agent "$LOCAL_AGENT")
 PROMPT="Read Local_Documentation/briefs/brief-$stamp.md in this project and carry out the task it describes. Work only inside this project directory. Do not run git commit, push, merge or any docker/systemctl command."
 RUNPID="$A770B_DATA/logs/run.pid"                              # the pid of `timeout`, for the life of the run: local-build.sh stop-run ends exactly it
+trap 'rm -f "$RUNPID"' EXIT INT TERM                          # the file must not outlive the run, even one ended by a signal
 if [ "${SANDBOX:-1}" = 1 ]; then
-  ( printf '%s\n' "$BASHPID" > "$RUNPID"; exec timeout "${LOCAL_TIMEOUT:-1800}" bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
+  ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "${LOCAL_TIMEOUT:-1800}" bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
       opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 9>&- ) 2>&1 | tee "$LOG"
 else
   echo "⚠ SANDBOX=0: running opencode UNCONFINED (testing only)" | tee -a "$LOG"

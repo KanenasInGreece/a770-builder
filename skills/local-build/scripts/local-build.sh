@@ -75,7 +75,7 @@ status(){ local c; c=$(current); version 2>&1
   echo "profiles: fast = $A770B_FAST_MODEL ctx $A770B_FAST_CTX · serious = $A770B_SERIOUS_MODEL ctx $A770B_SERIOUS_CTX · long = $A770B_LONG_MODEL ctx $A770B_LONG_CTX · models in $A770B_MODELS"
   echo "project $A770B_PROJECT · data $A770B_DATA · seat $A770B_SEAT"
   if ! : 9>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then echo "run lock: unknown (cannot open $A770B_DATA/logs/local-build.lock)"; elif ( flock -n 9 ) 9>>"$A770B_DATA/logs/local-build.lock"; then echo "run lock: free"; else echo "run lock: HELD — a run, verify, serve or reset is in progress; wait for it"; fi
-  if pid=$(run_pid_alive "$A770B_DATA/logs/run.pid"); then echo "run: pid $pid in progress since $(date -r "$A770B_DATA/logs/run.pid" +%H:%M:%S) — local-build.sh stop-run ends exactly it"; else echo "run: none"; fi
+  if pid=$(run_pid_alive "$A770B_DATA/logs/run.pid"); then echo "run: pid $pid in progress since $(date -r "$A770B_DATA/logs/run.pid" +%H:%M:%S 2>/dev/null || echo "a moment ago") — local-build.sh stop-run ends exactly it"; else echo "run: none"; fi
   local n; if [ -d "$A770B_SEAT/.git" ]; then n=$(seat_dirty "$A770B_SEAT" | wc -l); if [ "$n" = 0 ]; then echo "seat: $A770B_SEAT clean"; else echo "seat: $A770B_SEAT has $n uncommitted or ignored entries — local-build.sh reset before a run"; fi; else echo "seat: $A770B_SEAT is not a git clone"; fi
 }
 case "${1:-}" in
