@@ -49,7 +49,8 @@ PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
 profile_vars(){ # sets gguf ctx kv reasoning extra t for a profile named in A770B_PROFILES
   a770b_is_profile "$1" || die "profile must be one of: $A770B_PROFILES"
-  gguf=$(a770b_model_path "$(a770b_profile_var "$1" MODEL)"); ctx=$(a770b_profile_var "$1" CTX); kv=$(a770b_profile_var "$1" KV)
+  local m; m=$(a770b_profile_var "$1" MODEL); [ -n "$m" ] || die "profile $1 has no MODEL set (A770B_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')_MODEL is empty)"
+  gguf=$(a770b_model_path "$m"); ctx=$(a770b_profile_var "$1" CTX); kv=$(a770b_profile_var "$1" KV)
   reasoning=$(a770b_profile_var "$1" REASONING); extra=$(a770b_profile_var "$1" EXTRA); t=$(a770b_profile_var "$1" TIMEOUT)
 }
 serve(){ local p="$1" gguf ctx kv reasoning extra t; profile_vars "$p"

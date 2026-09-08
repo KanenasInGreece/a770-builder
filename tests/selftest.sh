@@ -86,7 +86,7 @@ else echo "skip shellcheck: none on PATH and none in the uv cache (install shell
 python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
 [ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = "long" ] && echo "ok   profiles: names and default come from the registry" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='$A770B_DEFAULT_PROFILE'"; fail=1; }
 [ "$(a770b_profile_var long CTX)" = "262144" ] && printf '%s' "$(a770b_profile_var serious EXTRA)" | grep -q reasoning_effort && echo "ok   profiles: the helper reads the registry's variables" || { echo "FAIL profiles: a770b_profile_var did not read the registry"; fail=1; }
-[ "$(A770B_LONG_CTX=4096 bash -c '. "$1/harness/env.sh" >/dev/null 2>&1; a770b_profile_var long CTX' _ "$here")" = "4096" ] && echo "ok   profiles: the environment wins over the registry" || { echo "FAIL profiles: A770B_LONG_CTX=4096 did not win over the registry default"; fail=1; }
+[ "$( (export A770B_LONG_CTX=4096; . "$here/harness/env.sh" >/dev/null 2>&1; a770b_profile_var long CTX) )" = "4096" ] && echo "ok   profiles: the environment wins over the registry" || { echo "FAIL profiles: A770B_LONG_CTX=4096 did not win over the registry default"; fail=1; }
 # the stop-run gate: run_pid_alive is the proof a pid is ours before any signal is sent, proved here without the card
 RUNPID="$A770B_DATA/logs/run.pid"
 rm -f "$RUNPID"
