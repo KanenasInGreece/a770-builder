@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "default": "long",
+  "notes": "Every number is a measurement on the Arc A770 (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. useful_ctx is where prefill falls under 150 tok/s or decode under the profile's floor. capability values are the model card's or the quantiser's own evaluation, named in capability_source. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served.",
+  "profiles": {
+    "long": {
+      "model": "Qwen3.5-9B-Q4_K_M.gguf",
+      "source": "lmstudio-community/Qwen3.5-9B-GGUF",
+      "family": "qwen3.5",
+      "architecture": "dense, hybrid attention (Gated DeltaNet + gated attention, 4 KV heads)",
+      "quant": "Q4_K_M",
+      "params_b": {"total": 9, "active": 9},
+      "ctx": 262144,
+      "useful_ctx": 65536,
+      "kv": "q8_0",
+      "flash_attention": "on",
+      "reasoning": "off",
+      "extra": "",
+      "timeout_s": 1500,
+      "vram_gib_after_load": 10.35,
+      "ram_gb_extra": 0,
+      "speed": {
+        "decode_tps": {"8k": 36.8, "32k": 23.1, "64k": 16.0, "100k": 11.6},
+        "prefill_tps": {"8k": 571, "32k": 274, "64k": 150, "100k": 147}
+      },
+      "depth_probe_100k": "pass",
+      "task_t1": "pass",
+      "capability": {},
+      "capability_source": "",
+      "use_for": "The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there."
+    },
+    "fast": {
+      "model": "gemma-4-E4B-it-Q4_K_M.gguf",
+      "source": "google/gemma-4-E4B-it (GGUF Q4_K_M)",
+      "family": "gemma4",
+      "architecture": "dense, sliding window 512 on five of six layers",
+      "quant": "Q4_K_M",
+      "params_b": {"total": 8, "active": 4},
+      "ctx": 131072,
+      "useful_ctx": 100000,
+      "kv": "f16",
+      "flash_attention": "off",
+      "reasoning": "off",
+      "extra": "-fa off",
+      "timeout_s": 1500,
+      "vram_gib_after_load": 8.1,
+      "ram_gb_extra": 0,
+      "speed": {
+        "decode_tps": {"8k": 60, "32k": null, "64k": null, "100k": 16},
+        "prefill_tps": {"8k": 796, "32k": null, "64k": null, "100k": 280}
+      },
+      "depth_probe_100k": "pass",
+      "task_t1": "weak: one of three edits made on a shell brief, three reported",
+      "capability": {"LiveCodeBench_v6": 52.0, "MMLU_Pro": 69.4, "GPQA_Diamond": 58.6},
+      "capability_source": "google/gemma-4 model card",
+      "use_for": "The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits."
+    },
+    "serious": {
+      "model": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf",
+      "source": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+      "family": "qwen3.8",
+      "architecture": "dense, hybrid attention (4 KV heads, 64 blocks)",
+      "quant": "IQ3_XXS",
+      "params_b": {"total": 27, "active": 27},
+      "ctx": 131072,
+      "useful_ctx": 32768,
+      "kv": "q4_0",
+      "flash_attention": "on",
+      "reasoning": "on",
+      "extra": "--chat-template-kwargs {\"reasoning_effort\":\"low\"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0",
+      "timeout_s": 3600,
+      "vram_gib_after_load": 12.25,
+      "ram_gb_extra": 0,
+      "speed": {
+        "decode_tps": {"8k": 8.1, "32k": 6.2, "64k": 4.9, "100k": null},
+        "prefill_tps": {"8k": 72, "32k": 58, "64k": 42, "100k": null}
+      },
+      "depth_probe_100k": "not run",
+      "task_t1": "pass",
+      "capability": {"LiveCodeBench_v6": 84.57, "GPQA_Diamond": 88.89, "AIME25": 100},
+      "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100)",
+      "use_for": "A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env."
+    }
+  }
+}
