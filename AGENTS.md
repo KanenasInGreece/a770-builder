@@ -23,16 +23,19 @@ experts (`moe`), and `weight_class`, a short label such as `9b`, `12b` or `35b-a
 registry from carrying two rows that are really the same choice twice.
 
 The window has two numbers. `ctx` is what the model is served at — the largest window that loads under the mode's
-cap. `useful_ctx` is the largest depth at which decode still holds above four tokens a second: taken from the time
-per token at two measured points, 8k and the far end of the window (a target of 100k, or the window less 8k when
-the window is under about 110k — a target, not a promise: `ctx_sweep.sh` sizes its corpus slice by the harness's
-own four-bytes-a-token rule, and this kit's corpus is dense real source, not prose, so that rule understates —
-a sweep asking for 8,000 tokens sent 12,718 (measured 2026-09-08). The far end recorded for a row is whatever token
-count its reply actually measured, never the number typed on the command line, and a row too slow to answer inside
-the run's time ceiling leaves no far-end reading to record at all: the 27B's own 100k attempt exceeded a 3,600 s
-ceiling with no answer), extended linearly between them, then capped wherever the depth probe actually failed to answer
-from deep in the prompt. A row can serve a large `ctx` and still have a much smaller `useful_ctx` once decode falls
-under that floor.
+cap, a human's own choice that rung 1 of the ladder below only confirms. `useful_ctx` is the largest depth at which
+decode still holds above four tokens a second: taken from the time per token at two measured points, 8k and the far
+end of the window (a target of 100k, or the window less 8k when the window is under about 110k — a target, not a
+promise: `ctx_sweep.sh` sizes its corpus slice by the harness's own four-bytes-a-token rule, and this kit's corpus is
+dense real source, not prose, so that rule understates — a sweep asking for 8,000 tokens sent 12,718 (measured
+2026-09-08). The far end recorded for a row is whatever token count its reply actually measured, never the number
+typed on the command line, and a row too slow to answer inside the run's time ceiling leaves no far-end reading to
+record at all: the 27B's own 100k attempt exceeded a 3,600 s ceiling with no answer), extended linearly between
+them, then capped at the depth probe's last passing depth — 8,000 tokens whenever the far end's own probe fails,
+since 8k is the only other point this ladder actually probes the model's quality at. This is the one definition of
+`useful_ctx` in this project: `harness/ladder.sh` computes it exactly this way, and no other threshold — a prefill
+figure, a different tokens-a-second floor — stands in for it anywhere else in these documents. A row can serve a
+large `ctx` and still have a much smaller `useful_ctx` once decode falls under that floor.
 
 Decode and prefill tokens per second are recorded at both points, plus time to first token at the far end; nothing
 is scored on a number pulled from the middle of the window. Quality has three short strings, each with its own
@@ -116,48 +119,77 @@ profile is still the interface, but it is a different instrument.
 
 ## The ladder
 
-Each rung is a command as it exists in the tree, run in this order because later rungs are wasted on a model that
-fails an earlier one.
+```
+harness/ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q8_0|q4_0] [--extra "<flags>"]
+                  [--timeout S] [--seat <path>] [--suite <suite.json>] [--reviewer <profile>] [--fresh] [--dry-run]
+```
 
-1. **Load and VRAM at the target window** — `harness/serve_a770_llamacpp.sh start <gguf> <ctx> [flags]`, with
-   `KV_K`, `KV_V` and `REASONING` set in the environment. Decides the largest window that actually loads under the
-   mode's cap. A mixture-of-experts file fills the card with expert layers by passing `--n-cpu-moe N` in `[flags]`
-   and counting down from a high N until it loads.
-2. **The probes and the 17k summary** — `harness/bench_model.sh <label> <gguf> <ctx> [flags]`: greedy sanity
-   answers, a tool call, a coherent summary after roughly 17k tokens of prefill. The gate's budget holds a full
-   thinking reply when `REASONING=on`. The ladder's wall time is dominated by rung 5's T1 and rung 3's far-end
-   sweep: T1 measured 121 s for the 9B, 203 s for the MoE, 546 s for the 27B; the sweep's far-end time to first
-   token measured 626 s for the 9B at 100k, 1,150 s for the MoE at 100k, 753 s for the 27B at 64k. The ladder's
-   cost is those two numbers plus the loads and the probes.
-3. **Speed at 0, 8k, 32k and the far end** — `harness/bench_speed.sh <profile>`: llama-bench built from the row's
-   own served flags (`-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe`), at depths 0, 8192, 32768 and the far
-   end. This is the standard number: one command a reader can reproduce byte for byte and set beside another row's,
-   written into the registry as `speed.bench`. `harness/ctx_sweep.sh 8000 100000` (or the window less 8k when under
-   about 110k) stays in the ladder for what llama-bench does not watch — VRAM sampled during each prompt and the
-   kernel log watched for a reset — and is still the source of `useful_ctx`; its own decode and prefill readings are
-   no longer the standard figure, only the safety read for the peak and the reset. Its own "8000" and "100000" are
-   targets, not measurements — the corpus slice is sized by four bytes a token, and this kit's dense source corpus
-   makes that rule understate, so a sweep asking for 8,000 tokens sent 12,718 — and a row can be too slow to answer
-   at all before the run's own time ceiling, in which case there is nothing to record at that depth (the 27B's own
-   100k attempt ran past a 3,600 s ceiling with no answer). The standard suite's own
-   as-delivered speed (`harness/suite_report.py` on a `run_suite.sh` results file, `speed.delivered`) is recorded
-   beside the llama-bench number, labelled, never alone: the two answer different questions — what the row can do
-   at that flag set on its own, and what it actually delivered inside a real coding run, contention and all.
-4. **The depth probe, once per model and window** — `harness/depth_probe.sh <tokens>`: a detail planted about 85
-   percent of the way into a large prompt, graded on whether it is actually pulled from that depth. Where it fails,
-   `useful_ctx` is capped there regardless of what the arithmetic would otherwise say.
-5. **The task, under the model's own card line** — `harness/run_suite.sh <profile>`, with the card's recommended
-   server flags served ahead of it and a profile row carrying a `sampling` object so the renderer puts temperature
-   and top_p into the agent block too. Runs the standard suite once (*The standard suite*, below) and writes the
-   results file that names the row's instrument. For a row meant to reproduce one of the earlier, sibling-repository
-   rows instead, `harness/run_one.sh <label> <gguf> <ctx> [flags]` runs `A770B_TASK_BRIEF` (T1 by default) once, and
-   the in-house suite (`briefs/suite/README.md`, five bounded briefs of this repository each with a hidden grader,
-   not the profiling suite) runs the same way for a row meant to carry that suite's result. Either way: once for a
-   row carrying a result, three times only when two arms of one model are being told apart — thinking against
-   instruct, one quantisation against another.
-6. **The cancel reproduction, once** — `harness/cancel_repro.sh`: a request cancelled mid-flight while the slot is
-   held must not take the card down. Watch the kernel log across every rung above; a reset anywhere is
-   disqualifying, whatever the other numbers say.
+is the one command that runs every rung below, in this order, stopping at the first failure — a later rung is
+wasted on a model that failed an earlier one. `<profile-or-gguf>` is either a name already in the registry (every
+knob comes from its row; passing `--ctx`/`--kv`/`--kv-v`/`--extra` alongside one is refused) or a bare GGUF or
+absolute path — a model with no row yet, which needs `--ctx` and climbs every rung except rung 3 (`bench_speed.sh`
+needs a registry profile; it is skipped for a bare GGUF, with a clear note in the output). It writes one JSON
+holding every rung's own numbers, whatever ran, then prints a REGISTRY ROW ready to paste under `profiles.<name>`
+in `config/profiles.json` or `.inference.json`. `--dry-run` prints every rung's command and writes nothing.
+
+1. **Load and VRAM at the target window** — `harness/serve_a770_llamacpp.sh start`, wrapped inside
+   `harness/bench_model.sh <label> <gguf> <ctx> [flags]`. Decides whether the window given actually loads under the
+   mode's cap, and the after-load VRAM (`vram_gib_after_load`) and, for a MoE row, the host RAM the load costs
+   beyond it (`ram_gb_extra`, the `MemAvailable` drop across the load).
+2. **The probes and the 17k summary** — the rest of `bench_model.sh`: greedy sanity answers, a tool call, a
+   coherent summary after roughly 17k tokens of prefill. Decides whether the row is sane enough for the rungs after
+   it to be worth running at all.
+3. **The standard speed rung** — `harness/bench_speed.sh <profile>`: llama-bench built from the row's own served
+   flags (`-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe`), at depths 0, 8192, 32768 and the far end. Decides
+   `speed.bench`: one command a reader can reproduce byte for byte and set beside another row's. Needs a registry
+   profile (`harness/profiles.py card --name <profile>` has no ephemeral form); skipped for a bare GGUF.
+4. **The window rung** — `harness/ctx_sweep.sh 8000 <far end>` (the far end: 100000, or the served window less 8k
+   when that window is under about 110k). Decides the two measured speed points — 8k and the far end, prefill,
+   decode, time to first token — `useful_ctx`'s linear extension is drawn from, and is the safety read for what
+   llama-bench does not watch: VRAM sampled during each prompt and the kernel log watched for a reset. Its own
+   "8000" and the far end are targets, not measurements — the corpus slice is sized by four bytes a token, and this
+   kit's dense source corpus makes that rule understate, so a sweep asking for 8,000 tokens has sent more before
+   now — and a row can be too slow to answer at all before the run's own time ceiling, in which case there is
+   nothing to record at that depth.
+5. **The depth probe, now graded** — `harness/depth_probe.sh <far end>`: a detail planted about 85 percent of the
+   way into a large prompt, answered and self-graded PASS/FAIL per question (exit 0 iff at least two of three).
+   Decides whether `useful_ctx`'s linear extension is trusted past 8k at all: where it fails, `useful_ctx` is
+   capped at 8,000 regardless of what the arithmetic from rung 4 would otherwise say.
+6. **The task rung** — `harness/run_suite.sh <profile>` (or, for a model with no row yet, `--model <gguf> --ctx
+   <n> [--kv …] [--kv-v …] [--extra …] [--timeout …]` — the same path a new GGUF climbs the task rung on before a
+   human has measured and pasted its row, and exactly what `--dry-run`'s rung 6 line shows for a bare GGUF). Decides
+   the row's `suite` object — which stages passed, out of the stages that count toward the tally: a reference
+   exercise, and any stage carrying `counts_toward_pass: false`, never does.
+
+`harness/cancel_repro.sh` — the cancel reproduction, once per model — is **not** part of this ladder: a request
+cancelled mid-flight while the slot is held must not take the card down, and it stays a one-off, once-per-model
+check an operator runs by hand. Watch the kernel log across every rung above; a reset anywhere is disqualifying,
+whatever the other numbers say.
+
+**What the ladder still leaves to a human.** Everything above is measured or computed; the following is not. A
+window, KV types, expert placement and flash attention are inputs the ladder takes as given, on the command line or
+from an existing row, and never searches for itself; `use_for`, `fit.write` and `capability` come back in the
+printed row marked `__TODO__`; the reviewer is a plain `--reviewer <profile>` choice; `fit.think` is not in the
+printed row at all:
+
+- **the largest window under the cap** — rung 1 confirms whether a given `--ctx` loads; which window to try, and a
+  MoE row's own `--n-cpu-moe` count, is a human's own search, counting down from a high number until it fits.
+- **the expert placement for a mixture-of-experts row** — how many expert layers sit on the card versus in host
+  memory, chosen by hand and re-measured, never searched by the ladder itself.
+- **flash attention on or off** — fixed per family (*What stays fixed*, above), decided once from a family's own
+  behaviour, not re-measured per row.
+- **the KV types** — `--kv`/`--kv-v` are given to the ladder, never derived by it.
+- **which model reviews the rubric** — `--reviewer <profile>`, a human's choice of a profile that the runner
+  refuses to let resolve to the builder's own model.
+- **the `use_for` sentence** — written by hand from what the ladder run actually showed; never derived from a
+  measurement.
+- **the capability figures** — the model's or the quantiser's own published evaluation, quoted verbatim, never
+  re-measured by the ladder.
+
+Beside these, a row's identity fields — `source`, `family`, `architecture`, `quant`, `category`, `weight_class`,
+`params_b`, `capability_source`, `sampling`, `measured_on` and (for a row reproducing the sibling-repository
+instrument) `task_t1` — are transcribed once by hand from the GGUF's own metadata and the model's public card,
+never derived from a rung; `ladder.sh`'s own closing note lists them again for the row it just measured.
 
 ## The standard suite (SUITE-1)
 

@@ -54,8 +54,10 @@ serving line here is llama.cpp with the Vulkan backend on the distribution's own
 measures rather than assumes.
 
 Whether a 16 GB card can hold a model that actually finishes a small, well-specified change in a real repository is a
-question. Only measurement answers it. Every candidate is now measured on the kit inside this repository, and only
-what passes earns a place. Earlier rows in the ledger were measured on a sibling repository instead.
+question. Only measurement answers it. From this release, a new candidate is measured on the kit inside this
+repository instead of a sibling one — no row has yet been measured on the kit, and the first one will be. Only what
+passes earns a place. Earlier rows in the ledger were measured on a sibling repository, and stay comparable only
+with each other.
 
 ## Install
 

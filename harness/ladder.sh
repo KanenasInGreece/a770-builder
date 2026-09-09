@@ -33,6 +33,7 @@
 # (SUITE-1@<VERSION>) filled in; use_for, fit.write and capability left as clearly marked placeholders — those are
 # never derived from a measurement, they are written by hand from what the ladder showed (kit/PROFILE.md §2) — and
 # a closing note lists the identity fields (source, family, architecture, quant, category, weight_class, params_b,
+# measured_on,
 # capability_source, sampling, task_t1) the ladder never fills, transcribed once by hand from the GGUF's own
 # metadata and the model's public card.
 # --dry-run prints every rung's command and writes nothing.
@@ -405,7 +406,7 @@ print(json.dumps(row, indent=2))
 print(
     "\nNot filled above — transcribe once by hand from the GGUF's own metadata and the model's public card "
     "(kit/PROFILE.md §2, \"identity fields, not measurements\"): source, family, architecture, quant, category, "
-    "weight_class, params_b, capability_source, sampling."
+    "weight_class, params_b, capability_source, sampling, and measured_on (the card and the serving build)."
 )
 if not (far_end >= 90000 and depth_score is not None):
     note = f"depth probe ran at {far_end} tokens (not ~100k)"
