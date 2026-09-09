@@ -82,18 +82,27 @@ else
   TIMEOUT="${TIMEOUT_ARG:-1500}"
   NAME=$(basename "$GGUF"); NAME="${NAME%.gguf}"
 fi
+SEAT_IS_OURS=0; [ -n "$SEAT" ] || SEAT_IS_OURS=1
 SEAT="${SEAT:-$A770B_DATA/kit-seat}"
+# a seat is a path, never a flag: '--seat --fresh' would otherwise make the seat the string '--fresh'
+case "$SEAT" in -*) die "the seat path looks like an option ('$SEAT') — pass --seat <path>";; esac
+# and the data directory a seat is replaced under has to be a real one, never empty and never the root
+{ [ -n "$A770B_DATA" ] && [ "$A770B_DATA" != "/" ]; } || die "A770B_DATA is not a directory a seat may be replaced under: '$A770B_DATA'"
 DATE=$(date +%Y%m%d-%H%M%S)
 OUT="$A770B_DATA/results/${NAME}-ladder-${DATE}.json"
 
-# the far end: 100000 unless the served window itself ends sooner (never sweep or probe past what the row can hold)
+# the far end: 100000 unless the served window itself ends sooner (never sweep or probe past what the row can hold).
+# The window has to hold the reply and the chat template as well as the prompt, so leave room for them: a probe sized
+# to exactly CTX asks the server for a request it can only turn down.
 FAR_END=100000
-[ "$CTX" -lt "$FAR_END" ] 2>/dev/null && FAR_END="$CTX"
+FAR_ROOM=$((CTX - 1024))
+[ "$FAR_ROOM" -lt "$FAR_END" ] 2>/dev/null && FAR_END="$FAR_ROOM"
+[ "$FAR_END" -gt 8000 ] || die "the served window ($CTX) leaves a far end of $FAR_END tokens, at or below the sweep's 8000-token shallow point — this ladder needs a window above about 9,024 tokens"
 DEPTHS="0,8192,32768"
 case ",$DEPTHS," in *",$FAR_END,"*) ;; *) DEPTHS="$DEPTHS,$FAR_END" ;; esac
 
 if [ "$DRYRUN" = 1 ]; then
-  FRESH_FLAG=""; [ "$FRESH" = 1 ] && FRESH_FLAG=" --fresh"
+  FRESH_FLAG=""; { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && FRESH_FLAG=" --fresh"
   echo "[dry-run] ladder for ${PROFILE_NAME:-$GGUF} — ctx=$CTX kv=$KV/$KV_V extra='$EXTRA' reasoning=$REAS timeout=${TIMEOUT}s far_end=$FAR_END"
   echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (ram_gb_extra)"
   echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
@@ -102,8 +111,9 @@ if [ "$DRYRUN" = 1 ]; then
   else
     echo "[dry-run] rung 3/6: SKIPPED — harness/bench_speed.sh needs a registry profile ('harness/profiles.py card --name <profile>' has no ephemeral form); $GGUF has no row yet"
   fi
-  echo "[dry-run] rung 4/6: bash harness/serve_a770_llamacpp.sh stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/serve_a770_llamacpp.sh start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh 8000 $FAR_END"
-  echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END  (now graded: PASS/FAIL per question, exit 0 iff >=2/3)"
+  echo "[dry-run] rung 4/6: bash harness/serve_a770_llamacpp.sh stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/serve_a770_llamacpp.sh start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
+  echo "[dry-run]           both are sized in real tokens by the server's tokeniser, and their deadlines come from rung 3's measured curve (harness/prompt_budget.py)"
+  echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --bench <rung 3's file>  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 6/6: bash harness/run_suite.sh $PROFILE_NAME $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   else
@@ -156,7 +166,10 @@ if [ -z "$FAIL_RUNG" ]; then
     FAIL_RUNG="window-serve"; FAIL_MSG="the server did not come up for the window rung"
   else
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
-    ( bash "$here/ctx_sweep.sh" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
+    # rung 3 has already measured how prefill slows with depth for this model on this card; the sweep sets each
+    # point's deadline from that curve instead of from a constant that fits no model (harness/prompt_budget.py)
+    SWEEP_ARGS=(); [ -n "$BENCH_SPEED_JSON" ] && SWEEP_ARGS=(--bench "$BENCH_SPEED_JSON")
+    ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
   fi
 fi
@@ -166,8 +179,15 @@ DEPTH_LOG=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 5/6 — depth probe at $FAR_END (graded: PASS/FAIL per question)"
   DEPTH_LOG="$LOGDIR/ladder-depth-probe-$$.log"
-  bash "$here/depth_probe.sh" "$FAR_END" 2>&1 | tee "$DEPTH_LOG"; rc=${PIPESTATUS[0]}
-  [ "$rc" = 0 ] || { FAIL_RUNG="depth"; FAIL_MSG="the depth probe answered fewer than two of three correctly — see $DEPTH_LOG"; }
+  PROBE_ARGS=(); [ -n "$BENCH_SPEED_JSON" ] && PROBE_ARGS=(--bench "$BENCH_SPEED_JSON")
+  bash "$here/depth_probe.sh" "$FAR_END" "${PROBE_ARGS[@]}" 2>&1 | tee "$DEPTH_LOG"; rc=${PIPESTATUS[0]}
+  case "$rc" in
+    0) ;;
+    1) FAIL_RUNG="depth"; FAIL_MSG="the depth probe answered fewer than two of three correctly — see $DEPTH_LOG" ;;
+    3) FAIL_RUNG="depth-no-answer"
+       FAIL_MSG="the server never answered the depth probe — the prompt was turned down, or the deadline cut it off. The model was never asked, so this says nothing about its quality at depth; see $DEPTH_LOG" ;;
+    *) FAIL_RUNG="depth-setup"; FAIL_MSG="the depth probe could not be set up (exit $rc) — see $DEPTH_LOG" ;;
+  esac
 fi
 
 # ── rung 6: the task, under the model's own card line ────────────────────────────────────────────────────────
@@ -179,7 +199,10 @@ if [ -z "$FAIL_RUNG" ]; then
   else RS_ARGS=(--model "$GGUF" --ctx "$CTX" --kv "$KV" --kv-v "$KV_V" --extra "$EXTRA" --timeout "$TIMEOUT" "$SEAT"); fi
   [ -n "$SUITE" ] && RS_ARGS+=(--suite "$SUITE")
   [ -n "$REVIEWER" ] && RS_ARGS+=(--reviewer "$REVIEWER")
-  [ "$FRESH" = 1 ] && RS_ARGS+=(--fresh)
+  # a ladder run owns the kit's own scratch seat and replaces it without being asked: a leftover from an earlier
+  # run stopped the task rung of all three profiles on 2026-09-09, in under a second, before any model work. A seat
+  # the operator named by hand keeps run_suite.sh's guard.
+  { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && RS_ARGS+=(--fresh)
   RS_LOG="$LOGDIR/ladder-run-suite-$$.log"
   bash "$here/run_suite.sh" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}
   SUITE_RESULTS_JSON=$(grep -oE '[^ ]+-suite-[0-9]{8}-[0-9]{6}-[0-9]+\.json' "$RS_LOG" | tail -1)
@@ -259,6 +282,10 @@ m = re.search(r'depth probe at \d+: (\d)/3', depth_text)
 if m:
     depth_score = int(m.group(1))
 depth_pass = None if depth_score is None else depth_score >= 2
+# "not measured" is not a score of zero: the server turned the prompt down or the deadline cut it off, so the model
+# was never asked. Left as None, it stops the 8,000 cap below from writing a useful_ctx nobody measured.
+m_nm = re.search(r'depth probe at \d+: not measured — (.+)', depth_text)
+depth_not_measured = m_nm.group(1).strip() if m_nm else None
 
 # ── useful_ctx: the four-tokens-a-second rule (AGENTS.md) — decode time-per-token at 8k and the far end,
 # extended linearly between them, capped by the depth probe's last passing depth (8k when the far probe failed,
@@ -275,6 +302,10 @@ if p8 and pfar and p8["decode_tps"] > 0 and pfar["decode_tps"] > 0:
 if depth_pass is False:
     cap = 8000
     useful_ctx = cap if useful_ctx is None else min(useful_ctx, cap)
+# a probe the server never answered measured nothing at all, so no window here has any quality behind it:
+# report none rather than the sweep's own figure, which would read as if the depth had been checked
+if depth_not_measured:
+    useful_ctx = None
 if useful_ctx is not None:
     useful_ctx = max(0, min(useful_ctx, ctx))
 
@@ -362,7 +393,8 @@ ladder_doc = {
         "load_and_probes": bench_model,
         "standard_speed": bench_speed,
         "window_sweep": sweep_points or None,
-        "depth_probe": {"log": depth_log or None, "score": depth_score, "pass": depth_pass},
+        "depth_probe": {"log": depth_log or None, "score": depth_score, "pass": depth_pass,
+                        "not_measured": depth_not_measured},
         "task_suite": suite,
     },
     "computed": {
@@ -412,7 +444,10 @@ print(
     "— replace its text with the card and the serving build."
 )
 if not (far_end >= 90000 and depth_score is not None):
-    note = f"depth probe ran at {far_end} tokens (not ~100k)"
+    if depth_not_measured:
+        note = f"the depth probe at {far_end} tokens was never answered — {depth_not_measured}"
+    else:
+        note = f"depth probe ran at {far_end} tokens (not ~100k)"
     if depth_score is not None:
         note += f": {depth_score}/3 ({'pass' if depth_pass else 'fail'})"
     print(f"depth_probe_100k: not filled — {note}; record it by hand if that is close enough to call the 100k rung.")

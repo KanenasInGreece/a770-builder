@@ -593,7 +593,41 @@ DPCURL
 chmod +x "$t/dpbin/curl"
 python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":1234},"timings":{"prompt_per_second":500,"predicted_per_second":20},"choices":[{"message":{"content":"orbital_checksum_v7 multiplies each byte by its 1-based position, sums them, and xors the sum with the salt (default 4171), then reduces the result modulo 65521, described as the Adler prime. Other real definitions include helper_1, helper_2, and helper_3."}}]}, open(sys.argv[1],"w"))' "$t/dp-good.json"
 python3 -c 'import json,sys; json.dump({"usage":{},"timings":{},"choices":[{"message":{"content":"I could not determine the exact behaviour of the function or any other definitions in the source."}}]}, open(sys.argv[1],"w"))' "$t/dp-bad.json"
-A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-good.json" \
+# depth_probe.sh cuts its prompt to a real token count with the server's own tokeniser now, rather than guessing
+# four characters to the token, so these grading tests need something that answers /tokenize. The completion itself
+# is still the fake curl above; this only stands in for the count.
+cat > "$t/tokenizer.py" <<'TOKPY'
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        # about three characters to the token, the ratio the kit's own corpus actually shows
+        tokens = list(range(max(1, len(body.get("content", "")) // 3)))
+        out = json.dumps({"tokens": tokens}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = HTTPServer(("127.0.0.1", 0), Handler)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+TOKPY
+python3 "$t/tokenizer.py" > "$t/tokport" 2>/dev/null &
+tok_pid=$!
+for _ in $(seq 1 50); do [ -s "$t/tokport" ] && break; sleep 0.1; done
+tok_port=$(cat "$t/tokport" 2>/dev/null)
+[ -n "$tok_port" ] || { echo "FAIL depth_probe: the stand-in tokeniser did not start"; fail=1; }
+
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-good.json" \
   bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-good.out" 2>&1; dp_good_rc=$?
 if [ "$dp_good_rc" = 0 ] && grep -q '^PASS: Q1' "$t/dp-good.out" && grep -q '^PASS: Q2' "$t/dp-good.out" \
   && grep -q '^PASS: Q3' "$t/dp-good.out" && grep -q 'depth probe at 1000: 3/3' "$t/dp-good.out" \
@@ -601,13 +635,69 @@ if [ "$dp_good_rc" = 0 ] && grep -q '^PASS: Q1' "$t/dp-good.out" && grep -q '^PA
 then echo "ok   depth_probe: a fully-correct reply grades PASS on all three questions (3/3) and exits 0, the raw answer still printed"
 else echo "FAIL depth_probe: good-answer grading did not pass as expected (rc=$dp_good_rc)"; cat "$t/dp-good.out"; fail=1
 fi
-A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-bad.json" \
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-bad.json" \
   bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-bad.out" 2>&1; dp_bad_rc=$?
 if [ "$dp_bad_rc" = 1 ] && grep -q '^FAIL: Q1' "$t/dp-bad.out" && grep -q '^FAIL: Q2' "$t/dp-bad.out" \
   && grep -q '^FAIL: Q3' "$t/dp-bad.out" && grep -qE 'depth probe at 1000: [01]/3' "$t/dp-bad.out"
 then echo "ok   depth_probe: a reply with none of the planted facts grades FAIL on all three questions and exits 1"
 else echo "FAIL depth_probe: bad-answer grading did not fail as expected (rc=$dp_bad_rc)"; cat "$t/dp-bad.out"; fail=1
 fi
+# ── the measured-deadline change: the deadline comes from the card's own curve, the prompt is cut to a real
+# ── token count, and anything that could not be measured says so rather than reporting a number ──────────────
+cat > "$t/pb-bench.json" <<'JSON'
+{"raw":[{"n_depth":0,"n_prompt":8192,"n_gen":0,"avg_ts":575.906343},{"n_depth":0,"n_prompt":0,"n_gen":128,"avg_ts":45.772166},
+        {"n_depth":8192,"n_prompt":8192,"n_gen":0,"avg_ts":414.080038},{"n_depth":8192,"n_prompt":0,"n_gen":128,"avg_ts":36.399182},
+        {"n_depth":32768,"n_prompt":8192,"n_gen":0,"avg_ts":218.792395},{"n_depth":32768,"n_prompt":0,"n_gen":128,"avg_ts":23.11061},
+        {"n_depth":100000,"n_prompt":8192,"n_gen":0,"avg_ts":89.263201},{"n_depth":100000,"n_prompt":0,"n_gen":128,"avg_ts":11.621887}]}
+JSON
+pb_100k=$(python3 "$here/harness/prompt_budget.py" time --tokens 100000 --gen 96 --bench "$t/pb-bench.json" 2>/dev/null)
+pb_8k=$(python3 "$here/harness/prompt_budget.py" time --tokens 8000 --gen 96 --bench "$t/pb-bench.json" 2>/dev/null)
+if [ "$pb_100k" -gt 900 ] && [ "$pb_100k" -lt 1400 ] && [ "$pb_8k" -lt 400 ] 2>/dev/null
+then echo "ok   prompt_budget: the deadline is integrated from the card's own measured curve — about ${pb_100k}s at 100k against ${pb_8k}s at 8k, a spread no single constant fits"
+else echo "FAIL prompt_budget: the integrated deadline is not what the measured curve says (8k=$pb_8k 100k=$pb_100k)"; fail=1
+fi
+printf '[{"n_depth":0,"n_prompt":8192,"n_gen":0,"avg_ts":72.97},{"n_depth":8192,"n_prompt":8192,"n_gen":0,"avg_ts":64.52}]' > "$t/pb-list.json"
+pb_list=$(python3 "$here/harness/prompt_budget.py" time --tokens 98000 --bench "$t/pb-list.json" 2>/dev/null); pb_list_rc=$?
+pb_none=$(python3 "$here/harness/prompt_budget.py" time --tokens 98000 2>/dev/null)
+if [ "$pb_list_rc" = 0 ] && [ "$pb_list" -gt 3600 ] && [ "$pb_none" -ge 7200 ] 2>/dev/null
+then echo "ok   prompt_budget: a bench file that is a bare list is read rather than crashed on, and with no curve at all the deadline is the cap, never a low guess"
+else echo "FAIL prompt_budget: the bare-list bench (rc=$pb_list_rc, $pb_list) or the unmeasured fallback ($pb_none) is wrong"; fail=1
+fi
+printf '{"raw":[{"n_depth":8192,"n_prompt":8192,"n_gen":0,"avg_ts":414.08}]}' > "$t/pb-one.json"
+pb_one_note=$(python3 "$here/harness/prompt_budget.py" time --tokens 100000 --bench "$t/pb-one.json" 2>&1 >/dev/null)
+printf '%s' "$pb_one_note" | grep -q UNMEASURED \
+  && echo "ok   prompt_budget: a single measured depth cannot be extrapolated — it is refused as unmeasured, never charged at the shallow rate" \
+  || { echo "FAIL prompt_budget: a single measured depth was extrapolated instead of refused"; fail=1; }
+pb_fit=$(python3 "$here/harness/prompt_budget.py" fit --corpus "$dp_corpus" --target 1000 --out "$t/pb-prompt" --overhead 64 --url "http://127.0.0.1:$tok_port" 2>/dev/null)
+pb_short_rc=0; python3 "$here/harness/prompt_budget.py" fit --corpus "$dp_corpus" --target 100000 --out "$t/pb-prompt2" --overhead 64 --url "http://127.0.0.1:$tok_port" >/dev/null 2>&1 || pb_short_rc=$?
+if [ -n "$pb_fit" ] && [ "$pb_fit" -le 1000 ] && [ "$pb_fit" -ge 900 ] && [ "$pb_short_rc" = 2 ] 2>/dev/null
+then echo "ok   prompt_budget: the prompt is cut to a real token count at or just under the target ($pb_fit for 1000), and a corpus too short to reach it is refused rather than short-filled"
+else echo "FAIL prompt_budget: fit missed the target ($pb_fit) or short-filled instead of refusing (rc=$pb_short_rc)"; fail=1
+fi
+printf '' > "$t/dp-none.json"
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-none.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-none.out" 2>&1; dp_none_rc=$?
+python3 -c 'import json,sys; json.dump({"choices":[{"message":{"content":"   "}}]}, open(sys.argv[1],"w"))' "$t/dp-empty.json"
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-empty.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-empty.out" 2>&1; dp_empty_rc=$?
+if [ "$dp_none_rc" = 3 ] && grep -q 'not measured' "$t/dp-none.out" && ! grep -qE ': [0-9]/3' "$t/dp-none.out" \
+  && [ "$dp_empty_rc" = 1 ] && grep -q 'depth probe at 1000: 0/3' "$t/dp-empty.out"
+then echo "ok   depth_probe: a request the server never answered is 'not measured' and exits 3, while a model that answers with nothing is graded 0/3 and exits 1"
+else echo "FAIL depth_probe: unanswered (rc=$dp_none_rc) and empty-answer (rc=$dp_empty_rc) are not told apart"; cat "$t/dp-none.out" "$t/dp-empty.out"; fail=1
+fi
+lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 40000 --dry-run 2>&1)
+lad_seat=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad4" bash "$here/harness/ladder.sh" long --seat "$t/mine" --dry-run 2>&1)
+lad_small=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad5" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1); lad_small_rc=$?
+lad_flag=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad6" bash "$here/harness/ladder.sh" long --seat --fresh --dry-run 2>&1); lad_flag_rc=$?
+if printf '%s\n' "$lad_res" | grep -q 'far_end=38976' && printf '%s\n' "$lad_res" | grep -q 'ctx_sweep.sh --bench' \
+  && printf '%s\n' "$lad_res" | grep -q 'depth_probe.sh 38976 --bench' \
+  && printf '%s\n' "$lad_res" | grep -q -- 'kit-seat --fresh' && ! printf '%s\n' "$lad_seat" | grep -q -- '--fresh' \
+  && [ "$lad_small_rc" != 0 ] && printf '%s\n' "$lad_small" | grep -q '8000-token shallow point' \
+  && [ "$lad_flag_rc" != 0 ] && printf '%s\n' "$lad_flag" | grep -q 'looks like an option'
+then echo "ok   ladder: the far end leaves 1024 tokens under the window, both long rungs are handed rung 3's measured curve, only the kit's own seat is replaced, and a window too small for both sweep points or a seat that is really a flag are refused"
+else echo "FAIL ladder: far end, --bench, seat replacement or the two refusals are not as expected"; printf '%s\n' "$lad_res" | head -12; fail=1
+fi
+kill "$tok_pid" 2>/dev/null; wait "$tok_pid" 2>/dev/null
 
 # ── harness/ladder.sh (item 2): the one command that produces a row — --dry-run prints all six rungs and writes nothing
 lad_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data" bash "$here/harness/ladder.sh" long --dry-run 2>&1)
@@ -619,8 +709,8 @@ if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | g
 then echo "ok   ladder: --dry-run names all six rungs (load, probes, speed, window, depth probe, task) and writes nothing"
 else echo "FAIL ladder: --dry-run output missing a rung or wrote something"; printf '%s\n' "$lad_out"; fail=1
 fi
-lad_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data2" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1)
-if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_model_out" | grep -q -- '--model .*--ctx 8192'
+lad_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data2" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 40000 --dry-run 2>&1)
+if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_model_out" | grep -q -- '--model .*--ctx 40000'
 then echo "ok   ladder: a bare GGUF with no registry row skips the bench_speed.sh rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
 else echo "FAIL ladder: the no-row GGUF path did not skip bench_speed.sh or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
 fi
