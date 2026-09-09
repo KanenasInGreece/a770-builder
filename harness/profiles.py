@@ -29,6 +29,16 @@ from `at_depth["32768"]`, `64k` from `at_depth["65536"]`, `100k` from `at_depth[
 performs that fill itself: a row's author reads `bench.at_depth` and writes the four keys by
 hand, the same way every other number in the registry is a human transcription of a
 measurement, not a derived value.
+
+A row's `thinking` object is optional and carries what the server's five thinking controls
+were measured at: `mode` ("on"|"off"|"auto", `--reasoning`), `effort`
+("low"|"medium"|"high"|"xhigh"|"default", `--reasoning-effort`), `budget` (int, -1
+unrestricted, 0 or a positive token count, `--reasoning-budget`), `budget_message` (string,
+`--reasoning-budget-message`), `preserve` (bool, `--reasoning-preserve` /
+`--no-reasoning-preserve`) and `source` (where the setting came from). Every key is optional;
+an unknown key or a wrong type is refused. The older top-level `reasoning` field ("on"/"off")
+stays for now and must not contradict `thinking.mode` when both are set (an "auto" mode never
+contradicts either value of `reasoning`).
 """
 
 import argparse
@@ -49,6 +59,9 @@ MODE_VALUES = {"display", "inference"}
 SAMPLING_NUMBER_KEYS = {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"}
 SAMPLING_MODE_VALUES = {"thinking", "instruct"}
 SAMPLING_KEYS = SAMPLING_NUMBER_KEYS | {"mode", "source"}
+THINKING_KEYS = {"mode", "effort", "budget", "budget_message", "preserve", "source"}
+THINKING_MODE_VALUES = {"on", "off", "auto"}
+THINKING_EFFORT_VALUES = {"low", "medium", "high", "xhigh", "default"}
 CATEGORY_VALUES = {"dense", "moe"}
 WEIGHT_CLASS_RE = re.compile(r"^[0-9]+b(-[ae][0-9]+b)?$")
 FAR_END_KEYS = {"tokens", "decode_tps", "prefill_tps", "ttft_s"}
@@ -76,10 +89,10 @@ STRING_KEYS = (
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
-    "instrument",
+    "instrument", "thinking",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
-OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite"}
+OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -439,6 +452,50 @@ def validate(data) -> list[str]:
                     if not isinstance(extra, str) or not TOP_P_FLAG_RE.search(extra):
                         errors.append(f"{name}: sampling.top_p is set but extra carries no --top-p")
 
+        if "thinking" in prof:
+            thinking = prof["thinking"]
+            if not isinstance(thinking, dict):
+                errors.append(f"{name}: thinking must be an object")
+            else:
+                for kk in thinking.keys():
+                    if kk not in THINKING_KEYS:
+                        errors.append(f"{name}: thinking: unknown key {kk}")
+
+                if "mode" in thinking and thinking["mode"] not in THINKING_MODE_VALUES:
+                    errors.append(f"{name}: thinking.mode must be on, off or auto")
+
+                if "effort" in thinking:
+                    effort = thinking["effort"]
+                    if not isinstance(effort, str) or effort not in THINKING_EFFORT_VALUES:
+                        errors.append(f"{name}: thinking.effort must be one of low, medium, high, xhigh, default")
+
+                if "budget" in thinking:
+                    budget = thinking["budget"]
+                    if not _is_int(budget) or budget < -1:
+                        errors.append(f"{name}: thinking.budget must be -1, 0 or a positive int")
+
+                if "budget_message" in thinking:
+                    budget_message = thinking["budget_message"]
+                    if not isinstance(budget_message, str) or not budget_message:
+                        errors.append(f"{name}: thinking.budget_message must be a non-empty string")
+
+                if "preserve" in thinking and not isinstance(thinking["preserve"], bool):
+                    errors.append(f"{name}: thinking.preserve must be a bool")
+
+                if "source" in thinking:
+                    source = thinking["source"]
+                    if not isinstance(source, str) or not source:
+                        errors.append(f"{name}: thinking.source must be a non-empty string")
+
+                mode = thinking.get("mode")
+                reasoning = prof.get("reasoning")
+                if (
+                    isinstance(mode, str) and mode in ON_OFF_VALUES
+                    and isinstance(reasoning, str) and reasoning in ON_OFF_VALUES
+                    and mode != reasoning
+                ):
+                    errors.append(f"{name}: thinking.mode {mode!r} contradicts reasoning {reasoning!r}")
+
     # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time:
     # the project keeps one best row per (category, weight_class) class, and a registry is
     # measurements from one instrument, never a mix.
@@ -534,6 +591,24 @@ def cmd_env(args) -> int:
         output_tokens_str = str(output_tokens) if _is_pos_int(output_tokens) else ""
         print(': "${A770B_%s_OUTPUT_TOKENS:=%s}"' % (upper, output_tokens_str))
         print(': "${A770B_%s_REASONING:=%s}"' % (upper, prof["reasoning"]))
+        thinking = prof.get("thinking") or {}
+        thinking_mode = thinking.get("mode")
+        thinking_effort = thinking.get("effort")
+        thinking_budget = thinking.get("budget")
+        thinking_budget_message = thinking.get("budget_message")
+        thinking_preserve = thinking.get("preserve")
+        thinking_mode_str = thinking_mode if isinstance(thinking_mode, str) else ""
+        thinking_effort_str = thinking_effort if isinstance(thinking_effort, str) else ""
+        thinking_budget_str = str(thinking_budget) if _is_int(thinking_budget) else ""
+        thinking_preserve_str = "" if not isinstance(thinking_preserve, bool) else ("true" if thinking_preserve else "false")
+        print(': "${A770B_%s_THINKING_MODE:=%s}"' % (upper, thinking_mode_str))
+        print(': "${A770B_%s_THINKING_EFFORT:=%s}"' % (upper, thinking_effort_str))
+        print(': "${A770B_%s_THINKING_BUDGET:=%s}"' % (upper, thinking_budget_str))
+        print(
+            '[ -n "${A770B_%s_THINKING_BUDGET_MESSAGE:-}" ] || A770B_%s_THINKING_BUDGET_MESSAGE=%s'
+            % (upper, upper, sh_single_quote(thinking_budget_message if isinstance(thinking_budget_message, str) else ""))
+        )
+        print(': "${A770B_%s_THINKING_PRESERVE:=%s}"' % (upper, thinking_preserve_str))
         print(': "${A770B_%s_TIMEOUT:=%d}"' % (upper, prof["timeout_s"]))
         print(
             '[ -n "${A770B_%s_EXTRA:-}" ] || A770B_%s_EXTRA=%s'

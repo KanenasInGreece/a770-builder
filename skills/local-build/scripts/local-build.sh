@@ -49,14 +49,20 @@ case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_upd
 SERVE="$A770B_PROJECT/harness/serve_a770_llamacpp.sh"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
-profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t for a profile named in A770B_PROFILES
+profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fields for a profile named in A770B_PROFILES
   a770b_is_profile "$1" || die "profile must be one of: $A770B_PROFILES"
   local m; m=$(a770b_profile_var "$1" MODEL); [ -n "$m" ] || die "profile $1 has no MODEL set (A770B_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')_MODEL is empty)"
   gguf=$(a770b_model_path "$m"); ctx=$(a770b_profile_var "$1" CTX); kv=$(a770b_profile_var "$1" KV)
   kv_v=$(a770b_profile_var "$1" KV_V)
   reasoning=$(a770b_profile_var "$1" REASONING); extra=$(a770b_profile_var "$1" EXTRA); t=$(a770b_profile_var "$1" TIMEOUT)
+  # the row's optional `thinking` object (harness/profiles.py): empty when the row sets none, like every field above
+  thinking_mode=$(a770b_profile_var "$1" THINKING_MODE); thinking_effort=$(a770b_profile_var "$1" THINKING_EFFORT)
+  thinking_budget=$(a770b_profile_var "$1" THINKING_BUDGET); thinking_budget_message=$(a770b_profile_var "$1" THINKING_BUDGET_MESSAGE)
+  thinking_preserve=$(a770b_profile_var "$1" THINKING_PRESERVE)
 }
-serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t; profile_vars "$p"
+serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
+  local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
+  profile_vars "$p"
   [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
   if [ "$(current)" = "$gguf" ] && curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
     if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; return 0; fi
@@ -65,10 +71,17 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t; profile_vars "$p"
   bash "$SERVE" stop >/dev/null 2>&1
   # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
   # shellcheck disable=SC2086
-  KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning bash "$SERVE" start "$gguf" "$ctx" $extra || die "server did not start (budget gate or VRAM cap refused — see above)"
+  KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
+    THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
+    THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
+    bash "$SERVE" start "$gguf" "$ctx" $extra || die "server did not start (budget gate or VRAM cap refused — see above)"
   for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || die "server not healthy after 180 s"
-  echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv/${kv_v:-$kv} · $A770B_HOST:$A770B_PORT"
+  local thinking_desc="mode ${thinking_mode:-$reasoning}"
+  [ -n "$thinking_effort" ] && thinking_desc="$thinking_desc · effort $thinking_effort"
+  [ -n "$thinking_budget" ] && thinking_desc="$thinking_desc · budget $thinking_budget"
+  [ "$thinking_preserve" = "false" ] && thinking_desc="$thinking_desc · preserve off" || thinking_desc="$thinking_desc · preserve on"
+  echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv/${kv_v:-$kv} · thinking $thinking_desc · $A770B_HOST:$A770B_PORT"
 }
 status(){ local c; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi

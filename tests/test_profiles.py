@@ -254,6 +254,11 @@ def test_env_matches_expected_lines():
         ': "${A770B_LONG_TOP_P:=}"',
         ': "${A770B_LONG_OUTPUT_TOKENS:=}"',
         ': "${A770B_LONG_REASONING:=off}"',
+        ': "${A770B_LONG_THINKING_MODE:=}"',
+        ': "${A770B_LONG_THINKING_EFFORT:=}"',
+        ': "${A770B_LONG_THINKING_BUDGET:=}"',
+        "[ -n \"${A770B_LONG_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_LONG_THINKING_BUDGET_MESSAGE=''",
+        ': "${A770B_LONG_THINKING_PRESERVE:=}"',
         ': "${A770B_LONG_TIMEOUT:=1500}"',
         "[ -n \"${A770B_LONG_EXTRA:-}\" ] || A770B_LONG_EXTRA=''",
     ]
@@ -262,9 +267,18 @@ def test_env_matches_expected_lines():
 
     expected_serious_extra = (
         '[ -n "${A770B_SERIOUS_EXTRA:-}" ] || A770B_SERIOUS_EXTRA='
-        "'--chat-template-kwargs {\"reasoning_effort\":\"low\"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0'"
+        "'--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0'"
     )
     assert expected_serious_extra in lines
+    expected_serious_thinking = [
+        ': "${A770B_SERIOUS_THINKING_MODE:=on}"',
+        ': "${A770B_SERIOUS_THINKING_EFFORT:=low}"',
+        ': "${A770B_SERIOUS_THINKING_BUDGET:=}"',
+        "[ -n \"${A770B_SERIOUS_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_SERIOUS_THINKING_BUDGET_MESSAGE=''",
+        ': "${A770B_SERIOUS_THINKING_PRESERVE:=true}"',
+    ]
+    for line in expected_serious_thinking:
+        assert line in lines
 
 
 def test_env_roundtrips_extra_and_survives_preset(tmp_path):
@@ -1514,3 +1528,302 @@ def test_snippet_labels_use_profile_flag(tmp_path):
     assert "**--profile long** (default) = " in text
     assert "**--profile fast** = " in text
     assert "**--profile serious** = " in text
+
+
+# --- thinking: the server's five thinking controls (--reasoning, --reasoning-effort,
+# --reasoning-budget, --reasoning-budget-message, --reasoning-preserve) as a profile field ---
+
+
+def _valid_thinking(**overrides) -> dict:
+    # mode "off" matches the shipped long profile's own reasoning: off, so a caller testing an
+    # unrelated field (budget, effort, source, ...) does not incidentally trip the
+    # mode-vs-reasoning contradiction rule; tests of that rule itself override mode explicitly.
+    thinking = {
+        "mode": "off", "effort": "low", "budget": 512, "budget_message": "budget spent, answer now",
+        "preserve": True, "source": "test card",
+    }
+    thinking.update(overrides)
+    return thinking
+
+
+def test_check_fails_thinking_not_object(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = "hot"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking must be an object" in result.stderr
+
+
+def test_check_fails_thinking_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(bogus=1)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking: unknown key bogus" in result.stderr
+
+
+def test_check_fails_thinking_bad_mode(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(mode="maybe")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.mode must be on, off or auto" in result.stderr
+
+
+def test_check_fails_thinking_bad_effort(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(effort="extreme")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.effort must be one of low, medium, high, xhigh, default" in result.stderr
+
+
+def test_check_fails_thinking_effort_not_string(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(effort=1)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.effort must be one of low, medium, high, xhigh, default" in result.stderr
+
+
+def test_check_fails_thinking_budget_not_int(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(budget="512")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.budget must be -1, 0 or a positive int" in result.stderr
+
+
+def test_check_fails_thinking_budget_below_minus_one(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(budget=-2)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.budget must be -1, 0 or a positive int" in result.stderr
+
+
+def test_check_passes_thinking_budget_minus_one_and_zero(tmp_path):
+    for b in (-1, 0, 512):
+        data = load_base()
+        data["profiles"]["long"]["thinking"] = _valid_thinking(budget=b)
+        path = write_json(tmp_path / "p.json", data)
+
+        result = run("check", "--file", str(path))
+        assert result.returncode == 0, f"budget={b}: {result.stderr}"
+
+
+def test_check_fails_thinking_budget_message_not_string(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(budget_message=1)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.budget_message must be a non-empty string" in result.stderr
+
+
+def test_check_fails_thinking_budget_message_empty(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(budget_message="")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.budget_message must be a non-empty string" in result.stderr
+
+
+def test_check_fails_thinking_preserve_not_bool(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(preserve="yes")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.preserve must be a bool" in result.stderr
+
+
+def test_check_fails_thinking_source_empty(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(source="")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.source must be a non-empty string" in result.stderr
+
+
+def test_check_fails_thinking_source_not_string(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(source=1)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.source must be a non-empty string" in result.stderr
+
+
+def test_check_passes_thinking_every_key_optional(tmp_path):
+    """Every thinking key is optional: an empty object, and a single-key object, both pass."""
+    for partial in ({}, {"mode": "auto"}, {"preserve": False}, {"source": "x"}):
+        data = load_base()
+        data["profiles"]["long"]["thinking"] = partial
+        path = write_json(tmp_path / "p.json", data)
+
+        result = run("check", "--file", str(path))
+        assert result.returncode == 0, f"{partial}: {result.stderr}"
+
+
+def test_check_passes_valid_thinking(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking()
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_thinking_mode_contradicts_reasoning_on(tmp_path):
+    """long ships with reasoning: off -- a thinking.mode of on contradicts it."""
+    data = load_base()
+    assert data["profiles"]["long"]["reasoning"] == "off"
+    data["profiles"]["long"]["thinking"] = _valid_thinking(mode="on")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: thinking.mode 'on' contradicts reasoning 'off'" in result.stderr
+
+
+def test_check_fails_thinking_mode_contradicts_reasoning_off(tmp_path):
+    """serious ships with reasoning: on -- a thinking.mode of off contradicts it."""
+    data = load_base()
+    assert data["profiles"]["serious"]["reasoning"] == "on"
+    data["profiles"]["serious"]["thinking"]["mode"] = "off"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: serious: thinking.mode 'off' contradicts reasoning 'on'" in result.stderr
+
+
+def test_check_passes_thinking_mode_auto_never_contradicts(tmp_path):
+    """auto is compatible with either reasoning value -- it is not a fixed state."""
+    for name in ("long", "serious"):
+        data = load_base()
+        thinking = dict(data["profiles"][name].get("thinking") or {})
+        thinking["mode"] = "auto"
+        thinking.setdefault("source", "test")
+        data["profiles"][name]["thinking"] = thinking
+        path = write_json(tmp_path / "p.json", data)
+
+        result = run("check", "--file", str(path))
+        assert result.returncode == 0, f"{name}: {result.stderr}"
+
+
+def test_check_passes_thinking_mode_matches_reasoning(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(mode="off")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_env_thinking_empty_when_unset():
+    result = run("env", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert ': "${A770B_LONG_THINKING_MODE:=}"' in lines
+    assert ': "${A770B_LONG_THINKING_EFFORT:=}"' in lines
+    assert ': "${A770B_LONG_THINKING_BUDGET:=}"' in lines
+    assert "[ -n \"${A770B_LONG_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_LONG_THINKING_BUDGET_MESSAGE=''" in lines
+    assert ': "${A770B_LONG_THINKING_PRESERVE:=}"' in lines
+
+
+def test_env_thinking_set_from_registry(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(
+        mode="off", budget=0, budget_message="stop thinking, it's time",
+    )
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("env", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert ': "${A770B_LONG_THINKING_MODE:=off}"' in lines
+    assert ': "${A770B_LONG_THINKING_EFFORT:=low}"' in lines
+    assert ': "${A770B_LONG_THINKING_BUDGET:=0}"' in lines
+    assert (
+        "[ -n \"${A770B_LONG_THINKING_BUDGET_MESSAGE:-}\" ] || "
+        "A770B_LONG_THINKING_BUDGET_MESSAGE='stop thinking, it'\\''s time'"
+    ) in lines
+    assert ': "${A770B_LONG_THINKING_PRESERVE:=true}"' in lines
+
+
+def test_env_thinking_output_is_valid_shell(tmp_path):
+    """A budget_message with an embedded single quote (an apostrophe, plausible in real prose)
+    must round-trip through the shell unbroken."""
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(budget_message="don't stop, it's fine")
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("env", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    script = result.stdout + '\necho "$A770B_LONG_THINKING_BUDGET_MESSAGE"\n'
+    bash_result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert bash_result.returncode == 0, bash_result.stderr
+    assert bash_result.stdout.strip() == "don't stop, it's fine"
+
+
+def test_env_thinking_negative_one_budget(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["thinking"] = _valid_thinking(budget=-1)
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("env", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    assert ': "${A770B_LONG_THINKING_BUDGET:=-1}"' in result.stdout.splitlines()
+
+
+def test_card_prints_thinking_as_stored():
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "serious")
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["thinking"] == {
+        "mode": "on", "effort": "low", "preserve": True,
+        "source": (
+            "huggingface.co/Qwen/Qwen3.8-27B model card's thinking line; reasoning effort low "
+            "ruled by this project for speed (formerly carried through --chat-template-kwargs, "
+            "now the first-class --reasoning-effort flag)"
+        ),
+    }
+
+
+def test_card_no_thinking_on_unmeasured_rows():
+    """long (both registries) and inference moe carry no thinking object yet -- the measured
+    bounded-budget arm is not a ruled row, and card must not invent one."""
+    for f, names in ((PROFILES_JSON, ("long",)), (PROFILES_INFERENCE_JSON, ("long", "moe"))):
+        for name in names:
+            result = run("card", "--file", str(f), "--name", name)
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout).get("thinking") is None, name
+
+
+def test_check_passes_both_shipped_registries_thinking():
+    for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+        result = run("check", "--file", str(f))
+        assert result.returncode == 0, result.stderr

@@ -28,7 +28,13 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot _a770b_selected_mode
 # flash attention off is the Gemma 4 condition on this card (with it on, prefill collapses with position and the GPU
 # watchdog fires); without it the V cache must be f16, which the sliding window keeps small
 # ── the profiles: config/profiles.json is the single source (harness/profiles.py env prints ${VAR:=…} defaults, so
-#    builder.env and the environment still win per variable); A770B_PROFILES lists the names, A770B_DEFAULT_PROFILE the default
+#    builder.env and the environment still win per variable); A770B_PROFILES lists the names, A770B_DEFAULT_PROFILE
+#    the default. Among what it prints per profile: A770B_<P>_THINKING_MODE/_EFFORT/_BUDGET/_BUDGET_MESSAGE/_PRESERVE
+#    from the registry row's optional `thinking` object (harness/profiles.py's docstring) — empty when the row sets
+#    none. `a770b_profile_var <profile> THINKING_MODE` (etc., below) reads them like any other profile field; the
+#    caller that starts the server (skills/local-build/scripts/local-build.sh's `serve`) is what maps them onto the
+#    THINKING_MODE/THINKING_EFFORT/THINKING_BUDGET/THINKING_BUDGET_MESSAGE/THINKING_PRESERVE environment variables
+#    harness/serve_a770_llamacpp.sh reads to build its --reasoning* flags.
 # the mode's two defaults: the registry it reads and its VRAM cap. 15.3 is measured on the A770 with no display (15.9
 # on the card, prefill growth at or under 0.3 GiB under ub 512, a 0.3 GiB reserve); 13.0 leaves an unmeasured desktop 3 GiB.
 case "$A770B_CARD_MODE" in inference) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.inference.json}"; : "${A770B_VRAM_CAP_GIB:=15.3}";; *) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.json}"; : "${A770B_VRAM_CAP_GIB:=13.0}";; esac

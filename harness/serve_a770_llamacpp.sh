@@ -7,6 +7,19 @@
 # quantised KV, --jinja, GGML_VK_DISABLE_COOPMAT=1 (the flag set proven on Arc under Vulkan).
 # ⚠ The cap and the ubatch are the card mode's (A770B_CARD_MODE): 13.0 GiB after load on a card that also draws a
 # desktop, 15.3 on one that draws nothing, -ub 512 in both, because the Xe job watchdog is what both protect.
+# Thinking (a profile's `thinking` object, harness/profiles.py; per call THINKING_MODE/THINKING_EFFORT/
+# THINKING_BUDGET/THINKING_BUDGET_MESSAGE/THINKING_PRESERVE, each added only when non-empty — an empty value adds
+# no argument):
+#   --reasoning <mode>        on/off/auto — THINKING_MODE when the profile set one, else today's REASONING
+#                              variable (default off)
+#   --reasoning-effort LEVEL  low/medium/high/xhigh/default — a first-class flag; where a row's `extra` used to
+#                              carry --chat-template-kwargs '{"reasoning_effort":"..."}' instead, this flag REPLACES
+#                              it (the same setting, no longer passed through the template kwarg)
+#   --reasoning-budget N      -1 unrestricted, 0 or a positive token budget spent on thinking before it is cut off
+#   --reasoning-budget-message MESSAGE   injected before the end-of-thinking tag when the budget is hit
+#   --no-reasoning-preserve   added only when THINKING_PRESERVE is exactly "false" — the server keeps the thinking
+#                              trace in the whole history by default for templates that support it (its own startup
+#                              log warns this may use more tokens), so "true" or unset adds nothing
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; LOG="$A770B_DATA/logs/llamacpp-a770.log"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
@@ -23,12 +36,21 @@ llama_pid_alive "$PIDFILE" >/dev/null && { echo "⛔ already running (pid $(cat 
 budget_gate || exit 1
 ss -ltn | grep -q ":$A770B_PORT " && { echo "⛔ port $A770B_PORT bound" >&2; exit 2; }
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
+# the thinking controls, built in an array so an unset/empty one adds no argument (see the header comment)
+declare -a THINKING_ARGS=()
+_a770b_reasoning_mode="${THINKING_MODE:-${REASONING:-off}}"
+[ -n "$_a770b_reasoning_mode" ] && THINKING_ARGS+=(--reasoning "$_a770b_reasoning_mode")
+[ -n "${THINKING_EFFORT:-}" ] && THINKING_ARGS+=(--reasoning-effort "$THINKING_EFFORT")
+[ -n "${THINKING_BUDGET:-}" ] && THINKING_ARGS+=(--reasoning-budget "$THINKING_BUDGET")
+[ -n "${THINKING_BUDGET_MESSAGE:-}" ] && THINKING_ARGS+=(--reasoning-budget-message "$THINKING_BUDGET_MESSAGE")
+[ "${THINKING_PRESERVE:-}" = "false" ] && THINKING_ARGS+=(--no-reasoning-preserve)
+unset _a770b_reasoning_mode
 # --api-key-file: every completion needs the key (the rendered profile carries it); a process outside the harness cannot use the card unnoticed
 MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" nohup "$A770B_LLAMA_BIN" -m "$MODEL" --alias "$A770B_ALIAS" --device "$A770B_DEVICE" --host "$A770B_HOST" --port "$A770B_PORT" --api-key-file "$A770B_API_KEY_FILE" \
   -ngl 99 -c "$CTX" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --no-mmap -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
-  --jinja --reasoning "${REASONING:-off}" --reasoning-format deepseek "$@" > "$LOG" 2>&1 9>&- &   # 9>&-: never inherit the run lock
+  --jinja "${THINKING_ARGS[@]}" --reasoning-format deepseek "$@" > "$LOG" 2>&1 9>&- &   # 9>&-: never inherit the run lock
 echo $! > "$PIDFILE"; printf '%s\n' "$MODEL" > "$MARK"
-echo "▶ started llama-server pid $! on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB — log $LOG"
+echo "▶ started llama-server pid $! on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB · thinking ${THINKING_ARGS[*]:-none} — log $LOG"
 for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; kill -0 "$(cat "$PIDFILE")" 2>/dev/null || break; sleep 2; done
 kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "⛔ the server died during load — read the log: $LOG" >&2; rm -f "$PIDFILE" "$MARK"; exit 3; }
 used=$(gpu_used_gib)

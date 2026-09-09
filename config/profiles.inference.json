@@ -98,7 +98,13 @@
       "kv": "q4_0",
       "flash_attention": "on",
       "reasoning": "on",
-      "extra": "--chat-template-kwargs {\"reasoning_effort\":\"low\"} --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0",
+      "extra": "--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0",
+      "thinking": {
+        "mode": "on",
+        "effort": "low",
+        "preserve": true,
+        "source": "huggingface.co/Qwen/Qwen3.8-27B model card's thinking line; reasoning effort low ruled by this project for speed (formerly carried through --chat-template-kwargs, now the first-class --reasoning-effort flag)"
+      },
       "sampling": {
         "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0,
         "mode": "thinking", "source": "huggingface.co/Qwen/Qwen3.8-27B, thinking mode; reasoning effort low ruled for speed"
