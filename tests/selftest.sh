@@ -685,9 +685,11 @@ if [ "$dp_none_rc" = 3 ] && grep -q 'not measured' "$t/dp-none.out" && ! grep -q
 then echo "ok   depth_probe: a request the server never answered is 'not measured' and exits 3, while a model that answers with nothing is graded 0/3 and exits 1"
 else echo "FAIL depth_probe: unanswered (rc=$dp_none_rc) and empty-answer (rc=$dp_empty_rc) are not told apart"; cat "$t/dp-none.out" "$t/dp-empty.out"; fail=1
 fi
-lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 40000 --dry-run 2>&1)
+# a GGUF with no registry row: the dry-run paths never open the file, so this is a name inside the test's own
+# temporary directory — never a path on the machine that happens to be running the suite.
+lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run 2>&1)
 lad_seat=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad4" bash "$here/harness/ladder.sh" long --seat "$t/mine" --dry-run 2>&1)
-lad_small=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad5" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1); lad_small_rc=$?
+lad_small=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad5" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 8192 --dry-run 2>&1); lad_small_rc=$?
 lad_flag=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad6" bash "$here/harness/ladder.sh" long --seat --fresh --dry-run 2>&1); lad_flag_rc=$?
 if printf '%s\n' "$lad_res" | grep -q 'far_end=38976' && printf '%s\n' "$lad_res" | grep -q 'ctx_sweep.sh --bench' \
   && printf '%s\n' "$lad_res" | grep -q 'depth_probe.sh 38976 --bench' \
@@ -709,20 +711,20 @@ if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | g
 then echo "ok   ladder: --dry-run names all six rungs (load, probes, speed, window, depth probe, task) and writes nothing"
 else echo "FAIL ladder: --dry-run output missing a rung or wrote something"; printf '%s\n' "$lad_out"; fail=1
 fi
-lad_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data2" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 40000 --dry-run 2>&1)
+lad_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data2" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run 2>&1)
 if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_model_out" | grep -q -- '--model .*--ctx 40000'
 then echo "ok   ladder: a bare GGUF with no registry row skips the bench_speed.sh rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
 else echo "FAIL ladder: the no-row GGUF path did not skip bench_speed.sh or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
 fi
 
 # ── run_suite.sh --model/--ctx (item 3): a GGUF with no registry row can still climb the task rung
-rs_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-model-data" bash "$here/harness/run_suite.sh" --model /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 "$t/rs-model-seat" --dry-run 2>&1)
+rs_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-model-data" bash "$here/harness/run_suite.sh" --model "$t/no-row-model.gguf" --ctx 8192 "$t/rs-model-seat" --dry-run 2>&1)
 if printf '%s\n' "$rs_model_out" | grep -q "ephemeral profile 'candidate'" && printf '%s\n' "$rs_model_out" | grep -q -- '--profile candidate' \
   && printf '%s\n' "$rs_model_out" | grep -q 'nothing written'
 then echo "ok   run_suite: --model/--ctx builds an ephemeral 'candidate' profile and drives every stage with it, with no registry row"
 else echo "FAIL run_suite: --model/--ctx did not build the candidate profile as expected"; printf '%s\n' "$rs_model_out"; fail=1
 fi
-rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-combo-data" bash "$here/harness/run_suite.sh" long --model /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1); rs_combo_rc=$?
+rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-combo-data" bash "$here/harness/run_suite.sh" long --model "$t/no-row-model.gguf" --ctx 8192 --dry-run 2>&1); rs_combo_rc=$?
 if [ "$rs_combo_rc" = 2 ] && printf '%s\n' "$rs_combo_out" | grep -q 'mutually exclusive'
 then echo "ok   run_suite: a registry profile name together with --model is refused (mutually exclusive)"
 else echo "FAIL run_suite: the profile-name + --model combination was not refused (rc=$rs_combo_rc)"; printf '%s\n' "$rs_combo_out"; fail=1
