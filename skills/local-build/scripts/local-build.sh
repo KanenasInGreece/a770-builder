@@ -82,7 +82,7 @@ status(){ local c; c=$(current); version 2>&1
 }
 # doctor — what this machine lacks to run the seat, one line per check; never stops at the first MISSING. No run lock, no server.
 doctor(){
-  local missing=0 t p m mp n warn_list w u hint
+  local missing=0 t p m mp n warn_list w u hint _cap_default _vsel_n
   command -v python3 >/dev/null 2>&1 && echo "ok   python3: on PATH" || { echo "MISSING python3: install Python 3 (the registry, the renderer and the capture use it)"; missing=$((missing+1)); }
   for t in bwrap socat uv curl git flock timeout; do
     command -v "$t" >/dev/null 2>&1 && echo "ok   $t: on PATH" || { echo "MISSING $t: install $t"; missing=$((missing+1)); }
@@ -132,6 +132,32 @@ doctor(){
   fi
   [ -n "$A770B_REFUSE" ] && echo "ok   A770B_REFUSE: set" || { echo "MISSING A770B_REFUSE: list the live checkouts the seat must never touch, colon-separated, in builder.env"; missing=$((missing+1)); }
   if [ -d "$A770B_SEAT" ] && [ -d "$A770B_SEAT/.git" ] && [ ! -L "$A770B_SEAT/.git" ]; then echo "ok   seat at $A770B_SEAT"; else echo "MISSING seat at $A770B_SEAT: clone the target repository there (git clone <url> $A770B_SEAT)"; missing=$((missing+1)); fi
+  # card inputs: A770B_VK_DEVICE_SELECT, A770B_GPU_MATCH, A770B_VRAM_CAP_GIB and A770B_UBATCH (-ub) pin the
+  # qualification workstation's Intel Arc A770 — Vulkan vendor:device 8086:56a0, nvtop name DG2, a VRAM cap
+  # measured on it per mode, ubatch 512 kept under this driver's GPU reset watchdog (see A770B_RESET_PATTERN in
+  # config/builder.env.example for the kernel-log side of that same watchdog on a non-Intel card). One line per
+  # knob below: the value in force, and whether it is this project's default or your own override for your card;
+  # a MISSING line when a default naming the A770 is still in force but nvtop or the Vulkan selector shows this
+  # machine's card is not one.
+  _a770b_doctor_input(){ local var="$1" default="$2" label="$3" val
+    val="${!var}"
+    if [ "$val" = "$default" ]; then echo "ok   input $var=$val — $label (this project's default, tuned for the A770)"
+    else echo "ok   input $var=$val — $label (your own override)"; fi
+  }
+  case "$A770B_CARD_MODE" in inference) _cap_default=15.3;; *) _cap_default=13.0;; esac
+  _a770b_doctor_input A770B_VK_DEVICE_SELECT "8086:56a0!" "the Vulkan selector pinning the builder card"
+  _a770b_doctor_input A770B_GPU_MATCH "DG2" "nvtop device-name substring for the builder card"
+  _a770b_doctor_input A770B_VRAM_CAP_GIB "$_cap_default" "the VRAM cap for mode $A770B_CARD_MODE"
+  _a770b_doctor_input A770B_UBATCH "512" "ubatch, kept under this driver's GPU reset watchdog"
+  if [ "$A770B_GPU_MATCH" = "DG2" ] && [ "$n" = 0 ]; then
+    echo "MISSING input A770B_GPU_MATCH=DG2 is this project's default (the Intel Arc A770) but no device in 'nvtop -s' matches it on this machine — set A770B_GPU_MATCH to your own card's name"; missing=$((missing+1))
+  fi
+  if [ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && [ -x "$A770B_LLAMA_BIN" ]; then
+    _vsel_n=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$A770B_LLAMA_BIN" --list-devices 2>/dev/null | grep -c '^ *Vulkan[0-9]*:')
+    if [ "$_vsel_n" = 0 ]; then
+      echo "MISSING input A770B_VK_DEVICE_SELECT=8086:56a0! is this project's default (the Intel Arc A770) but pins no Vulkan device on this machine — set it to your own card's vendor:device! from lspci -nn"; missing=$((missing+1))
+    fi
+  fi
   if [ -x "$A770B_LLAMA_BIN" ]; then
     if [ -z "$A770B_VK_DEVICE_SELECT" ]; then
       echo "ok   device: selector empty, not pinned"

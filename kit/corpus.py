@@ -20,6 +20,15 @@ requested floor: add more material under `kit/seat/` or `kit/reference/` rather 
 floor, unless the caller explicitly passes `--min-bytes` for a smaller demonstration (as the tests
 and this file's own verify step do while the sibling corners are still being built).
 
+THE CORPUS THIS SCRIPT GENERATES IS PART OF THE MEASURING INSTRUMENT, NOT A CONVENIENCE FILE. A
+consumer that reads `A770B_CORPUS_FILE` (harness/ctx_sweep.sh, and any script measuring against a
+fixed point on the context curve) must either find that file already generated, or generate it itself
+by running exactly `python3 kit/corpus.py generate --out <A770B_CORPUS_FILE>` (harness/guard.sh's
+`a770b_ensure_corpus_file` is the one place that rule is implemented) and say so — NEVER fall back to
+some other corpus (the seat's own source files, say) when the generated file is missing. Two runs on
+two machines that silently measured two different prompts at "the 8k point" would not be comparable,
+which defeats the entire purpose of a deterministic, byte-identical corpus.
+
 `index <file>` reads a file this script produced and prints `<line>: <name>` for every TOP-LEVEL
 `def`, `async def` and `class` FOUND IN THE PYTHON SEGMENTS ONLY (the segments whose marker path ends
 in `.py`) — the corpus now also carries C++, JavaScript, shell, JSON, Markdown and other real files,
