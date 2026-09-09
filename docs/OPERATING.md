@@ -64,6 +64,9 @@ what the brief named.
 
 ## Profiles
 
+`kit/PROFILE.md` is the field-by-field derivation of a row: which rung fills a field, how its number is worked
+out, and what it can honestly be compared with outside this project.
+
 The seat runs in one of two card modes, chosen by `A770B_CARD_MODE`: display-safe (the default, the tested set, for a
 card that also draws the desktop) and pure-inference (for a card that draws nothing). Each mode reads its own
 registry, the single source of every profile's numbers — `config/profiles.json` for display,
@@ -90,11 +93,11 @@ This workstation's own `builder.display.env` runs `serious` on the quantiser's t
 
 The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM sampled and the
 kernel log watched. The long profile serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
-flat within 0.3 GiB of its load, but its prefill falls under 150 tokens a second and its decode under 15 past about 64k,
-so its useful window is about 64k to 72k of what it serves. The three 27B files share one speed profile, decode being
-compute-bound on this card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and under the
-five-tokens-a-second floor by 64k, so the serious profile's useful window is about 32k whether it serves 131,072 or
-114,688, and a brief for it points at files that fit that.
+flat within 0.3 GiB of its load; by the four-tokens-a-second rule (below) its useful window is 65,536 tokens, this
+row's own registry `useful_ctx`. The three 27B files share one speed profile, decode being compute-bound on this
+card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and under four tokens a second by 64k, so
+the serious profile's useful window is 32,768 whether it serves 131,072 or 114,688, and a brief for it points at
+files that fit that.
 
 The fast profile exists for the read, not the edit: files the long window cannot hold, and the "read this whole thing
 and tell me" step before a brief is written. Its useful depth is about 100k tokens: at that depth it answered a probe's
@@ -120,8 +123,10 @@ is why it is set aside. Every file the model reads lands in that window, and a 1
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
 
 `useful_ctx` is the largest depth at which decode stays above four tokens a second, taken from the two measured points
-(8k and the far end of the window) by extending the time per token linearly, capped by the depth probe where one
-failed — not a window swept token by token. Beyond the table, `local-build.sh profiles` (`harness/profiles.py card`)
+(8k and the far end of the window) by extending the time per token linearly, capped at the depth probe's last
+passing depth where one failed — not a window swept token by token. This is the one definition of `useful_ctx` in
+this project; `harness/ladder.sh` (`AGENTS.md`, *The ladder*) computes it exactly this way. Beyond the table,
+`local-build.sh profiles` (`harness/profiles.py card`)
 carries the full card for each row: `speed` at 8k and the far end (decode, prefill, time to first token); `fit`, three
 short strings with their source — `code` (the in-house suite or T1, tests passed and wall), `think` (a reasoning arm
 measured, or the card's GPQA or AIME figure named as the card's), `write` (a reviewer-graded prose brief, or "not
@@ -333,9 +338,11 @@ Two pieces are Vulkan-specific, both harmless on another Vulkan card and simply 
 `MESA_VK_DEVICE_SELECT` (the pin Mesa's Vulkan loader reads) and `GGML_VK_DISABLE_COOPMAT` (the flag set proven on
 Arc under Vulkan). The `-ub 512` ceiling is this card's own watchdog rationale — Intel's Xe kernel driver resets the
 GPU past it on a display card; another card's reason for a batch ceiling, if any, is its own and needs its own
-measurement. The reset watch reads the kernel log for the Xe driver's own words (`engine reset`, `timedout`);
-another driver words a reset differently, so `A770B_RESET_PATTERN` is the knob to add when someone brings one — it
-is not there yet.
+measurement. The reset watch reads the kernel log for a configurable pattern, `A770B_RESET_PATTERN`
+(`harness/guard.sh`'s `kernel_resets_since`), Intel's Xe driver wording (`engine reset|timedout`) by default;
+another driver words a reset differently, and its own user sets `A770B_RESET_PATTERN` in `builder.env` to match it
+(`config/builder.env.example` says how to find the wording) — nobody has yet, so every reading in this document is
+still against the Xe driver's own words.
 
 Beyond that, nothing that matters. Two conventions remain: the opencode alias `local-builder` (the profile template depends on it) and
 the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A770B_OPENCODE_BIN`.

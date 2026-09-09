@@ -102,6 +102,30 @@ require_vram_readings(){
 gpu_used_gib(){ local u; u=$(_nvtop_field mem_used); [ "$u" -ge 0 ] && python3 -c "print($u/2**30)" || echo 0; }
 gpu_free_mb(){  local f; f=$(_nvtop_field mem_free); [ "$f" -ge 0 ] && echo $((f/1048576)) || echo 1000000; }
 
+# kernel_resets_since <journalctl --since ARG> — count of kernel-log lines since ARG matching A770B_RESET_PATTERN
+# (Intel's Xe driver wording by default; a non-Intel driver's user sets A770B_RESET_PATTERN in builder.env — see
+# config/builder.env.example for how to find their own driver's wording). The ONE place this grep is made, so
+# every caller (ctx_sweep.sh, bench_model.sh) reads the same, configurable pattern rather than a hard-coded one.
+kernel_resets_since(){ journalctl -k --since "$1" 2>/dev/null | grep -ciE "$A770B_RESET_PATTERN" || true; }
+
+# a770b_ensure_corpus_file — makes sure $A770B_CORPUS_FILE exists, GENERATING it via kit/corpus.py when it is
+# missing (one line, the same command config/builder.env.example and kit/corpus.py's own docstring name), and
+# says what it did. The corpus is part of the instrument, not a convenience: a caller that silently fell back to
+# a different corpus (the seat's own source files, say) would hand a stranger a different prompt at every point on
+# the curve than the one this workstation measured, so nothing here falls back — generation failure REFUSES (exit
+# 2, nothing left half-written) with the exact command to run by hand.
+a770b_ensure_corpus_file(){
+  [ -n "${A770B_CORPUS_FILE:-}" ] || { echo "⛔ A770B_CORPUS_FILE is empty" >&2; return 2; }
+  if [ -f "$A770B_CORPUS_FILE" ]; then echo "corpus: $A770B_CORPUS_FILE (already generated)"; return 0; fi
+  echo "corpus: $A770B_CORPUS_FILE is missing — generating it: python3 $A770B_PROJECT/kit/corpus.py generate --out $A770B_CORPUS_FILE"
+  if python3 "$A770B_PROJECT/kit/corpus.py" generate --out "$A770B_CORPUS_FILE"; then
+    return 0
+  else
+    echo "⛔ could not generate the corpus — run by hand and fix what it reports: python3 $A770B_PROJECT/kit/corpus.py generate --out $A770B_CORPUS_FILE" >&2
+    return 2
+  fi
+}
+
 # health_status <url> — one GET, and the status word the answer carries; "no answer" when nothing comes back. It informs
 # the operator reading the log and never refuses: another service's health says nothing about this host or this card.
 health_status(){ local body word

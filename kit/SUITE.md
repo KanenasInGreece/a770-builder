@@ -7,7 +7,9 @@ a C++ optimisation of the backend's hot path — each stage its own brief
 own hidden grader (`kit/hidden/test_<stage>_hidden.py`), run in order on one seat
 (`kit/seat/`, exported by `harness/run_suite.sh` as the run's working directory — every path
 in a brief or spec is relative to it, not to this repository's root). `kit/suite.json` is the
-machine-readable form of this file.
+machine-readable form of this file; `kit/PROFILE.md` is where a run of this suite turns into a
+registry row, field by field, and what each field can honestly be compared with outside this
+project.
 
 ## The five axes
 
@@ -24,6 +26,12 @@ which of the last two apply):
   `kit/hidden/`.
 - **usable** — S0 and S1 only: a 0–5 reviewer score per the rubric's usable lines. S2 and S3
   have no user-facing surface, so this axis does not apply to them.
+
+**maintainable** and **usable** never count toward a row's pass tally, at any stage: only
+**working**, and, where a stage has one, **conformance**, do (see *the design note's own
+hidden check and every stage's reviewer score are scored outside the pass count* in
+`AGENTS.md`). The rubric is commentary a reader weighs beside the pass count, never a gate
+folded into it.
 
 ## The stages, in run order
 

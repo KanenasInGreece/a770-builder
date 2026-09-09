@@ -34,6 +34,8 @@ corpus now also carries C++, JavaScript, shell, JSON and Markdown real source, a
 indexed. This is what the long-read task's grader (`read-1` / S4) checks the model's answer
 against.
 
-`harness/env.sh` points `A770B_CORPUS_FILE` at this file by default; `harness/ctx_sweep.sh` and
-`harness/depth_probe.sh` read it when present (falling back to today's seat `*.py` glob otherwise)
-and print which corpus they used.
+`harness/env.sh` points `A770B_CORPUS_FILE` at this file by default. The corpus is part of the
+measuring instrument, not a convenience: `harness/ctx_sweep.sh` (via `harness/guard.sh`'s
+`a770b_ensure_corpus_file`) GENERATES this file when it is missing — the exact command above — and
+refuses, naming that command, if generation itself fails. It never silently swaps in a different
+corpus (a stranger's "8k point" would otherwise be a different prompt from ours).

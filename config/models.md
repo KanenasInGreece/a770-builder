@@ -3,13 +3,16 @@
 This file is the ledger of every model that has been put through the seat's qualification on this card, and how it
 measured. It matters because the profiles in the mode's registry are configuration, not a promise: a model earns a
 profile here first, with numbers, and a model that is not in this table has not been measured on this card, whatever
-its reputation elsewhere. Every row below carries an instrument — every row in this table so far was measured with
-the seat being a standalone clone of the public Shared Memory repository at commit `3c8e2bb` (`seat:
-Shared_Memory@3c8e2bb`, recorded in the registry's own `instrument` field), and stays comparable only with the other
-rows measured on that same seat and commit; the profiling guide (`AGENTS.md`) says the current models are not
-re-measured in this release, and the next model profiled enters on the kit inside this repository instead
-(`instrument: SUITE-1@0.2.0`), a different instrument again. The seat runs in one of two card modes, and each reads
-its own registry. Display-safe reads
+its reputation elsewhere. Every row below carries an instrument AND a card (`measured_on`, the registry's own
+field) — comparability needs both to match, not the instrument alone, and every row and every free-card measurement
+below states both. Every row measured before this release carries the same instrument: the seat being a standalone
+clone of the public Shared Memory repository at commit `3c8e2bb` (`seat: Shared_Memory@3c8e2bb`), measured on
+`Arc A770 16 GB, llama.cpp b10805 Vulkan`, and stays comparable only with the other rows sharing both. From this
+release a new candidate is qualified on the kit inside this repository instead (`instrument: SUITE-1@<the project's
+own version>`), a different instrument again — no registry row has yet been measured on it, and the first one will
+be; the free-card table below (*On the same card with nothing else on it*) already carries one measurement taken on
+it, plainly marked as such and not a registry row either — a measurement, not a ruling. The seat runs in one of two
+card modes, and each reads its own registry. Display-safe reads
 `config/profiles.json`: **long** = Qwen3.5-9B Q4_K_M, the default for every ordinary change; **serious** = Qwen3.8-27B
 GSQ-RCO IQ3_XXS, for a deliverable larger than its brief; **fast** = Gemma 4 E4B Q4_K_M with flash attention off, for
 the read the long window cannot hold. Pure-inference reads `config/profiles.inference.json`, measured on the same
@@ -21,7 +24,10 @@ New releases of a model family are new models; they enter the same way.
 
 ## The bar
 
-A model qualifies when it clears four gates on the same harness, in one run of `harness/run_one.sh`:
+A model qualifies when it clears four gates on the same harness — on the sibling-repository instrument, in one run
+of `harness/run_one.sh`; on the kit instrument, the same four gates in one run of `harness/ladder.sh`
+(`AGENTS.md`, *The ladder*) — and every row below states which instrument and which card (`measured_on`) it
+cleared them on, since a gate cleared on one is not evidence about the other:
 
 1. **It serves under the card's rules**: llama.cpp with the Vulkan backend, `-fa on`, `--no-mmap`, `-ngl 99`,
    `--parallel 1`, `-b 2048 -ub 512`, quantised KV, at least 80k of context and at most the mode's cap after load on a
@@ -39,21 +45,28 @@ A model qualifies when it clears four gates on the same harness, in one run of `
    a row too slow to answer inside the run's own time ceiling leaves no far-end reading to record at all (the 27B's
    own 100k attempt ran past a 3,600 s ceiling with no answer), so the far end recorded for a row is whatever token
    count its reply actually measured, not the number asked for.
-4. **It does the coding task**: the qualification brief on a real repository (the seat is a standalone clone of the
-   public `https://github.com/KanenasInGreece/Shared_Memory` at commit `3c8e2bb`), run through opencode in the seat;
-   it wrote the test file, ran the given test command, and a cheap reviewer reading the capture graded the run green.
+4. **It does the coding task**: on the sibling-repository instrument, the qualification brief on a real repository
+   (the seat is a standalone clone of the public `https://github.com/KanenasInGreece/Shared_Memory` at commit
+   `3c8e2bb`), run through opencode in the seat; it wrote the test file, ran the given test command, and a cheap
+   reviewer reading the capture graded the run green. On the kit instrument, the standard suite (`kit/SUITE.md`)
+   run through `harness/run_suite.sh`, graded on the stages that count toward the tally — a reference exercise, and
+   the design note, never do.
 
 A red run or a failing grade keeps a model out; a style deviation with green tests is recorded as PARTIAL and admitted
-with its caveat.
+with its caveat. The task column below often names how many tests a model wrote for its own qualification brief
+(`11 tests`, `5 tests`, and so on): that count is the model's own choice, not a quality score — a model that writes
+fewer, sharper tests is not worse than one that pads the count, and the numbers are not comparable model to model.
+What compares row to row is PASS, PARTIAL or FAIL, the wall time, and — for a row measured on the kit — the standard
+suite's own stage-by-stage pass tally (`kit/PROFILE.md` §2, `suite`), never a raw test count.
 
 ## Qualified on the Intel Arc A770 16 GB (llama.cpp b10805, Vulkan, 2026-09-06/07)
 
-Every row below: instrument `seat: Shared_Memory@3c8e2bb`.
+Every row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`.
 
 | model file | source | ctx / KV | VRAM after load | decode short / after 17k | prefill (17k) | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
-| `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 81,920 / q8_0 (131,072 / q4_0 also passes) | 6.9 GiB | 45.2 / 33.0 tok/s | 464 tok/s, 37 s | PASS, 11 tests first try, 121 s | **long** (the window before the registry) | followed the repository's test idiom unprompted; the only self-sufficient builder of the matrix; 6 GiB of headroom. Sweep 2026-09-08 (prefill and decode against position, VRAM sampled): 8k 568 / 36.8 tok/s, 32k 274 / 23.1, 64k 150 / 16.0, 71k 125 / 14.8; VRAM flat at 7.2 GiB; zero resets — the whole 81,920 window is safe, prefill under 150 tok/s past about 64k. As a builder of this repository's own skill (2026-09-08): four bounded units from exact briefs in one run each, applied unchanged; a behavioural unit of nine rules not in two runs |
-| `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 262,144 / q8_0 (native) | 10.35 GiB | 36.8 / 11.6 tok/s | 571 → 147 tok/s | — | **long** (default) | the native window, served in full; sweep run with context served at 131,072: 8k 571 / 36.8 tok/s prefill/decode, 100k 147 / 11.6; 100k prompt TTFT 626 s; VRAM peak +0.28 GiB over the 10.35 GiB load; zero resets; useful to about 64–72k (prefill under 150 tok/s and decode under 15 tok/s past that) |
+| `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 81,920 / q8_0 (131,072 / q4_0 also passes) | 6.9 GiB | 45.2 / 33.0 tok/s | 464 tok/s, 37 s | PASS, 11 tests first try, 121 s | **long** (the window before the registry) | followed the repository's test idiom unprompted; the only self-sufficient builder of the matrix; 6 GiB of headroom. Sweep 2026-09-08 (prefill and decode against position, VRAM sampled): 8k 568 / 36.8 tok/s, 32k 274 / 23.1, 64k 150 / 16.0, 71k 125 / 14.8; VRAM flat at 7.2 GiB; zero resets — the whole 81,920 window is safe. As a builder of this repository's own skill (2026-09-08): four bounded units from exact briefs in one run each, applied unchanged; a behavioural unit of nine rules not in two runs |
+| `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 262,144 / q8_0 (native) | 10.35 GiB | 36.8 / 11.6 tok/s | 571 → 147 tok/s | — | **long** (default) | the native window, served in full; sweep run with context served at 131,072: 8k 571 / 36.8 tok/s prefill/decode, 100k 147 / 11.6; 100k prompt TTFT 626 s; VRAM peak +0.28 GiB over the 10.35 GiB load; zero resets; useful to 65,536 tokens by the four-tokens-a-second rule (this row's registry `useful_ctx`) |
 | `Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 158,000 / q4_0, reasoning on at effort low | 11.5 GiB | 8.1 / 6.7 tok/s | 70 tok/s, 247 s | PASS, 5 tests, 617 s | **serious** (retired from the defaults) | best-written file of the matrix; at the speed floor, 10–25 min per small task. Sweep 2026-09-08: 8k 73 / 7.4 tok/s, 32k 58 / 5.9, 64k 40 / 4.7; VRAM 11.9 GiB; zero resets — under the 5 tok/s decode floor by 64k, so the profile is served with 158,000 tokens and useful to about 32,000; LiveCodeBench 76.57, under the 95 % line, retired from the defaults |
 | `Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 131,072 / q4_0, reasoning on at effort low | 12.3 GiB | 8.1 / 6.7 tok/s | 65 tok/s, 265 s | PASS, 5 tests, 1,492 s | **serious** | same speed as IQ2_XS for 0.75 GiB more VRAM and 30k less context; LiveCodeBench v6 84.57 vs BF16 85.71, the new public default (fits the public 13.0 cap) |
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 114,688 / q4_0, reasoning on at effort low | 13.78 GiB | 8.0 / 6.2 / 4.9 tok/s (8k / 32k / 64k) | 72 / 58 / 42 tok/s (8k / 32k / 64k) | PASS, 5 tests, 542 s | **serious** (this workstation's `builder.display.env`) | the quantiser's task-lossless file, LiveCodeBench 85.71 = BF16; needs the 14.1 cap, peaks at 14.21 GiB during a 32k prompt; useful to about 32k |
@@ -61,7 +74,7 @@ Every row below: instrument `seat: Shared_Memory@3c8e2bb`.
 | `gemma-4-E4B-it-Q4_K_M.gguf` | `lmstudio-community/gemma-4-E4B-it-GGUF` | 131,072 / f16, **`-fa off`** (its condition, see below) | 6.8 GiB at 80k, 8.1 GiB at 131k | 60 / 38 tok/s | 796 tok/s, 29 s | PASS ×2 and PARTIAL ×1 (17, 6, 6 tests; the PARTIAL one `isinstance` assertion), 74–82 s; green at 131k after one fix | **fast** | the largest window at speed on this card: cold read of 107k tokens in 273 s, exact on a planted detail at 85% depth of a 100k prompt, approximate on broad recall (asked for three other functions it blended real names into ones that do not exist), a wrong number at 120k; decode 44 → 16 tok/s from 8k to 100k; VRAM flat at 8.4 GiB (sliding window); five client-cancel rounds clean, zero resets across nine rows. Not for multi-file shell edits: on the harness's own brief it made one of three edits and reported all three done. On the reading task (T2: index every top-level definition of a 6,300-line, 100k-token file): E4B paged through 60% of it in 9 min and listed 40 names, 34 of them real definitions, 19 with the right line; the 9B paged through all of it in 15.5 min and listed 57 module-level constants instead of definitions, none right. Neither seat indexes a large file; the fast profile's value is a precise question about a passage, which the long profile cannot reach at all. |
 
 The rows below are the campaign's, measured with nothing else on the card (`config/profiles.inference.json`). Every
-row below: instrument `seat: Shared_Memory@3c8e2bb`.
+row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`.
 
 | model file | source | ctx / KV | VRAM after load | decode 8k / far end | prefill 8k / far end | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
@@ -73,7 +86,9 @@ row below: instrument `seat: Shared_Memory@3c8e2bb`.
 
 One row per file and window the campaign measured on the free card, adopted or not; VRAM is after load unless a peak
 is named. The display registry's own after-load readings above were taken with the desktop's 0.65 to 0.9 GiB on the
-card, which this table has none of. Every row below: instrument `seat: Shared_Memory@3c8e2bb`.
+card, which this table has none of. Every row below down to and including the `-ub 1024`/`-ub 2048` rows carries
+instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`; the last row is
+the exception, on a different instrument, named beside it.
 
 | file, window | VRAM after load (peak) | decode / prefill at 8k | profile or verdict |
 |---|---|---|---|
@@ -95,6 +110,7 @@ card, which this table has none of. Every row below: instrument `seat: Shared_Me
 | Qwen3.5-9B Q4_K_M, thinking mode (the card's precise-coding line: 0.6/0.95/20/0, reasoning on, output 32,768) | — | — | measured, kept out: the probes pass on the first two prompts with about 480 characters of reasoning each; on the third (a one-line hello world) the model reasons for 13,588 characters, about 4,000 tokens and 96 s, and exhausts a 4,096-token budget with no answer — without an effort control the 9B's thinking mode over-thinks small prompts; the instruct line keeps the row |
 | Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 18 expert layers in RAM, thinking mode under the card's precise-coding line (temperature 0.6, top_p 0.95, top_k 20, min_p 0, presence 0) | 14.1 GiB | 22.3 / 154 tok/s (prefill at 17k; 51.7 ms per token after it) | measured, not adopted: probes 3 of 3 with short reasoning; T1 nine tests green in 254 s, against the instruct line's ten in 203 s — thinking costs a quarter of the wall for nothing on this task; the instruct line keeps the row |
 | Qwen3.8-27B GSQ-RCO IQ3_S, 196,608, q4_0 KV, `-ub 1024` | 14.94 GiB (15.11 peak during an 8k prompt) | 7.9 / 74 tok/s | measured, not adopted: four percent more prefill than `-ub 512` (71 tok/s, 7.9 decode, 14.77 GiB peak) for 0.34 GiB more peak; ubatch stays 512 in both modes |
+| Gemma 4 26B-A4B UD-Q4_K_XL, 131,072, 18 expert layers in host memory, K q8_0 / V f16, `-fa off` | 11.7 GiB (15.00 GiB peak, no reset) | 10.5 / 175 tok/s (13,028-token prompt, the project's own sweep) | measured tonight, not a registry row — **the first model measured on the kit** (`instrument: SUITE-1@0.1.5`, not `seat: Shared_Memory@3c8e2bb`; `measured_on: Arc A770 16 GB, llama.cpp b10805 Vulkan`, the same card as every other row in this table): 7.7 GB of host memory for the 18 expert layers beyond the 11.7 GiB VRAM; llama-bench at its own served flags: 13.3/186.5 tok/s decode/prefill at depth 0, 11.5/168.6 at 8,192, 9.4/109.2 at 32,768; the project's own sweep: 10.5/175 tok/s decode/prefill at a 13,028-token prompt, 5.5/82 at a 101,532-token prompt, VRAM peaking at 15.00 GiB, zero resets; the depth probe answered all three questions correctly at 101,532 tokens; the kit's suite: 3 of 3 counted stages passed (front end, backend, C++ optimisation) — the design note's own hidden check failed, scored outside the pass count, as it does for every row; of the three reference exercises, none of which ever counts toward the tally: the Python one passed, the C++ one failed, and the JavaScript one timed out after an hour. Decode still held at 5.5 tok/s at 101,532 tokens, comfortably above the four-tokens-a-second floor — so this row's window is bounded by memory near 110k (VRAM already at 15.00 GiB against the free card's 15.3 cap) rather than by speed. This is a measurement, not a ruling: it carries no registry row and is not comparable with the rows above it, which share a different instrument |
 
 ## Measured and kept out
 
@@ -138,10 +154,12 @@ request can take the card down. `briefs/T2-read-a-large-file.md` is the reading 
 
 The full guide for an agent that has a GGUF and this harness and wants a model on the list is
 [`AGENTS.md`](../AGENTS.md) at the repository root. In one line: put the GGUF in `A770B_MODELS`, run
-`harness/run_suite.sh <profile>` against the kit inside this repository (`kit/`, the ladder's task rung from this
-release on — no second repository needed), have a reviewer profile grade the reviewer-scored axes and a reviewer
-grade the capture, add the row here with its numbers and its instrument (`instrument: SUITE-1@0.2.0`), then give it
-a profile in the mode's registry (`config/profiles.json` or `config/profiles.inference.json`) with its measured
-card and its `suite` object, render the skill's tables from it, and move the version. A row reproducing one of the
-rows above instead runs `harness/run_one.sh` against the pinned Shared Memory seat and carries `seat:
-Shared_Memory@3c8e2bb`, comparable only with the rows already in this ledger, never with a kit row.
+`harness/ladder.sh <profile-or-gguf> --ctx N …` against the kit inside this repository (`kit/`, the ladder's task
+rung from this release on — no second repository needed; `AGENTS.md`, *The ladder*, is what each rung decides and
+what still needs a human), pick up the printed registry row and fill in what it marks `__TODO__` by hand, add the
+row here with its numbers and its instrument (`instrument: SUITE-1@<the project's own version>`) AND its
+`measured_on`, then give it a profile in the mode's registry (`config/profiles.json` or
+`config/profiles.inference.json`) with its measured card and its `suite` object, render the skill's tables from it,
+and move the version. A row reproducing one of the rows above instead runs `harness/run_one.sh` against the pinned
+Shared Memory seat and carries `seat: Shared_Memory@3c8e2bb`, comparable only with the rows already in this ledger,
+never with a kit row.

@@ -41,6 +41,8 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_DEVICE:=Vulkan0}"                             # llama-server --list-devices names the cards; pick the builder card
 : "${A770B_VK_DEVICE_SELECT=8086:56a0!}"                # Mesa device selector, vendor:device of the builder card with '!' = the only Vulkan device the server sees (A770 = 8086:56a0); Vulkan lists the boot card first, so an index alone drifts when the desktop moves
 : "${A770B_GPU_MATCH:=DG2}"                             # substring of the card's name in `nvtop -s`, for VRAM readings and the cap
+: "${A770B_RESET_PATTERN:=engine reset|timedout}"       # kernel-log regex (grep -ciE) for a GPU reset; this is Intel's Xe driver wording — on
+                                                          # a non-Intel driver set this to yours (see config/builder.env.example for how to find it)
 : "${A770B_PORT:=8093}";  : "${A770B_HOST:=127.0.0.1}";  : "${A770B_ALIAS:=local-builder}"
 : "${A770B_UBATCH:=512}";  : "${A770B_BATCH:=2048}"     # ubatch stays 512 in both modes (raising it gained 6 percent prefill when measured)
 : "${A770B_API_KEY_FILE:=${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/api.key}"   # the server's API key (one line, mode 600); created on first serve
@@ -64,7 +66,7 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_KIT:=$A770B_PROJECT/kit}"                     # the profiling kit's own tree, versioned with the harness
 : "${A770B_CORPUS_FILE:=$A770B_KIT/corpus/large.py}"     # kit/corpus.py's generated file: real source only, sized for the display serious profile's window
 : "${A770B_SUMMARY_CORPUS:=$A770B_SEAT/**/*.py}"         # bench_model.sh's judged 17k summary rung: the SEAT's own source, never the kit's generated corpus
-export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE
+export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE A770B_RESET_PATTERN
 export A770B_PROFILES A770B_DEFAULT_PROFILE
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }

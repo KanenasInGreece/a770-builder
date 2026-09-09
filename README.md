@@ -39,7 +39,8 @@ The repository holds a coding-worker harness with two card modes — display-saf
 VRAM cap, for a card that also drives the desktop) and pure-inference (under a 15.3 GiB cap, for a card with nothing
 else on it) — each with its own profile registry naming the qualified models (`config/profiles.json`,
 `config/profiles.inference.json`). It also holds the profiling kit and its suite (`kit/`, `harness/run_suite.sh`)
-that a candidate model is qualified against, and the `local-build` skill, the installable front door an agent hands
+that a candidate model is qualified against — `kit/PROFILE.md` says how every field of a row is measured and what
+it compares with — and the `local-build` skill, the installable front door an agent hands
 a brief to.
 
 ## Why we made it
@@ -53,8 +54,10 @@ serving line here is llama.cpp with the Vulkan backend on the distribution's own
 measures rather than assumes.
 
 Whether a 16 GB card can hold a model that actually finishes a small, well-specified change in a real repository is a
-question. Only measurement answers it. Every candidate is now measured on the kit inside this repository, and only
-what passes earns a place. Earlier rows in the ledger were measured on a sibling repository instead.
+question. Only measurement answers it. From this release, a new candidate is measured on the kit inside this
+repository instead of a sibling one — no row has yet been measured on the kit, and the first one will be. Only what
+passes earns a place. Earlier rows in the ledger were measured on a sibling repository, and stay comparable only
+with each other.
 
 ## Install
 

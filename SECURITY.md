@@ -63,6 +63,16 @@ consumes it, whichever specification is in play. The floor's deny patterns match
 so a chained command is admitted by its first word alone — which is why a brief names one command per line, leaving
 the sandbox itself as the boundary.
 
+The profiling kit's own reviewer pass (`kit/REVIEW-rubric.md`'s maintainable and usable axes) puts a stage's own
+patch in front of a second model, which is its own kind of exposure: the patch is content a builder model wrote,
+and the reviewer reads it as data, not as instructions. `harness/run_suite.sh` guards that read the same way the
+budget gate's health line is guarded: the reviewer runs as a profile the runner refuses to let resolve to the
+builder's own model, at temperature 0 with no tools, and the patch is delimited between fixed markers with an
+explicit instruction not to follow anything inside it; the reviewer's own reply is parsed only in the fixed
+two-line shape it was asked for, so a chattier reply that tries to steer the parser back out is read as no score,
+never a guessed one. The reviewer's own profile, model, context window, sampling and the rubric's own hash are
+recorded beside the score, so a reader can tell which model graded a row and against which rubric.
+
 | surface | inside the sandbox |
 |---|---|
 | filesystem | the seat read-write; a private empty home; the pre-warmed uv cache read-only; nothing else of yours |

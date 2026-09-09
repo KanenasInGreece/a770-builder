@@ -570,6 +570,11 @@ def test_check_passes_weight_class_shapes(tmp_path):
     for shape in ("9b", "12b", "27b", "35b-a3b", "8b-e4b"):
         data = load_base()
         data["profiles"]["long"]["weight_class"] = shape
+        # long's new weight_class may now collide with fast's or serious's own (category,
+        # weight_class) -- move those out of the way so this test stays about weight_class's
+        # shape, not the registry's one-row-per-class rule (covered separately).
+        data["profiles"]["fast"]["category"] = "moe"
+        data["profiles"]["serious"]["category"] = "moe"
         path = write_json(tmp_path / "p.json", data)
         result = run("check", "--file", str(path))
         assert result.returncode == 0, f"{shape}: {result.stderr}"
@@ -852,6 +857,29 @@ def test_check_fails_suite_passed_out_of_range(tmp_path):
     assert "profiles: long: suite.passed must be between 0 and runs" in result.stderr
 
 
+def test_check_fails_suite_timeouts_out_of_range(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {"briefs": 5, "runs": 15, "passed": 12, "timeouts": 16, "source": "s"}
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.timeouts must be between 0 and runs" in result.stderr
+
+
+def test_check_passes_valid_suite_with_timeouts(tmp_path):
+    """timeouts (harness/suite_report.py's count of "timeout"-outcome stages) is optional, and a valid count
+    between 0 and runs passes."""
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 5, "runs": 15, "passed": 12, "timeouts": 2, "mean_wall_s": 120.5, "source": "in-house suite",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
 def test_check_passes_valid_suite(tmp_path):
     data = load_base()
     data["profiles"]["long"]["suite"] = {
@@ -1009,10 +1037,79 @@ def test_check_passes_valid_suite_instrument(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+# --- measured_on: comparable_with is declared across machines on instrument alone otherwise ---
+
+
+def test_check_fails_missing_measured_on(tmp_path):
+    data = load_base()
+    del data["profiles"]["long"]["measured_on"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: missing key measured_on" in result.stderr
+
+
+def test_check_passes_on_both_shipped_registries_with_measured_on():
+    """Every shipped row (both registries) carries measured_on -- check accepts it."""
+    for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        for name, prof in data["profiles"].items():
+            assert prof.get("measured_on"), f"{f}: {name}: missing measured_on"
+
+
+def test_comparable_with_excludes_differing_measured_on(tmp_path):
+    """Two rows sharing an instrument string but measured on different cards/builds must not
+    read as comparable: comparable_with matches on the pair (instrument, measured_on), not
+    instrument alone."""
+    data = load_base()
+    assert data["profiles"]["long"]["instrument"] == data["profiles"]["fast"]["instrument"]
+    data["profiles"]["long"]["measured_on"] = "RTX 4090 24 GB, llama.cpp b10805 CUDA"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("card", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    data_out = json.loads(result.stdout)
+    assert data_out["profiles"]["long"]["comparable_with"] == []
+    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]
+    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]
+
+
+# --- registry-wide rules: one best row per (category, weight_class), one instrument per registry ---
+
+
+def test_check_fails_duplicate_category_weight_class(tmp_path):
+    data = load_base()
+    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
+    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert (
+        "profiles: fast: category 'dense' + weight_class '9b' duplicates long's -- "
+        "a registry keeps one best row per class" in result.stderr
+    )
+
+
+def test_check_fails_differing_instrument_within_registry(tmp_path):
+    data = load_base()
+    data["profiles"]["fast"]["instrument"] = "a different rig"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert (
+        "profiles: fast: instrument 'a different rig' differs from long's "
+        "'seat: Shared_Memory@3c8e2bb' -- a registry is one instrument" in result.stderr
+    )
+
+
 def _valid_stage(**overrides) -> dict:
     stage = {
         "id": "s0-design", "working": True, "conformance": True, "lines": 40, "budget_lines": 60,
-        "maintainable": 5, "usable": 3, "wall_s": 12.5, "axes": ["working", "conformance"],
+        "maintainable": 5, "usable": 3, "wall_s": 12.5, "axes": ["maintainable", "usable"],
+        "counts_toward_pass": True,
     }
     stage.update(overrides)
     return stage
@@ -1281,18 +1378,24 @@ def test_check_passes_valid_reviewer(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-def test_builder_class_from_stages_working_axis_only(tmp_path):
-    """Pass rate is computed from stages whose axes include "working"; the design stage and
-    the rubric (no "working" in axes) never count, even though one of them is marked False."""
+def test_builder_class_tally_uses_counts_toward_pass_not_axes(tmp_path):
+    """The root bug: `_builder_class` used to count only stages whose `axes` contained
+    "working" -- but no stage in kit/suite.json ever puts "working" in axes (they carry
+    maintainable/usable only), so a real four-stage suite.stages list (this is exactly
+    kit/suite.json's shape: one commentary-only design stage plus three counted ones)
+    always tallied zero counted stages under the old rule and fell through to False here
+    (task_t1 is deliberately weak so the old code's other fallback can't paper over it).
+    The honest rule counts a stage when its own `counts_toward_pass` is not false."""
     data = load_base()
     data["profiles"]["long"]["useful_ctx"] = 100000
     data["profiles"]["long"]["task_t1"] = "weak: not the row's own task"
     data["profiles"]["long"]["suite"] = {
-        "briefs": 3, "runs": 3, "passed": 2, "source": "kit",
+        "briefs": 4, "runs": 4, "passed": 3, "source": "kit",
         "stages": [
-            _valid_stage(id="s0-design", axes=["design"], working=False),
-            _valid_stage(id="s1-frontend", axes=["working", "conformance"], working=True),
-            _valid_stage(id="s2-backend", axes=["working", "conformance"], working=True),
+            _valid_stage(id="s0-design", axes=["maintainable", "usable"], working=True, counts_toward_pass=False),
+            _valid_stage(id="s1-frontend", axes=["maintainable", "usable"], working=True, counts_toward_pass=True),
+            _valid_stage(id="s2-backend", axes=["maintainable"], working=True, counts_toward_pass=True),
+            _valid_stage(id="s3-optimise", axes=["maintainable"], working=True, counts_toward_pass=True),
         ],
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1302,15 +1405,17 @@ def test_builder_class_from_stages_working_axis_only(tmp_path):
     assert json.loads(result.stdout)["builder_class"] is True
 
 
-def test_builder_class_false_from_stages_when_working_axis_fails(tmp_path):
+def test_builder_class_false_from_stages_when_counted_ratio_low(tmp_path):
+    """Same counts_toward_pass-driven tally, the other direction: two counted stages, one
+    failing, is a 0.5 ratio -- below the 0.8 bar."""
     data = load_base()
     data["profiles"]["long"]["useful_ctx"] = 100000
     data["profiles"]["long"]["task_t1"] = "weak: not the row's own task"
     data["profiles"]["long"]["suite"] = {
         "briefs": 2, "runs": 2, "passed": 1, "source": "kit",
         "stages": [
-            _valid_stage(id="s1-frontend", axes=["working", "conformance"], working=True),
-            _valid_stage(id="s2-backend", axes=["working", "conformance"], working=False),
+            _valid_stage(id="s1-frontend", axes=["maintainable", "usable"], working=True, counts_toward_pass=True),
+            _valid_stage(id="s2-backend", axes=["maintainable"], working=False, counts_toward_pass=True),
         ],
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1318,6 +1423,42 @@ def test_builder_class_false_from_stages_when_working_axis_fails(tmp_path):
     result = run("card", "--file", str(path), "--name", "long")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["builder_class"] is False
+
+
+def test_builder_class_false_when_suite_fails_despite_task_t1_pass(tmp_path):
+    """The other bug: an old `task_t1: "pass"` used to short-circuit builder_class to True
+    even when `suite` recorded failures. The suite is now the authority whenever it is
+    present -- a failing suite makes the row false no matter what task_t1 says."""
+    data = load_base()
+    data["profiles"]["long"]["useful_ctx"] = 100000
+    assert data["profiles"]["long"]["task_t1"] == "pass"
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 4, "runs": 4, "passed": 0, "source": "kit",
+        "stages": [
+            _valid_stage(id="s0-design", axes=["maintainable", "usable"], working=True, counts_toward_pass=False),
+            _valid_stage(id="s1-frontend", axes=["maintainable", "usable"], working=False, counts_toward_pass=True),
+            _valid_stage(id="s2-backend", axes=["maintainable"], working=False, counts_toward_pass=True),
+            _valid_stage(id="s3-optimise", axes=["maintainable"], working=False, counts_toward_pass=True),
+        ],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("card", "--file", str(path), "--name", "long")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["builder_class"] is False
+
+
+def test_check_fails_stage_bad_counts_toward_pass(tmp_path):
+    data = load_base()
+    stage = _valid_stage(counts_toward_pass="yes")
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite.stages[0].counts_toward_pass must be a bool" in result.stderr
 
 
 def test_comparable_with_on_display_registry():

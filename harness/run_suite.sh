@@ -3,6 +3,12 @@
 # the reference exercises (kit/reference/reference.json) through local-build.sh, verifies each, scores the rubric
 # axes through a reviewer profile that is never the builder, and writes one results JSON per run.
 #   run_suite.sh <profile> [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]
+#   run_suite.sh --model <gguf> --ctx <n> [--kv <type>] [--kv-v <type>] [--extra "<flags>"] [--timeout <s>] [<seat>] [...]
+# The second form is how a new GGUF climbs the task rung before it has a registry row: instead of a name already in
+# config/profiles.json, --model/--ctx build an EPHEMERAL profile named "candidate" for this run alone (the
+# A770B_CANDIDATE_* variables the harness reads, exported here, never written to any file), so a model can be
+# task-graded the same way a registered one is before a human has measured and pasted its row (harness/ladder.sh
+# drives exactly this path). A registry profile name and --model are mutually exclusive — passing both is refused.
 # The seat is NOT a clone of this repository (the model must not read harness/): it is an EXPORT of kit/seat/ — a
 # copy, git-init'ed and committed — into <seat> (default $A770B_DATA/kit-seat); a path that already exists and is
 # not empty is refused unless --fresh removes it first. The export is redone PER STAGE, not once for the whole
@@ -30,27 +36,72 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
 
-[ $# -ge 1 ] || die "usage: run_suite.sh <profile> [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]"
-PROFILE="$1"; shift
-SEAT="$A770B_DATA/kit-seat"
-if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then SEAT="$1"; shift; fi
+USAGE="usage: run_suite.sh <profile>|--model <gguf> --ctx <n> [--kv <type>] [--kv-v <type>] [--extra \"<flags>\"] [--timeout <s>] [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]"
+[ $# -ge 1 ] || die "$USAGE"
 SUITE="$A770B_PROJECT/kit/suite.json"
 STAGES_FILTER=""
 REVIEWER=""
 FRESH=0
 DRYRUN=0
+MODEL_GGUF=""; MODEL_CTX=""; MODEL_KV=""; MODEL_KV_V=""; MODEL_EXTRA=""; MODEL_TIMEOUT=""
+POSITIONALS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --suite) SUITE="${2:?path}"; shift 2 ;;
     --stages) STAGES_FILTER="${2:?comma-separated stage ids}"; shift 2 ;;
     --reviewer) REVIEWER="${2:?reviewer profile name}"; shift 2 ;;
+    --model) MODEL_GGUF="${2:?path to a gguf}"; shift 2 ;;
+    --ctx) MODEL_CTX="${2:?context window}"; shift 2 ;;
+    --kv) MODEL_KV="${2:?kv cache type}"; shift 2 ;;
+    --kv-v) MODEL_KV_V="${2:?kv_v cache type}"; shift 2 ;;
+    --extra) MODEL_EXTRA="${2:?extra llama-server flags}"; shift 2 ;;
+    --timeout) MODEL_TIMEOUT="${2:?timeout seconds}"; shift 2 ;;
     --fresh) FRESH=1; shift ;;
     --dry-run) DRYRUN=1; shift ;;
-    *) die "unknown arg $1" ;;
+    --*) die "unknown arg $1" ;;
+    *) POSITIONALS+=("$1"); shift ;;
   esac
 done
 
+PROFILE=""
+SEAT=""
+if [ -n "$MODEL_GGUF" ]; then
+  [ -n "$MODEL_CTX" ] || die "--model requires --ctx <n>"
+  case ${#POSITIONALS[@]} in
+    0) : ;;
+    1)
+      if a770b_is_profile "${POSITIONALS[0]}"; then
+        die "refusing: a registry profile name (${POSITIONALS[0]}) and --model are mutually exclusive — pass one or the other"
+      fi
+      SEAT="${POSITIONALS[0]}" ;;
+    *) die "too many positional arguments with --model: ${POSITIONALS[*]} (a registry profile name and --model are mutually exclusive)" ;;
+  esac
+  PROFILE="candidate"
+  export A770B_CANDIDATE_MODEL="$MODEL_GGUF"
+  export A770B_CANDIDATE_CTX="$MODEL_CTX"
+  export A770B_CANDIDATE_KV="${MODEL_KV:-q8_0}"
+  export A770B_CANDIDATE_KV_V="${MODEL_KV_V:-${MODEL_KV:-q8_0}}"
+  export A770B_CANDIDATE_REASONING="off"
+  export A770B_CANDIDATE_TIMEOUT="${MODEL_TIMEOUT:-1500}"
+  export A770B_CANDIDATE_EXTRA="${MODEL_EXTRA:-}"
+  case " $A770B_PROFILES " in *" candidate "*) ;; *) export A770B_PROFILES="$A770B_PROFILES candidate" ;; esac
+  echo "▶ --model $MODEL_GGUF: this is how a new GGUF climbs the task rung before it has a registry row — ephemeral profile 'candidate' (ctx $MODEL_CTX, kv $A770B_CANDIDATE_KV/$A770B_CANDIDATE_KV_V)"
+else
+  case ${#POSITIONALS[@]} in
+    0) die "$USAGE" ;;
+    1) PROFILE="${POSITIONALS[0]}" ;;
+    2) PROFILE="${POSITIONALS[0]}"; SEAT="${POSITIONALS[1]}" ;;
+    *) die "too many positional arguments: ${POSITIONALS[*]}" ;;
+  esac
+fi
+SEAT="${SEAT:-$A770B_DATA/kit-seat}"
+
 a770b_is_profile "$PROFILE" || die "profile must be one of: $A770B_PROFILES (got '$PROFILE')"
+# the profile's own timeout window (config/profiles.json timeout_s — the same budget build_local.sh's `timeout`
+# wraps the model's run in): a captured timeout still exits 0 all the way back up through local-build.sh run (the
+# capture itself succeeded), so this wall-clock budget is the only signal process_task has for telling a stage
+# that ran out of time from one that plainly failed — see stage_outcome below.
+TIMEOUT_S=$(a770b_profile_var "$PROFILE" TIMEOUT)
 if [ -n "$REVIEWER" ]; then
   a770b_is_profile "$REVIEWER" || die "reviewer profile must be one of: $A770B_PROFILES (got '$REVIEWER')"
   builder_model=$(a770b_profile_var "$PROFILE" MODEL); reviewer_model=$(a770b_profile_var "$REVIEWER" MODEL)
@@ -89,25 +140,35 @@ for s in d.get("stages", []):
         print(sid)
 PY
 ) || die "could not read stages from $SUITE"
-[ ${#MAIN_IDS[@]} -gt 0 ] || die "no stages selected from $SUITE (filter: ${STAGES_FILTER:-none})"
 
-# ── the reference exercises (kit/reference/reference.json), when present: always in full, never filtered by --stages ──
+# ── the reference exercises (kit/reference/reference.json), when present: filtered by --stages exactly as the
+# stage ids above are (an exact id, or its prefix before the first "-") — --stages used to leave these unfiltered
+# no matter what was asked for, so one stage's request pulled in all three reference exercises too, at an hour of
+# card time. An empty filter still runs every reference exercise, as before.
 # The exercise list lives under the "entries" key (not "reference" — read the file); reader refuses with a clear
 # message, instead of an AttributeError from iterating the wrong thing, when that key is missing or not a list.
 REF_IDS=()
 if [ -f "$REFFILE" ] && [ ! -L "$REFFILE" ]; then
-  REF_OUT=$(python3 - "$REFFILE" <<'PY' 2>&1
+  REF_OUT=$(python3 - "$REFFILE" "$STAGES_FILTER" <<'PY' 2>&1
 import json,sys
-path = sys.argv[1]
+path, filt_raw = sys.argv[1], sys.argv[2]
 d = json.load(open(path))
 items = d.get("entries") if isinstance(d, dict) else None
 if not isinstance(items, list):
     sys.exit(f'{path}: no "entries" list found (kit/reference/reference.json keeps its exercise list under "entries")')
+filt = [x for x in filt_raw.split(",") if x] if filt_raw else []
 for x in items:
-    print(x.get("id", ""))
+    sid = x.get("id", "")
+    if not filt or any(sid == f or sid.startswith(f + "-") for f in filt):
+        print(sid)
 PY
 ) || die "could not read reference exercises from $REFFILE:"$'\n'"$REF_OUT"
   [ -z "$REF_OUT" ] || mapfile -t REF_IDS <<< "$REF_OUT"
+fi
+[ ${#MAIN_IDS[@]} -gt 0 ] || [ ${#REF_IDS[@]} -gt 0 ] || die "no stages or reference exercises selected from $SUITE / $REFFILE (filter: ${STAGES_FILTER:-none})"
+if [ -n "$STAGES_FILTER" ]; then
+  ALL_SELECTED_IDS=("${MAIN_IDS[@]}" "${REF_IDS[@]}")
+  echo "▶ --stages $STAGES_FILTER selects: ${ALL_SELECTED_IDS[*]:-none}"
 fi
 
 # stage_precedents <id> — the ids from kit/suite.json's OWN "stages" list (file order, never the --stages filter)
@@ -171,6 +232,32 @@ copy_tracked(){
   fi
 }
 
+# write_seat_gitignore <seat> — the seat's own .gitignore, written and committed as part of every export, right
+# before the one commit each export function makes. Covers the build artefacts a build inside the sandbox leaves
+# behind (a CMake build directory under any of its usual names, its own generated CMakeFiles/ and CMakeCache.txt,
+# object/library files, Python/JS caches): without it these showed up as untracked "new files" — the C++
+# reference stage's own CMakeFiles/ alone turned a real change into a 4,682-line recorded diff, and a stray
+# __pycache__/*.pyc from a Python stage's own pytest run got dumped byte-for-byte into the capture, corrupting it
+# enough that even the server-side timings line after it stopped parsing. With this committed, seat_dirty
+# (guard.sh) still reports such a file if one shows up before a run starts (it lists ignored files on purpose —
+# see its own header comment), but capture_task.sh's "new files"/patch loop (git ls-files --others
+# --exclude-standard, same as seat_dirty's plain status half) no longer sees it as the model's own edit.
+write_seat_gitignore(){
+  cat > "$1/.gitignore" <<'GITIGNORE'
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.so
+*.a
+__pycache__/
+.pytest_cache/
+node_modules/
+GITIGNORE
+}
+
 # export_kit_seat <seat> <src> <label> [<solution-dir>...] — a standalone git clone-shaped copy of kit/seat/ at
 # <seat>, with each named solution subtree (kit/hidden/solutions/<id>/, laid out to mirror the seat itself) pasted
 # over it in order, one commit "kit seat for <label>". Always removes and recreates <seat> first: a stage's seat is
@@ -186,6 +273,7 @@ export_kit_seat(){
   copy_tracked "$seat" "$src"
   local d
   for d in "$@"; do copy_tracked "$seat" "$d"; done
+  write_seat_gitignore "$seat"
   safe_git "$seat" init -q
   safe_git "$seat" add -A
   safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat for $label" >/dev/null
@@ -217,6 +305,7 @@ export_reference_seat(){
     fi
   done
   find "$seat" -depth -type d -name '.meta' -exec rm -rf -- {} +
+  write_seat_gitignore "$seat"
   safe_git "$seat" init -q
   safe_git "$seat" add -A
   safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat for $label" >/dev/null
@@ -245,7 +334,10 @@ else
   check_seat_path "$SEAT"
 fi
 
-OUTFILE="$A770B_DATA/results/${PROFILE}-suite-$(date +%Y%m%d-%H%M%S).json"
+# -$$: the date alone is second-resolution — two runs of the same profile inside one second (harness scripted
+# back-to-back, or a test fixture) would otherwise silently overwrite each other's results file; this process's own
+# pid makes every run's OUTFILE distinct regardless of how close together two runs land.
+OUTFILE="$A770B_DATA/results/${PROFILE}-suite-$(date +%Y%m%d-%H%M%S)-$$.json"
 RESULTS_NDJSON=$(mktemp)
 trap 'rm -f "$RESULTS_NDJSON"' EXIT
 
@@ -272,7 +364,7 @@ with open(outfile, "w") as f:
 PY
 }
 
-emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json
+emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome
   python3 - "$@" >> "$RESULTS_NDJSON" <<'PY'
 import json, sys
 def num(s):
@@ -285,7 +377,7 @@ def num(s):
 def boolean(s):
     return True if s == "true" else False if s == "false" else None
 (id_, language, label, working, conf, lines, budget, budget_ok,
- score_json, wall, requests, ptok, gtok, axes_json, counts, seat_state_json) = sys.argv[1:]
+ score_json, wall, requests, ptok, gtok, axes_json, counts, seat_state_json, outcome) = sys.argv[1:]
 rec = {
     "id": id_, "language": language or None, "label": label or None,
     "working": boolean(working), "conformance_exit": num(conf),
@@ -295,9 +387,26 @@ rec = {
     "axes": json.loads(axes_json) if axes_json else None,
     "counts_toward_pass": boolean(counts) if counts else True,
     "seat_state": json.loads(seat_state_json) if seat_state_json else [],
+    "outcome": outcome or None,
 }
 print(json.dumps(rec))
 PY
+}
+
+# stage_outcome <working "true"|"false"|""> <wall_s> — "timeout" when the measured wall time reached the
+# profile's own configured budget (TIMEOUT_S, set once above from config/profiles.json's timeout_s — the same
+# window build_local.sh's `timeout` wraps the model's run in); a captured timeout still exits 0 all the way back
+# through local-build.sh run (the capture itself succeeded), so this wall-clock comparison is the only signal
+# available here for telling a slow model (still working when the clock ran out) from a plainly wrong one.
+# Otherwise "pass"/"fail" from the verify exit code, or empty when there was no verify at all (working is "").
+stage_outcome(){
+  local working="$1" wall="$2"
+  if [ -n "$TIMEOUT_S" ] && [ -n "$wall" ] && [ "$wall" -ge "$TIMEOUT_S" ] 2>/dev/null; then
+    printf 'timeout\n'
+  elif [ "$working" = true ]; then printf 'pass\n'
+  elif [ "$working" = false ]; then printf 'fail\n'
+  else printf '\n'
+  fi
 }
 
 # review_stage <rubric-file> <artefact-file> — one keyed HTTP request to the reviewer's own server; prints the score
@@ -415,15 +524,20 @@ process_task(){
     [ -n "$croot" ] && label=$(basename "$croot" .task.md)
   fi
   if [ -z "$label" ]; then
-    echo "⚠ stage $id: run exited $rrc with no capture — recording as failed" >&2
-    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON"
+    local no_cap_outcome; no_cap_outcome=$(stage_outcome false "$wall_s")
+    echo "⚠ stage $id: run exited $rrc with no capture — recording as ${no_cap_outcome:-failed}" >&2
+    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$no_cap_outcome"
     write_results
-    echo "stage $id: FAILED (no capture, run exit $rrc)"
+    echo "stage $id: ${no_cap_outcome:-FAILED} (no capture, run exit $rrc)"
     return 0
   fi
   local capfile="$A770B_DATA/results/$label.task.md" patchfile="$A770B_DATA/results/$label.patch"
   local reqline requests prompt_tokens gen_tokens
-  reqline=$(grep -oE 'requests=[0-9]+ prompt_tokens_total=[0-9]+ gen_tokens_total=[0-9]+' "$capfile" 2>/dev/null | tail -1)
+  # -a: a capture that dumped a build artefact's raw bytes into its "new files" section (the case Defect 3 above
+  # closes off going forward, but an older or still-uncovered capture can still carry one) reads as binary to a
+  # locale-aware grep, which then silently matches nothing anywhere past that point — including this timings line
+  # near the end of the file — even though the line itself is plain ASCII. -a forces a text match regardless.
+  reqline=$(grep -a -oE 'requests=[0-9]+ prompt_tokens_total=[0-9]+ gen_tokens_total=[0-9]+' "$capfile" 2>/dev/null | tail -1)
   requests=$(printf '%s' "$reqline" | grep -oE '^requests=[0-9]+' | cut -d= -f2)
   prompt_tokens=$(printf '%s' "$reqline" | grep -oE 'prompt_tokens_total=[0-9]+' | cut -d= -f2)
   gen_tokens=$(printf '%s' "$reqline" | grep -oE 'gen_tokens_total=[0-9]+' | cut -d= -f2)
@@ -444,6 +558,7 @@ process_task(){
     A770B_HIDDEN_ROOT="$HIDDEN_ROOT" bash "$LOCAL_BUILD" verify "$label" "$WT" >/dev/null 2>&1; vrc=$?
   fi
   [ "$vrc" = 0 ] && working=true
+  local outcome; outcome=$(stage_outcome "$working" "$wall_s")
   local conf_exit=""
   if [ -n "$S_CONFORMANCE_CMD" ]; then
     # verify drags the spec's hidden pytest tests along whenever a same-named <patch>.spec.json sits
@@ -462,9 +577,9 @@ process_task(){
     if [ -f "$rubricpath" ]; then score_json=$(review_stage "$rubricpath" "$patchfile")
     else echo "⚠ stage $id: rubric file not found: $rubricpath — no score" >&2; fi
   fi
-  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON"
+  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome"
   write_results
-  echo "stage $id: working=$working conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-0} tokens=${prompt_tokens:-0}+${gen_tokens:-0}"
+  echo "stage $id: working=$working outcome=${outcome:-n/a} conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-n/a} tokens=${prompt_tokens:-n/a}+${gen_tokens:-n/a}"
 }
 
 rc=0

@@ -47,7 +47,7 @@ tools=[{"type":"function","function":{"name":"read_file","description":"Read a f
 d,ms=chat([{"role":"user","content":"Read the file README.md using the tool."}],max_tokens=96,tools=tools,tool_choice="auto")
 m=d['choices'][0]['message']; r["toolcall"]={"ms":round(ms),"parsed":bool(m.get('tool_calls')),"call":json.dumps(m.get('tool_calls'))[:200],"gen_tokens":d.get('timings',{}).get('predicted_n')}
 r["vram_gib_after_probes"]=float(subprocess.check_output(['bash','-c',f". \"{os.environ['A770B_PROJECT']}/harness/env.sh\" >/dev/null 2>&1; . \"{os.environ['A770B_PROJECT']}/harness/guard.sh\"; gpu_used_gib"]).decode().strip())
-r["kernel_resets"]=int(subprocess.check_output("journalctl -k --since @$(stat -c %Y $A770B_DATA/logs/llamacpp-a770.pid) --no-pager 2>/dev/null | grep -ciE 'engine reset|timedout' || true",shell=True).decode().strip() or 0)
+r["kernel_resets"]=int(subprocess.check_output(['bash','-c',f". \"{os.environ['A770B_PROJECT']}/harness/env.sh\" >/dev/null 2>&1; . \"{os.environ['A770B_PROJECT']}/harness/guard.sh\"; kernel_resets_since \"@$(stat -c %Y $A770B_DATA/logs/llamacpp-a770.pid)\""]).decode().strip() or 0)
 json.dump(r,open(os.environ['OUT'],'w'),indent=1)
 print(json.dumps({k:r[k] for k in ['label','load_s','vram_gib_after_load','quality_ok','short','long','toolcall','vram_gib_after_probes','kernel_resets']})[:1500])
 PY

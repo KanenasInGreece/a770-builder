@@ -17,7 +17,8 @@
       "licence": "MIT (Exercism)",
       "source_commit": "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f",
       "track_licence": "MIT (Exercism, 2021, cpp track)",
-      "contamination_note": "Both binary_search_tree_test.cpp (the reference grader) and its canonical inputs are public (Aider's polyglot-benchmark, itself built from Exercism's public problem-specifications). A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_bst_hidden.py, fresh values and orders computed in kit/reference/hidden/bst_hidden_test.cpp) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way."
+      "contamination_note": "Both binary_search_tree_test.cpp (the reference grader) and its canonical inputs are public (Aider's polyglot-benchmark, itself built from Exercism's public problem-specifications). A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_bst_hidden.py, fresh values and orders computed in kit/reference/hidden/bst_hidden_test.cpp) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way.",
+      "counts_toward_pass": false
     },
     {
       "id": "ref-javascript-forth",
@@ -33,7 +34,8 @@
       "licence": "MIT (Exercism)",
       "source_commit": "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f",
       "track_licence": "MIT (Exercism, 2021, javascript track)",
-      "contamination_note": "Both forth.spec.js (the reference grader, run through the kit's shim under node's built-in test runner, not Jest) and its canonical inputs are public. A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_forth_hidden.py, fresh programs in kit/reference/hidden/forth_hidden.test.mjs) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way. See also the SOURCES.md note that the shim maps `xtest` onto `node:test`'s own `test` (not `test.skip`), reproducing Aider's own all-enabled grading run (49 cases), not Exercism's progressive-unlock default."
+      "contamination_note": "Both forth.spec.js (the reference grader, run through the kit's shim under node's built-in test runner, not Jest) and its canonical inputs are public. A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_forth_hidden.py, fresh programs in kit/reference/hidden/forth_hidden.test.mjs) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way. See also the SOURCES.md note that the shim maps `xtest` onto `node:test`'s own `test` (not `test.skip`), reproducing Aider's own all-enabled grading run (49 cases), not Exercism's progressive-unlock default.",
+      "counts_toward_pass": false
     },
     {
       "id": "ref-python-pov",
@@ -49,7 +51,8 @@
       "licence": "MIT (Exercism)",
       "source_commit": "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f",
       "track_licence": "MIT (Exercism, 2021, python track)",
-      "contamination_note": "Both pov_test.py (the reference grader) and its canonical inputs are public (adapted, per its own .meta/config.json, from https://github.com/oxalorg/4ever-clojure). A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_pov_hidden.py, fresh trees) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way."
+      "contamination_note": "Both pov_test.py (the reference grader) and its canonical inputs are public (adapted, per its own .meta/config.json, from https://github.com/oxalorg/4ever-clojure). A pass on the reference grader carries no information about memorisation by itself; the hidden variant (test_pov_hidden.py, fresh trees) is what discriminates: a reference pass with a hidden fail is the signal a model solved the public shape without the general one, and a pass on both carries no information about memorisation either way.",
+      "counts_toward_pass": false
     }
   ]
 }

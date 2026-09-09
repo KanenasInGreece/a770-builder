@@ -193,6 +193,14 @@ elif grep -qE '^SOLVED-(s0-pass|s1-fail)\.marker$' "$ku3/seat-ls/fake-ref-cpp-ex
 else
   echo "ok   suite: the stage-two seat saw the stage-one solution file (and stage three both, and the reference exercise neither)"
 fi
+# Defect 3 (export_reference_seat half): $t/ku3-seat is whatever the LAST stage of the run above left in place —
+# ref-cpp-example, a reference exercise, so export_reference_seat's own commit — and the fake local-build.sh never
+# touches or resets it, so it still reads exactly as exported. It must carry the build-artefact .gitignore.
+if [ -f "$t/ku3-seat/.gitignore" ] && grep -qx 'CMakeFiles/' "$t/ku3-seat/.gitignore" && grep -qx '__pycache__/' "$t/ku3-seat/.gitignore"; then
+  echo "ok   suite: export_reference_seat's export (ref-cpp-example) carries the build-artefact .gitignore"
+else
+  echo "FAIL suite: $t/ku3-seat has no .gitignore, or it is missing an expected pattern"; fail=1
+fi
 # the fake local-build.sh's own argv, recorded per call: a "run ... --spec ... --profile long" line and a
 # "verify fake-<id>" line per stage, in order, and no reviewer step (stop/serve) since --reviewer was not given
 if [ -f "$ku3/argv.log" ] && python3 - "$ku3/argv.log" <<'PY'
@@ -211,6 +219,28 @@ PY
 then echo "ok   suite: the fake local-build.sh's argv shows run --spec --profile then verify <label>, in order, no reviewer step"
 else echo "FAIL suite: the recorded argv did not match (see $ku3/argv.log)"; [ -f "$ku3/argv.log" ] && cat "$ku3/argv.log"; fail=1
 fi
+# KU3b — Defect 1: --stages must filter kit/reference/reference.json's own entries exactly as it filters
+# kit/suite.json's stages (an exact id, or its prefix before the first "-"). Before the fix, --stages left the
+# reference exercises entirely unfiltered, so a request for one ordinary stage silently pulled in all three of
+# them too — an hour of card time nobody asked for. Same ku3 fixture, reused: a filter naming only the main
+# stage s1-fail must run s1-fail alone (not ref-cpp-example), a filter naming only the reference exercise
+# ref-cpp-example must run it alone (no main stage matches it), and both must be named in a line printed before
+# the first stage starts.
+rm -f "$ku3/argv.log"
+outF=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat-b" --suite "$ku3/suite.json" --stages s1-fail 2>&1); rcF=$?
+if [ "$rcF" = 0 ] && printf '%s\n' "$outF" | grep -q -- '--stages s1-fail selects: s1-fail' \
+  && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] \
+  && grep -q "$ku3/tasks/s1-fail.md" "$ku3/argv.log" && ! grep -q 'ref-cpp-example' "$ku3/argv.log"
+then echo "ok   suite: --stages s1-fail filters the reference exercises exactly as the main stages (s1-fail alone ran, ref-cpp-example did not) and announces the selection before the first stage starts"
+else echo "FAIL suite: --stages s1-fail did not select exactly s1-fail (see $ku3/argv.log, output below)"; printf '%s\n' "$outF" | tail -10; fail=1
+fi
+rm -f "$ku3/argv.log"
+outF2=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat-c" --suite "$ku3/suite.json" --stages ref-cpp-example 2>&1); rcF2=$?
+if [ "$rcF2" = 0 ] && printf '%s\n' "$outF2" | grep -q -- '--stages ref-cpp-example selects: ref-cpp-example' \
+  && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] && grep -q 'ref-cpp-example' "$ku3/argv.log"
+then echo "ok   suite: --stages also selects a reference exercise on its own (ref-cpp-example alone, no main stage matched it)"
+else echo "FAIL suite: --stages ref-cpp-example did not select exactly the reference exercise (see $ku3/argv.log, output below)"; printf '%s\n' "$outF2" | tail -10; fail=1
+fi
 if [ -n "$res" ]; then
   # four stages are in the results (s0-pass, s1-fail, s2-note, ref-cpp-example) but s2-note carries
   # "counts_toward_pass": false, so the totals below must read as if it were never run: briefs=3, runs=3,
@@ -219,14 +249,114 @@ if [ -n "$res" ]; then
   if printf '%s' "$jout" | python3 -c '
 import json, sys
 d = json.loads(sys.stdin.read())
-need = {"briefs", "runs", "passed", "mean_wall_s", "source"}
+need = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source"}
 assert set(d.keys()) == need, d
-assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2, d
-' 2>/dev/null; then echo "ok   suite: suite_report.py --json excludes the counts_toward_pass:false stage from all five totals"
+assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2 and d["timeouts"] == 0, d
+' 2>/dev/null; then echo "ok   suite: suite_report.py --json excludes the counts_toward_pass:false stage from all totals (timeouts=0, none of this fixture's stages timed out)"
   else echo "FAIL suite: suite_report.py --json wrong: $jout"; fail=1
   fi
 else echo "FAIL suite: no results file to report on"; fail=1
 fi
+# KU10 — Defect 2: a capture that genuinely carries no server-side timings line at all (the run's wall clock
+# reached the profile's own timeout before capture_task.sh's own SLOG parse ever had anything to report) must be
+# recorded with requests/prompt_tokens/gen_tokens = null, never 0, and the stage's own "outcome" must read
+# "timeout", not a plain failure — so a reader can tell a slow model from a wrong one — carried through into
+# suite_report.py's table (TIMEOUT, not FAIL) and its --json (a "timeouts" count). A770B_LONG_TIMEOUT=1 shrinks
+# the profile's own timeout window to one second so a two-second fake run trips it without an hour of card time.
+# This fixture's own fresh kit/seat/ export (export_kit_seat, one main stage, never touched by the fake run) also
+# proves the other half of Defect 3: the .gitignore lands there too, not only from export_reference_seat above.
+kut="$t/kutimeout"; mkdir -p "$kut/tasks" "$kut/seat"
+echo "fixture" > "$kut/seat/README.md"
+echo "brief" > "$kut/tasks/t0-slow.md"; printf '{}' > "$kut/tasks/t0-slow.spec.json"
+cat > "$kut/suite.json" <<JSON
+{"suite": "SUITE-TIMEOUT", "stages": [
+  {"id": "t0-slow", "language": "python", "brief": "$kut/tasks/t0-slow.md", "spec": "$kut/tasks/t0-slow.spec.json",
+   "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}}
+]}
+JSON
+cat > "$kut/fake-local-build.sh" <<'FAKE'
+#!/usr/bin/env bash
+set -uo pipefail
+case "${1:-}" in
+  run)
+    shift; WT="$1"; BRIEF="$2"; shift 2
+    sleep 2   # longer than A770B_LONG_TIMEOUT=1 below, so this stage's wall_s trips the timeout comparison
+    label="fake-$(basename "$BRIEF" .md)"
+    mkdir -p "$A770B_DATA/results"
+    echo "# fake capture — no server-side timings line at all (the run never got that far)" > "$A770B_DATA/results/$label.task.md"
+    { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; } > "$A770B_DATA/results/$label.patch"
+    echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
+    exit 0 ;;
+  verify) exit 1 ;;   # the stage never finished — verify fails, same as any incomplete work
+  stop|serve) exit 0 ;;
+  *) exit 2 ;;
+esac
+FAKE
+chmod +x "$kut/fake-local-build.sh"
+rm -f "$A770B_DATA"/results/long-suite-*.json
+outT=$(A770B_LOCAL_BUILD="$kut/fake-local-build.sh" A770B_LONG_TIMEOUT=1 bash "$here/harness/run_suite.sh" long "$t/kutimeout-seat" --suite "$kut/suite.json" 2>&1); rcT=$?
+resT=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
+if [ "$rcT" = 0 ] && [ -n "$resT" ] && python3 - "$resT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = d["stages"][0]
+assert s["id"] == "t0-slow", s
+assert s["requests"] is None and s["prompt_tokens"] is None and s["gen_tokens"] is None, s
+assert s["outcome"] == "timeout", s
+assert s["working"] is False, s
+sys.exit(0)
+PY
+then
+  tbl=$(python3 "$here/harness/suite_report.py" "$resT" 2>&1)
+  jsonT=$(python3 "$here/harness/suite_report.py" "$resT" --json 2>/dev/null)
+  if printf '%s\n' "$tbl" | grep -qE '^t0-slow +TIMEOUT ' && printf '%s' "$jsonT" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+assert d["timeouts"] == 1, d
+' 2>/dev/null
+  then echo "ok   suite: a capture with no timings line at all records requests/tokens as null (never 0) and the stage outcome as timeout; suite_report.py shows TIMEOUT in its table and counts it in --json"
+  else echo "FAIL suite: suite_report.py did not show the timeout distinction — table: $tbl / json: $jsonT"; fail=1
+  fi
+else
+  echo "FAIL suite: run_suite.sh did not record null requests/tokens + a timeout outcome for a captureless-timings stage (rc=$rcT res=$resT)"; printf '%s\n' "$outT" | tail -20; fail=1
+fi
+# Defect 3 (export_kit_seat half): the main-suite export above (kutimeout-seat) must carry the same .gitignore.
+if [ -f "$t/kutimeout-seat/.gitignore" ] && grep -qx 'CMakeFiles/' "$t/kutimeout-seat/.gitignore" && grep -qx '__pycache__/' "$t/kutimeout-seat/.gitignore"; then
+  echo "ok   suite: export_kit_seat's export also carries the build-artefact .gitignore"
+else
+  echo "FAIL suite: $t/kutimeout-seat has no .gitignore, or it is missing an expected pattern"; fail=1
+fi
+# Defect 3, the part that must NOT change: seat_dirty (guard.sh) never hides an ignored file on principle (a model
+# could plant a disguised .venv or config file the same way) — planting build-artefact-shaped files that the new
+# .gitignore matches must still show up there — while capture_task.sh's own "new files"/patch loop, respecting
+# that same .gitignore, must not see them as the model's edits. Both checked on the real (unmodified)
+# seat_dirty and capture_task.sh, over the real seat export_kit_seat just produced above — never a re-typed copy.
+mkdir -p "$t/kutimeout-seat/build-bst/CMakeFiles" "$t/kutimeout-seat/python/logstats/__pycache__"
+echo "generated" > "$t/kutimeout-seat/build-bst/CMakeFiles/foo.txt"
+echo "generated" > "$t/kutimeout-seat/build-bst/CMakeCache.txt"
+: > "$t/kutimeout-seat/python/logstats/__pycache__/stats.cpython-314.pyc"
+echo ".o" > "$t/kutimeout-seat/thing.o"
+dseat=$(seat_dirty "$t/kutimeout-seat")
+if printf '%s\n' "$dseat" | grep -q 'CMakeFiles/foo.txt' && printf '%s\n' "$dseat" | grep -q 'thing.o'; then
+  echo "ok   suite: seat_dirty still reports the planted build artefacts even though the seat's own .gitignore now covers them (it never hides ignored files — see its own header comment)"
+else
+  echo "FAIL suite: seat_dirty hid a planted build artefact it must still report:"; printf '%s\n' "$dseat"; fail=1
+fi
+A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" ku10-gitignore "$t/kutimeout-seat" "$t/build.log" >/dev/null 2>&1
+cap="$A770B_DATA/results/ku10-gitignore.task.md"; patch="$A770B_DATA/results/ku10-gitignore.patch"
+# capture_task.sh's "## new files" section (git ls-files --others --exclude-standard, per-file "### <path>" dumps)
+# must come back empty — none of the planted artefacts are untracked-and-not-ignored any more — and neither must
+# the patch (built from the same listing); the SEPARATE "## ignored files ... left behind" section is expected
+# and correct to still name them (informational only, by capture_task.sh's own header comment: "removed by the
+# reset, never applied by verify") — that section is not what this defect was ever about.
+newfiles=$(sed -n '/^## new files$/,/^## ignored files/p' "$cap" 2>/dev/null | sed '1d;$d')
+if [ -f "$cap" ] && [ -z "$(printf '%s' "$newfiles" | tr -d '[:space:]')" ] \
+  && ! grep -qE '(CMakeFiles/foo\.txt|CMakeCache\.txt|\bthing\.o\b|stats\.cpython)' "$patch" 2>/dev/null \
+  && grep -q 'build-bst/CMakeFiles/foo.txt' "$cap"
+then echo "ok   suite: capture_task.sh, respecting the same .gitignore, never lists or diffs in the planted build artefacts as the model's own new files (they still show, informationally, under ignored files left behind)"
+else echo "FAIL suite: capture_task.sh's new-files section or patch included a gitignored build artefact — new files section: [$newfiles]"; fail=1
+fi
+[ "$(seat_dirty "$t/kutimeout-seat" | wc -l)" = 0 ] && echo "ok   suite: capture_task.sh's reset leaves the seat clean again, build artefacts included" || { echo "FAIL suite: seat left dirty after capture's reset"; fail=1; }
 # KU9 — suite_report.py's delivered speed: a fake capture file (the shape harness/capture_task.sh's server-side
 # timings section actually writes) beside a results JSON whose only per-stage capture record is its label, proving
 # the fallback path (<A770B_DATA>/results/<label>.task.md) and the two lines' parse.
@@ -441,6 +571,99 @@ rm -f "$RUNPID"
 grep -q '^MESA_VK_DEVICE_SELECT="\$A770B_VK_DEVICE_SELECT" nohup "\$A770B_LLAMA_BIN"' "$here/harness/serve_a770_llamacpp.sh" && echo "ok   device: the server starts under the selector" || { echo "FAIL device: serve_a770_llamacpp.sh does not export the selector to the server"; fail=1; }
 out=$(A770B_FAST_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_LONG_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile fast serves long's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
 out=$(bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "^ok   profiles:" && echo "ok   doctor: a clean environment is not warned about" || { echo "FAIL doctor: warned on a clean environment"; fail=1; }
+# ── depth_probe.sh grades itself (item 1): the two shared-helper fixes another builder landed (commit 637c4a1) —
+# a770b_ensure_corpus_file (never a silent seat-glob fallback) and kernel_resets_since (A770B_RESET_PATTERN, not a
+# hard-coded Intel string) — plus the grading itself: PASS/FAIL per question and a final "n/3" line, exit 0 iff >=2/3.
+grep -q 'a770b_ensure_corpus_file' "$here/harness/depth_probe.sh" && ! grep -q 'seat glob' "$here/harness/depth_probe.sh" \
+  && echo "ok   depth_probe: generates/refuses the corpus via a770b_ensure_corpus_file, no silent seat-glob fallback" \
+  || { echo "FAIL depth_probe: does not use a770b_ensure_corpus_file (or still falls back to a seat glob)"; fail=1; }
+grep -q 'kernel_resets_since' "$here/harness/depth_probe.sh" && ! grep -q "engine reset|timedout" "$here/harness/depth_probe.sh" \
+  && echo "ok   depth_probe: reads kernel resets through kernel_resets_since (A770B_RESET_PATTERN), not a hard-coded grep" \
+  || { echo "FAIL depth_probe: does not use kernel_resets_since (or still hard-codes the Intel reset pattern)"; fail=1; }
+dp_corpus="$t/dp-corpus.py"
+{ for i in 1 2 3 4 5 6; do printf 'def helper_%d():\n    return %d\n\n' "$i" "$i"; done; head -c 4000 /dev/zero | tr '\0' '#'; } > "$dp_corpus"
+mkdir -p "$t/dpbin"
+cat > "$t/dpbin/curl" <<'DPCURL'
+#!/bin/sh
+# a real completion takes many seconds, giving depth_probe.sh's background VRAM sampler time to write at least one
+# reading before it is killed; this fake must not answer instantly or that sampler file reads empty (float('') dies)
+sleep 2.5
+cat "$DP_FAKE_ANSWER_FILE"
+DPCURL
+chmod +x "$t/dpbin/curl"
+python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":1234},"timings":{"prompt_per_second":500,"predicted_per_second":20},"choices":[{"message":{"content":"orbital_checksum_v7 multiplies each byte by its 1-based position, sums them, and xors the sum with the salt (default 4171), then reduces the result modulo 65521, described as the Adler prime. Other real definitions include helper_1, helper_2, and helper_3."}}]}, open(sys.argv[1],"w"))' "$t/dp-good.json"
+python3 -c 'import json,sys; json.dump({"usage":{},"timings":{},"choices":[{"message":{"content":"I could not determine the exact behaviour of the function or any other definitions in the source."}}]}, open(sys.argv[1],"w"))' "$t/dp-bad.json"
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-good.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-good.out" 2>&1; dp_good_rc=$?
+if [ "$dp_good_rc" = 0 ] && grep -q '^PASS: Q1' "$t/dp-good.out" && grep -q '^PASS: Q2' "$t/dp-good.out" \
+  && grep -q '^PASS: Q3' "$t/dp-good.out" && grep -q 'depth probe at 1000: 3/3' "$t/dp-good.out" \
+  && grep -q '^ANSWER:' "$t/dp-good.out"
+then echo "ok   depth_probe: a fully-correct reply grades PASS on all three questions (3/3) and exits 0, the raw answer still printed"
+else echo "FAIL depth_probe: good-answer grading did not pass as expected (rc=$dp_good_rc)"; cat "$t/dp-good.out"; fail=1
+fi
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-bad.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-bad.out" 2>&1; dp_bad_rc=$?
+if [ "$dp_bad_rc" = 1 ] && grep -q '^FAIL: Q1' "$t/dp-bad.out" && grep -q '^FAIL: Q2' "$t/dp-bad.out" \
+  && grep -q '^FAIL: Q3' "$t/dp-bad.out" && grep -qE 'depth probe at 1000: [01]/3' "$t/dp-bad.out"
+then echo "ok   depth_probe: a reply with none of the planted facts grades FAIL on all three questions and exits 1"
+else echo "FAIL depth_probe: bad-answer grading did not fail as expected (rc=$dp_bad_rc)"; cat "$t/dp-bad.out"; fail=1
+fi
+
+# ── harness/ladder.sh (item 2): the one command that produces a row — --dry-run prints all six rungs and writes nothing
+lad_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data" bash "$here/harness/ladder.sh" long --dry-run 2>&1)
+if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | grep -q 'bench_model.sh' \
+  && printf '%s\n' "$lad_out" | grep -q 'bench_speed.sh' && printf '%s\n' "$lad_out" | grep -q 'ctx_sweep.sh' \
+  && printf '%s\n' "$lad_out" | grep -q 'depth_probe.sh' && printf '%s\n' "$lad_out" | grep -q 'run_suite.sh' \
+  && printf '%s\n' "$lad_out" | grep -q 'nothing written' \
+  && { [ ! -d "$t/ladder-data/results" ] || [ -z "$(ls -A "$t/ladder-data/results" 2>/dev/null)" ]; }
+then echo "ok   ladder: --dry-run names all six rungs (load, probes, speed, window, depth probe, task) and writes nothing"
+else echo "FAIL ladder: --dry-run output missing a rung or wrote something"; printf '%s\n' "$lad_out"; fail=1
+fi
+lad_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data2" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1)
+if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_model_out" | grep -q -- '--model .*--ctx 8192'
+then echo "ok   ladder: a bare GGUF with no registry row skips the bench_speed.sh rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
+else echo "FAIL ladder: the no-row GGUF path did not skip bench_speed.sh or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
+fi
+
+# ── run_suite.sh --model/--ctx (item 3): a GGUF with no registry row can still climb the task rung
+rs_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-model-data" bash "$here/harness/run_suite.sh" --model /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 "$t/rs-model-seat" --dry-run 2>&1)
+if printf '%s\n' "$rs_model_out" | grep -q "ephemeral profile 'candidate'" && printf '%s\n' "$rs_model_out" | grep -q -- '--profile candidate' \
+  && printf '%s\n' "$rs_model_out" | grep -q 'nothing written'
+then echo "ok   run_suite: --model/--ctx builds an ephemeral 'candidate' profile and drives every stage with it, with no registry row"
+else echo "FAIL run_suite: --model/--ctx did not build the candidate profile as expected"; printf '%s\n' "$rs_model_out"; fail=1
+fi
+rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-combo-data" bash "$here/harness/run_suite.sh" long --model /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1); rs_combo_rc=$?
+if [ "$rs_combo_rc" = 2 ] && printf '%s\n' "$rs_combo_out" | grep -q 'mutually exclusive'
+then echo "ok   run_suite: a registry profile name together with --model is refused (mutually exclusive)"
+else echo "FAIL run_suite: the profile-name + --model combination was not refused (rc=$rs_combo_rc)"; printf '%s\n' "$rs_combo_out"; fail=1
+fi
+
+# ── kit/REVIEW-rubric.md (item 4): asks for exactly what run_suite.sh's own parser accepts
+if grep -qx 'maintainable: <0|3|5>' "$here/kit/REVIEW-rubric.md" && grep -qx 'usable: <0|3|5>' "$here/kit/REVIEW-rubric.md" \
+  && grep -q 'EXACTLY two lines' "$here/kit/REVIEW-rubric.md" && grep -qi 'recorded as .null.' "$here/kit/REVIEW-rubric.md" \
+  && ! grep -q 'must start with the model name' "$here/kit/REVIEW-rubric.md"
+then echo "ok   rubric: kit/REVIEW-rubric.md asks for exactly the two lines run_suite.sh's parser accepts, and says anything else is null"
+else echo "FAIL rubric: kit/REVIEW-rubric.md does not match run_suite.sh's parser"; fail=1
+fi
+
+# ── harness/suite_report.py (item 5): the contamination pair (public exercise result beside its hidden variant),
+# read from a reference stage's own <label>.verify.md, per language — never leaked into --json (no field for it there)
+cr="$t/contam"; mkdir -p "$cr/results"
+cat > "$cr/results/ref-cpp-x.verify.md" <<'EOF'
+hidden tests: test_bst_hidden.py
+verdict: FAIL (exit 1) — the exit code of the command is the verdict
+reported: 5 passed, 1 failed in 0.42s (quoted from output the tests control; informational)
+EOF
+cat > "$cr/results.json" <<JSON
+{"instrument": "SUITE-1", "stages": [{"id": "ref-cpp-x", "language": "cpp", "label": "ref-cpp-x", "working": false}]}
+JSON
+cr_out=$(A770B_DATA="$cr" python3 "$here/harness/suite_report.py" "$cr/results.json" 2>&1)
+cr_json=$(A770B_DATA="$cr" python3 "$here/harness/suite_report.py" "$cr/results.json" --json 2>/dev/null)
+if printf '%s\n' "$cr_out" | grep -q 'contamination (ref-cpp-x, cpp): public PASS · hidden FAIL' \
+  && ! printf '%s' "$cr_json" | grep -q contamination
+then echo "ok   suite_report: prints the contamination pair (public PASS, hidden FAIL) per reference stage's language, never in --json"
+else echo "FAIL suite_report: contamination pair not reported as expected"; printf '%s\n' "$cr_out"; echo "$cr_json"; fail=1
+fi
 rm -rf "$t" "$A770B_DATA"
 if [ "$fail" = 0 ]; then echo "selftest: all passed"; fi
 exit "$fail"

@@ -56,10 +56,11 @@ BENCH_KEYS = {"tool", "prompt", "gen", "flags", "at_depth", "source"}
 BENCH_AT_DEPTH_VALUE_KEYS = {"pp", "tg"}
 DELIVERED_KEYS = {"prefill_tps", "decode_tps", "source"}
 FIT_KEYS = {"code", "think", "write"}
-SUITE_KEYS = {"briefs", "runs", "passed", "mean_wall_s", "source", "instrument", "stages", "reviewer"}
+SUITE_KEYS = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source", "instrument", "stages", "reviewer"}
 SUITE_REQUIRED_KEYS = {"briefs", "runs", "passed", "source"}
 STAGE_KEYS = {
     "id", "working", "conformance", "lines", "budget_lines", "maintainable", "usable", "wall_s", "axes",
+    "counts_toward_pass",
 }
 MAINTAINABLE_USABLE_VALUES = (0, 3, 5)
 REVIEWER_KEYS = {"profile", "model", "ctx", "sampling", "rubric_sha256"}
@@ -70,7 +71,7 @@ TASK_T1_PASS_RE = re.compile(r"^pass(?:\s*\(.*\))?$", re.IGNORECASE)
 STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
-    "category", "weight_class",
+    "category", "weight_class", "measured_on",
 )
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
@@ -320,6 +321,19 @@ def validate(data) -> list[str]:
                                 errors.append(f"{name}: suite.passed must be between 0 and runs")
                         elif passed < 0:
                             errors.append(f"{name}: suite.passed must be between 0 and runs")
+                if "timeouts" in suite:
+                    # a stage whose outcome is "timeout" (harness/suite_report.py's totals) — a slow model, not a
+                    # wrong one; never more than the runs it came from.
+                    timeouts = suite["timeouts"]
+                    if not isinstance(timeouts, int) or isinstance(timeouts, bool):
+                        errors.append(f"{name}: suite.timeouts must be between 0 and runs")
+                    else:
+                        runs = suite.get("runs")
+                        if _is_pos_int(runs):
+                            if not (0 <= timeouts <= runs):
+                                errors.append(f"{name}: suite.timeouts must be between 0 and runs")
+                        elif timeouts < 0:
+                            errors.append(f"{name}: suite.timeouts must be between 0 and runs")
                 if "mean_wall_s" in suite:
                     v = suite["mean_wall_s"]
                     if not _is_number(v) or v <= 0:
@@ -355,6 +369,9 @@ def validate(data) -> list[str]:
 
                             if "working" in stage and not isinstance(stage["working"], bool):
                                 errors.append(f"{name}: suite.stages[{i}].working must be a bool")
+
+                            if "counts_toward_pass" in stage and not isinstance(stage["counts_toward_pass"], bool):
+                                errors.append(f"{name}: suite.stages[{i}].counts_toward_pass must be a bool")
 
                             if "conformance" in stage:
                                 v = stage["conformance"]
@@ -421,6 +438,39 @@ def validate(data) -> list[str]:
                     extra = prof.get("extra")
                     if not isinstance(extra, str) or not TOP_P_FLAG_RE.search(extra):
                         errors.append(f"{name}: sampling.top_p is set but extra carries no --top-p")
+
+    # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time:
+    # the project keeps one best row per (category, weight_class) class, and a registry is
+    # measurements from one instrument, never a mix.
+    category_class_seen: dict[tuple, str] = {}
+    first_instrument = None
+    first_instrument_owner = None
+    for name, prof in profiles.items():
+        if not isinstance(prof, dict):
+            continue
+
+        category = prof.get("category")
+        weight_class = prof.get("weight_class")
+        if isinstance(category, str) and isinstance(weight_class, str):
+            key = (category, weight_class)
+            if key in category_class_seen:
+                errors.append(
+                    f"{name}: category {category!r} + weight_class {weight_class!r} duplicates "
+                    f"{category_class_seen[key]}'s -- a registry keeps one best row per class"
+                )
+            else:
+                category_class_seen[key] = name
+
+        instrument = prof.get("instrument")
+        if isinstance(instrument, str) and instrument:
+            if first_instrument is None:
+                first_instrument = instrument
+                first_instrument_owner = name
+            elif instrument != first_instrument:
+                errors.append(
+                    f"{name}: instrument {instrument!r} differs from {first_instrument_owner}'s "
+                    f"{first_instrument!r} -- a registry is one instrument"
+                )
 
     return errors
 
@@ -518,41 +568,40 @@ def _card_warnings(profiles: dict) -> dict:
 def _builder_class(prof: dict) -> bool:
     """Whether a profile clears the builder-class bar: useful_ctx >= 81920 and a green task.
 
-    Computed by `card`; never stored in the registry file itself. When `suite.stages` is
-    present, the pass rate is computed from the stages whose `axes` include "working" (the
-    design stage and the rubric never count); otherwise it falls back to `suite.passed` /
-    `suite.runs`.
+    Computed by `card`; never stored in the registry file itself. `axes` describes what a
+    stage was scored on and never drives the tally -- a stage counts toward the pass ratio
+    when its own `counts_toward_pass` is not false (the same rule `harness/suite_report.py`
+    and `harness/run_suite.sh` honour; `axes` alone would undercount, since no stage in
+    `kit/suite.json` puts "working" in `axes`).
+
+    The suite is the authority whenever it is present: with a `suite` object, builder_class
+    is exactly whether its counted pass ratio is at least 0.8 (from `suite.stages` when
+    present, else `suite.passed` / `suite.runs`) -- an old `task_t1: "pass"` never overrides
+    a suite that recorded failures. `task_t1` is consulted only when there is no `suite`
+    object at all.
     """
     useful_ctx = prof.get("useful_ctx")
     if not _is_pos_int(useful_ctx) or useful_ctx < 81920:
         return False
 
-    task_t1 = prof.get("task_t1")
-    if isinstance(task_t1, str) and TASK_T1_PASS_RE.match(task_t1.strip()):
-        return True
-
     suite = prof.get("suite")
     if isinstance(suite, dict):
         stages = suite.get("stages")
         if isinstance(stages, list):
-            working_stages = [
+            counted_stages = [
                 s for s in stages
-                if isinstance(s, dict) and isinstance(s.get("axes"), list) and "working" in s["axes"]
+                if isinstance(s, dict) and s.get("counts_toward_pass", True) is not False
             ]
-            passed = sum(1 for s in working_stages if s.get("working") is True)
-            runs = len(working_stages)
-            if runs and passed / runs >= 0.8:
-                return True
+            passed = sum(1 for s in counted_stages if s.get("working") is True)
+            runs = len(counted_stages)
         else:
             passed, runs = suite.get("passed"), suite.get("runs")
-            if (
-                isinstance(passed, int) and not isinstance(passed, bool)
-                and _is_pos_int(runs)
-                and passed / runs >= 0.8
-            ):
-                return True
+            if not (isinstance(passed, int) and not isinstance(passed, bool) and _is_pos_int(runs)):
+                passed, runs = None, None
+        return bool(runs) and (passed / runs) >= 0.8
 
-    return False
+    task_t1 = prof.get("task_t1")
+    return isinstance(task_t1, str) and bool(TASK_T1_PASS_RE.match(task_t1.strip()))
 
 
 def cmd_card(args) -> int:
@@ -589,10 +638,14 @@ def cmd_card(args) -> int:
         prof.update(served)
         prof["builder_class"] = _builder_class(prof)
 
-    instrument_by_name = {n: p.get("instrument") for n, p in profiles.items()}
+    comparability_key_by_name = {
+        n: (p.get("instrument"), p.get("measured_on")) for n, p in profiles.items()
+    }
     for name, prof in profiles.items():
-        inst = instrument_by_name[name]
-        prof["comparable_with"] = [n for n in profiles if n != name and instrument_by_name[n] == inst]
+        key = comparability_key_by_name[name]
+        prof["comparable_with"] = [
+            n for n in profiles if n != name and comparability_key_by_name[n] == key
+        ]
 
     warnings_by_profile = _card_warnings(profiles)
     data["warnings"] = [w for name in profiles for w in warnings_by_profile[name]]
