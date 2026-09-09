@@ -44,16 +44,19 @@ the parameter count · `ctx` the window served · `useful_ctx` the window that a
 cost · `depth_probe_100k`/`task_t1` pass/fail of two rungs · `instrument` what the row was measured on ·
 `capability` the model's own public benchmark numbers · `use_for` what the ladder showed the row is good for.
 Added by `card`, never stored in the file: `"builder_class": true` (`useful_ctx` clears 81,920 and `task_t1`
-reads pass) and `"comparable_with": ["long", "moe"]` (the other two inference rows share this row's exact
-`instrument` string today).
+reads pass) and `"comparable_with": {"instrument": "seat: Shared_Memory@3c8e2bb", "measured_on": "Arc A770 16 GB,
+llama.cpp b10805 Vulkan", "profiles": ["long", "moe"]}` (the other two inference rows share this row's exact
+`instrument` AND `measured_on` today).
 
 Besides the fields shown above, every row also carries `architecture` (a one-line prose description — attention
 shape, KV head count, block count), `params_b` (total/active parameters in billions), `extra` (the exact server
 flags), `sampling`, `timeout_s`, `speed`, `capability_source`, `fit` and `measured_on` (the card and build the row
-was measured on, e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan` — a required field, never filled by `ladder.sh`,
-which never sets it); §2 covers each in turn. `model`, `source`, `family`, `architecture`, `quant`, `category`,
-`weight_class`, `params_b` and `measured_on` are identity fields, not measurements: transcribed once, by hand, from
-the GGUF's own metadata, the model's public card and the workstation's own build, never re-derived by a rung —
+was measured on, e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan` — a required field `ladder.sh` prints only as a
+clearly marked `__TODO__` placeholder in the row itself, since a pasted row missing the key outright would fail
+`check`, but never a value it derives or fills in for you); §2 covers each in turn. `model`, `source`, `family`,
+`architecture`, `quant`, `category`, `weight_class`, `params_b` and `measured_on` are identity fields, not
+measurements: transcribed once, by hand, from the GGUF's own metadata, the model's public card and the
+workstation's own build, never re-derived by a rung —
 they exist so the registry never carries two rows that are really the same choice twice, and so comparability can
 ask for the same instrument AND the same card, never one alone.
 
@@ -88,9 +91,9 @@ whether a human still writes or chooses it (**human**) — `ladder.sh`'s own out
 | `fit.think`, `fit.write` | **human** — absent from `ladder.sh`'s own printed row entirely; its closing note names both as still to write | `think` from a reasoning arm measured on this card, or else the model's own card's GPQA/AIME figure, named as the card's; `write` from a reviewer-graded prose brief, or plainly "not measured" — never invented | `think`: the model card's own figure, where quoted rather than measured here; `write`: none, or the rubric's own 0–5 scale |
 | `capability`, `capability_source` | **human** — the model's or the quantiser's own published evaluation; `ladder.sh` leaves `capability` a `__TODO__` and never sets `capability_source` at all | numbers quoted verbatim from what `capability_source` names, never re-measured on this card | directly comparable with the maker's model card, and with the quantiser's own evaluation where one exists |
 | `instrument` | **ladder** — computed per run (`<suite id>@<project version>`, e.g. `SUITE-1@0.2.0`) or hand-recorded for the earlier rows (`seat: Shared_Memory@3c8e2bb`) | names what the row was actually measured on | none — it is the comparability key `comparable_with` reads, not itself a comparison |
-| `measured_on` | **human** — not written by `ladder.sh` at all (its closing note transcribes the other identity fields by hand but does not name this one) | the card and build the row was measured on, e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan`; comparability needs the same instrument AND the same card, so this is checked beside `instrument`, not folded into it | none — this card's own identity |
-| `builder_class` | computed by `profiles.py card`, never stored (neither ladder nor human — a read-time derivation) | `useful_ctx >= 81,920` AND a green task — `task_t1` passing, or, when `suite.stages` is present, the stages whose `axes` include `working` passing at 80% or better (the design stage and the rubric axes never count) | none |
-| `comparable_with` | computed by `profiles.py card`, never stored | every other row in the same registry whose `instrument` AND `measured_on` both match this row's exactly | none — it names which other rows this one may sit beside |
+| `measured_on` | **human** — `ladder.sh` prints only a `__TODO__` placeholder for it in the row (a required field; its closing note transcribes the other identity fields by hand and does not name this one, since this one is already in the row, unfilled) | the card and build the row was measured on, e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan`; comparability needs the same instrument AND the same card, so this is checked beside `instrument`, not folded into it | none — this card's own identity |
+| `builder_class` | computed by `profiles.py card`, never stored (neither ladder nor human — a read-time derivation) | `useful_ctx >= 81,920` AND a green task. A `suite` object, when present, is authoritative over `task_t1` and is never overridden by it: with `suite.stages`, a stage counts toward the pass ratio when its own `counts_toward_pass` is not `false` (`axes` only describes what a stage was scored on and never drives the tally — no stage in `kit/suite.json` puts `"working"` in `axes`, so counting by `axes` would undercount every row), the numerator is how many counted stages have `working: true`, and the row clears the bar at 80% or better of that ratio; without `suite.stages`, `suite.passed`/`suite.runs` is used the same way. `task_t1` is consulted only when there is no `suite` object at all. | none |
+| `comparable_with` | computed by `profiles.py card`, never stored | an object, not a bare list: `profiles`, every other row in the same registry whose `instrument` AND `measured_on` both match this row's exactly, beside `instrument` and `measured_on` themselves — the pair that made them comparable, so a reader does not have to look the two fields up on this row to see why | none — it names which other rows this one may sit beside, and on what |
 | `use_for` | **human** — absent from `ladder.sh`'s own printed row (left `__TODO__`); written by hand from what the ladder run actually showed | states what the row is good for and, as often, what it is not for or not to be run beside | none |
 
 ## 3. The tests, one by one

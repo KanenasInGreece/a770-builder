@@ -73,7 +73,9 @@ fi
 [ -r "$MODEL" ] || { echo "⛔ model not readable: $MODEL (A770B_MODELS=$A770B_MODELS)" >&2; exit 2; }
 
 echo "▶ $CMD_DISPLAY"
-BUILD_ID=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$BENCH_BIN" --version 2>&1 | head -1)
+# llama-bench --version prints its build line and exits non-zero on this build; under set -e that would end the
+# script before the benchmark ever ran, so the failure is tolerated and the fallback below names the build instead
+BUILD_ID=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$BENCH_BIN" --version 2>&1 | head -1 || true)
 [ -n "$BUILD_ID" ] || BUILD_ID=$(git -C "$(dirname "$BENCH_BIN")" describe --always --dirty 2>/dev/null || echo unknown)
 
 RAW_FILE=$(mktemp)

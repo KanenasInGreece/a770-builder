@@ -30,12 +30,12 @@
 # last passing depth (AGENTS.md's "four-tokens-a-second rule"); speed.decode_tps/prefill_tps filled from
 # speed.bench.at_depth by depth (kit/PROFILE.md §2); vram_gib_after_load, ram_gb_extra (the host MemAvailable drop
 # across the load), suite (harness/suite_report.py --json on the task rung's results file) and instrument
-# (SUITE-1@<VERSION>) filled in; use_for, fit.write and capability left as clearly marked placeholders — those are
-# never derived from a measurement, they are written by hand from what the ladder showed (kit/PROFILE.md §2) — and
-# a closing note lists the identity fields (source, family, architecture, quant, category, weight_class, params_b,
-# measured_on,
-# capability_source, sampling, task_t1) the ladder never fills, transcribed once by hand from the GGUF's own
-# metadata and the model's public card.
+# (SUITE-1@<VERSION>) filled in; use_for, fit.write, capability and measured_on left as clearly marked placeholders
+# IN THE ROW ITSELF (measured_on is a required field of the schema, so it is printed as __TODO__ rather than
+# omitted, unlike the identity fields below) — none of these are ever derived from a measurement, they are written
+# by hand from what the ladder showed (kit/PROFILE.md §2) — and a closing note lists the identity fields (source,
+# family, architecture, quant, category, weight_class, params_b, capability_source, sampling, task_t1) the ladder
+# never fills at all, transcribed once by hand from the GGUF's own metadata and the model's public card.
 # --dry-run prints every rung's command and writes nothing.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -385,6 +385,7 @@ row = {
     "timeout_s": int(timeout_s) if timeout_s.isdigit() else timeout_s,
     "vram_gib_after_load": vram_gib_after_load, "ram_gb_extra": ram_gb_extra,
     "useful_ctx": useful_ctx, "speed": speed, "instrument": instrument,
+    "measured_on": "__TODO__ — the card and build this was measured on, e.g. \"Arc A770 16 GB, llama.cpp b10805 Vulkan\" (kit/PROFILE.md: never filled by ladder.sh)",
     "use_for": "__TODO__ — write by hand from what this ladder run showed (kit/PROFILE.md: never derived from a measurement)",
     "fit": {
         "code": (
@@ -406,7 +407,9 @@ print(json.dumps(row, indent=2))
 print(
     "\nNot filled above — transcribe once by hand from the GGUF's own metadata and the model's public card "
     "(kit/PROFILE.md §2, \"identity fields, not measurements\"): source, family, architecture, quant, category, "
-    "weight_class, params_b, capability_source, sampling, and measured_on (the card and the serving build)."
+    "weight_class, params_b, capability_source, and sampling. measured_on is printed above as a placeholder "
+    "(__TODO__) rather than omitted, so a row pasted straight from this output still has the key check requires "
+    "— replace its text with the card and the serving build."
 )
 if not (far_end >= 90000 and depth_score is not None):
     note = f"depth probe ran at {far_end} tokens (not ~100k)"

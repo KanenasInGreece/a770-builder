@@ -83,8 +83,8 @@ doctor` reports it, and `local-build.sh profiles` shows what is actually served 
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. |
-| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. |
+| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 
 This workstation's own `builder.display.env` runs `serious` on the quantiser's task-lossless file instead, IQ3_S, at
@@ -130,8 +130,10 @@ this project; `harness/ladder.sh` (`AGENTS.md`, *The ladder*) computes it exactl
 carries the full card for each row: `speed` at 8k and the far end (decode, prefill, time to first token); `fit`, three
 short strings with their source — `code` (the in-house suite or T1, tests passed and wall), `think` (a reasoning arm
 measured, or the card's GPQA or AIME figure named as the card's), `write` (a reviewer-graded prose brief, or "not
-measured"); `sampling`, the model's own recommended temperature, top_p, top_k, min_p and penalties, with its source;
-and `builder_class`, computed from whether the useful window reaches at least 81,920 tokens and the task is green. The
+measured"); `sampling`, the model's own recommended temperature, top_p, top_k, min_p and penalties, with its source —
+where a row carries one at all: the display registry's `long` and `fast` rows have none, measured at the client's
+default temperature (0) before this registry carried a sampling line, and their own `use_for` says so; and
+`builder_class`, computed from whether the useful window reaches at least 81,920 tokens and the task is green. The
 orchestrating agent reads these fields against a brief's scope, the token size of the files it names, and the time it
 can spend, and takes the least costly profile whose card covers all three.
 
@@ -274,51 +276,77 @@ llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qw
 
 Models keep being released, and a new version of a family is a new model: its window, its speed on this card, its
 sampling line and its behaviour on a real brief are all unmeasured until the harness has run it. The seat is built so
-that a new model enters by measurement, in one sitting, without touching any script:
+that a new model enters by measurement, in one sitting, through one command:
 
-1. **Fetch the GGUF** into `A770B_MODELS` (the download lines above are the pattern). The ladder's task rung is now
-   the kit inside this repository (`kit/`): put a clone of this repository at the release's tag where
-   `A770B_PROJECT` points, and `harness/run_suite.sh <profile>` runs the standard suite against it — no second
-   repository, no brief of your own to write. `A770B_CORPUS_FILE` (`kit/corpus.py`'s own generated file) is what
-   the sweep and the depth probe read by default. A row measured on the kit at a different release's tag, or
-   against a revised suite version, is a different instrument, comparable only against other rows measured on that
-   same one. To reproduce one of the rows measured before this release instead — comparable only with each other,
-   never with a kit row — pin the seat the way they were pinned: `git clone
-   https://github.com/KanenasInGreece/Shared_Memory ~/local-ai/seat && git -C ~/local-ai/seat checkout 3c8e2bb`,
-   with `A770B_PROBE_CORPUS` and `A770B_TASK_BRIEF` pointing the sweep, the depth probe and the qualification task
-   at that seat and `briefs/T1-sanitize-entity-tests.md`.
-2. **Run the row**: `bash harness/run_suite.sh <profile>`, with `KV_K`/`KV_V`, `REASONING` and the model's own
-   card's sampling flags in the environment as the target profile needs. It starts the server under the mode's cap
-   and `-ub 512`, exports `kit/seat/` fresh per stage with every earlier stage's reference solution already pasted
-   in, dispatches each stage's brief through opencode in that export and `verify`s it against its hidden grader,
-   scores the reviewer-graded axes through a separate profile that is never the builder, and writes
-   `results/<profile>-suite-<date>.json` naming the row's instrument. Flash attention is a variable of the row, not
-   a constant of the card: if the long prefill slows with position or the kernel logs an engine reset, run the row
-   again with `-fa off` and `KV_V=f16` before judging the model. Watch the kernel log beside every run
-   (`journalctl -k`) and stop the server on the first reset.
-   For a model meant to hold large files, add: speed at 8k and the far end of the window (`harness/ctx_sweep.sh`,
-   prefill, decode and VRAM against position), the depth probe once for the model and window (`harness/depth_probe.sh`,
-   correct answers from deep inside the prompt), and the cancel reproduction once (`harness/cancel_repro.sh`, a
-   cancelled request must not take the card down) — all three now read `kit/corpus.py`'s own generated corpus by
-   default; run `briefs/T2-read-a-large-file.md` as a second task. To reproduce a row on the earlier instrument
-   instead, `bash harness/run_one.sh <label> <file.gguf> <ctx> [extra llama-server args]` runs the probes and the
-   single task against the pinned Shared Memory seat, refusing to continue if the sanity gate fails and writing its
-   capture and numbers to `A770B_DATA/results/<label>.*`; the in-house suite (`briefs/suite/`, five bounded units of
-   this repository with hidden graders, not the profiling suite) runs beside it for a builder-class candidate on
-   that instrument.
+```
+harness/ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q8_0|q4_0] [--extra "<flags>"]
+                  [--timeout S] [--seat <path>] [--suite <suite.json>] [--reviewer <profile>] [--fresh] [--dry-run]
+```
+
+`harness/ladder.sh` is the sitting: it runs every rung below, in order, stopping at the first failure (a later rung
+is wasted on a model that failed an earlier one), writes one JSON holding every rung's own numbers, and prints a
+REGISTRY ROW ready to paste under `profiles.<name>`. `<profile-or-gguf>` is either a name already in the registry
+(every knob comes from its row; `--ctx`/`--kv`/`--kv-v`/`--extra` alongside one is refused) or a bare GGUF/absolute
+path — a model with no row yet, which needs `--ctx` and skips only rung 3 (`bench_speed.sh` needs a registry
+profile: `harness/profiles.py card --name <profile>` has no ephemeral form). `--dry-run` prints every rung's command
+and writes nothing. `AGENTS.md`, *The ladder*, is the full reference for every flag, what each rung decides, and
+what the ladder still leaves to a human (`use_for`, `fit.write`, `capability`, the reviewer choice, and every
+identity field).
+
+1. **Fetch the GGUF** into `A770B_MODELS` (the download lines above are the pattern). The ladder's task rung (6) is
+   now the kit inside this repository (`kit/`): put a clone of this repository at the release's tag where
+   `A770B_PROJECT` points — rung 6 runs `harness/run_suite.sh <profile>` against it, no second repository, no brief
+   of your own to write. `A770B_CORPUS_FILE` (`kit/corpus.py`'s own generated file) is what the sweep and the depth
+   probe read by default. A row measured on the kit at a different release's tag, or against a revised suite
+   version, is a different instrument, comparable only against other rows measured on that same one. To reproduce
+   one of the rows measured before this release instead — comparable only with each other, never with a kit row —
+   pin the seat the way they were pinned: `git clone https://github.com/KanenasInGreece/Shared_Memory ~/local-ai/seat
+   && git -C ~/local-ai/seat checkout 3c8e2bb`, with `A770B_PROBE_CORPUS` and `A770B_TASK_BRIEF` pointing the sweep,
+   the depth probe and the qualification task at that seat and `briefs/T1-sanitize-entity-tests.md`, and pass
+   `--seat ~/local-ai/seat` to the ladder.
+2. **Run the ladder**: `bash harness/ladder.sh <profile-or-gguf> [--ctx <n>] [--kv …] [--kv-v …] [--extra …]`, with
+   the model's own card's sampling flags folded into `--extra`. Rung by rung it runs what used to be six commands
+   run by hand: **1-2** — `harness/bench_model.sh`, the load and its VRAM (`vram_gib_after_load`, and for a MoE row
+   the host RAM the load costs beyond it, `ram_gb_extra`), the sanity probes and the 17k summary; **3** —
+   `harness/bench_speed.sh <profile>`, llama-bench at the row's own served flags at depths 0, 8192, 32768 and the
+   far end (skipped for a bare GGUF); **4** — `harness/ctx_sweep.sh 8000 <far end>`, prefill, decode and VRAM
+   against position, the source `useful_ctx`'s linear extension is drawn from; **5** — `harness/depth_probe.sh <far
+   end>`, now graded PASS/FAIL per question, capping `useful_ctx` at 8,000 where it fails; **6** —
+   `harness/run_suite.sh <profile>` (or `--model <gguf> --ctx <n> [--kv …] [--kv-v …] [--extra …] [--timeout …]` for
+   a model with no row yet): starts the server under the mode's cap and `-ub 512`, exports `kit/seat/` fresh per
+   stage with every earlier stage's reference solution already pasted in, dispatches each stage's brief through
+   opencode in that export and `verify`s it against its hidden grader, scores the reviewer-graded axes through a
+   separate profile that is never the builder, and writes `results/<profile>-suite-<date>.json` naming the row's
+   instrument. Flash attention is a variable of the row, not a constant of the card: if the long prefill slows with
+   position or the kernel logs an engine reset, run the ladder again with `--extra "-fa off"` and `--kv-v f16`
+   before judging the model. Watch the kernel log beside every run (`journalctl -k`); a reset anywhere is
+   disqualifying, whatever the other numbers say — the ladder itself does not stop the server for you on one.
+   For a model meant to hold large files, rungs 3-5 already give speed at 8k and the far end and the depth probe for
+   the model and window, both against `kit/corpus.py`'s own generated corpus by default; run the cancel reproduction
+   once, by hand and outside the ladder (`harness/cancel_repro.sh`, a cancelled request must not take the card
+   down), and `briefs/T2-read-a-large-file.md` as a second task if you want one beyond the suite. To reproduce a row
+   on the earlier instrument instead of the ladder, `bash harness/run_one.sh <label> <file.gguf> <ctx> [extra
+   llama-server args]` runs the probes and the single task against the pinned Shared Memory seat directly, refusing
+   to continue if the sanity gate fails and writing its capture and numbers to `A770B_DATA/results/<label>.*`; the
+   in-house suite (`briefs/suite/`, five bounded units of this repository with hidden graders, not the profiling
+   suite) runs beside it for a builder-class candidate on that instrument.
 3. **Grade the capture** with a reviewer that did not write it: `briefs/REVIEW-prompt.md` is the prompt, the capture is
    its only input. Run `local-build.sh verify <label>` for the proof. Green tests and PASS or PARTIAL qualify.
 4. **Record it**: add the row to `config/models.md` with the measured numbers, the source repository and the caveats.
    A model that failed goes in the *kept out* paragraph with the reason, so nobody measures it twice.
-5. **Give it a profile** if it earns one: it enters the mode's registry (`config/profiles.json` for display,
-   `config/profiles.inference.json` for inference) with its measured card — model file, window, KV type, category and
-   weight class, the reasoning and extra flags, the sampling line and its source, the timings, and `use_for` in words.
-   `local-build.sh profiles` and `status` show what is configured; `builder.<mode>.env` may still override a served
-   value per machine (a different quantisation, a larger cap) without touching the registry. If the new profile
-   becomes its mode's default, change `default` in that registry, run `python3 harness/profiles.py render --skill
-   skills/local-build/SKILL.md --snippet skills/local-build/CONSTITUTION_SNIPPET.md --inference-file
-   config/profiles.inference.json` so the skill's tables and the snippet pick it up, update the numbers in this file,
-   and bump the version.
+5. **Give it a profile** if it earns one: paste the ladder's printed REGISTRY ROW under `profiles.<name>` in the
+   mode's registry (`config/profiles.json` for display, `config/profiles.inference.json` for inference), then fill
+   what the ladder leaves as `__TODO__` or omits entirely — `use_for` in words, `fit.write`, `capability` and
+   `capability_source` — and the identity fields its own closing note lists: `source`, `family`, `architecture`,
+   `quant`, `category`, `weight_class`, `params_b`, `sampling` and its source, `measured_on` (the card and build:
+   e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan`), and, for a row reproducing the sibling-repository instrument,
+   `task_t1` — transcribed once by hand from the GGUF's own metadata and the model's public card (`kit/PROFILE.md`
+   §2 is the field-by-field reference for what fills every field). `local-build.sh profiles` and `status` show what
+   is configured; `builder.<mode>.env` may still override a served value per machine (a different quantisation, a
+   larger cap) without touching the registry. If the new profile becomes its mode's default, change `default` in
+   that registry, run `python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet
+   skills/local-build/CONSTITUTION_SNIPPET.md --inference-file config/profiles.inference.json` so the skill's tables
+   and the snippet pick it up, update the numbers in this file, and bump the version.
 
 The expectations in the skill's tables (window, speed, minutes per small task, what the model did with the
 repository's idioms) are read straight off the ledger row; when the row changes, so do they. The full guide for an

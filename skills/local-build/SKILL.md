@@ -25,8 +25,8 @@ Display-safe (the default): the card also draws the desktop, cap 13 GiB after lo
 <!-- profiles:begin -->
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. |
-| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. |
+| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 <!-- profiles:end -->
 
@@ -54,7 +54,9 @@ row's `category` (`dense` or `moe`) and weight class; `useful_ctx`, the largest 
 tokens a second by the two measured points, so a window is a capacity, not a promise of that whole depth at speed;
 `speed` (decode and prefill) at 8k and at the far end of the window, set against the time you can spend; `fit`, three
 short strings — `code`, `think`, `write` — each with its source, saying how the row measured on the axis the brief
-needs; `sampling`, the model's own recommended line for the role, already served; and `builder_class`, whether the row
+needs; `sampling`, the model's own recommended line for the role, already served -- where a row carries one at all:
+the display registry's `long` and `fast` rows have none, measured at the client's default temperature (0) before this
+registry carried a sampling line, and their own `use_for` says so; and `builder_class`, whether the row
 is useful to at least 81,920 tokens and passed a green task. Match these against the brief's edit scope (a change to
 the files named, several files touched at once, tests written from a specification) and the token size of the files it
 points at, and take the least costly profile whose card covers all three, not the one with the strongest reputation.

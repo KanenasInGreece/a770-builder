@@ -718,9 +718,11 @@ def cmd_card(args) -> int:
     }
     for name, prof in profiles.items():
         key = comparability_key_by_name[name]
-        prof["comparable_with"] = [
-            n for n in profiles if n != name and comparability_key_by_name[n] == key
-        ]
+        prof["comparable_with"] = {
+            "instrument": key[0],
+            "measured_on": key[1],
+            "profiles": [n for n in profiles if n != name and comparability_key_by_name[n] == key],
+        }
 
     warnings_by_profile = _card_warnings(profiles)
     data["warnings"] = [w for name in profiles for w in warnings_by_profile[name]]

@@ -1084,9 +1084,9 @@ def test_comparable_with_excludes_differing_measured_on(tmp_path):
     result = run("card", "--file", str(path))
     assert result.returncode == 0, result.stderr
     data_out = json.loads(result.stdout)
-    assert data_out["profiles"]["long"]["comparable_with"] == []
-    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]
-    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]
+    assert data_out["profiles"]["long"]["comparable_with"]["profiles"] == []
+    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]["profiles"]
+    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]["profiles"]
 
 
 # --- registry-wide rules: one best row per (category, weight_class), one instrument per registry ---
@@ -1482,7 +1482,9 @@ def test_comparable_with_on_display_registry():
     data = json.loads(result.stdout)
     for name in ("long", "fast", "serious"):
         others = sorted(n for n in ("long", "fast", "serious") if n != name)
-        assert sorted(data["profiles"][name]["comparable_with"]) == others, name
+        assert sorted(data["profiles"][name]["comparable_with"]["profiles"]) == others, name
+        assert data["profiles"][name]["comparable_with"]["instrument"] == data["profiles"][name]["instrument"]
+        assert data["profiles"][name]["comparable_with"]["measured_on"] == data["profiles"][name]["measured_on"]
 
 
 def test_comparable_with_on_inference_registry():
@@ -1492,7 +1494,9 @@ def test_comparable_with_on_inference_registry():
     data = json.loads(result.stdout)
     for name in ("long", "moe", "serious"):
         others = sorted(n for n in ("long", "moe", "serious") if n != name)
-        assert sorted(data["profiles"][name]["comparable_with"]) == others, name
+        assert sorted(data["profiles"][name]["comparable_with"]["profiles"]) == others, name
+        assert data["profiles"][name]["comparable_with"]["instrument"] == data["profiles"][name]["instrument"]
+        assert data["profiles"][name]["comparable_with"]["measured_on"] == data["profiles"][name]["measured_on"]
 
 
 def test_comparable_with_excludes_differing_instrument(tmp_path):
@@ -1503,9 +1507,9 @@ def test_comparable_with_excludes_differing_instrument(tmp_path):
     result = run("card", "--file", str(path))
     assert result.returncode == 0, result.stderr
     data_out = json.loads(result.stdout)
-    assert data_out["profiles"]["long"]["comparable_with"] == []
-    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]
-    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]
+    assert data_out["profiles"]["long"]["comparable_with"]["profiles"] == []
+    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]["profiles"]
+    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]["profiles"]
 
 
 def test_card_prints_instrument():

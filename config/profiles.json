@@ -33,7 +33,7 @@
       "capability": {},
       "capability_source": "",
       "fit": {"code": "T1: 11 tests green in 121 s, the repository's test idiom followed unprompted (measured at the client's temperature 0)", "think": "not measured", "write": "not measured"},
-      "use_for": "The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there."
+      "use_for": "The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line."
     },
     "fast": {
       "model": "gemma-4-E4B-it-Q4_K_M.gguf",
@@ -64,7 +64,7 @@
       "capability": {"LiveCodeBench_v6": 52.0, "MMLU_Pro": 69.4, "GPQA_Diamond": 58.6},
       "capability_source": "google/gemma-4 model card",
       "fit": {"code": "T1: green twice and partial once (17, 6, 6 tests) at 74 to 82 s; on the harness's own brief one edit of three made, three reported (measured at temperature 0)", "think": "not measured", "write": "not measured"},
-      "use_for": "The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits."
+      "use_for": "The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line."
     },
     "serious": {
       "model": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf",
