@@ -34,6 +34,7 @@
       "depth_probe_100k": "pass",
       "task_t1": "pass",
       "instrument": "seat: Shared_Memory@3c8e2bb",
+      "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
       "capability": {},
       "capability_source": "",
       "fit": {
@@ -73,6 +74,7 @@
       "depth_probe_100k": "not run",
       "task_t1": "pass",
       "instrument": "seat: Shared_Memory@3c8e2bb",
+      "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
       "capability": {"LiveCodeBench_v6": 80.4, "MMLU_Pro": 85.2, "GPQA_Diamond": 86.0},
       "capability_source": "huggingface.co/Qwen/Qwen3.6-35B-A3B model card (BF16)",
       "fit": {
@@ -112,6 +114,7 @@
       "depth_probe_100k": "not run",
       "task_t1": "pass",
       "instrument": "seat: Shared_Memory@3c8e2bb",
+      "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
       "capability": {"LiveCodeBench_v6": 85.71, "GPQA_Diamond": 89.39, "AIME25": 100},
       "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100; the quantiser's task-lossless file)",
       "fit": {
