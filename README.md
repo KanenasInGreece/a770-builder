@@ -155,10 +155,9 @@ a health URL read once before a server starts, both empty by default. `SECURITY.
 
 ## Contributors
 
-Credits are for people and collaborators, not a claim of joint copyright on every line (the project is MIT, see
+Credits are for people, not a claim of joint copyright on every line (the project is MIT, see
 [LICENSE](LICENSE)).
 
 | who | role |
 |---|---|
 | **Xenofon S. Motsenigos** ([Oratotis](https://www.youtube.com/@Oratotis)) | Author & maintainer |
-| **[Claude](https://www.anthropic.com/claude)** (Anthropic) | AI collaborator — assisted with the model qualification matrix, the serving flags, the harness and sandbox, and the adversarial reviews. **Not** a code co-author for legal/git authorship purposes. |
