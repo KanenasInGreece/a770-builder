@@ -65,6 +65,10 @@ repository instead of a sibling one — no row has yet been measured on the kit,
 passes earns a place. Earlier rows in the ledger were measured on a sibling repository, and stay comparable only
 with each other.
 
+If what you are looking for is a pre-built container that serves llama.cpp or vLLM on an Intel card, that is a
+different job from this one and often the right place to start; [`docs/COMPARISON.md`](docs/COMPARISON.md) says
+plainly which problem each solves, where each stops, and how they fit together.
+
 ## Install
 
 ### Prerequisites
