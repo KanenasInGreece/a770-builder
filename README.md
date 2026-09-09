@@ -1,10 +1,10 @@
 # A770_Builder
 
-a770-builder is a harness around a local GPU, originally built on an Intel Arc A770: it runs a coding model in a
-sandbox, profiles models with packaged tests so you can add your own, and presents the result to an LLM
-orchestrator as a skill it can call instead of an online seat. The models in the registry are this project's own
-picks, measured so far on that one card; the harness reaches its GPU through a handful of named settings rather
-than anything specific to it, and the same ladder is how another card's own rows get taken.
+a770-builder is a harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles
+with the packaged tests anyone can run on their own model, and presents the result to an LLM orchestrator as a
+skill it calls instead of an online seat. The models in the registry are this project's own picks, measured so far
+on that one card; the harness reaches its GPU through a handful of named settings rather than anything specific to
+it, and the same ladder is how another card's own rows get taken. Developed and tested on a 16 GB Intel Arc A770.
 
 If you run Claude, OpenCode or other agentic tools locally, you probably already have the obvious problem: your
 expensive agent is doing work that a much cheaper local model could do — if you knew which model was actually good

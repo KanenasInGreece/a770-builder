@@ -1,8 +1,8 @@
 # Operating the seat
 
-a770-builder is a harness around a local GPU, originally built on an Intel Arc A770: it runs a coding model in a
-sandbox, profiles models with packaged tests so a reader can add one of their own, and presents the result to an
-LLM orchestrator as a skill it can call.
+a770-builder is a harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles
+with the packaged tests a reader can run on their own model, and presents the result to an LLM orchestrator as a
+skill it calls. Developed and tested on a 16 GB Intel Arc A770.
 
 This document is about running the seat day to day: how a run works, the three profiles and what they were measured at,
 every knob, where the models go, the card's constraints and what each file is. The README covers what this is, why it

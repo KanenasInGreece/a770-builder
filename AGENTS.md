@@ -3,9 +3,9 @@
 This guides the profiling procedure with the included kit: how to measure a candidate model on this card and, if
 it qualifies, add it to the list of models this project can run.
 
-a770-builder is a harness around a local GPU, originally built on an Intel Arc A770: it runs a coding model in a
-sandbox, profiles models with the packaged tests this guide walks through so you can add your own, and presents the
-result to an LLM orchestrator as a skill it can call.
+a770-builder is a harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles
+with the packaged tests this guide walks through so you can add your own, and presents the result to an LLM
+orchestrator as a skill it calls. Developed and tested on a 16 GB Intel Arc A770.
 
 This file is for the agent, or person, who has a GGUF and this harness and wants that model on the list of
 profiles the orchestrating seat can propose. The models that already have profiles, and the exact file of each, are
