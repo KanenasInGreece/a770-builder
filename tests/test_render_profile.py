@@ -625,14 +625,14 @@ def test_check_validates_context_paths(tmp_path):
 
 def test_profile_key_checks_against_registry_union_without_env(tmp_path):
     """With A770B_PROFILES unset, the specification's profile is checked against the union of the profile
-    names in config/profiles.json and config/profiles.inference.json -- moe (inference-only) is accepted."""
+    names in config/profiles.json and config/profiles.inference.json -- fast (display-only) is accepted."""
     seat = tmp_path / "seat"
     seat.mkdir()
 
     env = dict(os.environ)
     env.pop("A770B_PROFILES", None)
 
-    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "moe"})
+    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "fast"})
     result_ok = subprocess.run(
         [sys.executable, str(RENDERER), "check", "--spec", str(spec_ok), "--seat", str(seat)],
         capture_output=True, text=True, env=env,
@@ -645,7 +645,7 @@ def test_profile_key_checks_against_registry_union_without_env(tmp_path):
         capture_output=True, text=True, env=env,
     )
     assert result_bad.returncode == 2
-    assert "must be one of fast, long, moe, serious" in result_bad.stderr
+    assert "must be one of fast, long, serious" in result_bad.stderr
 
 
 def test_profile_key_checks_against_a770b_profiles_env(tmp_path):

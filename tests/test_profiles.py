@@ -950,8 +950,8 @@ def test_output_tokens_in_env(tmp_path):
     assert ': "${A770B_LONG_OUTPUT_TOKENS:=32768}"' in result.stdout.splitlines()
 
 
-def test_builder_class_true_for_inference_moe_long_serious():
-    for name in ("moe", "long", "serious"):
+def test_builder_class_true_for_inference_long_serious():
+    for name in ("long", "serious"):
         result = run("card", "--file", str(PROFILES_INFERENCE_JSON), "--name", name)
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)
@@ -992,7 +992,7 @@ def test_builder_class_true_for_suite_pass_rate(tmp_path):
 def test_env_inference_registry_first_line():
     result = run("env", "--file", str(PROFILES_INFERENCE_JSON))
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines()[0] == ': "${A770B_PROFILES:=long moe serious}"'
+    assert result.stdout.splitlines()[0] == ': "${A770B_PROFILES:=long serious}"'
 
 
 # --- KU8: suite.stages, suite.reviewer, suite.instrument, profile-level instrument, comparable_with ---
@@ -1492,8 +1492,8 @@ def test_comparable_with_on_inference_registry():
     result = run("card", "--file", str(PROFILES_INFERENCE_JSON))
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    for name in ("long", "moe", "serious"):
-        others = sorted(n for n in ("long", "moe", "serious") if n != name)
+    for name in ("long", "serious"):
+        others = sorted(n for n in ("long", "serious") if n != name)
         assert sorted(data["profiles"][name]["comparable_with"]["profiles"]) == others, name
         assert data["profiles"][name]["comparable_with"]["instrument"] == data["profiles"][name]["instrument"]
         assert data["profiles"][name]["comparable_with"]["measured_on"] == data["profiles"][name]["measured_on"]
@@ -1818,9 +1818,9 @@ def test_card_prints_thinking_as_stored():
 
 
 def test_card_no_thinking_on_unmeasured_rows():
-    """long (both registries) and inference moe carry no thinking object yet -- the measured
+    """long (both registries) carry no thinking object yet -- the measured
     bounded-budget arm is not a ruled row, and card must not invent one."""
-    for f, names in ((PROFILES_JSON, ("long",)), (PROFILES_INFERENCE_JSON, ("long", "moe"))):
+    for f, names in ((PROFILES_JSON, ("long",)), (PROFILES_INFERENCE_JSON, ("long",))):
         for name in names:
             result = run("card", "--file", str(f), "--name", name)
             assert result.returncode == 0, result.stderr
@@ -1831,3 +1831,18 @@ def test_check_passes_both_shipped_registries_thinking():
     for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
         result = run("check", "--file", str(f))
         assert result.returncode == 0, result.stderr
+
+
+def test_no_row_asks_for_host_ram():
+    """This is a tripwire and not a gate: the harness's only host-memory check is a page-cache floor
+    before the load, it cannot refuse a start whose weights will not fit in RAM, so until it can,
+    nothing shipped may ask for that. Every row in both config/profiles.json and
+    config/profiles.inference.json must have ram_gb_extra == 0 and no extra string containing
+    --n-cpu-moe or -ncmoes."""
+    for fpath in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+        data = json.loads(fpath.read_text(encoding="utf-8"))
+        for name, prof in data["profiles"].items():
+            assert prof.get("ram_gb_extra") == 0, f"{fpath}: {name}: ram_gb_extra must be 0"
+            extra = prof.get("extra", "")
+            assert "--n-cpu-moe" not in extra and "-ncmoes" not in extra, \
+                f"{fpath}: {name}: extra must not contain --n-cpu-moe or -ncmoes"
