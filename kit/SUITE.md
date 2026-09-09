@@ -1,5 +1,7 @@
 # SUITE-1 — the logstats mini-project
 
+This document describes SUITE-1, the four-stage test project a model is graded against inside the kit.
+
 One small application, "logstats" (a log-line statistics viewer), built in four stages that
 depend on each other the way a real project does — design, then front end, then backend, then
 a C++ optimisation of the backend's hot path — each stage its own brief

@@ -1,5 +1,9 @@
 # kit/ — the profiling suite's seat
 
+This folder contains the packaged tests run to profile each model, automated through AGENTS.md: the same tests
+the harness ran first on its own Intel Arc A770, shipped so a reader can measure a model, or a different card, of
+their own the same way.
+
 `kit/` is the profiling ladder's task rung: a small, self-contained, multi-language project
 ("logstats", a log-line statistics viewer) built in four stages, the same suite for every
 model profiled. It exists so a profile is not measured on Python test-writing alone — a real

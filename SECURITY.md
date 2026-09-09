@@ -1,6 +1,7 @@
 # Security
 
-This document is about the boundary around the local model. The seat runs a model that writes code you have not
+This explains the security considerations this project makes and establishes the boundary of its responsibility.
+The seat runs a model that writes code you have not
 reviewed yet, on the same machine as your credentials and your live checkouts. It matters because a local model is not
 trusted merely for running locally: it reads a brief you may not have written, it has a shell, and one careless mount
 turns a coding seat into a way off the machine. What follows is the problem as the adversarial reviews found it, the

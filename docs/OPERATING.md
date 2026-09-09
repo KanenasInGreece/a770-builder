@@ -1,5 +1,9 @@
 # Operating the seat
 
+a770-builder is a harness around a local GPU, originally built on an Intel Arc A770: it runs a coding model in a
+sandbox, profiles models with packaged tests so a reader can add one of their own, and presents the result to an
+LLM orchestrator as a skill it can call.
+
 This document is about running the seat day to day: how a run works, the three profiles and what they were measured at,
 every knob, where the models go, the card's constraints and what each file is. The README covers what this is, why it
 exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) covers the boundary.
@@ -379,11 +383,14 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 
 | path | role |
 |---|---|
+| `skills/` | the agent skills this project publishes for other coding agents to install; `local-build/` is the only one |
 | `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run` with an optional `--spec`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`, `check-update`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
 | `render_readme.sh` | generates the operator's local recap page, `README.html` — gitignored, never shipped; `README.md` is the document of record, written and reviewed first at every change, and the recap is regenerated from the repository's current state afterwards, never instead |
+| `harness/` | the scripts that run and guard a profiling or build session: starting the model server, wrapping the coding agent in the sandbox, capturing what it did, and measuring how fast and how far it can go — every script here runs on the host, outside the sandbox |
 | `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (the mode's: 13 GiB after load on a display card, 15.3 on a free one), `-ub 512`, the API key, model marker |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
 | `harness/sandbox_run.sh` | the bubblewrap boundary: only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |
+| `config/` | the project's configuration: the registries listing every qualified model and its measured numbers, the example environment file a new install copies, and the template opencode reads inside the sandbox |
 | `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation; the card mode, the key and profile helpers |
 | `config/profiles.json` · `config/profiles.inference.json` | the two registries, one per card mode, the single source of every profile's numbers; `harness/profiles.py` validates, exports, inspects and renders them |
 | `harness/render_profile.py` | renders the opencode profile from the template (`render`), checks a run specification against the seat (`check`) and prepares its context into the brief copy (`context`); the echo of what was rendered lands beside the profile; `tests/test_render_profile.py` proves it |
@@ -391,9 +398,10 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `harness/capture_task.sh` | diff + new files + the model's pytest line + server-side TTFT/TPOT distribution, the `.patch` for `verify`, then the seat reset |
 | `harness/bench_model.sh` · `run_one.sh` · `measure_overhead.sh` | the qualification row: probes → gate → task → capture; opencode opening-request cost (testing only, run by the operator) |
 | `harness/cancel_repro.sh` · `ctx_sweep.sh` · `depth_probe.sh` | the long-context qualification: a cancelled request while the slot is held; prefill, decode and VRAM against position; correct answers from 85% of the way into a large prompt (run by the operator against a server that is up) |
-| `kit/` | the profiling suite's own seat: `kit/seat/` (the exported working tree), `kit/tasks/` (each stage's brief and specification), `kit/hidden/` (each stage's one hidden pytest grader, and the reference solutions `run_suite.sh` pastes over a fresh export), `kit/reference/` (the three Aider polyglot exercises), `kit/corpus.py` (the deterministic long-context corpus), `kit/SUITE.md` · `kit/suite.json` (the standard suite in prose and as data), `kit/SOURCES.md` · `kit/NOTICE` (attribution) |
+| `kit/` | the packaged tests run to profile each model, automated through `AGENTS.md`: `kit/seat/` (the exported working tree), `kit/tasks/` (each stage's brief and specification), `kit/hidden/` (each stage's one hidden pytest grader, and the reference solutions `run_suite.sh` pastes over a fresh export), `kit/reference/` (the three Aider polyglot exercises), `kit/corpus.py` (the deterministic long-context corpus), `kit/SUITE.md` · `kit/suite.json` (the standard suite in prose and as data), `kit/SOURCES.md` · `kit/NOTICE` (attribution) |
 | `harness/run_suite.sh` | exports `kit/seat/` as its own standalone git repository, never a clone or checkout of this one, runs every stage of the standard suite and the reference exercises through the skill and `verify`, scores the reviewer-graded axes through a separate profile, and writes `results/<profile>-suite-<date>.json` |
 | `harness/suite_report.py` | reads one of those results files and prints the instrument, a per-stage table, and the totals a profile's `suite` object takes (`--json` for just the totals, pasteable into the registry) |
+| `tests/` | the tests that check the harness itself works, not the tests a profiled model is graded against |
 | `tests/kit_selftest.sh` | proves the kit inside the real sandbox boundary, never on the host: the toolchain is found, every stage's shipped stub fails its own grader, every reference solution passes it, and every reference exercise's own public grader passes over its `.meta` solution; skips loudly without `bwrap` or the warm uv cache, so `tests/selftest.sh` stays machine-independent |
 | `config/opencode.profile.template.jsonc` | the ONLY opencode config the sandbox sees, rendered per run with the server URL, the key, the profile's window, a default-deny bash allow-list, the run specification's card, scope and additions, and a floor of deny rules rendered after every allow |
 | `harness/warm_cache.sh` | pre-fills the read-only uv cache the sandbox mounts (it has no network) |
@@ -402,7 +410,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `release.sh` | cuts a release: moves the number in its three places (`VERSION`, the skill's `SKILL_VERSION`, the tag) in one commit, pushes, publishes the GitHub Release from a notes file. The first release is 0.1.0; each one after adds 0.0.1, the minor number moves when the patch would pass 99, and a major bump takes `--major` |
 | `LICENSE` | MIT |
 | `tests/selftest.sh` | what the harness proves without the card: every script parses, the health line reads the four kinds of answer and strips a hostile one, the seat's dirty check hides nothing but the harness's own brief copies, a symlink is reported and never read, the capture survives a run that made no file. Run it after a harness edit, from a tree you have read; a builder's patch is proven by `verify`, never by running its tests on the host |
-| `briefs/` | the brief template (`TEMPLATE.md`: named files, verbatim text in quoted blocks, a test command on named files, a stop condition), the qualification task (`T1-…`, a bounded edit), the reading task (`T2-…`, one large file whole, graded against `grep`), the cheap-reviewer prompt, the smoke brief, the in-house suite (`briefs/suite/`, five bounded units of this repository with hidden graders) |
+| `briefs/` | the written tasks handed to a model during profiling or a build: the brief template (`TEMPLATE.md`: named files, verbatim text in quoted blocks, a test command on named files, a stop condition), the qualification task (`T1-…`, a bounded edit), the reading task (`T2-…`, one large file whole, graded against `grep`), the cheap-reviewer prompt, the smoke brief, the in-house suite (`briefs/suite/`, five bounded units of this repository with hidden graders) |
 
 Data stays outside this folder on purpose: models in `~/LLM/tested` and `~/LLM/next-card`; the seat (`~/local-ai/seat`,
 a standalone clone of the target repository with no link to its live checkout), results (captures, patches, verify

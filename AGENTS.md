@@ -1,5 +1,12 @@
 # Qualifying a new model — the profiling guide
 
+This guides the profiling procedure with the included kit: how to measure a candidate model on this card and, if
+it qualifies, add it to the list of models this project can run.
+
+a770-builder is a harness around a local GPU, originally built on an Intel Arc A770: it runs a coding model in a
+sandbox, profiles models with the packaged tests this guide walks through so you can add your own, and presents the
+result to an LLM orchestrator as a skill it can call.
+
 This file is for the agent, or person, who has a GGUF and this harness and wants that model on the list of
 profiles the orchestrating seat can propose. The models that already have profiles, and the exact file of each, are
 in `docs/OPERATING.md`; this guide is for a model that is not yet on that list. It is not read by the model that
