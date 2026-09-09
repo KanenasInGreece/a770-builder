@@ -47,12 +47,27 @@ kill $VP 2>/dev/null; wait $VP 2>/dev/null
 python3 - "$R" "$((t1-t0))" "$(sort -n "$T/vram" | tail -1)" "$(kernel_resets_since '-1min')" "$b0" "$T/prompt" "$want" <<'PY'
 import json, re, sys
 
+def _num(v, unit=""):
+    # a VRAM sample can come back empty when nvtop is unreadable for a moment; report it rather than crashing
+    try:
+        return f"{float(v):.2f}{unit}"
+    except (TypeError, ValueError):
+        return "not measured"
+
+
+def _int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 r_raw, wall, vram_max, after, before, corpus_path, want = sys.argv[1:8]
 try:
     r = json.loads(r_raw)
     u, t = r.get("usage", {}), r.get("timings", {})
     print(f"prompt_tokens={u.get('prompt_tokens')} wall={wall}s prefill_tps={t.get('prompt_per_second', 0):.0f} "
-          f"decode_tps={t.get('predicted_per_second', 0):.1f} vram_max={float(vram_max):.2f}GiB resets={int(after) - int(before)}")
+          f"decode_tps={t.get('predicted_per_second', 0):.1f} vram_max={_num(vram_max, 'GiB')} resets={_int(after) - _int(before)}")
     answer = (r["choices"][0]["message"].get("content") or "").strip()
 except (json.JSONDecodeError, KeyError, IndexError, TypeError):
     answer = ""
