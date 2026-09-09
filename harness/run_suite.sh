@@ -3,6 +3,12 @@
 # the reference exercises (kit/reference/reference.json) through local-build.sh, verifies each, scores the rubric
 # axes through a reviewer profile that is never the builder, and writes one results JSON per run.
 #   run_suite.sh <profile> [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]
+#   run_suite.sh --model <gguf> --ctx <n> [--kv <type>] [--kv-v <type>] [--extra "<flags>"] [--timeout <s>] [<seat>] [...]
+# The second form is how a new GGUF climbs the task rung before it has a registry row: instead of a name already in
+# config/profiles.json, --model/--ctx build an EPHEMERAL profile named "candidate" for this run alone (the
+# A770B_CANDIDATE_* variables the harness reads, exported here, never written to any file), so a model can be
+# task-graded the same way a registered one is before a human has measured and pasted its row (harness/ladder.sh
+# drives exactly this path). A registry profile name and --model are mutually exclusive — passing both is refused.
 # The seat is NOT a clone of this repository (the model must not read harness/): it is an EXPORT of kit/seat/ — a
 # copy, git-init'ed and committed — into <seat> (default $A770B_DATA/kit-seat); a path that already exists and is
 # not empty is refused unless --fresh removes it first. The export is redone PER STAGE, not once for the whole
@@ -30,25 +36,65 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
 
-[ $# -ge 1 ] || die "usage: run_suite.sh <profile> [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]"
-PROFILE="$1"; shift
-SEAT="$A770B_DATA/kit-seat"
-if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then SEAT="$1"; shift; fi
+USAGE="usage: run_suite.sh <profile>|--model <gguf> --ctx <n> [--kv <type>] [--kv-v <type>] [--extra \"<flags>\"] [--timeout <s>] [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]"
+[ $# -ge 1 ] || die "$USAGE"
 SUITE="$A770B_PROJECT/kit/suite.json"
 STAGES_FILTER=""
 REVIEWER=""
 FRESH=0
 DRYRUN=0
+MODEL_GGUF=""; MODEL_CTX=""; MODEL_KV=""; MODEL_KV_V=""; MODEL_EXTRA=""; MODEL_TIMEOUT=""
+POSITIONALS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --suite) SUITE="${2:?path}"; shift 2 ;;
     --stages) STAGES_FILTER="${2:?comma-separated stage ids}"; shift 2 ;;
     --reviewer) REVIEWER="${2:?reviewer profile name}"; shift 2 ;;
+    --model) MODEL_GGUF="${2:?path to a gguf}"; shift 2 ;;
+    --ctx) MODEL_CTX="${2:?context window}"; shift 2 ;;
+    --kv) MODEL_KV="${2:?kv cache type}"; shift 2 ;;
+    --kv-v) MODEL_KV_V="${2:?kv_v cache type}"; shift 2 ;;
+    --extra) MODEL_EXTRA="${2:?extra llama-server flags}"; shift 2 ;;
+    --timeout) MODEL_TIMEOUT="${2:?timeout seconds}"; shift 2 ;;
     --fresh) FRESH=1; shift ;;
     --dry-run) DRYRUN=1; shift ;;
-    *) die "unknown arg $1" ;;
+    --*) die "unknown arg $1" ;;
+    *) POSITIONALS+=("$1"); shift ;;
   esac
 done
+
+PROFILE=""
+SEAT=""
+if [ -n "$MODEL_GGUF" ]; then
+  [ -n "$MODEL_CTX" ] || die "--model requires --ctx <n>"
+  case ${#POSITIONALS[@]} in
+    0) : ;;
+    1)
+      if a770b_is_profile "${POSITIONALS[0]}"; then
+        die "refusing: a registry profile name (${POSITIONALS[0]}) and --model are mutually exclusive — pass one or the other"
+      fi
+      SEAT="${POSITIONALS[0]}" ;;
+    *) die "too many positional arguments with --model: ${POSITIONALS[*]} (a registry profile name and --model are mutually exclusive)" ;;
+  esac
+  PROFILE="candidate"
+  export A770B_CANDIDATE_MODEL="$MODEL_GGUF"
+  export A770B_CANDIDATE_CTX="$MODEL_CTX"
+  export A770B_CANDIDATE_KV="${MODEL_KV:-q8_0}"
+  export A770B_CANDIDATE_KV_V="${MODEL_KV_V:-${MODEL_KV:-q8_0}}"
+  export A770B_CANDIDATE_REASONING="off"
+  export A770B_CANDIDATE_TIMEOUT="${MODEL_TIMEOUT:-1500}"
+  export A770B_CANDIDATE_EXTRA="${MODEL_EXTRA:-}"
+  case " $A770B_PROFILES " in *" candidate "*) ;; *) export A770B_PROFILES="$A770B_PROFILES candidate" ;; esac
+  echo "▶ --model $MODEL_GGUF: this is how a new GGUF climbs the task rung before it has a registry row — ephemeral profile 'candidate' (ctx $MODEL_CTX, kv $A770B_CANDIDATE_KV/$A770B_CANDIDATE_KV_V)"
+else
+  case ${#POSITIONALS[@]} in
+    0) die "$USAGE" ;;
+    1) PROFILE="${POSITIONALS[0]}" ;;
+    2) PROFILE="${POSITIONALS[0]}"; SEAT="${POSITIONALS[1]}" ;;
+    *) die "too many positional arguments: ${POSITIONALS[*]}" ;;
+  esac
+fi
+SEAT="${SEAT:-$A770B_DATA/kit-seat}"
 
 a770b_is_profile "$PROFILE" || die "profile must be one of: $A770B_PROFILES (got '$PROFILE')"
 # the profile's own timeout window (config/profiles.json timeout_s — the same budget build_local.sh's `timeout`
@@ -288,7 +334,10 @@ else
   check_seat_path "$SEAT"
 fi
 
-OUTFILE="$A770B_DATA/results/${PROFILE}-suite-$(date +%Y%m%d-%H%M%S).json"
+# -$$: the date alone is second-resolution — two runs of the same profile inside one second (harness scripted
+# back-to-back, or a test fixture) would otherwise silently overwrite each other's results file; this process's own
+# pid makes every run's OUTFILE distinct regardless of how close together two runs land.
+OUTFILE="$A770B_DATA/results/${PROFILE}-suite-$(date +%Y%m%d-%H%M%S)-$$.json"
 RESULTS_NDJSON=$(mktemp)
 trap 'rm -f "$RESULTS_NDJSON"' EXIT
 

@@ -22,6 +22,15 @@ path, so the fallback is the stage's own `label`: `$A770B_DATA/results/<label>.t
 same way `harness/env.sh` does. The per-stage readings are printed and their MEDIANS across stages are what
 `delivered` reports — the suite's own as-delivered speed, beside (never instead of) the standard llama-bench number
 `harness/bench_speed.sh` measures at the row's own served flags.
+
+Contamination pair: kit/reference/reference.json's own entries (ids starting "ref-", one per language) are graded by
+`local-build.sh verify` running the exercise's own public command FIRST, then — only if that succeeds — the fresh
+hidden variant, as one `&&`-chained command (kit/SUITE.md, AGENTS.md: "the pair is a contamination indicator, not
+two correctness scores"). `verify` writes that stage's own `<label>.verify.md` beside the capture, with a "hidden
+tests: <names or none>" line, the chain's own exit-code verdict, and the last pytest-shaped summary line reported —
+enough to tell public-passed-hidden-failed apart from a plain public failure, even though the two ran as one exit
+code. When that file is found for a reference stage, its language is printed beside the pair (never in --json: the
+registry's `suite` object has no field for it — see config/profiles.json SUITE_KEYS).
 """
 
 import argparse
@@ -33,6 +42,9 @@ import sys
 
 PREFILL_RE = re.compile(r"prefill tok/s over all prompts=([0-9]+(?:\.[0-9]+)?)")
 DECODE_RE = re.compile(r"decode tok/s median=([0-9]+(?:\.[0-9]+)?)")
+HIDDEN_TESTS_RE = re.compile(r"^hidden tests: (.*)$", re.MULTILINE)
+VERDICT_RE = re.compile(r"^verdict: (PASS \(exit 0\)|FAIL \(exit -?\d+\)|TIMEOUT after \d+s)", re.MULTILINE)
+REPORTED_RE = re.compile(r"^reported: (.*) \(quoted from output", re.MULTILINE)
 
 
 def load(path):
@@ -68,6 +80,67 @@ def delivered_for_stage(stage, a770b_data):
     prefill = float(pm.group(1)) if pm else None
     decode = float(dm.group(1)) if dm else None
     return prefill, decode
+
+
+def verify_path_for_stage(stage, a770b_data):
+    """The `<label>.verify.md` `local-build.sh verify` wrote for this stage, or None. Same fallback shape as
+    capture_path_for_stage: a results JSON records no verify path of its own, so this is `<label>.verify.md`
+    beside the stage's own `<label>.task.md`."""
+    label = stage.get("label")
+    if isinstance(label, str) and label:
+        return os.path.join(a770b_data, "results", f"{label}.verify.md")
+    return None
+
+
+def contamination_pair_for_stage(stage, a770b_data):
+    """The public/hidden pair for one reference stage (kit/reference/reference.json, ids "ref-*"), read from its
+    own `<label>.verify.md`. `local-build.sh verify` runs the exercise's own public command, and — only if that
+    succeeds — the fresh hidden variant, chained as `TEST && pytest ...`; the whole chain is one exit code, so the
+    three outcomes are told apart from the file `verify` itself wrote:
+      - the chain's own verdict is PASS  => both ran and both passed (the `&&` cannot reach the hidden half otherwise)
+      - the chain FAILED, but a pytest-shaped summary line was reported => the public half passed (it must have,
+        to reach the hidden half), the hidden half failed
+      - the chain FAILED with no such summary line => the public half itself failed; the hidden half never ran
+    Returns None when the stage has no verify.md, or when it names no hidden tests at all (a stage's own verify.md
+    where `hidden tests: none` is not a reference-with-hidden pair — nothing to report here)."""
+    if not str(stage.get("id", "")).startswith("ref-"):
+        return None
+    path = verify_path_for_stage(stage, a770b_data)
+    if not path:
+        return None
+    try:
+        text = open(path, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return None
+    hm = HIDDEN_TESTS_RE.search(text)
+    if not hm or hm.group(1).strip() in ("", "none"):
+        return None
+    vm = VERDICT_RE.search(text)
+    if not vm:
+        return None
+    verdict = vm.group(1)
+    rm = REPORTED_RE.search(text)
+    reported = rm.group(1).strip() if rm else ""
+    hidden_ran = bool(reported) and reported != "no pytest summary line"
+    if verdict.startswith("PASS"):
+        public, hidden = "PASS", "PASS"
+    elif verdict.startswith("TIMEOUT"):
+        public, hidden = "TIMEOUT", "TIMEOUT"
+    elif hidden_ran:
+        public, hidden = "PASS", "FAIL"
+    else:
+        public, hidden = "FAIL", "-"
+    return {"public": public, "hidden": hidden, "hidden_summary": reported or None}
+
+
+def contamination_pairs(doc, a770b_data):
+    """(id, language, pair) for every reference stage whose verify.md yields a pair, in stage order."""
+    out = []
+    for s in doc.get("stages") or []:
+        pair = contamination_pair_for_stage(s, a770b_data)
+        if pair is not None:
+            out.append((s.get("id", "-"), s.get("language"), pair))
+    return out
 
 
 def delivered(doc, a770b_data):
@@ -184,6 +257,10 @@ def main():
         print(f"delivered ({stage_id}): prefill {fmt(prefill, ' tok/s')} · decode {fmt(decode, ' tok/s')}")
     if medians is not None:
         print(f"delivered: prefill {medians['prefill_tps']} tok/s · decode {medians['decode_tps']} tok/s")
+    for stage_id, language, pair in contamination_pairs(doc, a770b_data):
+        summary = f" ({pair['hidden_summary']})" if pair.get("hidden_summary") else ""
+        lang = f", {language}" if language else ""
+        print(f"contamination ({stage_id}{lang}): public {pair['public']} · hidden {pair['hidden']}{summary}")
 
 
 if __name__ == "__main__":

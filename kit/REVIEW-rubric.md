@@ -1,11 +1,23 @@
 # logstats review rubric
 
-For the reviewer model `harness/run_suite.sh` names for a stage's `maintainable` and (on S0
-and S1 only — see `kit/suite.json`'s per-stage `axes`) `usable` scores. The reviewer reads the
-stage's diff and its brief; it never sees `kit/hidden/`'s graders and never built the change
-itself — a reviewer is never the builder. Score each line 0–5 (0 = fails outright, 5 =
-exemplary); the reviewer's response must start with the model name it is reviewing as, e.g.
-`Reviewed by: <model>`.
+For the reviewer model `harness/run_suite.sh` names for a stage's `maintainable` and (on S0 and S1 only — see
+`kit/suite.json`'s per-stage `axes`) `usable` scores. The reviewer reads the stage's diff and its brief; it never
+sees `kit/hidden/`'s graders and never built the change itself — a reviewer is never the builder.
+
+The reply must be EXACTLY two lines and nothing else — this is what `run_suite.sh`'s own parser (`review_stage`)
+accepts, and it is strict on purpose: only the first two non-empty lines are read, each is matched against a fixed
+pattern, and anything else — a preamble, a "Reviewed by:" header, a third line, a score outside 0/3/5 — is recorded
+as `null`, never guessed at or partially credited:
+
+```
+maintainable: <0|3|5>
+usable: <0|3|5>
+```
+
+Score each axis against every line below (0 = fails outright, 3 = adequate, 5 = exemplary) and let the WORST line
+on that axis set the score — the three values `run_suite.sh`'s parser accepts, nothing between them. `usable` is
+scored only on S0 and S1 (`kit/suite.json`'s per-stage `axes`); on a stage that carries no `usable` axis, write
+`usable: 0` — the runner records that as not applicable to this stage, not as a failing score.
 
 ## Maintainable (every stage; drawn from Google's "what to look for in a code review")
 
@@ -37,3 +49,6 @@ exemplary); the reviewer's response must start with the model name it is reviewi
 S0 is additionally judged on whether its design note states the JSON interface **completely**
 (all five keys, correctly) and **concisely** (no restating of the whole product brief) — fold
 that judgement into the Design and Complexity lines above rather than scoring it separately.
+
+Anything other than the two-line shape above — a header, an explanation before or after the two lines, a score not
+in {0, 3, 5} — is recorded as `null` by `run_suite.sh`'s parser, for that axis alone; it never fails the run.

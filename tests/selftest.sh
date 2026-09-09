@@ -571,6 +571,99 @@ rm -f "$RUNPID"
 grep -q '^MESA_VK_DEVICE_SELECT="\$A770B_VK_DEVICE_SELECT" nohup "\$A770B_LLAMA_BIN"' "$here/harness/serve_a770_llamacpp.sh" && echo "ok   device: the server starts under the selector" || { echo "FAIL device: serve_a770_llamacpp.sh does not export the selector to the server"; fail=1; }
 out=$(A770B_FAST_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_LONG_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile fast serves long's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
 out=$(bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "^ok   profiles:" && echo "ok   doctor: a clean environment is not warned about" || { echo "FAIL doctor: warned on a clean environment"; fail=1; }
+# ── depth_probe.sh grades itself (item 1): the two shared-helper fixes another builder landed (commit 637c4a1) —
+# a770b_ensure_corpus_file (never a silent seat-glob fallback) and kernel_resets_since (A770B_RESET_PATTERN, not a
+# hard-coded Intel string) — plus the grading itself: PASS/FAIL per question and a final "n/3" line, exit 0 iff >=2/3.
+grep -q 'a770b_ensure_corpus_file' "$here/harness/depth_probe.sh" && ! grep -q 'seat glob' "$here/harness/depth_probe.sh" \
+  && echo "ok   depth_probe: generates/refuses the corpus via a770b_ensure_corpus_file, no silent seat-glob fallback" \
+  || { echo "FAIL depth_probe: does not use a770b_ensure_corpus_file (or still falls back to a seat glob)"; fail=1; }
+grep -q 'kernel_resets_since' "$here/harness/depth_probe.sh" && ! grep -q "engine reset|timedout" "$here/harness/depth_probe.sh" \
+  && echo "ok   depth_probe: reads kernel resets through kernel_resets_since (A770B_RESET_PATTERN), not a hard-coded grep" \
+  || { echo "FAIL depth_probe: does not use kernel_resets_since (or still hard-codes the Intel reset pattern)"; fail=1; }
+dp_corpus="$t/dp-corpus.py"
+{ for i in 1 2 3 4 5 6; do printf 'def helper_%d():\n    return %d\n\n' "$i" "$i"; done; head -c 4000 /dev/zero | tr '\0' '#'; } > "$dp_corpus"
+mkdir -p "$t/dpbin"
+cat > "$t/dpbin/curl" <<'DPCURL'
+#!/bin/sh
+# a real completion takes many seconds, giving depth_probe.sh's background VRAM sampler time to write at least one
+# reading before it is killed; this fake must not answer instantly or that sampler file reads empty (float('') dies)
+sleep 2.5
+cat "$DP_FAKE_ANSWER_FILE"
+DPCURL
+chmod +x "$t/dpbin/curl"
+python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":1234},"timings":{"prompt_per_second":500,"predicted_per_second":20},"choices":[{"message":{"content":"orbital_checksum_v7 multiplies each byte by its 1-based position, sums them, and xors the sum with the salt (default 4171), then reduces the result modulo 65521, described as the Adler prime. Other real definitions include helper_1, helper_2, and helper_3."}}]}, open(sys.argv[1],"w"))' "$t/dp-good.json"
+python3 -c 'import json,sys; json.dump({"usage":{},"timings":{},"choices":[{"message":{"content":"I could not determine the exact behaviour of the function or any other definitions in the source."}}]}, open(sys.argv[1],"w"))' "$t/dp-bad.json"
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-good.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-good.out" 2>&1; dp_good_rc=$?
+if [ "$dp_good_rc" = 0 ] && grep -q '^PASS: Q1' "$t/dp-good.out" && grep -q '^PASS: Q2' "$t/dp-good.out" \
+  && grep -q '^PASS: Q3' "$t/dp-good.out" && grep -q 'depth probe at 1000: 3/3' "$t/dp-good.out" \
+  && grep -q '^ANSWER:' "$t/dp-good.out"
+then echo "ok   depth_probe: a fully-correct reply grades PASS on all three questions (3/3) and exits 0, the raw answer still printed"
+else echo "FAIL depth_probe: good-answer grading did not pass as expected (rc=$dp_good_rc)"; cat "$t/dp-good.out"; fail=1
+fi
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-bad.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-bad.out" 2>&1; dp_bad_rc=$?
+if [ "$dp_bad_rc" = 1 ] && grep -q '^FAIL: Q1' "$t/dp-bad.out" && grep -q '^FAIL: Q2' "$t/dp-bad.out" \
+  && grep -q '^FAIL: Q3' "$t/dp-bad.out" && grep -qE 'depth probe at 1000: [01]/3' "$t/dp-bad.out"
+then echo "ok   depth_probe: a reply with none of the planted facts grades FAIL on all three questions and exits 1"
+else echo "FAIL depth_probe: bad-answer grading did not fail as expected (rc=$dp_bad_rc)"; cat "$t/dp-bad.out"; fail=1
+fi
+
+# ── harness/ladder.sh (item 2): the one command that produces a row — --dry-run prints all six rungs and writes nothing
+lad_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data" bash "$here/harness/ladder.sh" long --dry-run 2>&1)
+if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | grep -q 'bench_model.sh' \
+  && printf '%s\n' "$lad_out" | grep -q 'bench_speed.sh' && printf '%s\n' "$lad_out" | grep -q 'ctx_sweep.sh' \
+  && printf '%s\n' "$lad_out" | grep -q 'depth_probe.sh' && printf '%s\n' "$lad_out" | grep -q 'run_suite.sh' \
+  && printf '%s\n' "$lad_out" | grep -q 'nothing written' \
+  && { [ ! -d "$t/ladder-data/results" ] || [ -z "$(ls -A "$t/ladder-data/results" 2>/dev/null)" ]; }
+then echo "ok   ladder: --dry-run names all six rungs (load, probes, speed, window, depth probe, task) and writes nothing"
+else echo "FAIL ladder: --dry-run output missing a rung or wrote something"; printf '%s\n' "$lad_out"; fail=1
+fi
+lad_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data2" bash "$here/harness/ladder.sh" /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1)
+if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_model_out" | grep -q -- '--model .*--ctx 8192'
+then echo "ok   ladder: a bare GGUF with no registry row skips the bench_speed.sh rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
+else echo "FAIL ladder: the no-row GGUF path did not skip bench_speed.sh or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
+fi
+
+# ── run_suite.sh --model/--ctx (item 3): a GGUF with no registry row can still climb the task rung
+rs_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-model-data" bash "$here/harness/run_suite.sh" --model /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 "$t/rs-model-seat" --dry-run 2>&1)
+if printf '%s\n' "$rs_model_out" | grep -q "ephemeral profile 'candidate'" && printf '%s\n' "$rs_model_out" | grep -q -- '--profile candidate' \
+  && printf '%s\n' "$rs_model_out" | grep -q 'nothing written'
+then echo "ok   run_suite: --model/--ctx builds an ephemeral 'candidate' profile and drives every stage with it, with no registry row"
+else echo "FAIL run_suite: --model/--ctx did not build the candidate profile as expected"; printf '%s\n' "$rs_model_out"; fail=1
+fi
+rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-combo-data" bash "$here/harness/run_suite.sh" long --model /home/xenofon/LLM/tested/Qwen3.5-9B-Q4_K_M.gguf --ctx 8192 --dry-run 2>&1); rs_combo_rc=$?
+if [ "$rs_combo_rc" = 2 ] && printf '%s\n' "$rs_combo_out" | grep -q 'mutually exclusive'
+then echo "ok   run_suite: a registry profile name together with --model is refused (mutually exclusive)"
+else echo "FAIL run_suite: the profile-name + --model combination was not refused (rc=$rs_combo_rc)"; printf '%s\n' "$rs_combo_out"; fail=1
+fi
+
+# ── kit/REVIEW-rubric.md (item 4): asks for exactly what run_suite.sh's own parser accepts
+if grep -qx 'maintainable: <0|3|5>' "$here/kit/REVIEW-rubric.md" && grep -qx 'usable: <0|3|5>' "$here/kit/REVIEW-rubric.md" \
+  && grep -q 'EXACTLY two lines' "$here/kit/REVIEW-rubric.md" && grep -qi 'recorded as .null.' "$here/kit/REVIEW-rubric.md" \
+  && ! grep -q 'must start with the model name' "$here/kit/REVIEW-rubric.md"
+then echo "ok   rubric: kit/REVIEW-rubric.md asks for exactly the two lines run_suite.sh's parser accepts, and says anything else is null"
+else echo "FAIL rubric: kit/REVIEW-rubric.md does not match run_suite.sh's parser"; fail=1
+fi
+
+# ── harness/suite_report.py (item 5): the contamination pair (public exercise result beside its hidden variant),
+# read from a reference stage's own <label>.verify.md, per language — never leaked into --json (no field for it there)
+cr="$t/contam"; mkdir -p "$cr/results"
+cat > "$cr/results/ref-cpp-x.verify.md" <<'EOF'
+hidden tests: test_bst_hidden.py
+verdict: FAIL (exit 1) — the exit code of the command is the verdict
+reported: 5 passed, 1 failed in 0.42s (quoted from output the tests control; informational)
+EOF
+cat > "$cr/results.json" <<JSON
+{"instrument": "SUITE-1", "stages": [{"id": "ref-cpp-x", "language": "cpp", "label": "ref-cpp-x", "working": false}]}
+JSON
+cr_out=$(A770B_DATA="$cr" python3 "$here/harness/suite_report.py" "$cr/results.json" 2>&1)
+cr_json=$(A770B_DATA="$cr" python3 "$here/harness/suite_report.py" "$cr/results.json" --json 2>/dev/null)
+if printf '%s\n' "$cr_out" | grep -q 'contamination (ref-cpp-x, cpp): public PASS · hidden FAIL' \
+  && ! printf '%s' "$cr_json" | grep -q contamination
+then echo "ok   suite_report: prints the contamination pair (public PASS, hidden FAIL) per reference stage's language, never in --json"
+else echo "FAIL suite_report: contamination pair not reported as expected"; printf '%s\n' "$cr_out"; echo "$cr_json"; fail=1
+fi
 rm -rf "$t" "$A770B_DATA"
 if [ "$fail" = 0 ]; then echo "selftest: all passed"; fi
 exit "$fail"
