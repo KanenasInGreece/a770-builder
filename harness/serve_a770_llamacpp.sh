@@ -22,9 +22,9 @@
 #                              log warns this may use more tokens), so "true" or unset adds nothing
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
-PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; LOG="$A770B_DATA/logs/llamacpp-a770.log"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
+PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; LOG="$A770B_DATA/logs/llamacpp-a770.log"; MARK="$A770B_DATA/logs/llamacpp-a770.model"; SIDECAR="$A770B_DATA/logs/live-backend.json"
 case "${1:-}" in
-  stop)   if pid=$(llama_pid_alive "$PIDFILE"); then kill "$pid"; echo "stopped pid $pid"; else echo "not running (or pidfile stale — nothing killed)"; fi; rm -f "$PIDFILE" "$MARK"; exit 0;;
+  stop)   if pid=$(llama_pid_alive "$PIDFILE"); then kill "$pid"; echo "stopped pid $pid"; else echo "not running (or pidfile stale — nothing killed)"; fi; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 0;;
   status) if pid=$(llama_pid_alive "$PIDFILE"); then echo "running pid $pid · $(cat "$MARK" 2>/dev/null)"; curl -s -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" | head -c 200; echo; else echo "not running"; fi; exit 0;;
   start)  ;;
   *) echo "usage: start <gguf> [ctx] [extra…] | stop | status" >&2; exit 2;;
@@ -50,9 +50,12 @@ MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" nohup "$A770B_LLAMA_BIN" -m "$MO
   -ngl 99 -c "$CTX" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --no-mmap -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
   --jinja "${THINKING_ARGS[@]}" --reasoning-format deepseek "$@" > "$LOG" 2>&1 9>&- &   # 9>&-: never inherit the run lock
 echo $! > "$PIDFILE"; printf '%s\n' "$MODEL" > "$MARK"
+if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ]; then
+  python3 "$(dirname "$0")/live_backend.py" write --path "$SIDECAR" --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" --model "$(basename "$MODEL")" --profile "$A770B_LIVE_PROFILE" --pid "$!"
+fi
 echo "▶ started llama-server pid $! on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB · thinking ${THINKING_ARGS[*]:-none} — log $LOG"
 for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; kill -0 "$(cat "$PIDFILE")" 2>/dev/null || break; sleep 2; done
-kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "⛔ the server died during load — read the log: $LOG" >&2; rm -f "$PIDFILE" "$MARK"; exit 3; }
+kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { echo "⛔ the server died during load — read the log: $LOG" >&2; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3; }
 used=$(gpu_used_gib)
-if python3 -c "import sys; sys.exit(0 if float('$used') > float('$A770B_VRAM_CAP_GIB') else 1)"; then kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE" "$MARK"; echo "⛔ VRAM after load ${used} GiB > cap $A770B_VRAM_CAP_GIB GiB — server STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"; exit 3; fi
+if python3 -c "import sys; sys.exit(0 if float('$used') > float('$A770B_VRAM_CAP_GIB') else 1)"; then kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; echo "⛔ VRAM after load ${used} GiB > cap $A770B_VRAM_CAP_GIB GiB — server STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"; exit 3; fi
 echo "✓ VRAM after load: ${used} GiB ≤ cap $A770B_VRAM_CAP_GIB GiB"
