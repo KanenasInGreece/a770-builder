@@ -1,12 +1,35 @@
 #!/usr/bin/env python3
-"""Tests for the `useful_ctx` harness/ladder.sh computes and prints in a registry row.
+"""Tests for harness/ladder_row.py — the ladder's last step, which writes its results document and prints the
+registry row.
 
-`useful_ctx` is the largest depth at which decode stays above four tokens a second: the ladder reads decode
-time-per-token at the shallow point and at the far end out of the window rung's own table, extends it linearly
-between them, and caps the result at the depth probe's last passing depth. Every input is a measurement, so
-every case where a measurement is missing has to leave the field unset rather than fill it from something else.
+Two things are checked here.
 
-The two that matter here:
+**A real run's numbers, end to end.** `test_the_salvaged_run_produces_its_recorded_results_and_row` drives
+`ladder_row.py` with the five rung outputs of one real ladder run and a fixed generation timestamp, and compares
+the whole results document and the whole printed row against the expected fixtures, field by field. The run is
+`ladder.sh long` of 2026-09-09 (pid 1167651, an A770 at a 262,144-token window), which was externally terminated
+during rung 6, before `ladder.sh` ever reached this step; its rung outputs survived on disk and are copied into
+`tests/data/` with the measuring machine's absolute paths replaced by neutral ones (the model file reads
+`/models/…`, the sweep's corpus `/project/…`), consistently, so the fixtures stay internally coherent:
+
+  * `long-rungs12-20260909-215915.json`  rungs 1-2, the load and the probes (was `long-rungs12-salvaged-…`)
+  * `long-bench-20260909-222214.json`    rung 3, the standard speed rung (llama-bench)
+  * `ladder-ctx-sweep-20260909.log`      rung 4, the window sweep      (was `ladder-ctx-sweep-1167651.log`)
+  * `ladder-depth-probe-20260909.log`    rung 5, the graded depth probe (was `ladder-depth-probe-1167651.log`)
+  * `long-suite-20260909-224236.json`    rung 6, 4 of the suite's 7 stages (the kill landed mid-stage)
+
+The two ladder-state arguments, the failed rung and its message, are passed empty: all five rung files are
+present, so this is the document the step writes when every rung handed it something. What the fixtures pin down:
+`useful_ctx` 262144 — computed from the two sweep points and clamped to the served window because the graded probe
+passed 3/3; the far end, 99,847 tokens at 11.5 tokens a second decoding and 159.0 prefilling after 580.7 seconds;
+`vram_gib_after_load` 9.485649108886719; and the suite's as-delivered medians under `speed.delivered` and *not*
+under `suite`, which `harness/profiles.py` would refuse.
+
+**`useful_ctx` is never filled from something that was not measured.** It is the largest depth at which decode
+stays above four tokens a second: the ladder reads decode time-per-token at the shallow point and at the far end
+out of the window rung's own table, extends it linearly between them, and caps the result at the depth probe's
+last passing depth. Every input is a measurement, so every case where a measurement is missing has to leave the
+field unset rather than fill it from something else. The two that matter:
 
   * a depth probe the server never answered reports "not measured", not a score. The model was never asked, so
     no window has any quality behind it and `useful_ctx` is unset. A number carried over from the requested
@@ -14,10 +37,8 @@ The two that matter here:
   * a window rung that reported no far point leaves nothing to extend the curve to, and `useful_ctx` is unset
     for the same reason. A point the sweep refuses as not measured prints no row in that table.
 
-The computation is the block of Python harness/ladder.sh runs after its six rungs, which takes every rung's
-output as its arguments. These tests lift that block out of the script and drive it with synthetic rung logs,
-so they need no card, no server and no run: exactly the inputs the ladder would hand it, and the ladder JSON
-and printed row it writes out.
+Those three cases are driven with synthetic rung logs, so they need no card, no server and no run: exactly the
+inputs the ladder would hand the step, and the ladder JSON and printed row it writes out.
 """
 
 import json
@@ -26,7 +47,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LADDER_SH = ROOT / "harness" / "ladder.sh"
+LADDER_ROW = ROOT / "harness" / "ladder_row.py"
+DATA = ROOT / "tests" / "data"
 
 FAR_END = 38976
 CTX = 40000
@@ -46,19 +68,8 @@ DEPTH_NEVER_ANSWERED = (
     f"depth probe at {FAR_END}: not measured — the 7200s deadline cut the request off after 7201s\n"
 )
 
-
-def row_computation(tmp_path: Path) -> Path:
-    """The Python block harness/ladder.sh runs to compute the row, written out as a file to drive."""
-    lines = LADDER_SH.read_text(encoding="utf-8").splitlines(keepends=True)
-    starts = [i for i, line in enumerate(lines) if line.rstrip().endswith("<<'PY'")]
-    assert len(starts) == 1, f"harness/ladder.sh no longer has exactly one PY block: {starts}"
-    ends = [i for i, line in enumerate(lines) if line.rstrip("\n") == "PY" and i > starts[0]]
-    assert ends, "harness/ladder.sh has no terminator for its PY block"
-    block = "".join(lines[starts[0] + 1:ends[0]])
-    assert "useful_ctx" in block, "the block lifted out of harness/ladder.sh does not compute useful_ctx"
-    path = tmp_path / "row_computation.py"
-    path.write_text(block, encoding="utf-8")
-    return path
+# the fixed generation timestamp: harness/ladder.sh passes the current time here, a test passes its own
+GENERATED = "2026-09-09T23:15:00"
 
 
 def run_row(tmp_path: Path, sweep_table: str, depth_log: str, fail_rung: str = "",
@@ -73,10 +84,10 @@ def run_row(tmp_path: Path, sweep_table: str, depth_log: str, fail_rung: str = "
         str(out_path), "long", "/models/a-model.gguf", str(CTX), "q8_0", "q8_0", "0", "-fa on", "1800",
         "long", "SUITE-1@test", str(FAR_END), "64000", "52000",
         str(tmp_path / "no-bench-model.json"), "", str(sweep_path), str(depth_path),
-        "", "", fail_rung, fail_msg,
+        "", "", fail_rung, fail_msg, GENERATED,
     ]
     result = subprocess.run(
-        [sys.executable, str(row_computation(tmp_path))] + argv,
+        [sys.executable, str(LADDER_ROW)] + argv,
         capture_output=True, text=True,
     )
     doc = json.loads(out_path.read_text(encoding="utf-8"))
@@ -92,6 +103,64 @@ def printed_row(stdout: str) -> dict:
         if depth == 0:
             return json.loads(stdout[start:i + 1])
     raise AssertionError(f"no registry row in:\n{stdout}")
+
+
+def run_salvaged_row(out_path: Path):
+    """Drive the step with the five rung outputs of the terminated run of 2026-09-09, from tests/data/.
+
+    Paths are passed relative to the repository root, and the step is run from there, so the one path it records
+    (rungs.depth_probe.log) is the same on every machine.
+    """
+    suite_json = subprocess.run(
+        [sys.executable, str(ROOT / "harness" / "suite_report.py"),
+         "tests/data/long-suite-20260909-224236.json", "--json"],
+        cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    argv = [
+        str(out_path), "long", "/models/Qwen3.5-9B-Q4_K_M.gguf", "262144", "q8_0", "q8_0", "off",
+        "--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --presence-penalty 1.5", "1500", "long",
+        "SUITE-1@0.1.5", "100000", "", "",
+        "tests/data/long-rungs12-20260909-215915.json", "tests/data/long-bench-20260909-222214.json",
+        "tests/data/ladder-ctx-sweep-20260909.log", "tests/data/ladder-depth-probe-20260909.log",
+        suite_json, "tests/data/long-suite-20260909-224236.json", "", "", GENERATED,
+    ]
+    result = subprocess.run(
+        [sys.executable, str(LADDER_ROW)] + argv,
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    return result, doc
+
+
+def test_the_salvaged_run_produces_its_recorded_results_and_row(tmp_path):
+    """One real run's five rung outputs, in: the whole results document and the whole printed row, out."""
+    result, doc = run_salvaged_row(tmp_path / "ladder.json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = printed_row(result.stdout)
+
+    expected_doc = json.loads((DATA / "long-ladder-20260909-expected.json").read_text(encoding="utf-8"))
+    expected_row = json.loads((DATA / "long-ladder-20260909-expected-row.json").read_text(encoding="utf-8"))
+    for key in expected_doc:
+        assert doc[key] == expected_doc[key], key
+    assert doc == expected_doc
+    for key in expected_row:
+        assert row[key] == expected_row[key], key
+    assert row == expected_row
+
+    # the figures this fixture exists to hold still, named one by one
+    assert doc["computed"]["useful_ctx"] == 262144 and row["useful_ctx"] == 262144
+    assert doc["computed"]["vram_gib_after_load"] == 9.485649108886719
+    assert doc["computed"]["speed"]["far_end"] == {
+        "tokens": 99847, "decode_tps": 11.5, "prefill_tps": 159.0, "ttft_s": 580.7,
+    }
+    assert doc["rungs"]["depth_probe"]["score"] == 3 and doc["rungs"]["depth_probe"]["pass"] is True
+    # the as-delivered medians belong under speed, never under suite: harness/profiles.py rejects a row that
+    # carries them under suite, and a printed row that has to be hand-edited is the one thing it exists to avoid
+    assert row["speed"]["delivered"] == {
+        "prefill_tps": 178.0, "decode_tps": 35.4, "source": "long-suite-20260909-224236.json",
+    }
+    assert "delivered" not in row["suite"], row["suite"]
+    assert doc["generated"] == GENERATED
 
 
 def test_a_probe_the_server_never_answered_leaves_useful_ctx_unset(tmp_path):

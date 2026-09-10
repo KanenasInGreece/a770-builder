@@ -1,0 +1,17 @@
+corpus: /project/kit/corpus/large.py (already generated)
+budget for 99878 tokens: 1047s (measured curve: prefill 631s + decode 27s, safety 1.50)
+prompt_tokens=99749 wall=612s prefill_tps=168 decode_tps=11.5 vram_max=9.52GiB resets=0
+ANSWER:
+1. The function `orbital_checksum_v7` computes a Kepler-weighted checksum by multiplying each byte of the payload by its 1-based position index, summing these products, XORing the total with a salt value (defaulting to 4171), and finally reducing the result modulo 65521.
+
+2. It reduces the intermediate result by the modulus 65521, which the comment identifies as "the Adler prime."
+
+3. Three distinct functions or classes defined in the source are:
+   - `parse_line`: Parses a single log line into a dictionary containing timestamp, level, component, and message fields, returning None if parsing fails.
+   - `sanitize_component`: Normalizes and validates a component name string, returning the cleaned name or None if it violates rejection rules like being too short or matching noise sets.
+   - `compute_stats`: Computes aggregate statistics over an iterable of log lines, including total line counts, per-level and per-component breakdowns, the busiest minute, and mean message length.
+PASS: Q1 (orbital_checksum_v7's behaviour and its default salt 4171)
+PASS: Q2 (the modulus 65521 and its Adler-prime comment)
+PASS: Q3 (three other real definitions from the source)
+  Q3 matched definitions: compute_stats, parse_line, sanitize_component
+depth probe at 100000: 3/3

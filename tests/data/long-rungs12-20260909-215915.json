@@ -1,0 +1,56 @@
+{
+ "label": "long",
+ "gguf": "/models/Qwen3.5-9B-Q4_K_M.gguf",
+ "ctx": 262144,
+ "load_s": 3.3,
+ "vram_gib_after_load": 9.485649108886719,
+ "ts": "2026-09-09T21:59:15",
+ "quality": [
+  {
+   "prompt": "What is 2+2? Answer with the number only.",
+   "answer": "4",
+   "ok": true,
+   "ms": 487,
+   "reasoning_chars": 0
+  },
+  {
+   "prompt": "What is the capital of Greece? One word.",
+   "answer": "Athens",
+   "ok": true,
+   "ms": 419,
+   "reasoning_chars": 0
+  },
+  {
+   "prompt": "Write a Python one-liner that prints hello world. Code only.",
+   "answer": "print(\"hello world\")",
+   "ok": true,
+   "ms": 486,
+   "reasoning_chars": 0
+  }
+ ],
+ "quality_ok": true,
+ "short": {
+  "prompt_tokens": 25,
+  "ttft_ms": 303,
+  "gen_tokens": 245,
+  "tpot_ms": 22.91,
+  "decode_tps": 43.6,
+  "wall_ms": 5957
+ },
+ "long": {
+  "prompt_tokens": 21420,
+  "ttft_ms": 48736,
+  "prefill_tps": 439.5,
+  "tpot_ms_after_long": 36.26,
+  "answer": "This project implements a \"Thin Client\" MCP server that acts as an unprivileged gateway for LM Studio (or other MCP hosts) to securely interact with the Hive-Mi",
+  "wall_ms": 51273
+ },
+ "toolcall": {
+  "ms": 2063,
+  "parsed": true,
+  "call": "[{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"arguments\": \"{\\\"path\\\":\\\"README.md\\\"}\"}, \"id\": \"83JnVge5YkEs1fd4DoblgApQy5PapvBW\"}]",
+  "gen_tokens": 26
+ },
+ "vram_gib_after_probes": 9.520000457763672,
+ "kernel_resets": 0
+}

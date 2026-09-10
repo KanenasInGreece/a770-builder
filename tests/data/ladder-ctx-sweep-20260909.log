@@ -1,0 +1,8 @@
+corpus: /project/kit/corpus/large.py (already generated)
+target   tokens   ttft_s    prefill_tps decode_tps vram_max  resets  
+  budget for 7956 tokens: 300s (measured curve: prefill 16s + decode 8s, safety 1.50)
+8000     7918     14.0      565.0       35.8       9.519004821777344GiB 0       
+  prefill predicted 16s from the measured curve, actually 14s (0.88x)
+  budget for 99884 tokens: 1018s (measured curve: prefill 631s + decode 8s, safety 1.50)
+100000   99847    580.7     159.0       11.5       9.51925277709961GiB 0       
+  prefill predicted 631s from the measured curve, actually 581s (0.92x)

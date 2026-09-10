@@ -1,0 +1,104 @@
+{
+  "instrument": "SUITE-1@0.1.5",
+  "seat": "kit/seat@affc52e",
+  "profile": "long",
+  "reviewer": null,
+  "generated": "2026-09-09T23:12:38",
+  "stages": [
+    {
+      "id": "s0-design",
+      "language": "prose",
+      "label": "long-20260909-224236",
+      "working": true,
+      "conformance_exit": null,
+      "lines": 19,
+      "budget_lines": 60,
+      "budget_ok": true,
+      "score": null,
+      "wall_s": 32,
+      "requests": 9,
+      "prompt_tokens": 206452,
+      "gen_tokens": 898,
+      "axes": [
+        "maintainable",
+        "usable"
+      ],
+      "counts_toward_pass": false,
+      "seat_state": [],
+      "outcome": "pass"
+    },
+    {
+      "id": "s1-frontend",
+      "language": "javascript+html",
+      "label": "long-20260909-224311",
+      "working": false,
+      "conformance_exit": 0,
+      "lines": 69,
+      "budget_lines": 180,
+      "budget_ok": true,
+      "score": null,
+      "wall_s": 115,
+      "requests": 25,
+      "prompt_tokens": 214576,
+      "gen_tokens": 3945,
+      "axes": [
+        "maintainable",
+        "usable"
+      ],
+      "counts_toward_pass": true,
+      "seat_state": [
+        "s0-design"
+      ],
+      "outcome": "fail"
+    },
+    {
+      "id": "s2-backend",
+      "language": "python",
+      "label": "long-20260909-224510",
+      "working": true,
+      "conformance_exit": 0,
+      "lines": 77,
+      "budget_lines": 120,
+      "budget_ok": true,
+      "score": null,
+      "wall_s": 75,
+      "requests": 38,
+      "prompt_tokens": 223280,
+      "gen_tokens": 5736,
+      "axes": [
+        "maintainable"
+      ],
+      "counts_toward_pass": true,
+      "seat_state": [
+        "s0-design",
+        "s1-frontend"
+      ],
+      "outcome": "pass"
+    },
+    {
+      "id": "s3-optimise",
+      "language": "cpp+python",
+      "label": "long-20260909-224628",
+      "working": false,
+      "conformance_exit": 0,
+      "lines": 66,
+      "budget_lines": 150,
+      "budget_ok": true,
+      "score": null,
+      "wall_s": 69,
+      "requests": 47,
+      "prompt_tokens": 226841,
+      "gen_tokens": 7736,
+      "axes": [
+        "maintainable"
+      ],
+      "counts_toward_pass": true,
+      "seat_state": [
+        "s0-design",
+        "s1-frontend",
+        "s2-backend"
+      ],
+      "outcome": "fail"
+    }
+  ]
+}

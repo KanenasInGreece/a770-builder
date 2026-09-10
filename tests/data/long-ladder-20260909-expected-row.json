@@ -1,0 +1,80 @@
+{
+  "model": "Qwen3.5-9B-Q4_K_M.gguf",
+  "ctx": 262144,
+  "kv": "q8_0",
+  "kv_v": "q8_0",
+  "flash_attention": "on",
+  "reasoning": "off",
+  "extra": "--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --presence-penalty 1.5",
+  "timeout_s": 1500,
+  "vram_gib_after_load": 9.485649108886719,
+  "ram_gb_extra": null,
+  "useful_ctx": 262144,
+  "speed": {
+    "decode_tps": {
+      "8k": 36.419797,
+      "32k": 23.110559,
+      "64k": null,
+      "100k": 11.637226
+    },
+    "prefill_tps": {
+      "8k": 414.417408,
+      "32k": 219.04364,
+      "64k": null,
+      "100k": 89.364684
+    },
+    "bench": {
+      "tool": "MESA: warning: Support for this platform is experimental with Xe KMD, bug reports may be ignored.",
+      "prompt": 8192,
+      "gen": 128,
+      "flags": "-m /models/Qwen3.5-9B-Q4_K_M.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -b 2048 -ub 512 --load-mode none -p 8192 -n 128 -d 0\\,8192\\,32768\\,100000 -r 3 -o json",
+      "at_depth": {
+        "0": {
+          "pp": 576.219692,
+          "tg": 45.799309
+        },
+        "8192": {
+          "pp": 414.417408,
+          "tg": 36.419797
+        },
+        "32768": {
+          "pp": 219.04364,
+          "tg": 23.110559
+        },
+        "100000": {
+          "pp": 89.364684,
+          "tg": 11.637226
+        }
+      },
+      "source": "long-bench-20260909-222214.json"
+    },
+    "far_end": {
+      "tokens": 99847,
+      "decode_tps": 11.5,
+      "prefill_tps": 159.0,
+      "ttft_s": 580.7
+    },
+    "delivered": {
+      "prefill_tps": 178.0,
+      "decode_tps": 35.4,
+      "source": "long-suite-20260909-224236.json"
+    }
+  },
+  "instrument": "SUITE-1@0.1.5",
+  "measured_on": "__TODO__ \u2014 the card and build this was measured on, e.g. \"Arc A770 16 GB, llama.cpp b10805 Vulkan\" (kit/PROFILE.md: never filled by ladder.sh)",
+  "use_for": "__TODO__ \u2014 write by hand from what this ladder run showed (kit/PROFILE.md: never derived from a measurement)",
+  "fit": {
+    "code": "SUITE-1: 1/3 stages passed, mean wall 86.3s (this ladder run)",
+    "write": "__TODO__ \u2014 a reviewer-graded prose brief, or state 'not measured'"
+  },
+  "capability": "__TODO__ \u2014 the model's or the quantiser's own published evaluation, quoted verbatim, never re-measured here",
+  "suite": {
+    "briefs": 3,
+    "runs": 3,
+    "passed": 1,
+    "timeouts": 0,
+    "source": "long-suite-20260909-224236.json",
+    "mean_wall_s": 86.3
+  },
+  "depth_probe_100k": "pass (3/3)"
+}

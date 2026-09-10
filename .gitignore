@@ -4,6 +4,8 @@ results/
 logs/
 *.log
 !kit/seat/python/data/sample.log
+# the rung logs tests/test_ladder_row.py drives harness/ladder_row.py with are fixtures, not run output
+!tests/data/*.log
 __pycache__/
 .pytest_cache/
 config/builder.env
