@@ -291,33 +291,33 @@ fi
 grep -q 'guard_path_policy "$real"' "$here/harness/guard.sh" && echo "ok   policy: guard_worktree enforces it through guard_path_policy, not a second copy" || { echo "FAIL guard_worktree no longer routes through guard_path_policy"; fail=1; }
 # the two seat exports remove the seat on EVERY call, past the one-time gate above; checks 1 and 2 stop at that gate
 # and never reach them, so their ordering is asserted where it lives: in each body, the policy comes before the removal.
-  for u8site in check_seat_path export_kit_seat export_reference_seat; do
+for u8site in check_seat_path export_kit_seat export_reference_seat; do
   if sed -n "/^$u8site(){/,/^}/p" "$here/harness/run_suite.sh" | grep -E 'guard_path_policy|rm -rf' | head -1 | grep -q guard_path_policy
   then echo "ok   policy: $u8site runs the policy before it removes anything"
   else echo "FAIL $u8site removes a path before the policy runs"; fail=1; fi
 done
 # sandbox_run.sh is its own entry point: it bind-mounts the worktree read-write. Direct invocation must
-# apply the same path policy before that bind, and must refuse while A770B_REFUSE is empty. The exit code
-# alone is not the point — a version that bind-mounts and then refuses, or that fails later for missing
-# bwrap, would still exit 2. The refusal text is the witness, and the marker file must still be there.
+# apply the same path policy before that bind, and must refuse while A770B_REFUSE is empty. The command
+# writes into the seat: a bind-then-refuse mutant runs it and mutates the witness; refuse-first leaves
+# the file equal to "witness". The refusal text still names the rule, so a later exit 2 is not enough.
 sb="$t/sandbox-policy"; mkdir -p "$sb/seat" "$sb/refused/live"
 echo "witness" > "$sb/seat/witness.txt"
 echo "witness" > "$sb/refused/live/witness.txt"
 printf '{}\n' > "$sb/cfg.jsonc"
-sba=$(A770B_REFUSE='' bash "$here/harness/sandbox_run.sh" "$sb/seat" "$sb/cfg.jsonc" -- true 2>&1); sba_rc=$?
-if [ ! -f "$sb/seat/witness.txt" ]; then echo "FAIL sandbox: an empty-refuse run mutated the seat"; fail=1
+sba=$(A770B_REFUSE='' bash "$here/harness/sandbox_run.sh" "$sb/seat" "$sb/cfg.jsonc" -- bash -c 'echo mutated >> witness.txt' 2>&1); sba_rc=$?
+if [ "$(cat "$sb/seat/witness.txt")" != "witness" ]; then echo "FAIL sandbox: an empty-refuse run mutated the seat"; fail=1
 elif [ "$sba_rc" != 2 ]; then echo "FAIL sandbox: empty A770B_REFUSE was not refused (rc=$sba_rc)"; printf '%s\n' "$sba" | tail -5; fail=1
 elif ! printf '%s\n' "$sba" | grep -q 'A770B_REFUSE is empty'; then echo "FAIL sandbox: empty refuse did not name the empty list (got a later failure instead)"; printf '%s\n' "$sba" | tail -5; fail=1
 else echo "ok   sandbox: empty A770B_REFUSE is refused before the bind"; fi
-sbb=$(A770B_REFUSE="$sb/refused" bash "$here/harness/sandbox_run.sh" "$sb/refused/live" "$sb/cfg.jsonc" -- true 2>&1); sbb_rc=$?
-if [ ! -f "$sb/refused/live/witness.txt" ]; then echo "FAIL sandbox: a refused-path run mutated the tree"; fail=1
+sbb=$(A770B_REFUSE="$sb/refused" bash "$here/harness/sandbox_run.sh" "$sb/refused/live" "$sb/cfg.jsonc" -- bash -c 'echo mutated >> witness.txt' 2>&1); sbb_rc=$?
+if [ "$(cat "$sb/refused/live/witness.txt")" != "witness" ]; then echo "FAIL sandbox: a refused-path run mutated the tree"; fail=1
 elif [ "$sbb_rc" != 2 ]; then echo "FAIL sandbox: a worktree inside A770B_REFUSE was not refused (rc=$sbb_rc)"; printf '%s\n' "$sbb" | tail -5; fail=1
 elif ! printf '%s\n' "$sbb" | grep -q 'protected live checkout'; then echo "FAIL sandbox: a refused path did not name the live-checkout rule (got a later failure instead)"; printf '%s\n' "$sbb" | tail -5; fail=1
 else echo "ok   sandbox: a worktree inside A770B_REFUSE is refused before the bind"; fi
 mkdir -p "$sb/home/.claude/skills"
 echo "witness" > "$sb/home/.claude/skills/witness.txt"
-sbc=$(HOME="$sb/home" A770B_REFUSE=/nonexistent bash "$here/harness/sandbox_run.sh" "$sb/home/.claude" "$sb/cfg.jsonc" -- true 2>&1); sbc_rc=$?
-if [ ! -f "$sb/home/.claude/skills/witness.txt" ]; then echo "FAIL sandbox: an agent-home run mutated the tree"; fail=1
+sbc=$(HOME="$sb/home" A770B_REFUSE=/nonexistent bash "$here/harness/sandbox_run.sh" "$sb/home/.claude" "$sb/cfg.jsonc" -- bash -c 'echo mutated >> skills/witness.txt' 2>&1); sbc_rc=$?
+if [ "$(cat "$sb/home/.claude/skills/witness.txt")" != "witness" ]; then echo "FAIL sandbox: an agent-home run mutated the tree"; fail=1
 elif [ "$sbc_rc" != 2 ]; then echo "FAIL sandbox: an agent home was not refused (rc=$sbc_rc)"; printf '%s\n' "$sbc" | tail -5; fail=1
 elif ! printf '%s\n' "$sbc" | grep -q 'agent home'; then echo "FAIL sandbox: an agent home did not name the agent-home rule (got a later failure instead)"; printf '%s\n' "$sbc" | tail -5; fail=1
 else echo "ok   sandbox: an agent home is refused before the bind"; fi
