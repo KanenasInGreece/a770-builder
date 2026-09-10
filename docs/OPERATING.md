@@ -402,7 +402,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `harness/` | the scripts that run and guard a profiling or build session: starting the model server, wrapping the coding agent in the sandbox, capturing what it did, and measuring how fast and how far it can go — every script here runs on the host, outside the sandbox |
 | `harness/serve_a770_llamacpp.sh` | the only way a server starts: budget gate, VRAM cap (the mode's: 13 GiB after load on a display card, 15.3 on a free one), `-ub 512`, the API key, model marker |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
-| `harness/sandbox_run.sh` | the bubblewrap boundary: only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |
+| `harness/sandbox_run.sh` | the bubblewrap boundary: path policy before the bind, then only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |
 | `config/` | the project's configuration: the registries listing every qualified model and its measured numbers, the example environment file a new install copies, and the template opencode reads inside the sandbox |
 | `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation; the card mode, the key and profile helpers |
 | `config/profiles.json` · `config/profiles.inference.json` | the two registries, one per card mode, the single source of every profile's numbers; `harness/profiles.py` validates, exports, inspects and renders them |

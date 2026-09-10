@@ -19,6 +19,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 KIT="$here/kit"
 fail=0
+export A770B_PROJECT="$here" A770B_REFUSE=/nonexistent
 
 command -v bwrap >/dev/null 2>&1 || { echo "skip: bwrap or the warm uv cache is missing"; exit 0; }
 # shellcheck disable=SC1091

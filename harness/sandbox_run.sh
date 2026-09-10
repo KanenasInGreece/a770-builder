@@ -21,9 +21,11 @@
 # without any bridge (verify: tests only, no model, no key).
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/guard.sh"
 WT="${1:?worktree}"; CFG="${2:?profile config}"; shift 2; [ "${1:-}" = "--" ] && shift
 [ -d "$WT" ] || { echo "⛔ sandbox: worktree missing $WT" >&2; exit 2; }
 [ -f "$CFG" ] || { echo "⛔ sandbox: config missing $CFG" >&2; exit 2; }
+WT=$(guard_path_policy "$WT")
 for t in bwrap socat uv; do command -v "$t" >/dev/null || { echo "⛔ sandbox: $t not installed" >&2; exit 2; }; done
 OC_BIN=$(a770b_opencode_bin); [ -x "$OC_BIN/opencode" ] || { echo "⛔ sandbox: opencode binary not found (A770B_OPENCODE_BIN or PATH)" >&2; exit 2; }
 UV=$(readlink -f "$(command -v uv)")
