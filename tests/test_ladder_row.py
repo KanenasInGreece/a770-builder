@@ -36,8 +36,11 @@ field unset rather than fill it from something else. The two that matter:
     window, or from the sweep alone, would read as a depth whose quality had been checked.
   * a window rung that reported no far point leaves nothing to extend the curve to, and `useful_ctx` is unset
     for the same reason. A point the sweep refuses as not measured prints no row in that table.
+  * a depth probe that was answered and failed caps the window at 8,000, the sweep's own shallow point — but
+    only when the sweep measured a window to cap. With no usable pair of sweep points the failure leaves the
+    field unset too, rather than publishing an 8,000 no rung of that run measured.
 
-Those three cases are driven with synthetic rung logs, so they need no card, no server and no run: exactly the
+Those five cases are driven with synthetic rung logs, so they need no card, no server and no run: exactly the
 inputs the ladder would hand the step, and the ladder JSON and printed row it writes out.
 """
 
@@ -67,6 +70,7 @@ DEPTH_PASSED = f"depth probe at {FAR_END}: 3/3\n"
 DEPTH_NEVER_ANSWERED = (
     f"depth probe at {FAR_END}: not measured — the 7200s deadline cut the request off after 7201s\n"
 )
+DEPTH_FAILED = f"depth probe at {FAR_END}: 1/3\n"
 
 # the fixed generation timestamp: harness/ladder.sh passes the current time here, a test passes its own
 GENERATED = "2026-09-09T23:15:00"
@@ -193,3 +197,25 @@ def test_a_window_rung_that_reported_no_far_point_leaves_useful_ctx_unset(tmp_pa
     assert str(FAR_END) not in doc["rungs"]["window_sweep"], doc["rungs"]["window_sweep"]
     assert doc["computed"]["useful_ctx"] is None, doc["computed"]
     assert printed_row(result.stdout)["useful_ctx"] is None, result.stdout
+
+
+def test_a_failed_probe_over_a_sweep_with_no_window_leaves_useful_ctx_unset(tmp_path):
+    """The cap is a cap: with nothing measured to cap, a failed probe fills the field no more than an
+    unanswered one does. 8,000 here would be a window no rung of this run measured."""
+    result, doc = run_row(tmp_path, SWEEP_SHALLOW_ONLY, DEPTH_FAILED)
+    assert result.returncode == 0, result.stdout + result.stderr
+    probe = doc["rungs"]["depth_probe"]
+    assert probe["score"] == 1 and probe["pass"] is False, probe
+    assert not probe["not_measured"], probe
+    assert doc["computed"]["useful_ctx"] is None, doc["computed"]
+    assert printed_row(result.stdout)["useful_ctx"] is None, result.stdout
+
+
+def test_a_failed_probe_over_a_measured_window_still_caps_at_the_shallow_point(tmp_path):
+    """The control on the test above, and the behaviour the cap exists for: these are the same rung outputs
+    that compute a window above 8,000 with a passing probe, and the failure brings the row back to 8,000."""
+    result, doc = run_row(tmp_path, SWEEP_TABLE, DEPTH_FAILED)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert doc["rungs"]["depth_probe"]["pass"] is False, doc["rungs"]["depth_probe"]
+    assert doc["computed"]["useful_ctx"] == 8000, doc["computed"]
+    assert printed_row(result.stdout)["useful_ctx"] == 8000, result.stdout

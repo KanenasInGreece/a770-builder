@@ -81,8 +81,9 @@ m_nm = re.search(r'depth probe at \d+: not measured — (.+)', depth_text)
 depth_not_measured = m_nm.group(1).strip() if m_nm else None
 
 # ── useful_ctx: the four-tokens-a-second rule (AGENTS.md) — decode time-per-token at 8k and the far end,
-# extended linearly between them, capped by the depth probe's last passing depth (8k when the far probe failed,
-# since 8k is the only other point this ladder actually probed the model's quality at) ──────────────────────
+# extended linearly between them, capped at 8,000 when the far probe failed. The graded probe runs only at the
+# far end, so a failure leaves no depth whose quality passed; 8,000 is the sweep's own shallow point, a measured
+# throughput point, and the row claims no further than the shallow point this run actually measured ──────────
 useful_ctx = None
 if p8 and pfar and p8["decode_tps"] > 0 and pfar["decode_tps"] > 0:
     t1, t2 = 1.0 / p8["decode_tps"], 1.0 / pfar["decode_tps"]
@@ -92,9 +93,10 @@ if p8 and pfar and p8["decode_tps"] > 0 and pfar["decode_tps"] > 0:
         slope = (t2 - t1) / (far_end - 8000)
         d_star = 8000 + (0.25 - t1) / slope
         useful_ctx = max(0, int(d_star))
-if depth_pass is False:
-    cap = 8000
-    useful_ctx = cap if useful_ctx is None else min(useful_ctx, cap)
+# a failed probe caps a measured window; it does not invent one. With no usable pair of sweep points there is
+# nothing to cap, and the failure leaves the field unset rather than publishing an 8,000 no rung measured
+if depth_pass is False and useful_ctx is not None:
+    useful_ctx = min(useful_ctx, 8000)
 # a probe the server never answered measured nothing at all, so no window here has any quality behind it:
 # report none rather than the sweep's own figure, which would read as if the depth had been checked
 if depth_not_measured:
