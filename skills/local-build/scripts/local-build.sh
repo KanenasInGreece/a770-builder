@@ -3,8 +3,9 @@
 #   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
-#   serve <profile> | status | profiles [--name N] | stop | stop-run (end the run in progress by its own pid) | version (--version)
+#   serve <profile> | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
 #   profiles [--name N]   the registry card (config/profiles.json) with the served values, for a caller choosing a profile
+#   menu              ready / also / the cold full slice as JSON, for a caller picking a row
 #   doctor            what this machine lacks to run the seat, one line per check; exit 1 when anything is missing
 #   The mode: A770B_CARD_MODE=display (the default, the tested set under a 13.0 cap) or inference (a card that draws no desktop: its own registry under 15.3)
 #   check-update      ask GitHub for the latest release and compare it with this copy (on demand only; nothing else ever calls out)
@@ -187,6 +188,7 @@ case "${1:-}" in
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@" ;;
+  menu) python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid" ;;
   doctor) doctor ;;
   stop)   bash "$SERVE" stop ;;
   stop-run)
@@ -305,5 +307,5 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac

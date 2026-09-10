@@ -4,7 +4,8 @@
 `config/profiles.json` is the single source of truth for the three seat profiles (fast,
 long, serious). This tool: validates the file (`check`); prints the shell defaults the
 harness `eval`s (`env`); prints the file as JSON, optionally with what is actually served
-(`card`); and regenerates the profile table in the skill and the one-line snippet from the
+(`card`); prints ready / also / the cold full slice a caller can pick a row from (`menu`);
+and regenerates the profile table in the skill and the one-line snippet from the
 data (`render`).
 
 A row's `speed` object may carry two more, both optional and neither computed by this
@@ -49,6 +50,8 @@ import os
 import re
 import sys
 from pathlib import Path
+
+from live_backend import read
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = REPO_ROOT / "config" / "profiles.json"
@@ -763,6 +766,87 @@ def cmd_card(args) -> int:
     return 0
 
 
+def _menu_row(name: str, prof: dict) -> dict:
+    """One slice/ready/also element: identity plus the numbers a caller compares."""
+    speed = prof.get("speed") or {}
+    decode = speed.get("decode_tps") or {}
+    return {
+        "name": name,
+        "card": prof["card"],
+        "backend": prof["backend"],
+        "mode": prof["mode"],
+        "model": prof["model"],
+        "ctx": prof["ctx"],
+        "useful_ctx": prof["useful_ctx"],
+        "decode_tps_8k": decode.get("8k"),
+        "use_for": prof["use_for"],
+    }
+
+
+def cmd_menu(args) -> int:
+    """Print ready/also JSON when a sidecar is live, or the cold full slice."""
+    rc = cmd_check(args)
+    if rc != 0:
+        return rc
+
+    data, err = _load(Path(args.file))
+    if err is not None:
+        print(f"profiles: {err}", file=sys.stderr)
+        return 2
+
+    live = None
+    if args.sidecar:
+        live = read(args.sidecar, args.pidfile)
+
+    profiles = data["profiles"]
+    default = data["default"]
+
+    if live is None:
+        out = {
+            "state": "cold",
+            "ready": [],
+            "also": [],
+            "slice": [_menu_row(name, prof) for name, prof in profiles.items()],
+            "default": default,
+        }
+        print(json.dumps(out, indent=2))
+        return 0
+
+    ready = []
+    also = []
+    for name, prof in profiles.items():
+        if prof.get("card") != live["card"] or prof.get("mode") != live["mode"]:
+            continue
+        row = _menu_row(name, prof)
+        if prof.get("backend") == live["backend"]:
+            ready.append(row)
+        else:
+            also.append(row)
+
+    for row in also:
+        row["reload"] = (
+            f"reload: stop the live backend, start {row['backend']}, load {row['model']}"
+        )
+        match = next((r for r in ready if r["model"] == row["model"]), None)
+        if match is not None:
+            row["deltas"] = {
+                "ctx": {"ready": match["ctx"], "also": row["ctx"]},
+                "useful_ctx": {"ready": match["useful_ctx"], "also": row["useful_ctx"]},
+                "decode_tps_8k": {"ready": match["decode_tps_8k"], "also": row["decode_tps_8k"]},
+                "use_for": {"ready": match["use_for"], "also": row["use_for"]},
+            }
+
+    out = {
+        "state": "ready",
+        "live": live,
+        "ready": ready,
+        "also": also,
+        "default": default,
+    }
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def _short_model_name(model: str) -> str:
     if model.endswith(".gguf"):
         model = model[: -len(".gguf")]
@@ -919,6 +1003,13 @@ def main() -> int:
     card_parser.add_argument("--name", help="Print only this profile's object")
     card_parser.add_argument("--served", action="store_true", help="Show what the environment actually serves")
 
+    menu_parser = subparsers.add_parser(
+        "menu", parents=[common],
+        help="Print ready, also, or the cold full slice as JSON",
+    )
+    menu_parser.add_argument("--sidecar", help="Path to the live-backend sidecar JSON")
+    menu_parser.add_argument("--pidfile", help="Path to the llama-server pidfile")
+
     render_parser = subparsers.add_parser("render", parents=[common], help="Regenerate the skill table and snippet")
     render_parser.add_argument("--skill", required=True, help="Path to the skill file to update")
     render_parser.add_argument("--snippet", required=True, help="Path to the snippet file to update")
@@ -932,6 +1023,8 @@ def main() -> int:
         return cmd_env(args)
     elif args.command == "card":
         return cmd_card(args)
+    elif args.command == "menu":
+        return cmd_menu(args)
     elif args.command == "render":
         return cmd_render(args)
 
