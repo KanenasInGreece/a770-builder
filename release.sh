@@ -4,7 +4,7 @@
 # file that carries the measured numbers. Tagging alone is not releasing.
 #   bash release.sh --notes <file.md> [--dry-run] [--major] [--minor]
 # The number: the first release is 0.1.0. Each release after it adds 0.0.1; when the patch number would pass 10, the
-# minor number moves by 0.1.0 instead and the patch restarts at 0 (0.1.10 → 0.2.0). A major bump never happens on its
+# minor number moves by 0.1.0 instead and the patch restarts at 0 (0.2.10 → 0.3.0). A major bump never happens on its
 # own: it takes --major, the maintainer's explicit word. A minor bump on demand — the next number is M.(m+1).0 — takes
 # --minor, the maintainer's word; --major and --minor together are refused.
 set -euo pipefail
@@ -28,7 +28,7 @@ else
   IFS=. read -r M m p <<<"$last"
   if [ "$MAJOR" = 1 ]; then next="$((M+1)).0.0"
   elif [ "$MINOR" = 1 ]; then next="$M.$((m+1)).0"
-  elif [ "$p" -ge 10 ] && [ "$m" -ge 10 ]; then echo "⛔ $last is the last number before a major bump, which takes --major (the maintainer's word)" >&2; exit 2
+  elif [ "$p" -ge 10 ] && [ "$m" -ge 99 ]; then echo "⛔ $last is the last number before a major bump, which takes --major (the maintainer's word)" >&2; exit 2
   elif [ "$p" -ge 10 ]; then next="$M.$((m+1)).0"
   else next="$M.$m.$((p+1))"; fi
 fi
