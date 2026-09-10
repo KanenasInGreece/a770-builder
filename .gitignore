@@ -11,6 +11,5 @@ __pycache__/
 config/builder.env
 config/builder.*.env
 CLAUDE.md
-OPENCODE.md
 sync_local_build.sh
 .claude/
