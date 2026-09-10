@@ -457,6 +457,9 @@ out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile nosuch ) 2>&1 )
 printf '%s' "$out" | grep -q "profile must be one of:" \
   && echo "ok   mode: I7b --profile nosuch is refused before the guard" || { echo "FAIL mode: I7b nosuch: $out"; fail=1; }
+out=$( ( _iso; export A770B_CARD_MODE=inference; bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile moe ) 2>&1 )
+printf '%s' "$out" | grep -q "profile must be one of: long serious (got 'moe')" \
+  && echo "ok   mode: I7b --profile moe is refused and the refusal names the profiles the inference registry serves" || { echo "FAIL mode: I7b moe: $out"; fail=1; }
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --fast ) 2>&1 )
 printf '%s' "$out" | grep -q "unknown arg --fast" \
   && echo "ok   mode: I7b the removed --fast arm is an unknown argument" || { echo "FAIL mode: I7b --fast: $out"; fail=1; }
@@ -467,6 +470,9 @@ grep -q 'mode \$A770B_CARD_MODE · cap \$A770B_VRAM_CAP_GIB GiB' "$here/harness/
 grep -q 'the server died during load' "$here/harness/serve_a770_llamacpp.sh" \
   && echo "ok   harness: serve refuses when the pid dies during load" \
   || { echo "FAIL harness: serve_a770_llamacpp.sh does not name the death message"; fail=1; }
+grep -q 'bench_build_id\.py" "\$RAW_FILE" "\$BUILD_ID"' "$here/harness/bench_speed.sh" \
+  && echo "ok   harness: bench_speed.sh takes the build id it records from bench_build_id.py, its own reading the fallback" \
+  || { echo "FAIL harness: bench_speed.sh does not read its build id from bench_build_id.py"; fail=1; }
 grep -q '4096' "$here/harness/bench_model.sh" && grep -q 'REASONING' "$here/harness/bench_model.sh" \
   && echo "ok   harness: bench_model's probe gate reads REASONING for its 4096 budget" \
   || { echo "FAIL harness: bench_model.sh does not read REASONING for a 4096 gate"; fail=1; }

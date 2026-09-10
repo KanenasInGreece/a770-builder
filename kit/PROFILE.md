@@ -184,11 +184,14 @@ own card. Its `use_for` follows from exactly that: a deliverable larger than its
 useful to about 98k before the read gets slow — never a claim invented past what the fields above actually hold.
 
 A green field-by-field card is not the whole story, and reading a row means reading a stage's own grade before
-trusting it. The kit's own standard suite has run against a 9B-class row on this card, and that run is a partial:
-it was stopped before its three reference exercises ran, so four of the suite's seven stages were graded. The row
-passed the design note and the backend stage and failed the front end and the C++ optimisation, which leaves it at
-one of the three counted stages passed, the design note's own grade never entering the tally. The honest reading of
-a result like that is not "close" or "nearly working": it is a run that does not clear the standard suite's bar as
-things stand, and it is not a suite score at all, since the suite did not finish. A card's `use_for` must say
-exactly that, never dressed up as a pass because the other rungs read well. A row is only ever as
-strong as its worst rung, and the suite exists precisely so that rung cannot be skipped or softened in the write-up.
+trusting it. The kit's own standard suite has been run on this card against the model file the shipped `long`
+profile serves, which is not a reading of that row: the row was measured on the sibling-repository instrument and
+carries its own task result, while this is the same file put through the kit. Every stage that counts toward the
+pass ratio ran. The backend stage passed, the front end and the C++ optimisation failed, so the file stands at one
+of three counted stages passed; the design note passed as well and is scored outside the count, as it is for every
+row. One of three is a complete pass ratio, and a failing one: it does not clear the standard suite's bar. The run
+was cut short before the three reference exercises, which are the contamination check and never enter the ratio,
+so what is missing from the record is that check and not the quality score. The honest reading of a result like
+that is not "close" or "nearly working". A card's `use_for` must say exactly that, never dressed up as a pass
+because the other rungs read well. A row is only ever as strong as its worst rung, and the suite exists precisely
+so that rung cannot be skipped or softened in the write-up.

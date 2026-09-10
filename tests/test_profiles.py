@@ -1527,7 +1527,8 @@ def test_comparable_with_on_display_registry():
 
 
 def test_comparable_with_on_inference_registry():
-    """The shipped inference registry: every row lists the other two as comparable (same instrument)."""
+    """The shipped inference registry holds two rows, so each lists the one other row as comparable
+    (same instrument)."""
     result = run("card", "--file", str(PROFILES_INFERENCE_JSON))
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)

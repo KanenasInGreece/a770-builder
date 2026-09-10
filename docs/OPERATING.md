@@ -203,6 +203,19 @@ loads at 13.78 GiB and peaks at 14.21 GiB during a 32k prompt; the long profile'
 `-ub 512`, so the inference cap is 15.3: 15.9 minus a 0.3 GiB growth allowance minus a 0.3 GiB reserve. Either cap is
 raised only after a fresh measurement, never by guesswork.
 
+**Host memory.** The only host-memory check before a load is a floor on available memory, `A770B_MIN_AVAIL_MB`
+(20,000 MB by default), read from the kernel's own `MemAvailable`. It is a page-cache floor for reading the weights
+off disk, not a budget for weights that stay in system memory, so it cannot refuse a load whose weights will not
+fit in RAM. A model that keeps part of its weights in host memory can still be started here, by four routes: the
+expert-placement flag `--n-cpu-moe N` passed to `harness/serve_a770_llamacpp.sh start <gguf> <ctx>`, which hands
+any argument after the window straight to the server; a profile's `A770B_<PROFILE>_EXTRA` set in the environment,
+which wins over the value the registry supplies; `harness/ladder.sh <gguf> --ctx N --extra "--n-cpu-moe N"` on a
+bare model file, the path for a model with no row; and serving one of the mixture-of-experts files the ledger
+records. Such a server holds gigabytes of system memory beyond what it holds on the card. On a machine whose swap
+is committed the kernel kills it under memory pressure, and the kill reads as a fault of the seat rather than of
+the machine, so check free memory first and keep a build or another memory-heavy process off the machine while it
+runs.
+
 **The key.** The server starts with `--api-key-file A770B_API_KEY_FILE` (default `~/.config/a770-builder/api.key`). The
 file is created on the first serve, one line, mode 600; the rendered profile carries the key into the sandbox, and every
 harness script that talks to the server reads it from the file. Delete the file to rotate: the next `serve` creates a

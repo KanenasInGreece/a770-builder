@@ -61,9 +61,9 @@ measures rather than assumes.
 
 Whether a 16 GB card can hold a model that actually finishes a small, well-specified change in a real repository is a
 question. Only measurement answers it. From this release, a new candidate is measured on the kit inside this
-repository instead of a sibling one — no row has yet been measured on the kit, and the first one will be. Only what
-passes earns a place. Earlier rows in the ledger were measured on a sibling repository, and stay comparable only
-with each other.
+repository instead of a sibling one: no row in either registry carries a kit measurement yet, and the ledger records
+the measurements taken with it so far. Only what passes earns a place. Earlier rows in the ledger were measured on a
+sibling repository, and stay comparable only with each other.
 
 If what you are looking for is a pre-built container that serves llama.cpp or vLLM on an Intel card, that is a
 different job from this one and often the right place to start; [`docs/COMPARISON.md`](docs/COMPARISON.md) says

@@ -11,9 +11,10 @@ budget) is never shown as a plain FAIL: a reader should be able to tell a slow m
 A results file recorded before "outcome" existed falls back to the "working" boolean alone (PASS/FAIL/-).
 
 --json: prints ONLY those six totals, plus `delivered` when at least one stage's capture yields a reading, as a
-JSON object — pasteable straight into a profile's `suite` field (and `speed.delivered`) in config/profiles.json —
-and nothing else on stdout (the instrument line, if wanted, goes to stderr so it never lands in the JSON a caller
-parses).
+JSON object. The six totals paste straight into a profile's `suite` field in config/profiles.json; `delivered`
+belongs under `speed.delivered` instead, the registry's only home for it (`suite` accepts SUITE_KEYS and rejects
+anything else), which is where harness/ladder.sh's printed row puts it. Nothing else goes to stdout (the instrument
+line, if wanted, goes to stderr so it never lands in the JSON a caller parses).
 
 Delivered speed: a stage's capture file (harness/capture_task.sh's `<label>.task.md`) carries the server-side timing
 lines `prefill tok/s over all prompts=<x>` and `... decode tok/s median=<y>`. A results JSON stage that names its own

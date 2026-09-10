@@ -7,8 +7,10 @@ harness `eval`s (`env`); prints the file as JSON, optionally with what is actual
 (`card`); and regenerates the profile table in the skill and the one-line snippet from the
 data (`render`).
 
-A row's `speed` object may carry two more, both optional and both filled by hand from a
-measurement, never computed by this tool:
+A row's `speed` object may carry two more, both optional and neither computed by this
+tool. `speed.bench` is copied from a measurement by hand; `speed.delivered` is written
+into the row `harness/ladder.sh` prints, and is the only place a registry row holds the
+suite's as-delivered medians:
 
 - `speed.bench`: the standard llama-bench instrument run at the row's own served flags
   (`harness/bench_speed.sh <profile>`) — `tool` (the build id llama-bench itself reports),
