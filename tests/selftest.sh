@@ -698,6 +698,78 @@ if [ "$dp_none_rc" = 3 ] && grep -q 'not measured' "$t/dp-none.out" && ! grep -q
 then echo "ok   depth_probe: a request the server never answered is 'not measured' and exits 3, while a model that answers with nothing is graded 0/3 and exits 1"
 else echo "FAIL depth_probe: unanswered (rc=$dp_none_rc) and empty-answer (rc=$dp_empty_rc) are not told apart"; cat "$t/dp-none.out" "$t/dp-empty.out"; fail=1
 fi
+# ── harness/ctx_sweep.sh's own behaviour: the window rung proved with no card and no server. The stand-in
+# tokeniser above sizes each prompt; a fake curl answers the completion from a file the check names, and answers
+# the health check that follows it, so every path below runs without a model.
+mkdir -p "$t/csbin"
+cat > "$t/csbin/curl" <<'CSCURL'
+#!/bin/sh
+[ -n "${CS_CURL_LOG:-}" ] && printf '%s\n' "$*" >> "$CS_CURL_LOG"
+for a in "$@"; do
+  case "$a" in */health) printf '{"status":"ok"}'; exit 0 ;; esac
+done
+# a real completion takes many seconds, giving the sweep's background VRAM sampler time to write a reading
+sleep 1
+cat "$CS_FAKE_ANSWER_FILE"
+CSCURL
+chmod +x "$t/csbin/curl"
+cs_answer(){ # cs_answer <file> <prompt_tokens the server claims it received>
+  python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":int(sys.argv[2])},"timings":{"prompt_ms":12000,"prompt_per_second":500,"predicted_per_second":20},"choices":[{"message":{"content":"it computes a checksum"}}]}, open(sys.argv[1],"w"))' "$1" "$2"
+}
+cs_answer "$t/cs-in-tolerance.json" 990
+cs_answer "$t/cs-far-off.json" 1500
+printf '' > "$t/cs-no-answer.json"
+run_sweep(){ # run_sweep <answer file> <harness directory> <sizes…>
+  local answer=$1 hdir=$2; shift 2
+  : > "$t/cs-curl.log"
+  CS_FAKE_ANSWER_FILE="$answer" CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME="${CS_MAX_TIME:-}" \
+    A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+    PATH="$t/csbin:$PATH" bash "$hdir/ctx_sweep.sh" "$@"
+}
+cs_ok=$(run_sweep "$t/cs-in-tolerance.json" "$here/harness" 1000 2>&1); cs_ok_rc=$?
+cs_off=$(run_sweep "$t/cs-far-off.json" "$here/harness" 1000 2>&1); cs_off_rc=$?
+if [ "$cs_ok_rc" = 0 ] && printf '%s\n' "$cs_ok" | grep -qE '^1000 +990 ' && ! printf '%s\n' "$cs_ok" | grep -q 'NOT MEASURED' \
+  && [ "$cs_off_rc" != 0 ] && printf '%s\n' "$cs_off" | grep -q '1000: NOT MEASURED' \
+  && printf '%s\n' "$cs_off" | grep -q '1500 tokens' && ! printf '%s\n' "$cs_off" | grep -qE '^1000 +1500 '
+then echo "ok   ctx_sweep: a point whose prompt reached the server at the size asked for is reported as it always was, and one that arrived far from that size is reported as not measured and fails the rung, never filed under the size nothing measured"
+else echo "FAIL ctx_sweep: the size the server reports is not compared with the size asked for (in tolerance rc=$cs_ok_rc, far off rc=$cs_off_rc)"; printf '%s\n' "$cs_ok" "$cs_off" | tail -20; fail=1
+fi
+cs_none=$(run_sweep "$t/cs-no-answer.json" "$here/harness" 1000 2>&1); cs_none_rc=$?
+if [ "$cs_none_rc" != 0 ] && printf '%s\n' "$cs_none" | grep -q '1000: NO ANSWER' \
+  && ! printf '%s\n' "$cs_none" | grep -qE '^1000 +[0-9]'
+then echo "ok   ctx_sweep: a point the server never answered fails the rung and prints no row, so it can never be read as a measurement"
+else echo "FAIL ctx_sweep: an unanswered point did not fail the rung (rc=$cs_none_rc)"; printf '%s\n' "$cs_none" | tail -20; fail=1
+fi
+# the corpus above is a few thousand characters: it can reach 1000 tokens and nothing like 100000. Both sizes are
+# proved before the first point is served, so nothing is sent at all (the fake curl's log stays empty).
+cs_short=$(run_sweep "$t/cs-in-tolerance.json" "$here/harness" 1000 100000 2>&1); cs_short_rc=$?
+if [ "$cs_short_rc" != 0 ] && printf '%s\n' "$cs_short" | grep -q '100000-token prompt' \
+  && ! printf '%s\n' "$cs_short" | grep -q '^target ' && [ ! -s "$t/cs-curl.log" ]
+then echo "ok   ctx_sweep: a corpus too short for the larger size refuses the rung, naming that size, before any point is served"
+else echo "FAIL ctx_sweep: the unreachable size was not refused before serving (rc=$cs_short_rc, curl log $(wc -l < "$t/cs-curl.log") lines)"; printf '%s\n' "$cs_short" | tail -20; fail=1
+fi
+# the deadline sub-process, forced to fail: a copy of harness/ that sizes prompts through the real estimator and
+# refuses to produce a deadline. The rung must still run, and say which deadline it fell back to and why.
+cp -r "$here/harness" "$t/csharness"
+cat > "$t/csharness/prompt_budget.py" <<CSPB
+#!/usr/bin/env python3
+"""Stands in for the estimator: sizes prompts through the real one, and fails when asked for a deadline."""
+import subprocess
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1] == "time":
+    print("the curve reader could not run", file=sys.stderr)
+    sys.exit(1)
+sys.exit(subprocess.run([sys.executable, "$here/harness/prompt_budget.py"] + sys.argv[1:]).returncode)
+CSPB
+cs_fb=$(run_sweep "$t/cs-in-tolerance.json" "$t/csharness" 1000 2>&1); cs_fb_rc=$?
+cs_ov=$(CS_MAX_TIME=42 run_sweep "$t/cs-in-tolerance.json" "$t/csharness" 1000 2>&1); cs_ov_rc=$?
+if [ "$cs_fb_rc" = 0 ] && printf '%s\n' "$cs_fb" | grep -q 'the fixed generous fallback' \
+  && printf '%s\n' "$cs_fb" | grep -qE '^1000 +990 ' \
+  && [ "$cs_ov_rc" = 0 ] && printf '%s\n' "$cs_ov" | grep -q 'set by A770B_SWEEP_MAX_TIME'
+then echo "ok   ctx_sweep: a deadline the curve reader never produced is not used as one: the point still runs under the fixed generous deadline, which is named with the reason, and the operator's own override still wins"
+else echo "FAIL ctx_sweep: the failed deadline sub-process was not caught (fallback rc=$cs_fb_rc, override rc=$cs_ov_rc)"; printf '%s\n' "$cs_fb" "$cs_ov" | tail -20; fail=1
+fi
 # a GGUF with no registry row: the dry-run paths never open the file, so this is a name inside the test's own
 # temporary directory — never a path on the machine that happens to be running the suite.
 lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run 2>&1)
