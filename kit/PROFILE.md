@@ -47,7 +47,7 @@ cost · `depth_probe_100k`/`task_t1` pass/fail of two rungs · `instrument` what
 `capability` the model's own public benchmark numbers · `use_for` what the ladder showed the row is good for.
 Added by `card`, never stored in the file: `"builder_class": true` (`useful_ctx` clears 81,920 and `task_t1`
 reads pass) and `"comparable_with": {"instrument": "seat: Shared_Memory@3c8e2bb", "measured_on": "Arc A770 16 GB,
-llama.cpp b10805 Vulkan", "profiles": ["long", "moe"]}` (the other two inference rows share this row's exact
+llama.cpp b10805 Vulkan", "profiles": ["long"]}` (the other inference row shares this row's exact
 `instrument` AND `measured_on` today).
 
 Besides the fields shown above, every row also carries `architecture` (a one-line prose description — attention
@@ -84,7 +84,7 @@ whether a human still writes or chooses it (**human**) — `ladder.sh`'s own out
 | `ram_gb_extra` | **ladder** — Rung 1, a MoE row only | the host `MemAvailable` drop across the load; host RAM the row's CPU-resident expert layers cost beyond VRAM; 0 for a dense row | none |
 | `speed.decode_tps` / `speed.prefill_tps` | **ladder** — Rung 3 (`bench_speed.sh`), when it ran (a registry profile only — Rung 3 is skipped for a bare GGUF, leaving these four keys unset) | `8k` from `at_depth["8192"]`, `32k` from `["32768"]`, `64k` from `["65536"]`, `100k` from `["100000"]` (or whichever depth the row's own far end used, on a window under ~110k); `decode_tps.<k>` from that depth's `tg`, `prefill_tps.<k>` from its `pp` | any llama-bench result for the same GGUF, backend and flags. Worked instance: llama-bench on this row read 8.8 tok/s decode at depth 0, 7.9 at 8,192, 6.2 at 32,768 (prefill 73.0 / 64.5 / 47.4 tok/s at those depths) — agreeing with this project's own sweep of the same file within a few percent, the two instruments cross-checking each other |
 | `speed.bench` | **ladder** — Rung 3 (`bench_speed.sh <profile>`) directly | llama-bench run at the row's own served flags at depths 0, 8,192, 32,768 and the far end; `tool`, `prompt`/`gen`, `flags` (the reproducible command line), `at_depth`, `source` recorded verbatim | any llama-bench result for the same GGUF, backend and flags — the standard, reproducible number; a different quantisation or backend is a different row |
-| `speed.delivered` | **human** — `ladder.sh`'s own printed row carries no `speed.delivered` field at all; a human runs `harness/suite_report.py --json` on the task rung's own results file (or reads the `delivered` object the ladder's own `suite` blob may already carry) and moves the medians here by hand, since the registry's `suite` object has no field of its own for them | each stage's own server-side timing lines from its capture, MEDIANED across stages | not comparable — what the row delivered inside a real coding run, contention included, never what the flag set can do alone; recorded beside `speed.bench`, never instead of it |
+| `speed.delivered` | **ladder** — Rung 6 on the kit, the speed the suite run itself delivered: `harness/suite_report.py --json` reports the medians with the suite's totals, and `ladder.sh` puts them under `speed` in the printed row, which is the registry's only home for them (the `suite` object has no field of its own for them) | each stage's own server-side timing lines from its capture, MEDIANED across stages | not comparable — what the row delivered inside a real coding run, contention included, never what the flag set can do alone; recorded beside `speed.bench`, never instead of it |
 | `speed.far_end` | **ladder** — Rung 4, the window rung | `tokens` is whatever the reply actually measured, never the number typed on the command line (a row too slow to answer inside the run's ceiling leaves nothing to record); `decode_tps`/`prefill_tps`/`ttft_s` read at that point | none directly — the anchor `useful_ctx`'s linear extension is drawn from |
 | `depth_probe_100k` | **ladder** when the far end is close to 100k (`>= 90000` and the probe scored), **human** otherwise | pass/fail (with the score, e.g. `pass (3/3)`) on whether a detail planted ~85% deep in a large prompt is actually recalled from that depth; written by hand on a smaller far end when that is close enough to call the 100k rung | none |
 | `task_t1` | **human** — never touched by the ladder (its own note says so plainly); Rung 6 on the sibling-repository instrument (`run_one.sh`, T1) for a row reproducing that instrument | pass/fail from the qualification brief run through opencode in that seat; superseded by `suite` for a row measured on the kit | none — this project's own bounded task |
@@ -184,8 +184,11 @@ own card. Its `use_for` follows from exactly that: a deliverable larger than its
 useful to about 98k before the read gets slow — never a claim invented past what the fields above actually hold.
 
 A green field-by-field card is not the whole story, and reading a row means reading a stage's own grade before
-trusting it. The kit's own standard suite has now run once, end to end, on the card: against a 9B-class row, it
-graded every one of the four stages FAIL. The honest reading of a result like that is not "close" or "nearly
-working" — it is a row that does not clear the standard suite's bar as things stand, and a card's `use_for` must
-say exactly that, never dressed up as a partial pass because the other rungs read well. A row is only ever as
+trusting it. The kit's own standard suite has run against a 9B-class row on this card, and that run is a partial:
+it was stopped before its three reference exercises ran, so four of the suite's seven stages were graded. The row
+passed the design note and the backend stage and failed the front end and the C++ optimisation, which leaves it at
+one of the three counted stages passed, the design note's own grade never entering the tally. The honest reading of
+a result like that is not "close" or "nearly working": it is a run that does not clear the standard suite's bar as
+things stand, and it is not a suite score at all, since the suite did not finish. A card's `use_for` must say
+exactly that, never dressed up as a pass because the other rungs read well. A row is only ever as
 strong as its worst rung, and the suite exists precisely so that rung cannot be skipped or softened in the write-up.

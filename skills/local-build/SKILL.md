@@ -1,6 +1,6 @@
 ---
 name: local-build
-description: A harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles with packaged tests anyone can run on their own model, and presents the result to an LLM orchestrator as a skill it calls. The shipped models are this project's own picks, measured so far on that one card; the harness reaches its GPU through a handful of named settings rather than anything card-specific. Dispatch a coding task to the LOCAL builder model (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Two card modes, each with its registry of profiles: display-safe (long = Qwen3.5-9B, fast = Gemma 4 E4B, serious = Qwen3.8-27B) and pure-inference (the same card with nothing else on it: long at its whole window, a moe row Qwen3.6-35B-A3B, serious at a larger window); the flag is --profile <name>. Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout. Developed and tested on a 16 GB Intel Arc A770.
+description: A harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles with packaged tests anyone can run on their own model, and presents the result to an LLM orchestrator as a skill it calls. The shipped models are this project's own picks, measured so far on that one card; the harness reaches its GPU through a handful of named settings rather than anything card-specific. Dispatch a coding task to the LOCAL builder model (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Two card modes, each with its registry of profiles: display-safe (long = Qwen3.5-9B, fast = Gemma 4 E4B, serious = Qwen3.8-27B) and pure-inference (the same card with nothing else on it: long at its whole window, serious at a larger window); the flag is --profile <name>. Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout. Developed and tested on a 16 GB Intel Arc A770.
 ---
 
 # local-build — the A770 builder seat
@@ -36,7 +36,6 @@ Pure-inference: the card draws nothing, cap 15.3 GiB after load.
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
 | long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
-| moe | Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf | 131,072 (~131k) | 14.1 GiB | 21.8 / 207 tok/s | A deliverable larger than its brief at three times the dense 27B's speed and its whole window at above ten tokens a second; needs 18 GB of host RAM for the run and a CPU that is busy; not beside another large load. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
 <!-- profiles-inference:end -->
 
@@ -75,7 +74,6 @@ bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profil
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>   # with a run specification (below)
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --profile fast        # fast, on a given seat: the reader
 bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile serious            # serious: a deliverable larger than its brief
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile moe                # inference mode: a deliverable larger than its brief, three times the dense 27B's speed
 bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>                       # re-run a capture's tests in a fresh sandbox
 bash ~/.claude/skills/local-build/scripts/local-build.sh serve <profile>      # start/switch the server only
 bash ~/.claude/skills/local-build/scripts/local-build.sh profiles [--name <profile>]   # the card, one profile or all, with what is actually served
@@ -128,8 +126,8 @@ an echo of what was rendered as `<label>.echo.json`. A flag on the command line 
 - **Seat only, inside the sandbox.** The seat must be a standalone clone not listed in `A770B_REFUSE`. The model's
   process sees the seat, a private home and a read-only uv cache; no credentials, no other tree, no network except the
   model server. Every test package a brief needs must be pre-warmed into the uv cache (`harness/warm_cache.sh`).
-- **Timeouts** are the registry's: each profile's `timeout_s` (1,500 s for long and fast, 3,600 s for serious,
-  1,800 s for the inference registry's moe row); `--timeout` overrides.
+- **Timeouts** are the registry's: each profile's `timeout_s` (1,500 s for long and fast, 3,600 s for serious);
+  `--timeout` overrides.
 - **Flash attention is per model family.** The Qwen profiles run with it on; the fast profile's Gemma runs with it off,
   because with it on every Gemma 4 measured here collapsed on prefill and reset the GPU. The profile carries the flag.
 
@@ -147,9 +145,10 @@ inside a boundary with no network and none of the host's environment (measured: 
 ## Optional: persistent agent guidance
 
 `CONSTITUTION_SNIPPET.md` beside this file is a short standing reminder for an agent that will use this seat repeatedly:
-when to use it, the three profiles, the call, the hard rules. The skill works without it. If you want it, add it to your
-own constitution file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md` in your home) between its `<!-- local-build:begin/end -->`
-markers so a later version can replace it. Nothing modifies your agent configuration for you.
+when to use it, the profiles of both card modes, the call, the hard rules. The skill works without it. If you want
+it, add it to your own constitution file (`CLAUDE.md`, `AGENTS.md` or `GEMINI.md` in your home) between its
+`<!-- local-build:begin/end -->` markers so a later version can replace it. Nothing modifies your agent
+configuration for you.
 
 ## Configuration
 

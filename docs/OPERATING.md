@@ -4,9 +4,9 @@ a770-builder is a harness around a local GPU: it runs a coding model in a sandbo
 with the packaged tests a reader can run on their own model, and presents the result to an LLM orchestrator as a
 skill it calls. Developed and tested on a 16 GB Intel Arc A770.
 
-This document is about running the seat day to day: how a run works, the three profiles and what they were measured at,
-every knob, where the models go, the card's constraints and what each file is. The README covers what this is, why it
-exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) covers the boundary.
+This document is about running the seat day to day: how a run works, each card mode's profiles and what they were
+measured at, every knob, where the models go, the card's constraints and what each file is. The README covers what
+this is, why it exists, how it installs and its security state; [`SECURITY.md`](../SECURITY.md) covers the boundary.
 
 ## Run it
 
@@ -123,7 +123,6 @@ is why it is set aside. Every file the model reads lands in that window, and a 1
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
 | long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
-| moe | Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf | 131,072 (~131k) | 14.1 GiB | 21.8 / 207 tok/s | A deliverable larger than its brief at three times the dense 27B's speed and its whole window at above ten tokens a second; needs 18 GB of host RAM for the run and a CPU that is busy; not beside another large load. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
 
 `useful_ctx` is the largest depth at which decode stays above four tokens a second, taken from the two measured points
@@ -256,7 +255,6 @@ uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.
 uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested        # display: --profile fast (5.3 GB)
 uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested     # display: --profile serious (10.1 GB)
 uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # inference: --profile long (5.6 GB; the same file as display's long)
-uvx --from huggingface_hub hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --local-dir ~/LLM/tested             # inference: --profile moe (22.4 GB; 18 GB of host RAM at run time)
 uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested       # inference: --profile serious (11.8 GB)
 ```
 

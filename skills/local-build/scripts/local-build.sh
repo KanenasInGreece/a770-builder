@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# local-build.sh — the A770 builder seat, three profiles. Installed as a skill in every agent's skill dir (copies).
+# local-build.sh — the A770 builder seat, serving the profiles of the card mode's own registry. Installed as a skill in every agent's skill dir (copies).
 #   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)

@@ -5,7 +5,7 @@ files, tests from a specification, the read of a file your window cannot hold) a
 down or rate-limited. Skill: the `local-build` folder in YOUR OWN skill directory (script `scripts/local-build.sh`). The profiles of the two card modes (a machine serves the set `A770B_CARD_MODE` names; `local-build.sh profiles` prints it):
 <!-- profiles:begin -->
 Display-safe (`A770B_CARD_MODE=display`, the default): **--profile long** (default) = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~65k), ~37 tok/s; **--profile fast** = gemma-4-E4B-Q4_K_M, 131,072-token window (useful to ~100k), ~60 tok/s; **--profile serious** = Qwen3.8-27B-GSQ-RCO-IQ3_XXS, 131,072-token window (useful to ~32k), ~8 tok/s.
-Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): **--profile long** (default) = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~262k), ~44 tok/s; **--profile moe** = Qwen3.6-35B-A3B-UD-Q4_K_XL, 131,072-token window (useful to ~131k), ~22 tok/s; **--profile serious** = Qwen3.8-27B-GSQ-RCO-IQ3_S, 196,608-token window (useful to ~98k), ~8 tok/s.
+Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): **--profile long** (default) = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~262k), ~44 tok/s; **--profile serious** = Qwen3.8-27B-GSQ-RCO-IQ3_S, 196,608-token window (useful to ~98k), ~8 tok/s.
 <!-- profiles:end -->
 Call:
 `bash <your-skill-dir>/local-build/scripts/local-build.sh run [<seat>] <brief.md> [--spec <spec.json>] [--profile <name>]` — it starts or

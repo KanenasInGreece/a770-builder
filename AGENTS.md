@@ -266,11 +266,13 @@ row displaced it and why. Rows that each win a different axis all stay, one row 
 only one row keeps it for as long as it clears the bar above.
 
 The rows measured so far are the working reference for what "beats" and "dominated" mean in practice: a dense
-9B-class file as the long, general-purpose row; a mixture of experts as a builder-class row of its own category, at
-several times the decode speed of a dense 27B on the same task; a dense 27B-class file as the slow, best-written
-row, useful to somewhere short of 100k tokens. Alongside them sit files measured and not adopted: a model that
-failed the coding task outright, and a dense mid-size file that passed every gate but was dominated on every axis
-by rows already in the registry, and so stayed out despite qualifying.
+9B-class file as the long, general-purpose row; a dense 27B-class file as the slow, best-written row, useful to
+somewhere short of 100k tokens. Alongside them sit files measured and not adopted: a model that failed the coding
+task outright; a dense mid-size file that passed every gate but was dominated on every axis by files already
+measured, and so stayed out despite qualifying; and a mixture of experts that decoded several times faster than a
+dense 27B on the same task and is a builder by every axis the comparison names, yet is not a shipped profile,
+because it keeps part of its weights in host memory and the harness budgets card memory only. A row that wins its
+axes is still only shipped when the harness can hold it to the rules it serves every other row by.
 
 ## The submission
 

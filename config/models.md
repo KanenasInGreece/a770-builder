@@ -10,15 +10,14 @@ clone of the public Shared Memory repository at commit `3c8e2bb` (`seat: Shared_
 `Arc A770 16 GB, llama.cpp b10805 Vulkan`, and stays comparable only with the other rows sharing both. From this
 release a new candidate is qualified on the kit inside this repository instead (`instrument: SUITE-1@<the project's
 own version>`), a different instrument again — no registry row has yet been measured on it, and the first one will
-be; the free-card table below (*On the same card with nothing else on it*) already carries one measurement taken on
-it, plainly marked as such and not a registry row either — a measurement, not a ruling. The seat runs in one of two
+be; the free-card table below (*On the same card with nothing else on it*) already carries two measurements taken on
+it, each plainly marked as such and neither a registry row: measurements, not rulings. The seat runs in one of two
 card modes, and each reads its own registry. Display-safe reads
 `config/profiles.json`: **long** = Qwen3.5-9B Q4_K_M, the default for every ordinary change; **serious** = Qwen3.8-27B
 GSQ-RCO IQ3_XXS, for a deliverable larger than its brief; **fast** = Gemma 4 E4B Q4_K_M with flash attention off, for
 the read the long window cannot hold. Pure-inference reads `config/profiles.inference.json`, measured on the same
-card with nothing else on it: **long** = the same 9B at its whole native window; **moe** = Qwen3.6-35B-A3B, a
-deliverable larger than its brief at three times the dense 27B's speed; **serious** = the 27B's IQ3_S file at a
-larger window. Both registries carry each row's `category` (`dense` or `moe`) and weight class, so an equivalent file
+card with nothing else on it: **long** = the same 9B at its whole native window; **serious** = the 27B's IQ3_S file
+at a larger window. Both registries carry each row's `category` (`dense` or `moe`) and weight class, so an equivalent file
 is ruled out rather than kept as a second row of the same class. The profile column below says which row holds which.
 New releases of a model family are new models; they enter the same way.
 
@@ -79,7 +78,7 @@ row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB
 | model file | source | ctx / KV | VRAM after load | decode 8k / far end | prefill 8k / far end | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
 | `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 262,144 / q8_0 (native) | 9.49 GiB | 43.7 / 11.6 tok/s (far end 100k) | 439 / 147 tok/s | PASS, 6 tests, 122 s, under its instruct line (0.7 / 0.8 / 20 / 0 / presence 1.5) | **long** (inference default) | useful to its whole native window; 100k prompt TTFT 626 s; the same file as the display registry's `long`, served in full on a card with nothing else on it |
-| `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 131,072 / q8_0, `--n-cpu-moe 18` (18 expert layers in host RAM, 22 on the card) | 14.1 GiB, flat | 21.8 / 10.3 tok/s (far end 100k) | 207 / 80 tok/s | PASS, 10 tests, 203 s, under its instruct line | **moe** | useful to its whole 131,072; 100k prompt TTFT 1,150 s; three times the dense 27B's decode; needs 18 GB of host RAM and a CPU that is not otherwise busy; category `moe`, weight class `35b-a3b` |
+| `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 131,072 / q8_0, `--n-cpu-moe 18` (18 expert layers in host RAM, 22 on the card) | 14.1 GiB, flat | 21.8 / 10.3 tok/s (far end 100k) | 207 / 80 tok/s | PASS, 10 tests, 203 s, under its instruct line | measured, not shipped | useful to its whole 131,072; 100k prompt TTFT 1,150 s; three times the dense 27B's decode; 18 of its expert layers sit in host memory, 22 on the card, which costs about 18 GB of system memory beyond the card and a CPU that is not otherwise busy; the harness has no gate for that memory, so it is not offered as a profile (*Measured and kept out*) |
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 196,608 / q4_0, reasoning on at effort low | 14.62 GiB, 14.82 peak at a 32k prompt | 7.9 / 4.9 tok/s (8k / 64k; 100k not run) | 71 / 42 tok/s (8k / 64k) | PASS, 10 tests, 546 s, under its card line (temperature 1.0, top_p 0.95); 5 tests, 664 s at the client's temperature 0 | **serious** (inference) | useful to about 98k by the four-tokens-a-second rule; the quantiser's task-lossless file, 100.2% of BF16 on its own card (AIME25 100, GPQA-Diamond 89.39 against 89.90, LiveCodeBench v6 85.71 = BF16); the largest IQ3_S window under the 15.3 cap |
 
 ## On the same card with nothing else on it
@@ -87,15 +86,15 @@ row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB
 One row per file and window the campaign measured on the free card, adopted or not; VRAM is after load unless a peak
 is named. The display registry's own after-load readings above were taken with the desktop's 0.65 to 0.9 GiB on the
 card, which this table has none of. Every row below down to and including the `-ub 1024`/`-ub 2048` rows carries
-instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`; the last row is
-the exception, on a different instrument, named beside it.
+instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`; the last two rows
+are the exceptions, on a different instrument, named beside them.
 
 | file, window | VRAM after load (peak) | decode / prefill at 8k | profile or verdict |
 |---|---|---|---|
 | Qwen3.5-9B Q4_K_M, 262,144 | 9.49 GiB | 43.7 / 439 tok/s | **long** (inference) |
 | Qwen3.5-9B Q8_0, 262,144 | 12.64 GiB | 30.6 / — tok/s | measured, not adopted: 28% less decode at 8k than Q4_K_M for nothing measurable on T1 (10.3 against 11.6 at 100k); Q4_K_M keeps the row unless the suite separates them |
 | gemma-4-E4B Q4_K_M, 131,072, `-fa off` | 7.33 GiB | 60 / 796 tok/s | **fast** (display registry; the same file, read on a card with nothing else on it) |
-| Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 18 expert layers in host RAM | 14.1 GiB, flat | 21.8 / 207 tok/s | **moe** |
+| Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 18 expert layers in host RAM | 14.1 GiB, flat | 21.8 / 207 tok/s | measured, not adopted: the fastest builder measured on this card, but its expert layers cost about 18 GB of system memory beyond the card and the harness has no gate for that (*Measured and kept out*) |
 | Qwen3.8-27B GSQ-RCO IQ3_S, 114,688 | 13.14 GiB | — | **serious** (this workstation's `builder.display.env`, under its 14.1 cap; 13.78 GiB on the display card, peaking at 14.21 during a 32k prompt) |
 | Qwen3.8-27B GSQ-RCO IQ3_S, 131,072 | 13.44 GiB (14.30 on the display card) | — | measured, not adopted: superseded by the 196,608 window |
 | Qwen3.8-27B GSQ-RCO IQ3_S, 163,840 | 14.03 GiB | — | measured, not adopted: superseded by the 196,608 window |
@@ -105,12 +104,13 @@ the exception, on a different instrument, named beside it.
 | Qwen3.8-27B, KV q8_0 (`serious`'s window) | — | 7.8 / — tok/s | measured, not adopted: see above |
 | Qwen3.8-27B, `-ub 1024` (`serious`'s window) | 14.94 GiB | — | measured, not adopted: loads under the 15.3 cap; its row is owed to a later cycle |
 | Qwen3.8-27B, `-ub 2048` (`serious`'s window) | 15.68 GiB | — | refused: exceeds the 15.3 cap |
-| gemma-4-12B-it Q6_K, 81,920, K q8_0, V f16, `-fa off` | 15.19 GiB (15.28 peak) | 14.3 / 133 tok/s (8.7 / 138 at 73,728, 503 s to first token) | measured, not adopted: useful to its whole 81,920 by the four-tokens-a-second rule and clears the builder bar (five tests, 528 s, 17.3 tok/s decode and 171 prefill at a 17k prompt), but dominated on every axis by the MoE row (more window, more speed, less VRAM, a faster task) and by the 9B as a builder |
+| gemma-4-12B-it Q6_K, 81,920, K q8_0, V f16, `-fa off` | 15.19 GiB (15.28 peak) | 14.3 / 133 tok/s (8.7 / 138 at 73,728, 503 s to first token) | measured, not adopted: useful to its whole 81,920 by the four-tokens-a-second rule and clears the builder bar (five tests, 528 s, 17.3 tok/s decode and 171 prefill at a 17k prompt), but dominated on every axis by the 35B-A3B file measured on this card, itself not shipped (more window, more speed, less VRAM, a faster task), and by the 9B as a builder |
 | Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 16 expert layers in host RAM (24 on the card) | 15.01 GiB | 23.8 / 158 tok/s (prefill at 17k) | measured, not adopted: does not fit under 15.3 GiB with margin; 18 expert layers in host RAM is the row |
 | Qwen3.5-9B Q4_K_M, thinking mode (the card's precise-coding line: 0.6/0.95/20/0, reasoning on, output 32,768) | — | — | measured, kept out: the probes pass on the first two prompts with about 480 characters of reasoning each; on the third (a one-line hello world) the model reasons for 13,588 characters, about 4,000 tokens and 96 s, and exhausts a 4,096-token budget with no answer — without an effort control the 9B's thinking mode over-thinks small prompts; the instruct line keeps the row |
 | Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 18 expert layers in RAM, thinking mode under the card's precise-coding line (temperature 0.6, top_p 0.95, top_k 20, min_p 0, presence 0) | 14.1 GiB | 22.3 / 154 tok/s (prefill at 17k; 51.7 ms per token after it) | measured, not adopted: probes 3 of 3 with short reasoning; T1 nine tests green in 254 s, against the instruct line's ten in 203 s — thinking costs a quarter of the wall for nothing on this task; the instruct line keeps the row |
 | Qwen3.8-27B GSQ-RCO IQ3_S, 196,608, q4_0 KV, `-ub 1024` | 14.94 GiB (15.11 peak during an 8k prompt) | 7.9 / 74 tok/s | measured, not adopted: four percent more prefill than `-ub 512` (71 tok/s, 7.9 decode, 14.77 GiB peak) for 0.34 GiB more peak; ubatch stays 512 in both modes |
 | Gemma 4 26B-A4B UD-Q4_K_XL, 131,072, 18 expert layers in host memory, K q8_0 / V f16, `-fa off` | 11.7 GiB (15.00 GiB peak, no reset) | 10.5 / 175 tok/s (13,028-token prompt, the project's own sweep) | measured tonight, not a registry row — **the first model measured on the kit** (`instrument: SUITE-1@0.1.5`, not `seat: Shared_Memory@3c8e2bb`; `measured_on: Arc A770 16 GB, llama.cpp b10805 Vulkan`, the same card as every other row in this table): 7.7 GB of host memory for the 18 expert layers beyond the 11.7 GiB VRAM; llama-bench at its own served flags: 13.3/186.5 tok/s decode/prefill at depth 0, 11.5/168.6 at 8,192, 9.4/109.2 at 32,768; the project's own sweep: 10.5/175 tok/s decode/prefill at a 13,028-token prompt, 5.5/82 at a 101,532-token prompt, VRAM peaking at 15.00 GiB, zero resets; the depth probe answered all three questions correctly at 101,532 tokens; the kit's suite: 3 of 3 counted stages passed (front end, backend, C++ optimisation) — the design note's own hidden check failed, scored outside the pass count, as it does for every row; of the three reference exercises, none of which ever counts toward the tally: the Python one passed, the C++ one failed, and the JavaScript one timed out after an hour. Decode still held at 5.5 tok/s at 101,532 tokens, comfortably above the four-tokens-a-second floor — so this row's window is bounded by memory near 110k (VRAM already at 15.00 GiB against the free card's 15.3 cap) rather than by speed. This is a measurement, not a ruling: it carries no registry row and is not comparable with the rows above it, which share a different instrument |
+| Qwen3.5-9B Q4_K_M, 262,144, the ladder run of 2026-09-09 | 9.49 GiB | 36 / 414 tok/s | measured, not a registry row: **the second model measured on the kit** (`instrument: SUITE-1@0.1.5`, not `seat: Shared_Memory@3c8e2bb`; `measured_on: Arc A770 16 GB, llama.cpp b10805 Vulkan`, the same card as every other row in this table). It loaded in 3.3 s at 9.49 GiB and stayed there, with no kernel reset; prefill and decode by depth: 576 / 46 tok/s at the shallow end, 414 / 36 at 8k, 219 / 23 at 32k, 89 / 12 at 100k; the far end, 99,847 tokens, answered after 581 s of prefill at 159 tok/s and decoded at 11.5; the graded depth probe at 100,000 tokens passed all three questions. The kit's suite ran as a **partial** and reads as one: the run was terminated before it finished, 4 of the suite's 7 stages ran, 1 of the 3 counted stages passed, mean wall 86 s. That is not a suite score, and nothing may present it as one. This is a measurement, not a ruling: it carries no registry row, none of these numbers belong in one, and it sits beside the other row taken on the kit instrument, never beside the rows above that carry the seat instrument |
 
 ## Measured and kept out
 
@@ -121,7 +121,18 @@ calls. On a card that also draws the desktop it only fit at 65,536 of context (1
 prefill, 15 tok/s decode and 12 minutes for the task. On a card that draws nothing, at Q6_K and 81,920, it clears the
 builder bar (17.3 tok/s decode, 171 prefill at a 17k prompt, five tests in 528 s; the free-card sweep of the same row is
 in the table above), so the cap no longer keeps it out — but it stays out of both registries, dominated on every axis
-by the MoE row and by the 9B as a builder.
+by the 35B-A3B file measured on this card, itself not shipped, and by the 9B as a builder.
+
+**Qwen3.6-35B-A3B** (`Qwen3.6-35B-A3B-UD-Q4_K_XL`) is a mixture of experts measured on this card at 14.1 GiB of VRAM
+with 18 of its expert layers in host memory, which costs about 18 GB of system memory beyond the card. It is not
+shipped as a profile. The only host-memory check the harness makes is a floor on available memory before the load,
+written for a dense model's page cache, and it cannot refuse a start whose weights will not fit in RAM. On a machine
+whose swap is committed the server is killed under memory pressure, and the kill looks like a fault of the seat
+rather than of the machine. Keeping the file out of the registry does not add the missing check; the harness still
+has no memory gate. What a row like this needs before it is offered: its own memory minimum in the budget gate,
+checked before the load; a prerequisite line naming it as the one profile with a system-memory requirement; a
+paragraph on the flag that trades host memory for card memory; and a rule that such a server never starts beside a
+build or another memory-heavy process.
 
 **Flash attention is a per-family condition on this card.** The Qwen line has it on. Every Gemma 4 measured with it on
 collapsed on prefill with position and reset the GPU; with it off the same weights ran clean. Without flash attention
