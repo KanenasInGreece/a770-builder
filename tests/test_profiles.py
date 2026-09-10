@@ -1877,11 +1877,11 @@ def test_no_row_asks_for_host_ram():
     before the load, it cannot refuse a start whose weights will not fit in RAM, so until it can,
     nothing shipped may ask for that. Every row in both config/profiles.json and
     config/profiles.inference.json must have ram_gb_extra == 0 and no extra string containing
-    --n-cpu-moe or -ncmoes."""
+    --n-cpu-moe or -ncmoe."""
     for fpath in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
         data = json.loads(fpath.read_text(encoding="utf-8"))
         for name, prof in data["profiles"].items():
             assert prof.get("ram_gb_extra") == 0, f"{fpath}: {name}: ram_gb_extra must be 0"
             extra = prof.get("extra", "")
-            assert "--n-cpu-moe" not in extra and "-ncmoes" not in extra, \
-                f"{fpath}: {name}: extra must not contain --n-cpu-moe or -ncmoes"
+            assert "--n-cpu-moe" not in extra and "-ncmoe" not in extra, \
+                f"{fpath}: {name}: extra must not contain --n-cpu-moe or -ncmoe"
