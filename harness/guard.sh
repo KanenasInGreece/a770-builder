@@ -3,12 +3,44 @@
 # Canonical refusal of protected checkouts, worktree validation, verified pids, run lock, safe host-side git,
 # VRAM readings that refuse to fail open, the built-in budget gate.
 
+# guard_path_policy <path> — THE PATH POLICY, and its only home: the trees this harness must never remove, replace
+# or write over. It judges a path ALONE — whether or not it exists, and whether or not it is a git tree — which is
+# what lets it run BEFORE the destructive operation rather than after it. That ordering is the point: run_suite.sh's
+# --fresh removal and both of its seat exports delete the seat path outright, and until this function existed the
+# only check was guard_worktree, which cannot run that early (it also proves the path is a self-contained clone —
+# false by construction for a seat about to be created, and for the kit seat, which is an export, not a clone).
+# guard_worktree now calls this and keeps its clone checks on top, so both callers enforce one rule.
+# Echoes the resolved path on success; exits 2 on any refusal.
+guard_path_policy(){
+  local p="$1" real r
+  [ -n "$A770B_REFUSE" ] || { echo "⛔ A770B_REFUSE is empty — list the live checkouts this seat must never touch (colon-separated) in builder.env before running" >&2; exit 2; }
+  [ -n "$p" ] || { echo "⛔ empty path" >&2; exit 2; }
+  # -m, not -e: a path that does not exist yet is still judged (every component that DOES exist is still resolved
+  # through its symlinks, so a link planted where the seat will be cannot point the removal somewhere else)
+  real=$(realpath -m -- "$p" 2>/dev/null) || { echo "⛔ cannot resolve path: $p" >&2; exit 2; }
+  local IFS=':'; for r in $A770B_REFUSE; do
+    [ -n "$r" ] || continue; r=$(realpath -m -- "$r")
+    case "$real" in "$r"|"$r"/*) echo "⛔ refusing: $p resolves to a protected live checkout ($r)" >&2; exit 2;; esac
+  done; unset IFS
+  # the agent homes, the operator's configuration and keys, and the harness's own project directory. Each home is
+  # named BOTH as itself and as a prefix: ~/.claude is an agent home, not only the things inside it.
+  case "$real" in \
+    "$HOME"/.claude|"$HOME"/.claude/*|"$HOME"/.grok|"$HOME"/.grok/*|"$HOME"/.codex|"$HOME"/.codex/*|\
+    "$HOME"/.gemini|"$HOME"/.gemini/*|"$HOME"/.config|"$HOME"/.config/*|"$HOME"/.ssh|"$HOME"/.ssh/*|\
+    "$A770B_PROJECT"|"$A770B_PROJECT"/*)
+      echo "⛔ refusing: $real is an agent home, operator ground or the harness itself" >&2; exit 2;;
+  esac
+  printf '%s\n' "$real"
+}
+
 # guard_worktree <path> — echoes the canonical path on success; exits 2 on any refusal.
 guard_worktree(){
-  local wt="$1" real top r
+  local wt="$1" real top
   [ -n "$A770B_REFUSE" ] || { echo "⛔ A770B_REFUSE is empty — list the live checkouts this seat must never touch (colon-separated) in builder.env before running" >&2; exit 2; }
   [ -n "$wt" ] || { echo "⛔ empty worktree path" >&2; exit 2; }
   real=$(realpath -e -- "$wt" 2>/dev/null) || { echo "⛔ worktree does not exist: $wt" >&2; exit 2; }
+  # the path policy first, in its one home; everything below it is the clone check this function adds on top
+  guard_path_policy "$real" >/dev/null
   [ ! -L "$real/.git" ] || { echo "⛔ $real/.git is a symlink — the seat's repository metadata must be its own" >&2; exit 2; }
   [ -d "$real/.git" ] || { echo "⛔ $real is not a self-contained git clone (needs a .git DIRECTORY; linked worktrees of a live checkout are refused)" >&2; exit 2; }
   top=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$real" rev-parse --show-toplevel 2>/dev/null | xargs -r realpath -e 2>/dev/null || true)
@@ -16,12 +48,7 @@ guard_worktree(){
   gitdir=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$real" rev-parse --absolute-git-dir 2>/dev/null | xargs -r realpath -e 2>/dev/null || true)
   [ "$gitdir" = "$real/.git" ] || { echo "⛔ $real's repository metadata resolves to $gitdir, not to its own .git" >&2; exit 2; }
   [ "$top" = "$real" ] || { echo "⛔ $real is a subdirectory of a worktree ($top); pass the worktree root" >&2; exit 2; }
-  local IFS=':'; for r in $A770B_REFUSE; do
-    [ -n "$r" ] || continue; r=$(realpath -m -- "$r")
-    case "$real" in "$r"|"$r"/*) echo "⛔ refusing: $wt resolves to a protected live checkout ($r)" >&2; exit 2;; esac
-    case "$top"  in "$r"|"$r"/*) echo "⛔ refusing: $wt's working tree is a protected live checkout ($r)" >&2; exit 2;; esac
-  done; unset IFS
-  case "$real" in "$HOME"/.claude/*|"$HOME"/.grok/*|"$HOME"/.codex/*|"$HOME"/.gemini/*|"$HOME"/.config/*|"$HOME"/.ssh/*|"$A770B_PROJECT"|"$A770B_PROJECT"/*) echo "⛔ refusing: $real is an agent home, operator ground or the harness itself" >&2; exit 2;; esac
+  # $top needs no separate policy pass: the line above has just proved it is $real, which the policy already judged.
   printf '%s\n' "$real"
 }
 

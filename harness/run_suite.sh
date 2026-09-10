@@ -268,6 +268,7 @@ GITIGNORE
 export_kit_seat(){
   local seat="$1" src="$2" label="$3"; shift 3
   [ -d "$src" ] || die "kit seat source not found: $src (kit/seat/ is another unit's — is it built yet?)"
+  guard_path_policy "$seat" >/dev/null   # BEFORE the removal: the policy judges the path, existing or not
   rm -rf -- "$seat"
   mkdir -p "$seat"
   copy_tracked "$seat" "$src"
@@ -296,6 +297,7 @@ export_kit_seat(){
 export_reference_seat(){
   local seat="$1" label="$2" refdir="$3" d
   [ -d "$refdir" ] || die "reference source not found: $refdir"
+  guard_path_policy "$seat" >/dev/null   # BEFORE the removal: the policy judges the path, existing or not
   rm -rf -- "$seat"
   mkdir -p "$seat/kit/reference"
   for d in cpp javascript python js; do
@@ -316,8 +318,13 @@ export_reference_seat(){
 # check_seat_path <seat> — the one-time safety gate before the first per-stage export: a path that already exists
 # and is not empty is refused unless --fresh removes it first. Every export after this one owns the path outright
 # (export_kit_seat itself recreates it each call), so this runs only once, before the stage loop.
+# The PATH POLICY (guard_path_policy, harness/guard.sh) runs FIRST, before --fresh's removal and before anything
+# else here: guard_worktree cannot run this early (the seat may not exist yet, and the kit seat is never a clone),
+# and until the policy was split out of it a protected tree — a live checkout, an agent home, this project itself —
+# was deleted here and only refused much later, once there was nothing left to protect.
 check_seat_path(){
   local seat="$1"
+  guard_path_policy "$seat" >/dev/null
   if [ -e "$seat" ]; then
     if [ "$FRESH" = 1 ]; then rm -rf -- "$seat"
     else

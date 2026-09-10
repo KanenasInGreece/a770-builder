@@ -257,6 +257,45 @@ assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2 and d["timeouts"
   fi
 else echo "FAIL suite: no results file to report on"; fail=1
 fi
+# U8 — nothing is deleted before the policy that protects it has run. run_suite.sh --fresh REMOVES the seat path it
+# is handed, and both seat exports remove it again on every call; guard_path_policy (harness/guard.sh) now judges
+# that path first. Each check puts a witness file in the tree BEFORE the run and asserts THE WITNESS SURVIVES: the
+# exit code is not the point, a protected tree losing its contents is. Every path here is made under $t by this
+# file, and the "harness's own project directory" check runs against a THROWAWAY project ($u8/proj, holding only
+# what env.sh needs), never against the real checkout — a check that proves a deletion must not risk performing it.
+u8="$t/u8"; mkdir -p "$u8/refused/live/deep" "$u8/good" "$u8/proj/harness" "$u8/proj/config" "$u8/proj/inside/deep"
+echo "witness" > "$u8/refused/live/deep/witness.txt"
+echo "witness" > "$u8/proj/inside/deep/witness.txt"
+cp "$here/harness/profiles.py" "$u8/proj/harness/profiles.py"; cp "$here/config/profiles.json" "$u8/proj/config/profiles.json"
+# 1. a seat inside A770B_REFUSE, with --fresh
+u8a=$(A770B_REFUSE="$u8/refused" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+      bash "$here/harness/run_suite.sh" long "$u8/refused/live" --suite "$ku3/suite.json" --fresh 2>&1); u8a_rc=$?
+if [ ! -f "$u8/refused/live/deep/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED a seat inside A770B_REFUSE before refusing it"; fail=1
+elif [ "$u8a_rc" != 2 ]; then echo "FAIL policy: a seat inside A770B_REFUSE was not refused (rc=$u8a_rc)"; printf '%s\n' "$u8a" | tail -5; fail=1
+else echo "ok   policy: a refused seat keeps its contents — --fresh deleted nothing"; fi
+# 2. a seat inside the harness's own project directory, with --fresh
+u8b=$(A770B_PROJECT="$u8/proj" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+      bash "$here/harness/run_suite.sh" long "$u8/proj/inside" --suite "$ku3/suite.json" --fresh 2>&1); u8b_rc=$?
+if [ ! -f "$u8/proj/inside/deep/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED a seat inside the harness's own project directory before refusing it"; fail=1
+elif [ "$u8b_rc" != 2 ]; then echo "FAIL policy: a seat inside A770B_PROJECT was not refused (rc=$u8b_rc)"; printf '%s\n' "$u8b" | tail -5; fail=1
+else echo "ok   policy: a seat inside the harness's own project directory keeps its contents and is refused"; fi
+# 3. the control: a legitimate seat is still accepted, and --fresh still replaces what was there
+echo "stale" > "$u8/good/STALE.txt"
+u8c=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+      bash "$here/harness/run_suite.sh" long "$u8/good" --suite "$ku3/suite.json" --fresh 2>&1); u8c_rc=$?
+if [ "$u8c_rc" = 0 ] && [ ! -e "$u8/good/STALE.txt" ] && [ -d "$u8/good/.git" ]; then
+  echo "ok   policy: a legitimate seat is still accepted and still replaced by --fresh"
+else echo "FAIL policy: the path policy refused or failed to replace a legitimate seat (rc=$u8c_rc)"; printf '%s\n' "$u8c" | tail -10; fail=1
+fi
+# and the policy is the ONE home of the rule: guard_worktree must reach it rather than keep a second copy
+grep -q 'guard_path_policy "$real"' "$here/harness/guard.sh" && echo "ok   policy: guard_worktree enforces it through guard_path_policy, not a second copy" || { echo "FAIL guard_worktree no longer routes through guard_path_policy"; fail=1; }
+# the two seat exports remove the seat on EVERY call, past the one-time gate above; checks 1 and 2 stop at that gate
+# and never reach them, so their ordering is asserted where it lives: in each body, the policy comes before the removal.
+for u8site in check_seat_path export_kit_seat export_reference_seat; do
+  if sed -n "/^$u8site(){/,/^}/p" "$here/harness/run_suite.sh" | grep -E 'guard_path_policy|rm -rf' | head -1 | grep -q guard_path_policy
+  then echo "ok   policy: $u8site runs the policy before it removes anything"
+  else echo "FAIL $u8site removes a path before the policy runs"; fail=1; fi
+done
 # KU10 — Defect 2: a capture that genuinely carries no server-side timings line at all (the run's wall clock
 # reached the profile's own timeout before capture_task.sh's own SLOG parse ever had anything to report) must be
 # recorded with requests/prompt_tokens/gen_tokens = null, never 0, and the stage's own "outcome" must read

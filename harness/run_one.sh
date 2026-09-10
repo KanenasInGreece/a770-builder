@@ -4,10 +4,13 @@
 # Env knobs: KV_K KV_V UBATCH VRAM_CAP_GIB (server), AGENTS_ASIDE=1 (set the repo's 25k-token AGENTS.md aside for the
 # opencode run and restore it after), LEAN_AGENT=1 (opencode --agent local-builder), BUILD_TIMEOUT (s, default 1500).
 # Leaves the server running for follow-up probes; the worktree is reset by capture_task.sh.
-. "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 set -uo pipefail
 LABEL="${1:?label}"; GGUF="${2:?gguf}"; CTX="${3:?ctx}"; shift 3 || shift $#
-WT=$A770B_SEAT; R=$A770B_DATA/results
+# the seat is guarded HERE, before the AGENTS.md rename below touches it — not left to build_local.sh and
+# capture_task.sh further down, which guard their own argument only after this script has already moved a file
+# in the tree. A protected tree must lose nothing, not even a rename, before it is refused.
+WT=$(guard_worktree "$A770B_SEAT") || exit 2; R=$A770B_DATA/results
 echo "═══ ROW $LABEL — $(date -Is)"
 if ! bash "$A770B_PROJECT/harness/bench_model.sh" "$LABEL" "$GGUF" "$CTX" "$@"; then echo "✗ bench failed for $LABEL"; bash "$A770B_PROJECT/harness/serve_a770_llamacpp.sh" stop; exit 1; fi
 python3 -c "import json,sys; r=json.load(open('$R/$LABEL.json')); sys.exit(0 if r.get('quality_ok') else 1)" || { echo "✗ quality gate failed for $LABEL — no coding task"; exit 1; }
