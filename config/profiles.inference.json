@@ -35,6 +35,9 @@
       "task_t1": "pass",
       "instrument": "seat: Shared_Memory@3c8e2bb",
       "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
+      "card": "a770",
+      "backend": "vulkan",
+      "mode": "inference",
       "capability": {},
       "capability_source": "",
       "fit": {
@@ -82,6 +85,9 @@
       "task_t1": "pass",
       "instrument": "seat: Shared_Memory@3c8e2bb",
       "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
+      "card": "a770",
+      "backend": "vulkan",
+      "mode": "inference",
       "capability": {"LiveCodeBench_v6": 85.71, "GPQA_Diamond": 89.39, "AIME25": 100},
       "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100; the quantiser's task-lossless file)",
       "fit": {

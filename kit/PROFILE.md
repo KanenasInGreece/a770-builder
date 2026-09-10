@@ -56,11 +56,11 @@ flags), `sampling`, `timeout_s`, `speed`, `capability_source`, `fit` and `measur
 was measured on, e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan` — a required field `ladder.sh` prints only as a
 clearly marked `__TODO__` placeholder in the row itself, since a pasted row missing the key outright would fail
 `check`, but never a value it derives or fills in for you); §2 covers each in turn. `model`, `source`, `family`,
-`architecture`, `quant`, `category`, `weight_class`, `params_b` and `measured_on` are identity fields, not
+`architecture`, `quant`, `category`, `weight_class`, `params_b`, `measured_on`, `card`, `backend` and `mode` are identity fields, not
 measurements: transcribed once, by hand, from the GGUF's own metadata, the model's public card and the
 workstation's own build, never re-derived by a rung —
 they exist so the registry never carries two rows that are really the same choice twice, and so comparability can
-ask for the same instrument AND the same card, never one alone.
+ask for the same instrument AND the same card, never one alone. Uniqueness is one best row per class per backend.
 
 ## 2. From the tests to the fields
 
@@ -94,6 +94,9 @@ whether a human still writes or chooses it (**human**) — `ladder.sh`'s own out
 | `capability`, `capability_source` | **human** — the model's or the quantiser's own published evaluation; `ladder.sh` leaves `capability` a `__TODO__` and never sets `capability_source` at all | numbers quoted verbatim from what `capability_source` names, never re-measured on this card | directly comparable with the maker's model card, and with the quantiser's own evaluation where one exists |
 | `instrument` | **ladder** — computed per run (`<suite id>@<project version>`, e.g. `SUITE-1@0.2.0`) or hand-recorded for the earlier rows (`seat: Shared_Memory@3c8e2bb`) | names what the row was actually measured on | none — it is the comparability key `comparable_with` reads, not itself a comparison |
 | `measured_on` | **human** — `ladder.sh` prints only a `__TODO__` placeholder for it in the row (a required field; its closing note transcribes the other identity fields by hand and does not name this one, since this one is already in the row, unfilled) | the card and build the row was measured on, e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan`; comparability needs the same instrument AND the same card, so this is checked beside `instrument`, not folded into it | none — this card's own identity |
+| `card` | **human** — stored, required | the card this row was measured on; not parsed from `measured_on` | none |
+| `backend` | **human** — stored, required | the serving backend this row was measured on; not parsed from `measured_on` | none |
+| `mode` | **human** — stored, required | display or inference; not parsed from `measured_on` | none |
 | `builder_class` | computed by `profiles.py card`, never stored (neither ladder nor human — a read-time derivation) | `useful_ctx >= 81,920` AND a green task. A `suite` object, when present, is authoritative over `task_t1` and is never overridden by it: with `suite.stages`, a stage counts toward the pass ratio when its own `counts_toward_pass` is not `false` (`axes` only describes what a stage was scored on and never drives the tally — no stage in `kit/suite.json` puts `"working"` in `axes`, so counting by `axes` would undercount every row), the numerator is how many counted stages have `working: true`, and the row clears the bar at 80% or better of that ratio; without `suite.stages`, `suite.passed`/`suite.runs` is used the same way. `task_t1` is consulted only when there is no `suite` object at all. | none |
 | `comparable_with` | computed by `profiles.py card`, never stored | an object, not a bare list: `profiles`, every other row in the same registry whose `instrument` AND `measured_on` both match this row's exactly, beside `instrument` and `measured_on` themselves — the pair that made them comparable, so a reader does not have to look the two fields up on this row to see why | none — it names which other rows this one may sit beside, and on what |
 | `use_for` | **human** — absent from `ladder.sh`'s own printed row (left `__TODO__`); written by hand from what the ladder run actually showed | states what the row is good for and, as often, what it is not for or not to be run beside | none |

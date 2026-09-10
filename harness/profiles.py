@@ -86,7 +86,7 @@ TASK_T1_PASS_RE = re.compile(r"^pass(?:\s*\(.*\))?$", re.IGNORECASE)
 STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
-    "category", "weight_class", "measured_on",
+    "category", "weight_class", "measured_on", "card", "backend", "mode",
 )
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
@@ -205,6 +205,20 @@ def validate(data) -> list[str]:
 
         if "weight_class" in prof and isinstance(prof["weight_class"], str) and not WEIGHT_CLASS_RE.match(prof["weight_class"]):
             errors.append(f"{name}: weight_class must look like 9b, 35b-a3b or 8b-e4b")
+
+        if "card" in prof and isinstance(prof["card"], str) and not NAME_RE.match(prof["card"]):
+            errors.append(f"{name}: card must match ^[a-z][a-z0-9-]*$")
+
+        if "backend" in prof and isinstance(prof["backend"], str) and not NAME_RE.match(prof["backend"]):
+            errors.append(f"{name}: backend must match ^[a-z][a-z0-9-]*$")
+
+        if "mode" in prof and isinstance(prof["mode"], str):
+            if prof["mode"] not in MODE_VALUES:
+                errors.append(f"{name}: mode must be display or inference")
+            elif "mode" in data and data["mode"] in MODE_VALUES and prof["mode"] != data["mode"]:
+                errors.append(
+                    f"{name}: mode {prof['mode']!r} disagrees with file mode {data['mode']!r}"
+                )
 
         if "kv" in prof and isinstance(prof["kv"], str) and prof["kv"] not in KV_VALUES:
             errors.append(f"{name}: kv must be one of f16, q8_0, q4_0")
@@ -499,7 +513,7 @@ def validate(data) -> list[str]:
                     errors.append(f"{name}: thinking.mode {mode!r} contradicts reasoning {reasoning!r}")
 
     # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time:
-    # the project keeps one best row per (category, weight_class) class, and a registry is
+    # the project keeps one best row per (category, weight_class, backend) class, and a registry is
     # measurements from one instrument, never a mix.
     category_class_seen: dict[tuple, str] = {}
     first_instrument = None
@@ -510,12 +524,13 @@ def validate(data) -> list[str]:
 
         category = prof.get("category")
         weight_class = prof.get("weight_class")
-        if isinstance(category, str) and isinstance(weight_class, str):
-            key = (category, weight_class)
+        backend = prof.get("backend")
+        if isinstance(category, str) and isinstance(weight_class, str) and isinstance(backend, str):
+            key = (category, weight_class, backend)
             if key in category_class_seen:
                 errors.append(
-                    f"{name}: category {category!r} + weight_class {weight_class!r} duplicates "
-                    f"{category_class_seen[key]}'s -- a registry keeps one best row per class"
+                    f"{name}: category {category!r} + weight_class {weight_class!r} + backend {backend!r} duplicates "
+                    f"{category_class_seen[key]}'s -- a registry keeps one best row per class per backend"
                 )
             else:
                 category_class_seen[key] = name
@@ -616,6 +631,9 @@ def cmd_env(args) -> int:
             '[ -n "${A770B_%s_EXTRA:-}" ] || A770B_%s_EXTRA=%s'
             % (upper, upper, sh_single_quote(prof["extra"]))
         )
+        print(': "${A770B_%s_CARD:=%s}"' % (upper, prof["card"]))
+        print(': "${A770B_%s_BACKEND:=%s}"' % (upper, prof["backend"]))
+        print(': "${A770B_%s_MODE:=%s}"' % (upper, prof["mode"]))
 
     return 0
 

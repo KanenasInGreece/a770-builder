@@ -594,6 +594,73 @@ def test_check_passes_weight_class_shapes(tmp_path):
         assert result.returncode == 0, f"{shape}: {result.stderr}"
 
 
+def test_check_fails_missing_card(tmp_path):
+    data = load_base()
+    del data["profiles"]["long"]["card"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "missing key card" in result.stderr
+
+
+def test_check_fails_missing_backend(tmp_path):
+    data = load_base()
+    del data["profiles"]["long"]["backend"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "missing key backend" in result.stderr
+
+
+def test_check_fails_missing_mode(tmp_path):
+    data = load_base()
+    del data["profiles"]["long"]["mode"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "missing key mode" in result.stderr
+
+
+def test_check_fails_uppercase_card(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["card"] = "A770"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+
+
+def test_check_fails_uppercase_backend(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["backend"] = "Vulkan"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+
+
+def test_check_fails_bad_mode(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["mode"] = "gpu"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+
+
+def test_check_fails_row_mode_disagrees_with_file(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["mode"] = "inference"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: mode 'inference' disagrees with file mode 'display'" in result.stderr
+
+
 def test_check_fails_far_end_missing_key(tmp_path):
     data = load_base()
     data["profiles"]["long"]["speed"]["far_end"] = {"tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147}
@@ -1128,7 +1195,7 @@ def test_comparable_with_excludes_differing_measured_on(tmp_path):
     assert "long" not in data_out["profiles"]["serious"]["comparable_with"]["profiles"]
 
 
-# --- registry-wide rules: one best row per (category, weight_class), one instrument per registry ---
+# --- registry-wide rules: one best row per (category, weight_class, backend), one instrument per registry ---
 
 
 def test_check_fails_duplicate_category_weight_class(tmp_path):
@@ -1140,9 +1207,40 @@ def test_check_fails_duplicate_category_weight_class(tmp_path):
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert (
-        "profiles: fast: category 'dense' + weight_class '9b' duplicates long's -- "
-        "a registry keeps one best row per class" in result.stderr
+        "profiles: fast: category 'dense' + weight_class '9b' + backend 'vulkan' duplicates long's -- "
+        "a registry keeps one best row per class per backend" in result.stderr
     )
+
+
+def test_check_passes_same_class_different_backend(tmp_path):
+    data = load_base()
+    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
+    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
+    data["profiles"]["fast"]["backend"] = "sycl"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_passes_on_both_shipped_registries_with_card_backend_mode():
+    for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        file_mode = data["mode"]
+        for name, prof in data["profiles"].items():
+            assert prof["card"] == "a770", f"{f}: {name}: card"
+            assert prof["backend"] == "vulkan", f"{f}: {name}: backend"
+            assert prof["mode"] == file_mode, f"{f}: {name}: mode"
+        result = run("check", "--file", str(f))
+        assert result.returncode == 0, result.stderr
+
+
+def test_env_exports_card_backend_mode():
+    result = run("env", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    assert "A770B_LONG_CARD:=a770" in result.stdout
+    assert "A770B_LONG_BACKEND:=vulkan" in result.stdout
+    assert "A770B_LONG_MODE:=display" in result.stdout
 
 
 def test_check_fails_differing_instrument_within_registry(tmp_path):
