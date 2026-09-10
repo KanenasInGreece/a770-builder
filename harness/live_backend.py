@@ -15,6 +15,9 @@ Usage:
   live_backend.py write  --path P --card C --backend B --mode M --model F --profile N --pid PID
   live_backend.py clear  --path P
   live_backend.py read   --path P --pidfile F
+  live_backend.py reload-blocked [--lock-held] [--run-pid-alive]
+  live_backend.py reload-sentence --backend B --model F
+  live_backend.py remote-cannot-switch --host H
 """
 
 import argparse
@@ -26,6 +29,8 @@ import sys
 KEYS = ("card", "backend", "mode", "model", "profile", "pid")
 TOKEN = re.compile(r"^[a-z][a-z0-9-]*$")
 MODES = ("display", "inference")
+LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+BUSY_MSG = "reload refused: the server is busy"
 
 
 def _validate(record):
@@ -99,6 +104,23 @@ def read(path, pidfile):
     return {k: record[k] for k in KEYS}
 
 
+def reload_blocked(lock_held, run_pid_alive):
+    """Refuse message when a reload would interrupt a held lock or a live run, else None."""
+    if lock_held or run_pid_alive:
+        return BUSY_MSG
+    return None
+
+
+def reload_sentence(backend, model):
+    """The caller-visible cost of a reload, using the requested row's backend and model."""
+    return f"reload: stop the live backend, start {backend}, load {model}"
+
+
+def remote_cannot_switch(host):
+    """True when A770B_HOST is not loopback, so a backend switch is refused."""
+    return str(host).strip().lower() not in LOOPBACK
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="live_backend.py")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -115,6 +137,14 @@ def main(argv):
     r = sub.add_parser("read")
     r.add_argument("--path", required=True)
     r.add_argument("--pidfile", required=True)
+    rb = sub.add_parser("reload-blocked")
+    rb.add_argument("--lock-held", action="store_true")
+    rb.add_argument("--run-pid-alive", action="store_true")
+    rs = sub.add_parser("reload-sentence")
+    rs.add_argument("--backend", required=True)
+    rs.add_argument("--model", required=True)
+    rc = sub.add_parser("remote-cannot-switch")
+    rc.add_argument("--host", required=True)
     args = parser.parse_args(argv[1:])
     if args.cmd == "write":
         write(args.path, {
@@ -129,6 +159,17 @@ def main(argv):
     if args.cmd == "clear":
         clear(args.path)
         return 0
+    if args.cmd == "reload-blocked":
+        msg = reload_blocked(args.lock_held, args.run_pid_alive)
+        if msg:
+            print(msg)
+            return 1
+        return 0
+    if args.cmd == "reload-sentence":
+        print(reload_sentence(args.backend, args.model))
+        return 0
+    if args.cmd == "remote-cannot-switch":
+        return 0 if remote_cannot_switch(args.host) else 1
     obj = read(args.path, args.pidfile)
     if obj is None:
         return 1

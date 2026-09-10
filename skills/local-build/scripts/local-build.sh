@@ -47,7 +47,7 @@ check_update(){ local url latest pv
 case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh"; . "$A770B_PROJECT/harness/guard.sh"
-SERVE="$A770B_PROJECT/harness/serve_a770_llamacpp.sh"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
+SERVE="${SERVE:-$A770B_PROJECT/harness/serve_a770_llamacpp.sh}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
 profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fields for a profile named in A770B_PROFILES
@@ -61,28 +61,91 @@ profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fie
   thinking_budget=$(a770b_profile_var "$1" THINKING_BUDGET); thinking_budget_message=$(a770b_profile_var "$1" THINKING_BUDGET_MESSAGE)
   thinking_preserve=$(a770b_profile_var "$1" THINKING_PRESERVE)
 }
-serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
-  local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
-  profile_vars "$p"
-  [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
-  if [ "$(current)" = "$gguf" ] && curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
-    if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; return 0; fi
-    echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
-  fi
-  bash "$SERVE" stop >/dev/null 2>&1
+_export_live(){ # A770B_LIVE_* for the sidecar write on start; empty values mean the sidecar is not written
+  A770B_LIVE_CARD="$(a770b_profile_var "$1" CARD)"
+  A770B_LIVE_BACKEND="$(a770b_profile_var "$1" BACKEND)"
+  A770B_LIVE_MODE="$(a770b_profile_var "$1" MODE)"
+  A770B_LIVE_PROFILE="$1"
+  export A770B_LIVE_CARD A770B_LIVE_BACKEND A770B_LIVE_MODE A770B_LIVE_PROFILE
+}
+_reload_lock_held(){ # true when another process holds the run lock; this shell's own fd 9 does not count
+  if { true >&9; } 2>/dev/null; then return 1; fi
+  if ( flock -n 8 ) 8>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then return 1; fi
+  return 0
+}
+_serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
   # shellcheck disable=SC2086
   KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
     THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
     THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
-    bash "$SERVE" start "$gguf" "$ctx" $extra || die "server did not start (budget gate or VRAM cap refused — see above)"
+    bash "$SERVE" start "$gguf" "$ctx" $extra || return 1
   for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
-  curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || die "server not healthy after 180 s"
+  curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || return 2
   local thinking_desc="mode ${thinking_mode:-$reasoning}"
   [ -n "$thinking_effort" ] && thinking_desc="$thinking_desc · effort $thinking_effort"
   [ -n "$thinking_budget" ] && thinking_desc="$thinking_desc · budget $thinking_budget"
   [ "$thinking_preserve" = "false" ] && thinking_desc="$thinking_desc · preserve off" || thinking_desc="$thinking_desc · preserve on"
   echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv/${kv_v:-$kv} · thinking $thinking_desc · $A770B_HOST:$A770B_PORT"
+  return 0
+}
+_serve_start_or_die(){
+  local rc=0; _serve_start || rc=$?
+  [ "$rc" = 0 ] && return 0
+  [ "$rc" = 2 ] && die "server not healthy after 180 s"
+  die "server did not start (budget gate or VRAM cap refused — see above)"
+}
+serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
+  local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
+  local live_json live_backend live_model live_profile req_backend req_model
+  local lock_held run_alive msg old_profile LIVE_PY
+  local -a rb_args
+  profile_vars "$p"
+  [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
+  _export_live "$p"
+  LIVE_PY="$A770B_PROJECT/harness/live_backend.py"
+  live_json=$(python3 "$LIVE_PY" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null) || live_json=""
+  req_backend=$(a770b_profile_var "$p" BACKEND)
+  req_model=$(basename "$gguf")
+  if [ -n "$live_json" ]; then
+    live_backend=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["backend"])')
+    live_model=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
+    live_profile=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])')
+    if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ]; then
+      if curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
+        if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; return 0; fi
+        echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+      fi
+    else
+      if [ "$live_backend" != "$req_backend" ] && python3 "$LIVE_PY" remote-cannot-switch --host "$A770B_HOST"; then
+        echo "reload refused: remote URL cannot switch backend"
+        return 1
+      fi
+      lock_held=0; run_alive=0
+      if _reload_lock_held; then lock_held=1; fi
+      if run_pid_alive "$A770B_DATA/logs/run.pid" >/dev/null; then run_alive=1; fi
+      rb_args=(); [ "$lock_held" = 1 ] && rb_args+=(--lock-held); [ "$run_alive" = 1 ] && rb_args+=(--run-pid-alive)
+      msg=$(python3 "$LIVE_PY" reload-blocked "${rb_args[@]}")
+      if [ -n "$msg" ]; then echo "$msg"; return 1; fi
+      python3 "$LIVE_PY" reload-sentence --backend "$req_backend" --model "$req_model"
+      old_profile=$live_profile
+      bash "$SERVE" stop >/dev/null 2>&1
+      if _serve_start; then return 0; fi
+      echo "reload failed: rolling back to $old_profile"
+      bash "$SERVE" stop >/dev/null 2>&1
+      if ! a770b_is_profile "$old_profile"; then echo "rollback failed: server is down"; return 1; fi
+      p=$old_profile
+      profile_vars "$p"
+      if [ ! -r "$gguf" ]; then echo "rollback failed: server is down"; return 1; fi
+      _export_live "$p"
+      if _serve_start; then return 0; fi
+      bash "$SERVE" stop >/dev/null 2>&1
+      echo "rollback failed: server is down"
+      return 1
+    fi
+  fi
+  bash "$SERVE" stop >/dev/null 2>&1
+  _serve_start_or_die
 }
 status(){ local c; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi
