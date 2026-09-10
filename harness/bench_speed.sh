@@ -73,8 +73,10 @@ fi
 [ -r "$MODEL" ] || { echo "⛔ model not readable: $MODEL (A770B_MODELS=$A770B_MODELS)" >&2; exit 2; }
 
 echo "▶ $CMD_DISPLAY"
-# llama-bench --version prints its build line and exits non-zero on this build; under set -e that would end the
-# script before the benchmark ever ran, so the failure is tolerated and the fallback below names the build instead
+# The fallbacks only. llama-bench --version prints its build line and exits non-zero on this build; under set -e
+# that would end the script before the benchmark ever ran, so the failure is tolerated and the git describe after
+# it names the build instead. On this build that --version line is the graphics driver's platform warning, not a
+# build at all, so the benchmark's own raw JSON (build_number/build_commit, read below) is preferred over both.
 BUILD_ID=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$BENCH_BIN" --version 2>&1 | head -1 || true)
 [ -n "$BUILD_ID" ] || BUILD_ID=$(git -C "$(dirname "$BENCH_BIN")" describe --always --dirty 2>/dev/null || echo unknown)
 
@@ -82,6 +84,11 @@ RAW_FILE=$(mktemp)
 trap 'rm -f "$RAW_FILE"' EXIT
 MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" GGML_VK_DISABLE_COOPMAT="$GGML_VK_DISABLE_COOPMAT" \
   "$BENCH_BIN" "${ARGS[@]}" > "$RAW_FILE"
+
+# the build that actually ran the benchmark, from the measurement's own rows (build_number/build_commit); the
+# --version line and the git describe above stay as its fallbacks. The decision lives in harness/bench_build_id.py
+# so a test can drive it with a synthetic raw file, without the card; it prints a line whatever it is handed.
+BUILD_ID=$(python3 "$(dirname "$0")/bench_build_id.py" "$RAW_FILE" "$BUILD_ID" 2>/dev/null || printf '%s\n' "$BUILD_ID")
 
 mkdir -p "$A770B_DATA/results"
 OUT="$A770B_DATA/results/${PROFILE}-bench-$(date +%Y%m%d-%H%M%S).json"

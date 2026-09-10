@@ -822,6 +822,45 @@ def test_check_passes_bench_and_delivered_together(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+# The registry has ONE home for the suite's as-delivered medians, and the pair below says which: a row that
+# carries them under `suite` — the shape harness/suite_report.py --json publishes, since its `delivered` object
+# rides inside the totals — is refused, and the same row with them under `speed` checks out. That is why
+# harness/ladder.sh moves the object out of the totals it assigns to the printed row's `suite` and into the row's
+# `speed`: a freshly measured row is meant to be pasted into config/profiles.json unedited.
+
+
+def _suite_totals(**overrides) -> dict:
+    """The totals harness/suite_report.py --json prints, without `delivered`."""
+    totals = {"briefs": 4, "runs": 4, "passed": 3, "timeouts": 0, "mean_wall_s": 210.5,
+              "source": "long-suite-20260908-120000.json"}
+    totals.update(overrides)
+    return totals
+
+
+def test_check_fails_delivered_under_suite(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = _suite_totals(
+        delivered={"prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908-120000.json"},
+    )
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: suite: unknown key delivered" in result.stderr
+
+
+def test_check_passes_the_same_row_with_delivered_under_speed(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = _suite_totals()
+    data["profiles"]["long"]["speed"]["delivered"] = {
+        "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908-120000.json",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
 def test_check_fails_fit_unknown_key(tmp_path):
     data = load_base()
     data["profiles"]["long"]["fit"] = {"code": "T1: 6 tests green in 122 s", "bogus": "x"}

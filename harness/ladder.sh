@@ -411,12 +411,26 @@ with open(out_path, "w") as f:
     f.write("\n")
 print(f"\n▶ ladder results: {out_path}")
 
+# ── the printed row: `delivered` moves from the suite totals to `speed` ─────────────────────────────────────
+# suite_report.py folds the suite's own as-delivered medians into its totals object, and other callers read that
+# output as it is — but the registry's only home for them is speed.delivered (harness/profiles.py: `speed`
+# allows decode_tps, prefill_tps, far_end, bench, delivered; `suite` allows SUITE_KEYS and rejects anything
+# else). Left under `suite`, the printed row is refused by `profiles.py check` and has to be hand-edited before
+# it can be pasted, which is the one thing a printed row exists to avoid. Both objects are copied here, so the
+# ladder JSON written above keeps each rung's output exactly as its producer wrote it.
+row_speed = dict(speed)
+row_suite = dict(suite) if suite is not None else None
+if row_suite is not None:
+    row_delivered = row_suite.pop("delivered", None)
+    if row_delivered is not None:
+        row_speed["delivered"] = row_delivered
+
 row = {
     "model": os.path.basename(gguf), "ctx": ctx, "kv": kv, "kv_v": kv_v,
     "flash_attention": flash_attention, "reasoning": reasoning, "extra": extra,
     "timeout_s": int(timeout_s) if timeout_s.isdigit() else timeout_s,
     "vram_gib_after_load": vram_gib_after_load, "ram_gb_extra": ram_gb_extra,
-    "useful_ctx": useful_ctx, "speed": speed, "instrument": instrument,
+    "useful_ctx": useful_ctx, "speed": row_speed, "instrument": instrument,
     "measured_on": "__TODO__ — the card and build this was measured on, e.g. \"Arc A770 16 GB, llama.cpp b10805 Vulkan\" (kit/PROFILE.md: never filled by ladder.sh)",
     "use_for": "__TODO__ — write by hand from what this ladder run showed (kit/PROFILE.md: never derived from a measurement)",
     "fit": {
@@ -429,8 +443,8 @@ row = {
     },
     "capability": "__TODO__ — the model's or the quantiser's own published evaluation, quoted verbatim, never re-measured here",
 }
-if suite is not None:
-    row["suite"] = suite
+if row_suite is not None:
+    row["suite"] = row_suite
 if far_end >= 90000 and depth_score is not None:
     row["depth_probe_100k"] = f"{'pass' if depth_pass else 'fail'} ({depth_score}/3)"
 
