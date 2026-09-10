@@ -9,7 +9,8 @@ Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): **--
 <!-- profiles:end -->
 Call:
 `bash <your-skill-dir>/local-build/scripts/local-build.sh run [<seat>] <brief.md> [--spec <spec.json>] [--profile <name>]` — it starts or
-switches the server, dispatches the brief through opencode inside the sandbox, captures diff + tests + timings, resets the seat.
+switches the server, dispatches the brief through opencode inside the sandbox, captures diff + tests + timings, resets the seat;
+`menu` lists what is already up and what would need a restart.
 A specification beside the brief sets, for that run, the card (the seat's standing instructions), the edit scope, extra commands,
 prepared definitions, `verify.test` and hidden acceptance tests (see SKILL.md); the harness's floor is never lowered by it.
 Judge the result by the capture (`~/local-ai/results/<label>.task.md`) and by `verify <label>`, which re-runs the tests in

@@ -18,7 +18,7 @@ bash skills/local-build/scripts/local-build.sh run <brief.md> --profile fast    
 bash harness/run_suite.sh <profile>                                                      # the standard suite (kit/), stage by stage, one results file
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
-bash skills/local-build/scripts/local-build.sh serve <profile> · profiles [--name <profile>] · status · stop · stop-run · --version · check-update
+bash skills/local-build/scripts/local-build.sh serve <profile> · profiles [--name <profile>] · menu · status · stop · stop-run · --version · check-update
 ```
 
 A run that must be ended early is ended with `stop-run`: the harness records the pid of the run's `timeout` process while it lives, `stop-run` sends exactly that pid one TERM after checking it is a timeout of this harness, and the run then captures what the seat did and resets the seat as an expired timeout does. Never end a run by process name: `bwrap` is also every Flatpak application on the desktop.
@@ -138,7 +138,9 @@ where a row carries one at all: the display registry's `long` and `fast` rows ha
 default temperature (0) before this registry carried a sampling line, and their own `use_for` says so; and
 `builder_class`, computed from whether the useful window reaches at least 81,920 tokens and the task is green. The
 orchestrating agent reads these fields against a brief's scope, the token size of the files it names, and the time it
-can spend, and takes the least costly profile whose card covers all three.
+can spend, and takes the least costly profile whose card covers all three. `local-build.sh menu` prints which measured
+models are already up and which would need a restart; when nothing is loaded it lists the whole card and marks the
+default without calling it up.
 
 The standard speed number for a row is `harness/bench_speed.sh <profile>`: llama-bench run at the row's own served
 flags — `-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe` — at depths 0, 8k, 32k and the far end, one command a

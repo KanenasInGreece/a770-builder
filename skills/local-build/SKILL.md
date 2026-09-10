@@ -48,7 +48,8 @@ skill does that.)
 
 ## Choosing a profile
 
-Read the card before choosing: `local-build.sh profiles`, or `--name <profile>` for one profile alone. It carries a
+Read the card before choosing: `local-build.sh profiles` for the measured card, or `--name <profile>` for one profile
+alone; `local-build.sh menu` is the pick-a-row list. It carries a
 row's `category` (`dense` or `moe`) and weight class; `useful_ctx`, the largest depth at which decode stays above four
 tokens a second by the two measured points, so a window is a capacity, not a promise of that whole depth at speed;
 `speed` (decode and prefill) at 8k and at the far end of the window, set against the time you can spend; `fit`, three
@@ -59,7 +60,7 @@ registry carried a sampling line, and their own `use_for` says so; and `builder_
 is useful to at least 81,920 tokens and passed a green task. Match these against the brief's edit scope (a change to
 the files named, several files touched at once, tests written from a specification) and the token size of the files it
 points at, and take the least costly profile whose card covers all three, not the one with the strongest reputation.
-The registry keeps one best-measured row per category and weight class: a row a sibling beats on quality, speed and
+The registry keeps one best-measured row per category, weight class, and graphics backend: a row a sibling beats on quality, speed and
 useful window alike is pruned and the ledger says by whom, so a name on the card has already survived that. Each
 profile's `use_for` says in words what it is not for, and that refusal is as much the card's content as what it is
 good at; a brief that needs more than the strongest card covers should not go to the seat at all.
@@ -77,6 +78,7 @@ bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profil
 bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>                       # re-run a capture's tests in a fresh sandbox
 bash ~/.claude/skills/local-build/scripts/local-build.sh serve <profile>      # start/switch the server only
 bash ~/.claude/skills/local-build/scripts/local-build.sh profiles [--name <profile>]   # the card, one profile or all, with what is actually served
+bash ~/.claude/skills/local-build/scripts/local-build.sh menu   # which models are already up, and which would need a restart
 bash ~/.claude/skills/local-build/scripts/local-build.sh status               # which model is up, VRAM, health
 bash ~/.claude/skills/local-build/scripts/local-build.sh stop                 # free the card
 bash ~/.claude/skills/local-build/scripts/local-build.sh stop-run             # end the run in progress by its own pid; never kill bwrap by name
