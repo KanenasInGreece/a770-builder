@@ -1,0 +1,38 @@
+# A770 llama.cpp Vulkan server. Official image, GGUFs bind-mounted, PCI nodes from env.
+# Passthrough is unmeasured until this file is brought up on a host. Do not pass all of /dev/dri.
+# One service, one GPU. Do not add a B70 service to this file.
+services:
+  llama:
+    image: ${A770B_LLAMA_IMAGE}
+    user: "1000:1000"
+    group_add:
+      - "${A770B_RENDER_GID}"
+      - "${A770B_VIDEO_GID}"
+    devices:
+      - "${A770B_DRM_CARD}:/dev/dri/card0"
+      - "${A770B_DRM_RENDER}:/dev/dri/renderD128"
+    volumes:
+      - "${A770B_MODELS}:/models:ro"
+    environment:
+      MESA_VK_DEVICE_SELECT: "8086:56a0!"
+      GGML_VK_DISABLE_COOPMAT: "1"
+    ports:
+      - "${A770B_PORT}:8080"
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /models/${A770B_MODEL}
+      - -c
+      - "${A770B_CTX}"
+      - --no-mmap
+      - -ngl
+      - "99"
+      - --parallel
+      - "1"
+      - -b
+      - "2048"
+      - -ub
+      - "512"

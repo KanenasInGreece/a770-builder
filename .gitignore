@@ -10,6 +10,8 @@ __pycache__/
 .pytest_cache/
 config/builder.env
 config/builder.*.env
+compose/*.env
+!compose/*.env.example
 CLAUDE.md
 sync_local_build.sh
 .claude/
