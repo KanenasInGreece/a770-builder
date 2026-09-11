@@ -995,6 +995,14 @@ then echo "ok   compose: the tracked envelope sets the server entrypoint, binds 
 else echo "FAIL compose: the tracked envelope is not as expected"; fail=1
 fi
 
+# the skill copy finds its own checkout: with A770B_PROJECT unset and no builder.env, a copy that sits inside a
+# checkout resolves to that checkout (so running a branch's script tests the branch); an installed copy, which is
+# not inside a checkout, still falls back to builder.env and the default.
+sl_out=$(cd / && env -u A770B_PROJECT XDG_CONFIG_HOME="$t/xdg" bash "$here/skills/local-build/scripts/local-build.sh" version 2>&1)
+if printf '%s\n' "$sl_out" | grep -q "$here"; then echo "ok   skill: a copy inside a checkout resolves A770B_PROJECT to its own checkout"
+else echo "FAIL skill: self-location did not resolve to $here"; printf '%s\n' "$sl_out"; fail=1
+fi
+
 rm -rf "$t" "$A770B_DATA"
 if [ "$fail" = 0 ]; then echo "selftest: all passed"; fi
 exit "$fail"

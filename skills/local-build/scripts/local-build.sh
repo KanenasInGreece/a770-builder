@@ -16,7 +16,15 @@ set -uo pipefail
 SKILL_VERSION=0.2.2            # the version of THIS installed copy; the project's VERSION file must match (see `version`)
 die(){ echo "⛔ $*" >&2; exit 2; }
 _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/builder.env"
-if [ -z "${A770B_PROJECT:-}" ] && [ -f "$_cfg" ]; then A770B_PROJECT=$(sed -nE 's/^[[:space:]]*A770B_PROJECT=([^#]*).*/\1/p' "$_cfg" | tail -1 | tr -d '"' | sed "s#^~#$HOME#"); fi
+# The project this copy belongs to, in order: the environment; THIS script's own checkout when it sits inside one
+# (so running a branch's copy tests that branch — an installed skill copy is not inside a checkout and skips this);
+# builder.env; the default. An explicit A770B_PROJECT always wins.
+if [ -z "${A770B_PROJECT:-}" ]; then
+  _self="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." 2>/dev/null && pwd || true)"
+  if [ -n "$_self" ] && [ -r "$_self/harness/env.sh" ]; then A770B_PROJECT="$_self"
+  elif [ -f "$_cfg" ]; then A770B_PROJECT=$(sed -nE 's/^[[:space:]]*A770B_PROJECT=([^#]*).*/\1/p' "$_cfg" | tail -1 | tr -d '"' | sed "s#^~#$HOME#")
+  fi
+fi
 A770B_PROJECT="${A770B_PROJECT:-$HOME/local-ai/A770_Builder}"; export A770B_PROJECT
 version(){ local pv sha rel n
   echo "local-build skill release $SKILL_VERSION · installed at $(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,7 +55,7 @@ check_update(){ local url latest pv
 case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh"; . "$A770B_PROJECT/harness/guard.sh"
-SERVE="${SERVE:-$A770B_SERVE_SCRIPT}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
+SERVE="${SERVE:-${A770B_SERVE_SCRIPT:?the project at $A770B_PROJECT has no A770B_SERVE_SCRIPT in its env.sh — that checkout predates A770B_SERVE; run this copy from its own checkout or set A770B_PROJECT to it}}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
 profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fields for a profile named in A770B_PROFILES
