@@ -47,7 +47,7 @@ check_update(){ local url latest pv
 case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh"; . "$A770B_PROJECT/harness/guard.sh"
-SERVE="${SERVE:-$A770B_PROJECT/harness/serve_a770_llamacpp.sh}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
+SERVE="${SERVE:-$A770B_SERVE_SCRIPT}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
 profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fields for a profile named in A770B_PROFILES
@@ -164,7 +164,19 @@ doctor(){
   for t in bwrap socat uv curl git flock timeout; do
     command -v "$t" >/dev/null 2>&1 && echo "ok   $t: on PATH" || { echo "MISSING $t: install $t"; missing=$((missing+1)); }
   done
-  [ -x "$A770B_LLAMA_BIN" ] && echo "ok   llama-server at $A770B_LLAMA_BIN" || { echo "MISSING llama-server at $A770B_LLAMA_BIN: build llama.cpp with the Vulkan backend, or set A770B_LLAMA_BIN"; missing=$((missing+1)); }
+  if [ "$A770B_SERVE" = compose ]; then
+    # compose mode: the server is the container, so a host llama-server is NOT required; the
+    # container runtime and its compose plugin are. The envelope and its gitignored env file are checked too.
+    if command -v "$A770B_DOCKER" >/dev/null 2>&1 && "$A770B_DOCKER" compose version >/dev/null 2>&1; then
+      echo "ok   $A770B_DOCKER compose: on PATH (A770B_SERVE=compose — no host llama-server needed)"
+    else
+      echo "MISSING $A770B_DOCKER compose: A770B_SERVE=compose needs the container runtime and its compose plugin on PATH"; missing=$((missing+1))
+    fi
+    [ -f "$A770B_COMPOSE_FILE" ] && echo "ok   compose envelope: $A770B_COMPOSE_FILE" || { echo "MISSING compose envelope: $A770B_COMPOSE_FILE not found"; missing=$((missing+1)); }
+    [ -f "$A770B_COMPOSE_ENV_FILE" ] && echo "ok   compose env: $A770B_COMPOSE_ENV_FILE" || echo "note compose env: $A770B_COMPOSE_ENV_FILE not found — copy compose/a770-vulkan.env.example (PCI nodes and host group ids)"
+  else
+    [ -x "$A770B_LLAMA_BIN" ] && echo "ok   llama-server at $A770B_LLAMA_BIN" || { echo "MISSING llama-server at $A770B_LLAMA_BIN: build llama.cpp with the Vulkan backend, or set A770B_LLAMA_BIN"; missing=$((missing+1)); }
+  fi
   if command -v nvtop >/dev/null 2>&1 || [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then echo "ok   nvtop: on PATH or A770B_ALLOW_NO_NVTOP=1"; else echo "MISSING nvtop: install it for VRAM readings, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1)); fi
   n=$(gpu_match_count)
   case "$n" in
@@ -229,13 +241,15 @@ doctor(){
   if [ "$A770B_GPU_MATCH" = "DG2" ] && [ "$n" = 0 ]; then
     echo "MISSING input A770B_GPU_MATCH=DG2 is this project's default (the Intel Arc A770) but no device in 'nvtop -s' matches it on this machine — set A770B_GPU_MATCH to your own card's name"; missing=$((missing+1))
   fi
-  if [ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && [ -x "$A770B_LLAMA_BIN" ]; then
+  # the host binary's --list-devices says which card a HOST serve would pick; in compose mode the card is pinned
+  # inside the container by MESA_VK_DEVICE_SELECT, so these two checks are host-only (no host llama-server needed).
+  if [ "$A770B_SERVE" != compose ] && [ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && [ -x "$A770B_LLAMA_BIN" ]; then
     _vsel_n=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$A770B_LLAMA_BIN" --list-devices 2>/dev/null | grep -c '^ *Vulkan[0-9]*:')
     if [ "$_vsel_n" = 0 ]; then
       echo "MISSING input A770B_VK_DEVICE_SELECT=8086:56a0! is this project's default (the Intel Arc A770) but pins no Vulkan device on this machine — set it to your own card's vendor:device! from lspci -nn"; missing=$((missing+1))
     fi
   fi
-  if [ -x "$A770B_LLAMA_BIN" ]; then
+  if [ "$A770B_SERVE" != compose ] && [ -x "$A770B_LLAMA_BIN" ]; then
     if [ -z "$A770B_VK_DEVICE_SELECT" ]; then
       echo "ok   device: selector empty, not pinned"
     else

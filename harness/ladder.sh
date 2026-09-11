@@ -109,11 +109,11 @@ if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (ram_gb_extra)"
   echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
   if [ -n "$PROFILE_NAME" ]; then
-    echo "[dry-run] rung 3/6: bash harness/serve_a770_llamacpp.sh stop; bash harness/bench_speed.sh $PROFILE_NAME --depths $DEPTHS"
+    echo "[dry-run] rung 3/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; bash harness/bench_speed.sh $PROFILE_NAME --depths $DEPTHS"
   else
     echo "[dry-run] rung 3/6: SKIPPED — harness/bench_speed.sh needs a registry profile ('harness/profiles.py card --name <profile>' has no ephemeral form); $GGUF has no row yet"
   fi
-  echo "[dry-run] rung 4/6: bash harness/serve_a770_llamacpp.sh stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/serve_a770_llamacpp.sh start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
+  echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
   echo "[dry-run]           both are sized in real tokens by the server's tokeniser, and their deadlines come from rung 3's measured curve (harness/prompt_budget.py)"
   echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --bench <rung 3's file>  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
   if [ -n "$PROFILE_NAME" ]; then
@@ -145,7 +145,7 @@ BENCH_MODEL_JSON="$A770B_DATA/results/$NAME.json"
 BENCH_SPEED_JSON=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 3/6 — standard speed (bench_speed.sh)"
-  bash "$here/serve_a770_llamacpp.sh" stop >/dev/null 2>&1 || true
+  bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
   if [ -n "$PROFILE_NAME" ]; then
     SPEED_LOG="$LOGDIR/ladder-bench-speed-$$.log"
     if bash "$here/bench_speed.sh" "$PROFILE_NAME" --depths "$DEPTHS" 2>&1 | tee "$SPEED_LOG"; then
@@ -162,9 +162,9 @@ fi
 CTX_SWEEP_LOG=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 4/6 — window (ctx_sweep.sh at 8000 and $FAR_END)"
-  bash "$here/serve_a770_llamacpp.sh" stop >/dev/null 2>&1 || true
+  bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
   # shellcheck disable=SC2086
-  if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" bash "$here/serve_a770_llamacpp.sh" start "$GGUF" "$CTX" $EXTRA; then
+  if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" $EXTRA; then
     FAIL_RUNG="window-serve"; FAIL_MSG="the server did not come up for the window rung"
   else
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"

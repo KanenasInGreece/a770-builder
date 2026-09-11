@@ -164,6 +164,23 @@ health_status(){ local body word
   [ -n "$word" ] && echo "$word" || echo "answered, no status field"
 }
 
+# compose_project_pids — the host pids of the compose project's running containers, one per line (empty when none,
+# when docker is absent, or when the envelope does not exist). A container shares the host PID namespace, so its
+# llama-server shows up in pgrep; these pids are what budget_gate subtracts to tell its OWN container from a foreign
+# host server (pgrep and a pidfile alone lie for a container).
+compose_project_pids(){
+  command -v "$A770B_DOCKER" >/dev/null 2>&1 || return 0
+  [ -f "$A770B_COMPOSE_FILE" ] || return 0
+  local id
+  for id in $("$A770B_DOCKER" compose -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" ps -q 2>/dev/null); do
+    "$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true
+  done
+}
+# compose_project_running — true when the project has at least one running container.
+compose_project_running(){
+  [ -n "$(compose_project_pids)" ]
+}
+
 # budget_gate — the built-in gate: host RAM, no stray llama-server, VRAM on the builder card, optional health URL, port.
 # Replaced entirely by A770B_BUDGET_GATE when that is set.
 budget_gate(){
@@ -172,7 +189,15 @@ budget_gate(){
   require_vram_readings || return 1
   avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
   if [ "$avail" -ge "$A770B_MIN_AVAIL_MB" ]; then printf '  %-30s %s\n' "host MemAvailable (MB)" "$avail ≥ $A770B_MIN_AVAIL_MB"; else printf '⛔ %-30s %s\n' "host MemAvailable (MB)" "$avail < $A770B_MIN_AVAIL_MB"; ok=0; fi
-  if pgrep -x llama-server >/dev/null && ! llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid" >/dev/null; then printf '⛔ %-30s %s\n' "other llama-server" "running outside this harness — one GPU process per card"; ok=0; else printf '  %-30s %s\n' "other llama-server" "none"; fi
+  if [ "$A770B_SERVE" = compose ]; then
+    # a llama-server that is not one of THIS project's containers is foreign; this project's own container is ours
+    local ours foreign=0 p
+    ours=" $(compose_project_pids | tr '\n' ' ') "
+    for p in $(pgrep -x llama-server 2>/dev/null || true); do
+      case "$ours" in *" $p "*) ;; *) foreign=1;; esac
+    done
+    if [ "$foreign" = 1 ]; then printf '⛔ %-30s %s\n' "other llama-server" "running outside this compose project — one GPU process per card"; ok=0; else printf '  %-30s %s\n' "other llama-server" "none"; fi
+  elif pgrep -x llama-server >/dev/null && ! llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid" >/dev/null; then printf '⛔ %-30s %s\n' "other llama-server" "running outside this harness — one GPU process per card"; ok=0; else printf '  %-30s %s\n' "other llama-server" "none"; fi
   free=$(gpu_free_mb); if [ "$free" -ge "$A770B_MIN_VRAM_MB" ]; then printf '  %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free ≥ $A770B_MIN_VRAM_MB"; else printf '⛔ %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free < $A770B_MIN_VRAM_MB"; ok=0; fi
   if [ -n "$A770B_HEALTH_URL" ]; then printf '  %-30s %s\n' "health $A770B_HEALTH_URL" "$(health_status "$A770B_HEALTH_URL") (informational, never a refusal)"; fi
   case " $A770B_FRAMEWORK_PORTS " in *" $A770B_PORT "*) printf '⛔ %-30s %s\n' "port $A770B_PORT" "is a protected port"; ok=0;; esac

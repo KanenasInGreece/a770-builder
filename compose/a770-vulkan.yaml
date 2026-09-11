@@ -1,6 +1,18 @@
-# A770 llama.cpp Vulkan server. Official image, GGUFs bind-mounted, PCI nodes from env.
-# Passthrough is unmeasured until this file is brought up on a host. Do not pass all of /dev/dri.
-# One service, one GPU. Do not add a B70 service to this file.
+# A770 llama.cpp Vulkan server — the container ENVELOPE only.
+# It carries what a container needs to reach the card and the weights: the image, the two PCI DRM nodes, the host
+# render/video group ids, the MESA device pin, the read-only GGUF mount, the read-only API-key mount, and the
+# loopback port. It carries NO model, NO context and NO llama-server argv: the profile row is turned into argv at
+# serve time by harness/serve_compose.sh from config/profiles*.json, so the registry stays the single source.
+#
+# The official full-vulkan image's own ENTRYPOINT is /app/tools.sh (a toolbox shell), and compose appends `command:`
+# to the entrypoint — so without the explicit entrypoint below a serve would run tools.sh and never reach the server.
+# The ruled start path is `local-build.sh serve` with A770B_SERVE=compose, NOT a bare `docker compose up`: that skips
+# the profile argv, the budget gate, the VRAM cap and the live-backend sidecar. serve recreates the container
+# (`up -d --force-recreate`) so a profile change takes effect; `--no-recreate` would silently keep the old model.
+#
+# Passthrough is unmeasured until a host brings this up. Pin the image by digest after the first pull
+# (set A770B_LLAMA_IMAGE to repo@sha256:… in compose/a770-vulkan.env). Do NOT pass all of /dev/dri — that would
+# expose a second Intel GPU on a two-card machine. The sandbox never sees a container socket.
 services:
   llama:
     image: ${A770B_LLAMA_IMAGE}
@@ -14,26 +26,10 @@ services:
       - "${A770B_DRM_RENDER}:/dev/dri/renderD128"
     volumes:
       - "${A770B_MODELS}:/models:ro"
+      - "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro"
     environment:
-      MESA_VK_DEVICE_SELECT: "8086:56a0!"
-      GGML_VK_DISABLE_COOPMAT: "1"
+      MESA_VK_DEVICE_SELECT: "${A770B_VK_DEVICE_SELECT}"
+      GGML_VK_DISABLE_COOPMAT: "${GGML_VK_DISABLE_COOPMAT}"
     ports:
-      - "${A770B_PORT}:8080"
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
-      - -m
-      - /models/${A770B_MODEL}
-      - -c
-      - "${A770B_CTX}"
-      - --no-mmap
-      - -ngl
-      - "99"
-      - --parallel
-      - "1"
-      - -b
-      - "2048"
-      - -ub
-      - "512"
+      - "127.0.0.1:${A770B_PORT}:8080"
+    entrypoint: ["/app/llama-server"]

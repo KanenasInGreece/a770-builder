@@ -54,6 +54,21 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_API_KEY_FILE:=${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/api.key}"   # the server's API key (one line, mode 600); created on first serve
 : "${A770B_ALLOW_NO_NVTOP:=0}"                           # 1 = start without VRAM readings (NOT on a card that draws a desktop)
 : "${GGML_VK_DISABLE_COOPMAT:=1}"; export GGML_VK_DISABLE_COOPMAT
+# ── how the server is placed: host (default) or compose ────────────────────────────────────────────────────────
+# host    = the host llama.cpp binary (harness/serve_a770_llamacpp.sh) — today's path, unchanged.
+# compose = the same server in a container (harness/serve_compose.sh): the profile row still becomes llama-server
+#           argv from THIS registry, the container envelope (devices, groups, MESA pin, mounts, port) is
+#           compose/a770-vulkan.yaml, and the VRAM cap after load and the live-backend sidecar stay on the HOST.
+: "${A770B_SERVE:=host}"
+case "$A770B_SERVE" in host|compose) ;; *) echo "⛔ A770B_SERVE must be host or compose (it is '$A770B_SERVE')" >&2; return 2 2>/dev/null || exit 2;; esac
+: "${A770B_COMPOSE_FILE:=$A770B_PROJECT/compose/a770-vulkan.yaml}"     # the envelope: devices, groups, mounts, port, entrypoint
+: "${A770B_COMPOSE_ENV_FILE:=$A770B_PROJECT/compose/a770-vulkan.env}"  # gitignored: image, PCI nodes, host group ids (getent)
+: "${A770B_COMPOSE_PROJECT:=a770-builder}"                             # the compose project name: its own container namespace
+: "${A770B_DOCKER:=docker}"                                            # the container runtime CLI (podman compose also works)
+case "$A770B_SERVE" in
+  compose) : "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_compose.sh}";;
+  *)       : "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_a770_llamacpp.sh}";;
+esac
 # ── the budget gate (built in; set A770B_BUDGET_GATE to an external script to use that instead) ─────────────
 : "${A770B_BUDGET_GATE:=}"
 : "${A770B_MIN_AVAIL_MB:=20000}"; : "${A770B_MIN_VRAM_MB:=3000}"
@@ -74,6 +89,8 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_SUMMARY_CORPUS:=$A770B_SEAT/**/*.py}"         # bench_model.sh's judged 17k summary rung: the SEAT's own source, never the kit's generated corpus
 export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE A770B_RESET_PATTERN
 export A770B_PROFILES A770B_DEFAULT_PROFILE
+# exported for the compose envelope's ${…} interpolation (the values this file is the single source of)
+export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }
 # a770b_profile_var <profile> <FIELD> — the value of A770B_<PROFILE>_<FIELD> (name upper-cased, - → _); empty if unset

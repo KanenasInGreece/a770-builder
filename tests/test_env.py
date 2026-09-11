@@ -200,6 +200,55 @@ def test_doctor_labels_an_overridden_knob_as_the_users_own():
     assert "this project's default" not in lines[0]
 
 
+# ── A770B_SERVE: host (default) or compose ───────────────────────────────────────────────────────────────────
+
+
+def test_env_sh_defaults_serve_to_host(tmp_path):
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_SERVE="")
+    r = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_SERVE"', env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "host"
+
+
+def test_env_sh_refuses_an_unknown_serve_value(tmp_path):
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_SERVE="bogus")
+    r = run_bash(f'set -e; . "{ENV_SH}"', env=env)
+    assert r.returncode != 0
+    assert "A770B_SERVE must be host or compose" in r.stderr
+
+
+def test_env_sh_selects_the_compose_serve_script(tmp_path):
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_SERVE="compose")
+    r = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_SERVE_SCRIPT"', env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.endswith("harness/serve_compose.sh")
+
+
+def _fake_docker_bin(tmp_path):
+    bin_ = tmp_path / "bin"
+    bin_.mkdir(exist_ok=True)
+    _make_bin(bin_, "docker", 'case " $* " in *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;; esac; exit 0')
+    return bin_
+
+
+def test_doctor_compose_does_not_require_a_host_llama_server(tmp_path):
+    bin_ = _fake_docker_bin(tmp_path)
+    env = _doctor_env(tmp_path, A770B_SERVE="compose", A770B_ALLOW_NO_NVTOP="1",
+                      A770B_COMPOSE_FILE=str(ROOT / "compose" / "a770-vulkan.yaml"))
+    env["PATH"] = f"{bin_}:{env['PATH']}"
+    r = _run_doctor(env)
+    assert "MISSING llama-server" not in r.stdout, r.stdout
+    assert any(ln.startswith("ok   docker compose") for ln in r.stdout.splitlines()), r.stdout
+    assert any(ln.startswith("ok   compose envelope") for ln in r.stdout.splitlines()), r.stdout
+
+
+def test_doctor_compose_requires_the_container_runtime(tmp_path):
+    env = _doctor_env(tmp_path, A770B_SERVE="compose", A770B_ALLOW_NO_NVTOP="1",
+                      A770B_DOCKER="docker-absent-xyz")
+    r = _run_doctor(env)
+    assert any(ln.startswith("MISSING docker-absent-xyz compose") for ln in r.stdout.splitlines()), r.stdout
+
+
 def test_doctor_flags_missing_when_the_a770_defaults_are_in_force_on_a_non_matching_card(tmp_path):
     # fake nvtop (no device names it as DG2) and a fake llama-server whose --list-devices pins nothing:
     # both A770B_GPU_MATCH and A770B_VK_DEVICE_SELECT are left at this project's default, so doctor must say so.

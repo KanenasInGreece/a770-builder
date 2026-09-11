@@ -41,13 +41,24 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       └── the model server ────────┘── host llama.cpp, or the same OpenAI URL from compose/a770-vulkan.yaml
 ```
 
-Copy `compose/a770-vulkan.env.example` to `compose/a770-vulkan.env`, set the PCI nodes and model path, then:
+The server runs on the host by default. To run it in a container instead, set `A770B_SERVE=compose` in
+`builder.env` and copy `compose/a770-vulkan.env.example` to `compose/a770-vulkan.env`, editing the image, the two
+PCI DRM nodes and the host group ids (`getent group render`, `getent group video`). Start it the same way as the
+host server:
 
 ```
-docker compose --env-file compose/a770-vulkan.env -f compose/a770-vulkan.yaml up -d --no-recreate
+A770B_SERVE=compose bash skills/local-build/scripts/local-build.sh serve long
 ```
 
-`restart: "no"` is set in the file, so a reboot does not bring the server back. Stop with `docker compose --env-file compose/a770-vulkan.env -f compose/a770-vulkan.yaml down`. The image is `full-vulkan` so `llama-bench` is in the same container; take the server down before a bench run.
+`serve` recreates the container with the profile's own llama-server argv, so the registry stays the single source;
+`compose/a770-vulkan.yaml` carries only the envelope — the `/app/llama-server` entrypoint, the two DRM nodes, the
+group ids, the MESA device pin, the read-only GGUF and API-key mounts, and a `127.0.0.1` port. The VRAM cap after
+load and the live-backend sidecar stay on the host. `restart: "no"` means a reboot does not bring it back; stop it
+with `bash skills/local-build/scripts/local-build.sh stop`. Do not start it with a bare `docker compose up`: that
+skips the profile argv, the budget gate, the VRAM cap and the sidecar, and `--no-recreate` would keep the old model.
+The image is `full-vulkan` (not `server-vulkan`, which has no `llama-bench`), so the speed rung's bench runs as a
+one-shot in the same container after the server is stopped. Passthrough is unmeasured until a host brings it up;
+pin the image by digest after the first pull.
 
 The repository holds a coding-worker harness with two card modes — display-safe (the tested default, under a 13 GiB
 VRAM cap, for a card that also drives the desktop) and pure-inference (under a 15.3 GiB cap, for a card with nothing

@@ -926,6 +926,62 @@ if printf '%s\n' "$cr_out" | grep -q 'contamination (ref-cpp-x, cpp): public PAS
 then echo "ok   suite_report: prints the contamination pair (public PASS, hidden FAIL) per reference stage's language, never in --json"
 else echo "FAIL suite_report: contamination pair not reported as expected"; printf '%s\n' "$cr_out"; echo "$cr_json"; fail=1
 fi
+# ── A770B_SERVE=compose: the container backend is wired behind the same serve() ────────────────────────────────
+# A fake docker/curl/pgrep/nvtop stand in for the runtime; the checks are the argv, the start path, the host-side cap
+# and pid, and doctor not demanding a host llama-server. Nothing here opens the card or runs a real container.
+cb="$t/compose"; mkdir -p "$cb/bin" "$cb/models" "$cb/data"
+printf 'dummy\n' > "$cb/models/Qwen3.5-9B-Q4_K_M.gguf"
+cat > "$cb/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_DOCKER_LOG:?}"
+case " $* " in
+  *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
+  *" ps -q "*) printf '%s\n' cid; exit 0;;
+  *" inspect "*) printf '%s\n' 4242; exit 0;;
+  *) exit 0;;
+esac
+EOF
+chmod +x "$cb/bin/docker"
+printf '#!/usr/bin/env bash\necho \x27{"ok": true}\x27; exit 0\n' > "$cb/bin/curl"; chmod +x "$cb/bin/curl"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$cb/bin/pgrep"; chmod +x "$cb/bin/pgrep"
+printf '#!/usr/bin/env bash\necho \x27[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\x27\n' > "$cb/bin/nvtop"; chmod +x "$cb/bin/nvtop"
+cb_env(){ A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
+  A770B_SERVE=compose A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_API_KEY_FILE="$cb/api.key" \
+  A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" A770B_COMPOSE_ENV_FILE="$cb/a770-vulkan.env" \
+  A770B_DOCKER=docker FAKE_DOCKER_LOG="$cb/docker.log" PATH="$cb/bin:$PATH" "$@"; }
+cb_plan=$(cb_env bash "$here/harness/serve_compose.sh" plan Qwen3.5-9B-Q4_K_M.gguf 8192 2>&1)
+if printf '%s\n' "$cb_plan" | grep -q '^argv: /app/llama-server$' \
+  && printf '%s\n' "$cb_plan" | grep -q '/models/Qwen3.5-9B-Q4_K_M.gguf' \
+  && printf '%s\n' "$cb_plan" | grep -q -- '--api-key-file' \
+  && printf '%s\n' "$cb_plan" | grep -q -- '--force-recreate' \
+  && [ ! -f "$cb/docker.log" ]
+then echo "ok   compose: serve_compose.sh plan is the server entrypoint with the /models path, the key file and --force-recreate, and touches no docker"
+else echo "FAIL compose: serve_compose.sh plan is not as expected"; printf '%s\n' "$cb_plan" | head -40; fail=1
+fi
+cb_start=$(cb_env bash "$here/harness/serve_compose.sh" start Qwen3.5-9B-Q4_K_M.gguf 8192 2>&1)
+if printf '%s\n' "$cb_start" | grep -q 'VRAM after load' && grep -q -- '--force-recreate' "$cb/docker.log" \
+  && ! grep -q -- '--no-recreate' "$cb/docker.log" && [ "$(cat "$cb/data/logs/llamacpp-a770.pid")" = 4242 ]
+then echo "ok   compose: start recreates (never --no-recreate), enforces the host cap and records the container's host pid"
+else echo "FAIL compose: start did not recreate or did not record the host pid"; printf '%s\n' "$cb_start" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
+fi
+if python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["services"]["llama"]; assert s["entrypoint"]==["/app/llama-server"]; assert s["command"][0]=="/app/llama-server"' "$cb/data/logs/compose-argv.override.json" 2>/dev/null
+then echo "ok   compose: the runtime override carries the server entrypoint and the profile argv, not a baked model"
+else echo "FAIL compose: the override is not the expected JSON"; cat "$cb/data/logs/compose-argv.override.json" 2>/dev/null; fail=1
+fi
+cb_doc=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data2" A770B_CARD_MODE=inference \
+  A770B_SERVE=compose A770B_ALLOW_NO_NVTOP=1 A770B_DOCKER=docker A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" \
+  FAKE_DOCKER_LOG="$cb/docker.log" PATH="$cb/bin:$PATH" bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1)
+if printf '%s\n' "$cb_doc" | grep -q 'ok   docker compose' && ! printf '%s\n' "$cb_doc" | grep -q 'MISSING llama-server'
+then echo "ok   compose: doctor requires the container runtime and does not require a host llama-server"
+else echo "FAIL compose: doctor in compose mode is not as expected"; printf '%s\n' "$cb_doc" | head -30; fail=1
+fi
+if grep -q 'entrypoint: \["/app/llama-server"\]' "$here/compose/a770-vulkan.yaml" \
+  && grep -q '127.0.0.1:${A770B_PORT}:8080' "$here/compose/a770-vulkan.yaml" \
+  && ! grep -qE '\$\{A770B_(MODEL|CTX)\}' "$here/compose/a770-vulkan.yaml"
+then echo "ok   compose: the tracked envelope sets the server entrypoint, binds loopback and bakes no model or ctx"
+else echo "FAIL compose: the tracked envelope is not as expected"; fail=1
+fi
+
 rm -rf "$t" "$A770B_DATA"
 if [ "$fail" = 0 ]; then echo "selftest: all passed"; fi
 exit "$fail"
