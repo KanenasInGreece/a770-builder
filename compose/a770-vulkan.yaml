@@ -33,9 +33,11 @@ services:
       - source: "${A770B_DRM_RENDER}"
         target: /dev/dri/renderD128
         permissions: "rwm"
+    # the trailing `z` relabels the host source for SELinux (Fedora/RHEL): without it the container's container_t
+    # cannot read a user-home file, and the API-key (and model) mount is denied. `z` = shared, not exclusive.
     volumes:
-      - "${A770B_MODELS}:/models:ro"
-      - "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro"
+      - "${A770B_MODELS}:/models:ro,z"
+      - "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro,z"
     environment:
       MESA_VK_DEVICE_SELECT: "${A770B_VK_DEVICE_SELECT}"
       GGML_VK_DISABLE_COOPMAT: "${GGML_VK_DISABLE_COOPMAT}"

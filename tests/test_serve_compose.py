@@ -236,6 +236,9 @@ def test_envelope_sets_the_server_entrypoint_binds_loopback_and_bakes_no_model()
     assert "/run/a770b/api.key" in text
     assert "${A770B_LLAMA_IMAGE}" in text
     assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
+    # SELinux: a user-home bind mount is denied without the :z relabel suffix
+    assert "${A770B_MODELS}:/models:ro,z" in text
+    assert "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro,z" in text
 
 
 def test_envelope_devices_use_long_syntax_for_colon_bearing_paths():
