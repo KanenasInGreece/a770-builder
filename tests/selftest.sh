@@ -314,6 +314,12 @@ if [ "$(cat "$sb/refused/live/witness.txt")" != "witness" ]; then echo "FAIL san
 elif [ "$sbb_rc" != 2 ]; then echo "FAIL sandbox: a worktree inside A770B_REFUSE was not refused (rc=$sbb_rc)"; printf '%s\n' "$sbb" | tail -5; fail=1
 elif ! printf '%s\n' "$sbb" | grep -q 'protected live checkout'; then echo "FAIL sandbox: a refused path did not name the live-checkout rule (got a later failure instead)"; printf '%s\n' "$sbb" | tail -5; fail=1
 else echo "ok   sandbox: a worktree inside A770B_REFUSE is refused before the bind"; fi
+ln -s "$sb/refused/live" "$sb/link"
+sbb2=$(A770B_REFUSE="$sb/refused" bash "$here/harness/sandbox_run.sh" "$sb/link" "$sb/cfg.jsonc" -- bash -c 'echo mutated >> witness.txt' 2>&1); sbb2_rc=$?
+if [ "$(cat "$sb/refused/live/witness.txt")" != "witness" ]; then echo "FAIL sandbox: a symlink-to-refused run mutated the tree"; fail=1
+elif [ "$sbb2_rc" != 2 ]; then echo "FAIL sandbox: a worktree that is a symlink into A770B_REFUSE was not refused (rc=$sbb2_rc)"; printf '%s\n' "$sbb2" | tail -5; fail=1
+elif ! printf '%s\n' "$sbb2" | grep -q 'protected live checkout'; then echo "FAIL sandbox: a symlink into a refused path did not name the live-checkout rule (got a later failure instead)"; printf '%s\n' "$sbb2" | tail -5; fail=1
+else echo "ok   sandbox: a worktree that is a symlink into A770B_REFUSE is refused before the bind"; fi
 mkdir -p "$sb/home/.claude/skills"
 echo "witness" > "$sb/home/.claude/skills/witness.txt"
 sbc=$(HOME="$sb/home" A770B_REFUSE=/nonexistent bash "$here/harness/sandbox_run.sh" "$sb/home/.claude" "$sb/cfg.jsonc" -- bash -c 'echo mutated >> skills/witness.txt' 2>&1); sbc_rc=$?
@@ -321,6 +327,17 @@ if [ "$(cat "$sb/home/.claude/skills/witness.txt")" != "witness" ]; then echo "F
 elif [ "$sbc_rc" != 2 ]; then echo "FAIL sandbox: an agent home was not refused (rc=$sbc_rc)"; printf '%s\n' "$sbc" | tail -5; fail=1
 elif ! printf '%s\n' "$sbc" | grep -q 'agent home'; then echo "FAIL sandbox: an agent home did not name the agent-home rule (got a later failure instead)"; printf '%s\n' "$sbc" | tail -5; fail=1
 else echo "ok   sandbox: an agent home is refused before the bind"; fi
+sbd=$(A770B_REFUSE='' bash "$here/harness/sandbox_run.sh" "$sb/missing" "$sb/cfg.jsonc" -- bash -c 'echo mutated >> witness.txt' 2>&1); sbd_rc=$?
+if [ "$sbd_rc" != 2 ]; then echo "FAIL sandbox: missing worktree with empty refuse was not refused (rc=$sbd_rc)"; printf '%s\n' "$sbd" | tail -5; fail=1
+elif ! printf '%s\n' "$sbd" | grep -q 'A770B_REFUSE is empty'; then echo "FAIL sandbox: empty refuse on missing worktree did not name the empty list (got a later failure instead)"; printf '%s\n' "$sbd" | tail -5; fail=1
+elif printf '%s\n' "$sbd" | grep -q 'worktree missing'; then echo "FAIL sandbox: empty refuse on missing worktree named worktree missing"; printf '%s\n' "$sbd" | tail -5; fail=1
+else echo "ok   sandbox: empty A770B_REFUSE on missing worktree is refused before the worktree missing check"; fi
+sbe=$(A770B_REFUSE=/nonexistent bash "$here/harness/sandbox_run.sh" "$sb/seat" "$sb/cfg.jsonc" -- bash -c 'echo mutated >> witness.txt' 2>&1)
+if printf '%s\n' "$sbe" | grep -q 'A770B_REFUSE is empty'; then echo "FAIL sandbox: a legitimate seat was refused as an empty list"; printf '%s\n' "$sbe" | tail -5; fail=1
+elif printf '%s\n' "$sbe" | grep -q 'protected live checkout'; then echo "FAIL sandbox: a legitimate seat was refused as a live checkout"; printf '%s\n' "$sbe" | tail -5; fail=1
+elif printf '%s\n' "$sbe" | grep -q 'worktree missing'; then echo "FAIL sandbox: a legitimate seat was reported missing (path policy stdout likely corrupted WT)"; printf '%s\n' "$sbe" | tail -5; fail=1
+else echo "ok   sandbox: a legitimate seat is not refused by the path policy"; fi
+echo "witness" > "$sb/seat/witness.txt"
 if grep -n 'guard_path_policy\|--bind "$WT"' "$here/harness/sandbox_run.sh" | head -1 | grep -q guard_path_policy
 then echo "ok   sandbox: the path policy runs before the worktree is bind-mounted"
 else echo "FAIL sandbox_run.sh bind-mounts the worktree before the path policy"; fail=1; fi

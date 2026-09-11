@@ -43,7 +43,8 @@ operator can read, so a process outside the harness cannot use the card unnotice
 checkout you list, every linked worktree, symlink, subdirectory and agent home, a seat whose `.git` is a link to
 another repository, and refuses to run at all while that list is empty. `sandbox_run.sh` applies that same path
 policy to the worktree before it bind-mounts it, so a direct call cannot hand an agent home or a live checkout to
-the model as its writable tree. The run lock's descriptor is closed before the
+the model as its writable tree — the operator's home directory itself, and the data directory, are not on that list.
+The run lock's descriptor is closed before the
 sandbox starts, so no host file crosses the boundary with it. A symlink the model leaves in the seat is named in the
 capture and never followed: the host reads nothing through a link the model made, and the patch does not carry it. The
 briefs directory the harness writes keeps only the harness's own copies across a reset; anything else planted there is

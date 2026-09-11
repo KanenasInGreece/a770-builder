@@ -19,13 +19,14 @@
 # loopback service on the host. PID/UTS/IPC unshared; the sandbox dies with its parent. Both socat ends log to
 # $A770B_DATA/logs/llama-bridge.log / nowhere, so a closed connection never lands in the transcript. A770B_NO_BRIDGE=1 runs
 # without any bridge (verify: tests only, no model, no key).
+# The worktree is judged by guard_path_policy before any existence check and before it is bind-mounted.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 . "$(dirname "$0")/guard.sh"
 WT="${1:?worktree}"; CFG="${2:?profile config}"; shift 2; [ "${1:-}" = "--" ] && shift
+WT=$(guard_path_policy "$WT")
 [ -d "$WT" ] || { echo "⛔ sandbox: worktree missing $WT" >&2; exit 2; }
 [ -f "$CFG" ] || { echo "⛔ sandbox: config missing $CFG" >&2; exit 2; }
-WT=$(guard_path_policy "$WT")
 for t in bwrap socat uv; do command -v "$t" >/dev/null || { echo "⛔ sandbox: $t not installed" >&2; exit 2; }; done
 OC_BIN=$(a770b_opencode_bin); [ -x "$OC_BIN/opencode" ] || { echo "⛔ sandbox: opencode binary not found (A770B_OPENCODE_BIN or PATH)" >&2; exit 2; }
 UV=$(readlink -f "$(command -v uv)")
