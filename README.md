@@ -41,6 +41,14 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       └── the model server ────────┘── host llama.cpp, or the same OpenAI URL from compose/a770-vulkan.yaml
 ```
 
+Copy `compose/a770-vulkan.env.example` to `compose/a770-vulkan.env`, set the PCI nodes and model path, then:
+
+```
+docker compose --env-file compose/a770-vulkan.env -f compose/a770-vulkan.yaml up -d --no-recreate
+```
+
+`restart: "no"` is set in the file, so a reboot does not bring the server back. Stop with `docker compose --env-file compose/a770-vulkan.env -f compose/a770-vulkan.yaml down`. The image is `full-vulkan` so `llama-bench` is in the same container; take the server down before a bench run.
+
 The repository holds a coding-worker harness with two card modes — display-safe (the tested default, under a 13 GiB
 VRAM cap, for a card that also drives the desktop) and pure-inference (under a 15.3 GiB cap, for a card with nothing
 else on it) — each with its own profile registry naming the qualified models (`config/profiles.json`,
