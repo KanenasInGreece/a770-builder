@@ -38,7 +38,7 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       │
       ├── bubblewrap sandbox ── opencode ── the seat (a standalone clone of your repository)
       │                          │ loopback bridge, the only network
-      └── llama.cpp (Vulkan) ────┘── the qualified model on the A770
+      └── the model server ────────┘── host llama.cpp, or the same OpenAI URL from compose/a770-vulkan.yaml
 ```
 
 The repository holds a coding-worker harness with two card modes — display-safe (the tested default, under a 13 GiB
@@ -135,8 +135,8 @@ and opencode on the host, and the model files in `A770B_MODELS`.
 `CONSTITUTION_SNIPPET.md` is optional: a short standing reminder for an agent that will use the seat repeatedly,
 added to that agent's own constitution file by its operator if wanted (`SKILL.md` says how); nothing the skill
 installs writes into any agent's home. The project is MIT-licensed (`LICENSE`). Day-to-day operating detail — how a
-run and a `verify` work, each card mode's profiles and their numbers, every knob, building llama.cpp with Vulkan and
-fetching the models, and what each file is — lives in [`docs/OPERATING.md`](docs/OPERATING.md).
+run and a `verify` work, each card mode's profiles and their numbers, every knob, serving the model on the host or
+from `compose/a770-vulkan.yaml`, fetching the models, and what each file is — lives in [`docs/OPERATING.md`](docs/OPERATING.md).
 
 ## Security
 
@@ -147,7 +147,7 @@ nothing the model wrote, and `verify` re-runs a capture's tests inside a fresh s
 reviews have read the boundary and what sits on it, two of them by a second model family, and found and closed real
 holes. All of it, with what you must still do yourself and how to report a hole, is in [`SECURITY.md`](SECURITY.md).
 
-This project stands alone. It needs llama.cpp, opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
+This project stands alone. It needs an OpenAI-compatible model server (host llama.cpp, or the Compose example in `compose/`), opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
 no database, no account, no memory system, and no network call of its own except the model server on loopback. The
 profiling kit is the same way: it needs no second repository, since its own seat, corners and hidden graders all
 live inside `kit/` here. It was
