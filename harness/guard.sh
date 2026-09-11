@@ -174,8 +174,9 @@ compose_project_pids(){
   local id p
   for id in $("$A770B_DOCKER" compose -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" ps -q 2>/dev/null); do
     p=$("$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true)
-    [ -n "$p" ] && [ "$p" != 0 ] && printf '%s\n' "$p"   # a stopped container has pid 0: not a running server
+    if [ -n "$p" ] && [ "$p" != 0 ]; then printf '%s\n' "$p"; fi   # a stopped container has pid 0: not a server
   done
+  return 0
 }
 # compose_project_running — true when the project has at least one running container.
 compose_project_running(){

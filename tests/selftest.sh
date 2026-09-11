@@ -891,8 +891,9 @@ fi
 # None -> TypeError whenever kit_version WAS present, killing every non-dry-run ladder at the final step.
 if ! grep -q 'raise SystemExit' "$here/harness/ladder.sh" \
   && grep -q '\[ -n "\$INSTRUMENT" \]' "$here/harness/ladder.sh" \
-  && [ "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "$here/kit/suite.json")" = "SUITE-1@1" ]
-then echo "ok   ladder: the instrument line yields SUITE@V for a present kit_version and refuses an absent one"
+  && [ "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "$here/kit/suite.json")" = "SUITE-1@1" ] \
+  && [ -z "$(printf '{"suite":"X"}' | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")')" ]
+then echo "ok   ladder: the instrument line yields SUITE@V for a present kit_version and an empty string for an absent one (the guard then refuses)"
 else echo "FAIL ladder: the inline instrument computation is wrong or its guard is gone"; fail=1
 fi
 

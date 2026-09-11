@@ -30,11 +30,12 @@ def _make_bin(dir_: Path, name: str, body: str) -> Path:
     return p
 
 
-def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "4242", running: bool = True):
+def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "4242", running: bool = True,
+                  down_clears: bool = True):
     """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path).
 
-    The fake docker is stateful: `up` marks a container up, `down` clears it, and `ps -q`/`inspect` answer only
-    while it is up, so a stop really stops and a recreate really recreates.
+    The fake docker is stateful: `up` marks a container up, `down` clears it (unless down_clears is False), and
+    `ps -q`/`inspect` answer only while it is up, so a stop really stops and a recreate really recreates.
     """
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
@@ -42,10 +43,11 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
     state = tmp_path / "docker.state"
     if running:
         state.write_text("up", encoding="utf-8")
+    down_body = f': > "{state}"; exit 0;;' if down_clears else 'exit 0;;'
     _make_bin(bin_, "docker", f'''printf '%s\\n' "$*" >> "{log}"
 case " $* " in
   *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
-  *" down"*) : > "{state}"; exit 0;;
+  *" down"*) {down_body}
   *" up "*) printf up > "{state}"; exit 0;;
   *" ps -q "*) [ -s "{state}" ] && printf '%s\\n' "{ps_id}"; exit 0;;
   *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{host_pid}"; exit 0;;
@@ -164,6 +166,37 @@ def test_stop_runs_compose_down(tmp_path):
     r = _run(_env(tmp_path, bin_), "stop")
     assert r.returncode == 0, r.stderr
     assert any(" down" in f" {c} " for c in log.read_text(encoding="utf-8").splitlines())
+
+
+def test_stop_reports_still_running_when_down_leaves_a_container(tmp_path):
+    # a daemon that accepts `down` but leaves the container running must not be reported as a clean stop
+    bin_, _ = _fake_runtime(tmp_path, down_clears=False)
+    r = _run(_env(tmp_path, bin_), "stop")
+    assert r.returncode == 3
+    assert "still running" in r.stderr
+
+
+def test_start_refuses_early_when_the_envelope_values_are_missing(tmp_path):
+    # env file absent and none of the five envelope values set: refuse with the named fix, before any docker call
+    bin_, log = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, A770B_LLAMA_IMAGE="", A770B_DRM_CARD="", A770B_DRM_RENDER="",
+               A770B_RENDER_GID="", A770B_VIDEO_GID="")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2
+    assert "a770-vulkan.env.example" in r.stderr
+    assert not log.exists()
+
+
+def test_start_fails_when_the_container_reports_no_live_pid(tmp_path):
+    # `docker inspect` of a dead container prints 0; an empty inspect output is the same class of failure. Neither
+    # may be accepted as a live server (a pidfile of 0 makes kill -0 0 always succeed).
+    for dead in ("0", ""):
+        d = tmp_path / f"dead-{dead or 'empty'}"
+        d.mkdir()
+        bin_, _ = _fake_runtime(d, host_pid=dead)
+        r = _run(_env(d, bin_), "start", GGUF, "8192")
+        assert r.returncode == 3, (dead, r.stdout, r.stderr)
+        assert not (Path(d) / "data" / "logs" / "llamacpp-a770.pid").exists()
 
 
 def test_bench_is_a_one_shot_llama_bench_in_the_same_image(tmp_path):

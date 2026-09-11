@@ -46,9 +46,13 @@ _build_argv(){
 # _container_host_pid — the host pid of the running compose container (empty when none); the sidecar and the
 # pidfile name a real host process so live_backend.read's liveness check keeps working for a container.
 _container_host_pid(){
-  local cid; cid=$(_compose ps -q "$CONTAINER" 2>/dev/null || true)
+  # always returns 0: the caller reads the (possibly empty) stdout, and a non-zero status here would abort the
+  # caller under `set -e` before its own guard could run
+  local cid p; cid=$(_compose ps -q "$CONTAINER" 2>/dev/null || true)
   [ -n "$cid" ] || return 0
-  "$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true
+  p=$("$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true)
+  if [ -n "$p" ] && [ "$p" != 0 ]; then printf '%s\n' "$p"; fi   # a dead container reports pid 0, not a live server
+  return 0
 }
 
 case "${1:-}" in
@@ -118,9 +122,12 @@ if ! curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>
   _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3
 fi
 CPID=$(_container_host_pid)
-# a healthy container must report a host pid: without it the sidecar, the menu and the cap would all be blind, so an
-# empty pid is a failed start, not a silent success
-[ -n "$CPID" ] || { echo "⛔ the container answers /health but reports no host pid — tearing it down" >&2; _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3; }
+# a healthy container must report a LIVE host pid (not empty, not the 0 a dead container reports): without it the
+# sidecar, the menu and the cap would all be blind, so either is a failed start, not a silent success
+if [ -z "$CPID" ] || [ "$CPID" = 0 ]; then
+  echo "⛔ the container answers /health but reports no live host pid — tearing it down" >&2
+  _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3
+fi
 printf '%s\n' "$CPID" > "$PIDFILE"
 printf '%s\n' "$MODEL" > "$MARK"
 used=$(gpu_used_gib)

@@ -60,7 +60,7 @@ if [ "$A770B_SERVE" = compose ]; then
   if [ "$DRY_RUN" = 1 ]; then bash "$A770B_SERVE_SCRIPT" bench --dry-run -- "${ARGS[@]}"; exit 0; fi
   compose_project_running && { echo "⛔ the compose server is up — one GPU process on the card; stop it first: bash $A770B_SERVE_SCRIPT stop" >&2; exit 2; }
   # a host-side server left up (or reached by flipping A770B_SERVE without stopping) also holds the card
-  if pid=$(llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid"); then echo "⛔ a llama-server is up (pid $pid) — one GPU process on the card; stop it first" >&2; exit 2; fi
+  if pid=$(llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid"); then echo "⛔ a llama-server is up (pid $pid) — one GPU process on the card; stop it first: A770B_SERVE=host bash harness/serve_a770_llamacpp.sh stop" >&2; exit 2; fi
   [ -r "$MODEL" ] || { echo "⛔ model not readable: $MODEL (A770B_MODELS=$A770B_MODELS)" >&2; exit 2; }
   echo "▶ $CMD_DISPLAY"
   RAW_FILE=$(mktemp)

@@ -249,6 +249,17 @@ def test_doctor_compose_requires_the_container_runtime(tmp_path):
     assert any(ln.startswith("MISSING docker-absent-xyz compose") for ln in r.stdout.splitlines()), r.stdout
 
 
+def test_doctor_compose_flags_a_missing_env_file(tmp_path):
+    # the envelope cannot interpolate without its image/DRM/GID values: a missing file with the values unset is
+    # a MISSING check, not a note (a false green here let `serve` fail later inside docker compose)
+    env = _doctor_env(tmp_path, A770B_SERVE="compose", A770B_ALLOW_NO_NVTOP="1",
+                      A770B_DOCKER="docker-absent-xyz", A770B_COMPOSE_ENV_FILE=str(tmp_path / "nope.env"))
+    for v in ("A770B_LLAMA_IMAGE", "A770B_DRM_CARD", "A770B_DRM_RENDER", "A770B_RENDER_GID", "A770B_VIDEO_GID"):
+        env.pop(v, None)
+    r = _run_doctor(env)
+    assert any(ln.startswith("MISSING compose env") for ln in r.stdout.splitlines()), r.stdout
+
+
 def test_doctor_flags_missing_when_the_a770_defaults_are_in_force_on_a_non_matching_card(tmp_path):
     # fake nvtop (no device names it as DG2) and a fake llama-server whose --list-devices pins nothing:
     # both A770B_GPU_MATCH and A770B_VK_DEVICE_SELECT are left at this project's default, so doctor must say so.
