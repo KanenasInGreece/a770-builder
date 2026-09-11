@@ -32,7 +32,7 @@
 # last passing depth (AGENTS.md's "four-tokens-a-second rule"); speed.decode_tps/prefill_tps filled from
 # speed.bench.at_depth by depth (kit/PROFILE.md §2); vram_gib_after_load, ram_gb_extra (the host MemAvailable drop
 # across the load), suite (harness/suite_report.py --json on the task rung's results file) and instrument
-# (SUITE-1@<VERSION>) filled in; use_for, fit.write, capability and measured_on left as clearly marked placeholders
+# (SUITE-1@<kit_version>) filled in; use_for, fit.write, capability and measured_on left as clearly marked placeholders
 # IN THE ROW ITSELF (measured_on is a required field of the schema, so it is printed as __TODO__ rather than
 # omitted, unlike the identity fields below) — none of these are ever derived from a measurement, they are written
 # by hand from what the ladder showed (kit/PROFILE.md §2) — and a closing note lists the identity fields (source,
@@ -216,8 +216,9 @@ if [ -n "$SUITE_RESULTS_JSON" ] && [ -f "$SUITE_RESULTS_JSON" ]; then
   SUITE_JSON=$(python3 "$here/suite_report.py" "$SUITE_RESULTS_JSON" --json 2>/dev/null || true)
 fi
 
-VERSION_STR=$(head -1 "$A770B_PROJECT/VERSION" 2>/dev/null || echo unknown)
-INSTRUMENT="SUITE-1@$VERSION_STR"
+INSTRUMENT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1";
+raise SystemExit("kit_version missing") if not (isinstance(v,str) and v) else None
+print("%s@%s" % (s, v))' "${SUITE:-$A770B_PROJECT/kit/suite.json}") || { echo "⛔ kit_version missing from suite.json" >&2; exit 1; }
 
 # ── the last step: read every rung's own output, compute what no single rung produces (useful_ctx by the
 # four-tokens-a-second rule, ram_gb_extra, the speed table), write the ONE ladder results JSON to $OUT, and print

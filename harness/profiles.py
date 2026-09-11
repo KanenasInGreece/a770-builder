@@ -50,17 +50,32 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 from live_backend import read
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = REPO_ROOT / "config" / "profiles.json"
+DEFAULT_SUITE = REPO_ROOT / "kit" / "suite.json"
+
+
+def kit_instrument(suite_path: Optional[Path] = None) -> str:
+    path = Path(suite_path) if suite_path is not None else DEFAULT_SUITE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    suite_id = data.get("suite")
+    version = data.get("kit_version")
+    if not isinstance(suite_id, str) or not suite_id:
+        raise ValueError("suite.json: suite must be a non-empty string")
+    if not isinstance(version, str) or not version:
+        raise ValueError("suite.json: kit_version must be a non-empty string")
+    return f"{suite_id}@{version}"
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SPEED_KEYS = {"8k", "32k", "64k", "100k"}
 KV_VALUES = {"f16", "q8_0", "q4_0"}
 ON_OFF_VALUES = {"on", "off"}
 MODE_VALUES = {"display", "inference"}
+PLACEMENT_VALUES = {"host", "container", "remote"}
 SAMPLING_NUMBER_KEYS = {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"}
 SAMPLING_MODE_VALUES = {"thinking", "instruct"}
 SAMPLING_KEYS = SAMPLING_NUMBER_KEYS | {"mode", "source"}
@@ -89,7 +104,7 @@ TASK_T1_PASS_RE = re.compile(r"^pass(?:\s*\(.*\))?$", re.IGNORECASE)
 STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
-    "category", "weight_class", "measured_on", "card", "backend", "mode",
+    "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
 )
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
@@ -97,7 +112,7 @@ OTHER_KEYS = (
     "instrument", "thinking",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
-OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking"}
+OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -222,6 +237,11 @@ def validate(data) -> list[str]:
                 errors.append(
                     f"{name}: mode {prof['mode']!r} disagrees with file mode {data['mode']!r}"
                 )
+
+        if "placement" in prof:
+            v = prof["placement"]
+            if not isinstance(v, str) or v not in PLACEMENT_VALUES:
+                errors.append(f"{name}: placement must be host, container or remote")
 
         if "kv" in prof and isinstance(prof["kv"], str) and prof["kv"] not in KV_VALUES:
             errors.append(f"{name}: kv must be one of f16, q8_0, q4_0")

@@ -1,5 +1,6 @@
 {
   "suite": "SUITE-1",
+  "kit_version": "1",
   "seat": "kit/seat",
   "hidden_root": "kit/hidden",
   "stages": [

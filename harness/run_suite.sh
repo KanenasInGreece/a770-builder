@@ -123,8 +123,9 @@ REF_HIDDEN_ROOT="$REFDIR/hidden"
 resolve(){ case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$A770B_PROJECT/$1" ;; esac; }
 
 SUITE_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("suite",""))' "$SUITE") || die "suite invalid: $SUITE"
-PROJECT_VERSION=$(head -1 "$A770B_PROJECT/VERSION" 2>/dev/null || echo unknown)
-INSTRUMENT="$SUITE_ID@$PROJECT_VERSION"
+KIT_VERSION=$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("kit_version"); print(v if isinstance(v,str) and v else "")' "$SUITE") || die "suite invalid: $SUITE"
+[ -n "$KIT_VERSION" ] || die "suite.json kit_version missing: $SUITE"
+INSTRUMENT="$SUITE_ID@$KIT_VERSION"
 PROJECT_REV=$(safe_git "$A770B_PROJECT" rev-parse --short HEAD 2>/dev/null || echo unknown)
 SEAT_LABEL=$(realpath -m --relative-to="$A770B_PROJECT" "$KIT_SEAT_SRC" 2>/dev/null || printf '%s' "$KIT_SEAT_SRC")
 SEAT_ID="$SEAT_LABEL@$PROJECT_REV"

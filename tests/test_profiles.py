@@ -1984,3 +1984,51 @@ def test_no_row_asks_for_host_ram():
             extra = prof.get("extra", "")
             assert "--n-cpu-moe" not in extra and "-ncmoe" not in extra, \
                 f"{fpath}: {name}: extra must not contain --n-cpu-moe or -ncmoe"
+
+
+def test_kit_instrument_uses_kit_version_not_product_version(tmp_path):
+    sys.path.insert(0, str(ROOT / "harness"))
+    from profiles import kit_instrument
+    suite = tmp_path / "suite.json"
+    suite.write_text(json.dumps({"suite": "SUITE-1", "kit_version": "1"}), encoding="utf-8")
+    (tmp_path / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+    assert kit_instrument(suite) == "SUITE-1@1"
+
+
+def test_kit_instrument_refuses_missing_kit_version(tmp_path):
+    sys.path.insert(0, str(ROOT / "harness"))
+    from profiles import kit_instrument
+    suite = tmp_path / "suite.json"
+    suite.write_text(json.dumps({"suite": "SUITE-1"}), encoding="utf-8")
+    try:
+        kit_instrument(suite)
+    except ValueError as e:
+        assert "kit_version" in str(e)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_shipped_kit_instrument_is_suite_at_kit_version():
+    sys.path.insert(0, str(ROOT / "harness"))
+    from profiles import kit_instrument
+    product = (ROOT / "VERSION").read_text(encoding="utf-8").splitlines()[0]
+    got = kit_instrument()
+    assert got.startswith("SUITE-1@")
+    assert not got.endswith("@" + product)
+
+
+def test_check_fails_bad_placement(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["placement"] = "disk"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: placement must be host, container or remote" in result.stderr
+
+
+def test_check_passes_placement_host(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["placement"] = "host"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
