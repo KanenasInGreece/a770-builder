@@ -64,7 +64,11 @@ case "$A770B_SERVE" in host|compose) ;; *) echo "⛔ A770B_SERVE must be host or
 : "${A770B_COMPOSE_FILE:=$A770B_PROJECT/compose/a770-vulkan.yaml}"     # the envelope: devices, groups, mounts, port, entrypoint
 : "${A770B_COMPOSE_ENV_FILE:=$A770B_PROJECT/compose/a770-vulkan.env}"  # gitignored: image, PCI nodes, host group ids (getent)
 : "${A770B_COMPOSE_PROJECT:=a770-builder}"                             # the compose project name: its own container namespace
-: "${A770B_DOCKER:=docker}"                                            # the container runtime CLI (podman compose also works)
+: "${A770B_DOCKER:=docker}"                                            # the container runtime CLI (podman compose is untested)
+# The uid:gid the container runs as. It must match the owner of A770B_API_KEY_FILE (mode 600), because the envelope
+# mounts that file read-only; a fixed 1000 would break on a host whose operator is another uid. Defaults to this host.
+: "${A770B_CONTAINER_UID:=$(id -u 2>/dev/null || echo 1000)}"
+: "${A770B_CONTAINER_GID:=$(id -g 2>/dev/null || echo 1000)}"
 case "$A770B_SERVE" in
   compose) : "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_compose.sh}";;
   *)       : "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_a770_llamacpp.sh}";;
@@ -90,7 +94,7 @@ esac
 export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE A770B_RESET_PATTERN
 export A770B_PROFILES A770B_DEFAULT_PROFILE
 # exported for the compose envelope's ${…} interpolation (the values this file is the single source of)
-export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT
+export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT A770B_CONTAINER_UID A770B_CONTAINER_GID
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }
 # a770b_profile_var <profile> <FIELD> — the value of A770B_<PROFILE>_<FIELD> (name upper-cased, - → _); empty if unset

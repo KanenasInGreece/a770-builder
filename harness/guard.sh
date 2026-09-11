@@ -171,9 +171,10 @@ health_status(){ local body word
 compose_project_pids(){
   command -v "$A770B_DOCKER" >/dev/null 2>&1 || return 0
   [ -f "$A770B_COMPOSE_FILE" ] || return 0
-  local id
+  local id p
   for id in $("$A770B_DOCKER" compose -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" ps -q 2>/dev/null); do
-    "$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true
+    p=$("$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true)
+    [ -n "$p" ] && [ "$p" != 0 ] && printf '%s\n' "$p"   # a stopped container has pid 0: not a running server
   done
 }
 # compose_project_running — true when the project has at least one running container.

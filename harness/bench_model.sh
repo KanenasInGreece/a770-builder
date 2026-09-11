@@ -9,9 +9,9 @@ set -euo pipefail
 LABEL="${1:?label}"; GGUF="${2:?gguf}"; CTX="${3:?ctx}"; shift 3 || shift $#
 OUT="$A770B_DATA/results/$LABEL.json"; LOG="$A770B_DATA/logs/llamacpp-a770.log"
 mkdir -p "$A770B_DATA/results"
-bash "$A770B_PROJECT/harness/serve_a770_llamacpp.sh" stop >/dev/null 2>&1 || true
+bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
 t0=$(date +%s.%N)
-bash "$A770B_PROJECT/harness/serve_a770_llamacpp.sh" start "$GGUF" "$CTX" "$@" | tail -1
+bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" "$@" | tail -1
 for _ in $(seq 1 150); do curl -sf --max-time 2 $A770B_HOST:$A770B_PORT/health 2>/dev/null | grep -q '"ok"' && break; kill -0 "$(cat "$A770B_DATA/logs/llamacpp-a770.pid")" 2>/dev/null || { echo "SERVER DIED"; tail -8 "$LOG" | cut -c1-200; exit 1; }; sleep 2; done
 curl -sf $A770B_HOST:$A770B_PORT/health >/dev/null || { echo "not ready"; exit 1; }
 load_s=$(echo "$(date +%s.%N) - $t0" | bc)

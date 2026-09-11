@@ -886,6 +886,15 @@ if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_mod
 then echo "ok   ladder: a bare GGUF with no registry row skips the bench_speed.sh rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
 else echo "FAIL ladder: the no-row GGUF path did not skip bench_speed.sh or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
 fi
+# the ladder's inline instrument computation: a present kit_version must yield SUITE@V, and an absent one must refuse.
+# The old form, `raise SystemExit(...) if not (...) else None`, parsed as `raise (X if cond else None)` and raised
+# None -> TypeError whenever kit_version WAS present, killing every non-dry-run ladder at the final step.
+if ! grep -q 'raise SystemExit' "$here/harness/ladder.sh" \
+  && grep -q '\[ -n "\$INSTRUMENT" \]' "$here/harness/ladder.sh" \
+  && [ "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "$here/kit/suite.json")" = "SUITE-1@1" ]
+then echo "ok   ladder: the instrument line yields SUITE@V for a present kit_version and refuses an absent one"
+else echo "FAIL ladder: the inline instrument computation is wrong or its guard is gone"; fail=1
+fi
 
 # ── run_suite.sh --model/--ctx (item 3): a GGUF with no registry row can still climb the task rung
 rs_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-model-data" bash "$here/harness/run_suite.sh" --model "$t/no-row-model.gguf" --ctx 8192 "$t/rs-model-seat" --dry-run 2>&1)
@@ -946,11 +955,14 @@ printf '#!/usr/bin/env bash\necho \x27{"ok": true}\x27; exit 0\n' > "$cb/bin/cur
 printf '#!/usr/bin/env bash\nexit 0\n' > "$cb/bin/pgrep"; chmod +x "$cb/bin/pgrep"
 printf '#!/usr/bin/env bash\necho \x27[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\x27\n' > "$cb/bin/nvtop"; chmod +x "$cb/bin/nvtop"
 cb_env(){ A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
-  A770B_SERVE=compose A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_API_KEY_FILE="$cb/api.key" \
+  A770B_SERVE=compose A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_MIN_AVAIL_MB=1 A770B_API_KEY_FILE="$cb/api.key" \
   A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" A770B_COMPOSE_ENV_FILE="$cb/a770-vulkan.env" \
+  A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp:full-vulkan" A770B_DRM_CARD=/dev/dri/card0 A770B_DRM_RENDER=/dev/dri/renderD128 \
+  A770B_RENDER_GID=105 A770B_VIDEO_GID=39 \
   A770B_DOCKER=docker FAKE_DOCKER_LOG="$cb/docker.log" PATH="$cb/bin:$PATH" "$@"; }
 cb_plan=$(cb_env bash "$here/harness/serve_compose.sh" plan Qwen3.5-9B-Q4_K_M.gguf 8192 2>&1)
-if printf '%s\n' "$cb_plan" | grep -q '^argv: /app/llama-server$' \
+if printf '%s\n' "$cb_plan" | grep -q '^entrypoint: /app/llama-server$' \
+  && printf '%s\n' "$cb_plan" | grep -q '^argv: -m$' \
   && printf '%s\n' "$cb_plan" | grep -q '/models/Qwen3.5-9B-Q4_K_M.gguf' \
   && printf '%s\n' "$cb_plan" | grep -q -- '--api-key-file' \
   && printf '%s\n' "$cb_plan" | grep -q -- '--force-recreate' \
@@ -964,8 +976,8 @@ if printf '%s\n' "$cb_start" | grep -q 'VRAM after load' && grep -q -- '--force-
 then echo "ok   compose: start recreates (never --no-recreate), enforces the host cap and records the container's host pid"
 else echo "FAIL compose: start did not recreate or did not record the host pid"; printf '%s\n' "$cb_start" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
 fi
-if python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["services"]["llama"]; assert s["entrypoint"]==["/app/llama-server"]; assert s["command"][0]=="/app/llama-server"' "$cb/data/logs/compose-argv.override.json" 2>/dev/null
-then echo "ok   compose: the runtime override carries the server entrypoint and the profile argv, not a baked model"
+if python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["services"]["llama"]; assert s["entrypoint"]==["/app/llama-server"]; assert s["command"][0]=="-m"; assert "/app/llama-server" not in s["command"]' "$cb/data/logs/compose-argv.override.json" 2>/dev/null
+then echo "ok   compose: the runtime override carries the server entrypoint and the profile argv (binary once), not a baked model"
 else echo "FAIL compose: the override is not the expected JSON"; cat "$cb/data/logs/compose-argv.override.json" 2>/dev/null; fail=1
 fi
 cb_doc=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data2" A770B_CARD_MODE=inference \

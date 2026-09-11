@@ -30,16 +30,25 @@ def _make_bin(dir_: Path, name: str, body: str) -> Path:
     return p
 
 
-def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "4242"):
-    """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path)."""
+def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "4242", running: bool = True):
+    """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path).
+
+    The fake docker is stateful: `up` marks a container up, `down` clears it, and `ps -q`/`inspect` answer only
+    while it is up, so a stop really stops and a recreate really recreates.
+    """
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
     log = tmp_path / "docker.log"
+    state = tmp_path / "docker.state"
+    if running:
+        state.write_text("up", encoding="utf-8")
     _make_bin(bin_, "docker", f'''printf '%s\\n' "$*" >> "{log}"
 case " $* " in
   *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
-  *" ps -q "*) printf '%s\\n' "{ps_id}"; exit 0;;
-  *" inspect "*) printf '%s\\n' "{host_pid}"; exit 0;;
+  *" down"*) : > "{state}"; exit 0;;
+  *" up "*) printf up > "{state}"; exit 0;;
+  *" ps -q "*) [ -s "{state}" ] && printf '%s\\n' "{ps_id}"; exit 0;;
+  *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{host_pid}"; exit 0;;
   *) exit 0;;
 esac''')
     _make_bin(bin_, "curl", 'echo \'{"ok": true}\'; exit 0')
@@ -61,9 +70,16 @@ def _env(tmp_path: Path, bin_=None, **overrides) -> dict:
         A770B_CARD_MODE="inference",
         A770B_MODELS=str(models),
         A770B_ALLOW_NO_NVTOP="1",
+        A770B_MIN_AVAIL_MB="1",                 # keep the budget-gate tests hermetic on a small CI box
         A770B_API_KEY_FILE=str(tmp_path / "api.key"),
         A770B_COMPOSE_FILE=str(ENVELOPE),
         A770B_COMPOSE_ENV_FILE=str(tmp_path / "a770-vulkan.env"),
+        # the envelope's image/DRM/GID values, as the gitignored env file would supply them
+        A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp:full-vulkan",
+        A770B_DRM_CARD="/dev/dri/card0",
+        A770B_DRM_RENDER="/dev/dri/renderD128",
+        A770B_RENDER_GID="105",
+        A770B_VIDEO_GID="39",
         A770B_DOCKER="docker",
         A770B_PORT="8093",
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
@@ -87,8 +103,11 @@ def test_plan_builds_the_container_argv_and_touches_no_docker(tmp_path):
     bin_, log = _fake_runtime(tmp_path)
     r = _run(_env(tmp_path, bin_), "plan", GGUF, "8192")
     assert r.returncode == 0, r.stderr
+    assert "entrypoint: /app/llama-server" in r.stdout
     argv = _argv_lines(r.stdout)
-    assert argv[0] == "/app/llama-server"
+    # the binary is the ENTRYPOINT; it must not also be an argv word, or compose runs entrypoint + command and
+    # execs /app/llama-server /app/llama-server …
+    assert argv[0] == "-m" and "/app/llama-server" not in argv
     assert f"/models/{GGUF}" in argv
     assert "/run/a770b/api.key" in argv
     assert argv[argv.index("--host") + 1] == "0.0.0.0"
@@ -131,8 +150,11 @@ def test_start_recreates_never_no_recreate_and_writes_the_host_pid(tmp_path):
     assert any("--force-recreate" in c for c in up), calls
     assert not any("--no-recreate" in c for c in calls), calls
     ov = json.loads((Path(env["A770B_DATA"]) / "logs" / "compose-argv.override.json").read_text(encoding="utf-8"))
-    cmd = ov["services"]["llama"]["command"]
-    assert cmd[0] == "/app/llama-server" and f"/models/{GGUF}" in cmd
+    svc = ov["services"]["llama"]
+    cmd = svc["command"]
+    # entrypoint + command must be ONE invocation: the binary is the entrypoint, never the first argv word
+    assert svc["entrypoint"] == ["/app/llama-server"]
+    assert cmd[0] == "-m" and f"/models/{GGUF}" in cmd and "/app/llama-server" not in cmd
     pidf = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid"
     assert pidf.read_text(encoding="utf-8").strip() == "4242"
 

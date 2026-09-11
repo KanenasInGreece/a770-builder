@@ -217,8 +217,8 @@ if [ -n "$SUITE_RESULTS_JSON" ] && [ -f "$SUITE_RESULTS_JSON" ]; then
 fi
 
 INSTRUMENT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1";
-raise SystemExit("kit_version missing") if not (isinstance(v,str) and v) else None
-print("%s@%s" % (s, v))' "${SUITE:-$A770B_PROJECT/kit/suite.json}") || { echo "⛔ kit_version missing from suite.json" >&2; exit 1; }
+print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "${SUITE:-$A770B_PROJECT/kit/suite.json}") || { echo "⛔ suite.json is not readable or not valid JSON: ${SUITE:-$A770B_PROJECT/kit/suite.json}" >&2; exit 1; }
+[ -n "$INSTRUMENT" ] || { echo "⛔ kit_version missing from suite.json" >&2; exit 1; }
 
 # ── the last step: read every rung's own output, compute what no single rung produces (useful_ctx by the
 # four-tokens-a-second rule, ram_gb_extra, the speed table), write the ONE ladder results JSON to $OUT, and print

@@ -17,7 +17,7 @@ services:
   llama:
     image: ${A770B_LLAMA_IMAGE}
     restart: "no"
-    user: "1000:1000"
+    user: "${A770B_CONTAINER_UID}:${A770B_CONTAINER_GID}"
     group_add:
       - "${A770B_RENDER_GID}"
       - "${A770B_VIDEO_GID}"

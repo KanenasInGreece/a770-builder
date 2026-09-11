@@ -159,7 +159,7 @@ status(){ local c; c=$(current); version 2>&1
 }
 # doctor — what this machine lacks to run the seat, one line per check; never stops at the first MISSING. No run lock, no server.
 doctor(){
-  local missing=0 t p m mp n warn_list w u hint _cap_default _vsel_n
+  local missing=0 t p m mp n warn_list w u hint _cap_default _vsel_n _envfile_ok _v
   command -v python3 >/dev/null 2>&1 && echo "ok   python3: on PATH" || { echo "MISSING python3: install Python 3 (the registry, the renderer and the capture use it)"; missing=$((missing+1)); }
   for t in bwrap socat uv curl git flock timeout; do
     command -v "$t" >/dev/null 2>&1 && echo "ok   $t: on PATH" || { echo "MISSING $t: install $t"; missing=$((missing+1)); }
@@ -173,7 +173,12 @@ doctor(){
       echo "MISSING $A770B_DOCKER compose: A770B_SERVE=compose needs the container runtime and its compose plugin on PATH"; missing=$((missing+1))
     fi
     [ -f "$A770B_COMPOSE_FILE" ] && echo "ok   compose envelope: $A770B_COMPOSE_FILE" || { echo "MISSING compose envelope: $A770B_COMPOSE_FILE not found"; missing=$((missing+1)); }
-    [ -f "$A770B_COMPOSE_ENV_FILE" ] && echo "ok   compose env: $A770B_COMPOSE_ENV_FILE" || echo "note compose env: $A770B_COMPOSE_ENV_FILE not found — copy compose/a770-vulkan.env.example (PCI nodes and host group ids)"
+    # the envelope cannot interpolate without its image/DRM/GID values: the gitignored env file supplies them, or
+    # they are set in the environment (builder.env is exported). Either way, a missing value is a MISSING check.
+    _envfile_ok=1; for _v in A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID; do [ -n "${!_v:-}" ] || _envfile_ok=0; done
+    if [ -f "$A770B_COMPOSE_ENV_FILE" ]; then echo "ok   compose env: $A770B_COMPOSE_ENV_FILE"
+    elif [ "$_envfile_ok" = 1 ]; then echo "ok   compose env: the envelope's image/DRM/GID values are set in the environment"
+    else echo "MISSING compose env: $A770B_COMPOSE_ENV_FILE not found and the envelope's image/DRM/GID values are not all set — copy compose/a770-vulkan.env.example"; missing=$((missing+1)); fi
   else
     [ -x "$A770B_LLAMA_BIN" ] && echo "ok   llama-server at $A770B_LLAMA_BIN" || { echo "MISSING llama-server at $A770B_LLAMA_BIN: build llama.cpp with the Vulkan backend, or set A770B_LLAMA_BIN"; missing=$((missing+1)); }
   fi

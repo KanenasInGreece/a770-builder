@@ -12,7 +12,7 @@ LABEL="${1:?label}"; GGUF="${2:?gguf}"; CTX="${3:?ctx}"; shift 3 || shift $#
 # in the tree. A protected tree must lose nothing, not even a rename, before it is refused.
 WT=$(guard_worktree "$A770B_SEAT") || exit 2; R=$A770B_DATA/results
 echo "═══ ROW $LABEL — $(date -Is)"
-if ! bash "$A770B_PROJECT/harness/bench_model.sh" "$LABEL" "$GGUF" "$CTX" "$@"; then echo "✗ bench failed for $LABEL"; bash "$A770B_PROJECT/harness/serve_a770_llamacpp.sh" stop; exit 1; fi
+if ! bash "$A770B_PROJECT/harness/bench_model.sh" "$LABEL" "$GGUF" "$CTX" "$@"; then echo "✗ bench failed for $LABEL"; bash "$A770B_SERVE_SCRIPT" stop; exit 1; fi
 python3 -c "import json,sys; r=json.load(open('$R/$LABEL.json')); sys.exit(0 if r.get('quality_ok') else 1)" || { echo "✗ quality gate failed for $LABEL — no coding task"; exit 1; }
 # coding task
 [ "${AGENTS_ASIDE:-1}" = 1 ] && [ -f "$WT/AGENTS.md" ] && mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"

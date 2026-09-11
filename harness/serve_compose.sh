@@ -26,8 +26,10 @@ _compose(){
   "$A770B_DOCKER" compose "${envf[@]}" -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" "$@"
 }
 # _build_argv <model-in-container> <ctx> [extra…] — the measured Vulkan flag set, mirrored from
-# serve_a770_llamacpp.sh:49-51 with the three container differences only: the binary, the /models path, and the
-# in-container host/port/key path (the envelope mounts the key). Everything else is the host server's own argv.
+# serve_a770_llamacpp.sh:49-51 with the container differences only: the /models path and the in-container
+# host/port/key path (the envelope mounts the key). The binary is NOT an argv word here: it is the container's
+# ENTRYPOINT (/app/llama-server), and compose runs entrypoint + command, so a binary in `command` too would exec
+# `/app/llama-server /app/llama-server …`. The host server's own flags are otherwise unchanged.
 _build_argv(){
   local model="$1" ctx="$2"; shift 2
   local -a thinking=()
@@ -37,7 +39,7 @@ _build_argv(){
   [ -n "${THINKING_BUDGET:-}" ] && thinking+=(--reasoning-budget "$THINKING_BUDGET")
   [ -n "${THINKING_BUDGET_MESSAGE:-}" ] && thinking+=(--reasoning-budget-message "$THINKING_BUDGET_MESSAGE")
   [ "${THINKING_PRESERVE:-}" = "false" ] && thinking+=(--no-reasoning-preserve)
-  ARGV=(/app/llama-server -m "$model" --alias "$A770B_ALIAS" --host 0.0.0.0 --port 8080 --api-key-file "$KCONTAINER" \
+  ARGV=(-m "$model" --alias "$A770B_ALIAS" --host 0.0.0.0 --port 8080 --api-key-file "$KCONTAINER" \
     -ngl 99 -c "$ctx" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --no-mmap -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
     --jinja "${thinking[@]}" --reasoning-format deepseek "$@")
 }
@@ -53,6 +55,7 @@ case "${1:-}" in
   stop)
     _compose down >/dev/null 2>&1 || true
     rm -f "$PIDFILE" "$MARK" "$SIDECAR"
+    if compose_project_running; then echo "⛔ the container is still running after down — the card is NOT free; check the docker daemon" >&2; exit 3; fi
     echo "stopped (compose project $A770B_COMPOSE_PROJECT)"
     exit 0;;
   status)
@@ -86,11 +89,20 @@ MODEL_IN_CONTAINER="/models/$(basename "$MODEL")"
 _build_argv "$MODEL_IN_CONTAINER" "$CTX" "$@"
 
 if [ "$MODE" = plan ]; then
+  echo "entrypoint: /app/llama-server"
   printf 'argv: %q\n' "${ARGV[@]}"
-  echo "compose: $A770B_DOCKER compose -p $A770B_COMPOSE_PROJECT -f $A770B_COMPOSE_FILE -f $OVERRIDE up -d --force-recreate"
+  PLAN_ENVF=""; [ -f "$A770B_COMPOSE_ENV_FILE" ] && PLAN_ENVF="--env-file $A770B_COMPOSE_ENV_FILE "
+  echo "compose: $A770B_DOCKER compose ${PLAN_ENVF}-p $A770B_COMPOSE_PROJECT -f $A770B_COMPOSE_FILE -f $OVERRIDE up -d --force-recreate"
   exit 0
 fi
 
+# the envelope cannot interpolate without its image/DRM/GID values: the gitignored env file supplies them, or the
+# environment does; refuse early and name the fix rather than fail inside `docker compose up`
+if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
+  for _v in A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID; do
+    [ -n "${!_v:-}" ] || { echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy compose/a770-vulkan.env.example and edit it" >&2; exit 2; }
+  done
+fi
 # a start is a recreate: take any existing container of this project down first, so the budget gate reads the card
 # free (a running container's VRAM is this project's, not a foreign server) and `up --force-recreate` starts from
 # the profile just built — a profile switch must not silently keep the old model.
@@ -106,7 +118,10 @@ if ! curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>
   _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3
 fi
 CPID=$(_container_host_pid)
-[ -n "$CPID" ] && printf '%s\n' "$CPID" > "$PIDFILE" || rm -f "$PIDFILE"
+# a healthy container must report a host pid: without it the sidecar, the menu and the cap would all be blind, so an
+# empty pid is a failed start, not a silent success
+[ -n "$CPID" ] || { echo "⛔ the container answers /health but reports no host pid — tearing it down" >&2; _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3; }
+printf '%s\n' "$CPID" > "$PIDFILE"
 printf '%s\n' "$MODEL" > "$MARK"
 used=$(gpu_used_gib)
 if python3 -c "import sys; sys.exit(0 if float('$used') > float('$A770B_VRAM_CAP_GIB') else 1)"; then

@@ -22,6 +22,9 @@
 #                              log warns this may use more tokens), so "true" or unset adds nothing
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
+# the host server is for A770B_SERVE=host; a compose placement must not fall back to it (the card would be held by
+# a host process the compose stop cannot reach). The compose script carries the mirror guard.
+[ "$A770B_SERVE" = host ] || { echo "⛔ serve_a770_llamacpp.sh is for A770B_SERVE=host (it is '$A770B_SERVE') — use serve_compose.sh" >&2; exit 2; }
 PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; LOG="$A770B_DATA/logs/llamacpp-a770.log"; MARK="$A770B_DATA/logs/llamacpp-a770.model"; SIDECAR="$A770B_DATA/logs/live-backend.json"
 case "${1:-}" in
   stop)   if pid=$(llama_pid_alive "$PIDFILE"); then kill "$pid"; echo "stopped pid $pid"; else echo "not running (or pidfile stale — nothing killed)"; fi; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 0;;
