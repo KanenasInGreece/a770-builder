@@ -92,8 +92,9 @@ exercises, needing no second repository at all. `harness/run_suite.sh <profile>`
 live checkout of this repository and never a clone of it either, since the model must not read `harness/` — as the
 run's own working tree, runs each stage of the standard suite (the design note, the front end, the backend, the
 C++ optimisation) and the three reference exercises through the skill and `verify`, and writes a results file that
-names its instrument. A row's task numbers carry that instrument (`instrument: SUITE-1@0.2.0`, or `seat:
-kit/seat@<commit>`) and are compared only against rows carrying the same one; see *The standard suite* below.
+names its instrument. A row's task numbers carry that instrument (`instrument: SUITE-1@1` from `kit/suite.json`'s
+`kit_version`, or `seat: kit/seat@<commit>`) and are compared only against rows carrying the same one; see *The
+standard suite* below. The kit version moves when the tests or graders change, not when the product version does.
 
 Every number in the ledger and the registries measured before this release carries a different instrument: the
 seat was a standalone clone of the public Shared Memory repository, `https://github.com/KanenasInGreece/Shared_Memory`,
@@ -119,7 +120,7 @@ git clone https://github.com/KanenasInGreece/a770-builder <a second seat> && git
 — the harness needs nothing from either repository at run time beyond what a brief names: each is the target of a
 task, not a dependency of the harness. Comparability is the point of pinning an instrument: a different seat, a
 different commit or a different suite version is a different instrument, and a row is only ever set beside another
-row measured on the same one. A reader who profiles a model of their own against the kit at the same release's tag
+row measured on the same one. A reader who profiles a model of their own against the same `kit_version`
 gets numbers comparable with the ledger; a reader who only wants a row for their own repository writes their own
 brief from the template and states plainly that the numbers are not comparable — the row is still theirs, and the
 profile is still the interface, but it is a different instrument.

@@ -8,8 +8,8 @@ field) — comparability needs both to match, not the instrument alone, and ever
 below states both. Every row measured before this release carries the same instrument: the seat being a standalone
 clone of the public Shared Memory repository at commit `3c8e2bb` (`seat: Shared_Memory@3c8e2bb`), measured on
 `Arc A770 16 GB, llama.cpp b10805 Vulkan`, and stays comparable only with the other rows sharing both. From this
-release a new candidate is qualified on the kit inside this repository instead (`instrument: SUITE-1@<the project's
-own version>`), a different instrument again — no registry row has yet been measured on it, and the first one will
+release a new candidate is qualified on the kit inside this repository instead (`instrument: SUITE-1@<kit_version>`
+from `kit/suite.json`), a different instrument again — no registry row has yet been measured on it, and the first one will
 be; the free-card table below (*On the same card with nothing else on it*) already carries two measurements taken on
 it, each plainly marked as such and neither a registry row: measurements, not rulings. The seat runs in one of two
 card modes, and each reads its own registry. Display-safe reads
@@ -171,7 +171,7 @@ The full guide for an agent that has a GGUF and this harness and wants a model o
 `harness/ladder.sh <profile-or-gguf> --ctx N …` against the kit inside this repository (`kit/`, the ladder's task
 rung from this release on — no second repository needed; `AGENTS.md`, *The ladder*, is what each rung decides and
 what still needs a human), pick up the printed registry row and fill in what it marks `__TODO__` by hand, add the
-row here with its numbers and its instrument (`instrument: SUITE-1@<the project's own version>`) AND its
+row here with its numbers and its instrument (`instrument: SUITE-1@<kit_version>`) AND its
 `measured_on`, then give it a profile in the mode's registry (`config/profiles.json` or
 `config/profiles.inference.json`) with its measured card and its `suite` object, render the skill's tables from it,
 and move the version. A row reproducing one of the rows above instead runs `harness/run_one.sh` against the pinned
