@@ -115,7 +115,9 @@ def test_plan_builds_the_container_argv_and_touches_no_docker(tmp_path):
     assert argv[argv.index("--host") + 1] == "0.0.0.0"
     assert argv[argv.index("--port") + 1] == "8080"
     assert argv[argv.index("-ub") + 1] == "512"
-    assert "--no-mmap" in argv
+    # --no-mmap was removed upstream (the image rejects it); --load-mode none is the replacement
+    assert "--no-mmap" not in argv
+    assert argv[argv.index("--load-mode") + 1] == "none"
     assert not log.exists(), "plan must not invoke docker"
 
 

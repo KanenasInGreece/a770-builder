@@ -28,7 +28,7 @@ of `harness/run_one.sh`; on the kit instrument, the same four gates in one run o
 (`AGENTS.md`, *The ladder*) — and every row below states which instrument and which card (`measured_on`) it
 cleared them on, since a gate cleared on one is not evidence about the other:
 
-1. **It serves under the card's rules**: llama.cpp with the Vulkan backend, `-fa on`, `--no-mmap`, `-ngl 99`,
+1. **It serves under the card's rules**: llama.cpp with the Vulkan backend, `-fa on`, `--load-mode none`, `-ngl 99`,
    `--parallel 1`, `-b 2048 -ub 512`, quantised KV, at least 80k of context and at most the mode's cap after load on a
    16 GB card (13 GiB on one that also draws the desktop, 15.3 on one that draws nothing), with zero GPU engine resets.
 2. **It answers**: correct greedy answers on a three-prompt sanity gate and a coherent one-sentence summary after a

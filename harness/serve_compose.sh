@@ -40,7 +40,7 @@ _build_argv(){
   [ -n "${THINKING_BUDGET_MESSAGE:-}" ] && thinking+=(--reasoning-budget-message "$THINKING_BUDGET_MESSAGE")
   [ "${THINKING_PRESERVE:-}" = "false" ] && thinking+=(--no-reasoning-preserve)
   ARGV=(-m "$model" --alias "$A770B_ALIAS" --host 0.0.0.0 --port 8080 --api-key-file "$KCONTAINER" \
-    -ngl 99 -c "$ctx" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --no-mmap -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
+    -ngl 99 -c "$ctx" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --load-mode none -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
     --jinja "${thinking[@]}" --reasoning-format deepseek "$@")
 }
 # _container_host_pid — the host pid of the running compose container (empty when none); the sidecar and the

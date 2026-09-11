@@ -68,7 +68,7 @@ CPU that is not otherwise busy.
 Some things are not re-measured for every row, settled once. Flash attention is on for every family but one: every
 Gemma 4 model measured here collapsed on long prefill and reset the GPU with it on, and ran clean with it off;
 llama.cpp cannot quantise the V cache without flash attention, so a Gemma row's V cache runs at f16 regardless of
-K. `--no-mmap` is always set, one process holds the card at a time, and `-ub 512` holds in both card modes. No
+K. `--load-mode none` is always set, one process holds the card at a time, and `-ub 512` holds in both card modes. No
 speculative decoding is used in any form tried — a draft model and the multi-token-prediction heads of two Qwen
 families both made decode slower, not faster.
 
