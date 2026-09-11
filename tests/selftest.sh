@@ -119,7 +119,7 @@ for st in s0-pass s1-fail s2-note ref-cpp-example; do
   printf '{}' > "$ku3/tasks/$st.spec.json"
 done
 cat > "$ku3/suite.json" <<JSON
-{"suite": "SUITE-TEST", "stages": [
+{"suite": "SUITE-TEST", "kit_version": "1", "stages": [
   {"id": "s0-pass", "language": "python", "brief": "$ku3/tasks/s0-pass.md", "spec": "$ku3/tasks/s0-pass.spec.json",
    "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}},
   {"id": "s1-fail", "language": "python", "brief": "$ku3/tasks/s1-fail.md", "spec": "$ku3/tasks/s1-fail.spec.json",
@@ -354,7 +354,7 @@ kut="$t/kutimeout"; mkdir -p "$kut/tasks" "$kut/seat"
 echo "fixture" > "$kut/seat/README.md"
 echo "brief" > "$kut/tasks/t0-slow.md"; printf '{}' > "$kut/tasks/t0-slow.spec.json"
 cat > "$kut/suite.json" <<JSON
-{"suite": "SUITE-TIMEOUT", "stages": [
+{"suite": "SUITE-TIMEOUT", "kit_version": "1", "stages": [
   {"id": "t0-slow", "language": "python", "brief": "$kut/tasks/t0-slow.md", "spec": "$kut/tasks/t0-slow.spec.json",
    "grader": {"working": null, "conformance": null, "budget_lines": 100, "rubric": null}}
 ]}
