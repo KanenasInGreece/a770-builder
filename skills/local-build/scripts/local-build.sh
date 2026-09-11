@@ -13,7 +13,7 @@
 # ${XDG_CONFIG_HOME:-~/.config}/a770-builder/builder.env, then the default ~/local-ai/A770_Builder. Every other path
 # and knob comes from the project's harness/env.sh (see config/builder.env.example).
 set -uo pipefail
-SKILL_VERSION=0.2.1            # the version of THIS installed copy; the project's VERSION file must match (see `version`)
+SKILL_VERSION=0.2.2            # the version of THIS installed copy; the project's VERSION file must match (see `version`)
 die(){ echo "⛔ $*" >&2; exit 2; }
 _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/builder.env"
 if [ -z "${A770B_PROJECT:-}" ] && [ -f "$_cfg" ]; then A770B_PROJECT=$(sed -nE 's/^[[:space:]]*A770B_PROJECT=([^#]*).*/\1/p' "$_cfg" | tail -1 | tr -d '"' | sed "s#^~#$HOME#"); fi
