@@ -21,9 +21,13 @@ services:
     group_add:
       - "${A770B_RENDER_GID}"
       - "${A770B_VIDEO_GID}"
+    # long syntax: the host path is a PCI by-path node, and its colon (`pci-0000:0b:00.0-render`) makes compose's
+    # short `host:container` form ambiguous ("confusing device mapping, please use long syntax")
     devices:
-      - "${A770B_DRM_CARD}:/dev/dri/card0"
-      - "${A770B_DRM_RENDER}:/dev/dri/renderD128"
+      - source: "${A770B_DRM_CARD}"
+        target: /dev/dri/card0
+      - source: "${A770B_DRM_RENDER}"
+        target: /dev/dri/renderD128
     volumes:
       - "${A770B_MODELS}:/models:ro"
       - "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro"

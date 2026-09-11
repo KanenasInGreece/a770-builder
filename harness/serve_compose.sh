@@ -115,7 +115,11 @@ budget_gate || exit 1
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
 python3 "$(dirname "$0")/compose_override.py" --out "$OVERRIDE" -- "${ARGV[@]}"
 # recreate, never --no-recreate: a profile change must replace the container
-_compose -f "$OVERRIDE" up -d --force-recreate
+if ! _compose -f "$OVERRIDE" up -d --force-recreate; then
+  echo "⛔ docker compose up failed — the container did not start (docker's error is above); nothing was left running" >&2
+  rm -f "$PIDFILE" "$MARK" "$SIDECAR"
+  exit 1
+fi
 for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
 if ! curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1; then
   echo "⛔ the container did not answer /health — read: $A770B_DOCKER compose -p $A770B_COMPOSE_PROJECT logs $CONTAINER" >&2

@@ -238,6 +238,15 @@ def test_envelope_sets_the_server_entrypoint_binds_loopback_and_bakes_no_model()
     assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
 
 
+def test_envelope_devices_use_long_syntax_for_colon_bearing_paths():
+    # the host node is a PCI by-path whose name contains a colon (pci-0000:0b:00.0-render); compose's short
+    # `host:container` form is then ambiguous and it refuses with "confusing device mapping, please use long syntax"
+    text = ENVELOPE.read_text(encoding="utf-8")
+    assert 'source: "${A770B_DRM_CARD}"' in text and "target: /dev/dri/card0" in text
+    assert 'source: "${A770B_DRM_RENDER}"' in text and "target: /dev/dri/renderD128" in text
+    assert "${A770B_DRM_CARD}:/dev/dri" not in text
+
+
 def test_compose_env_example_bakes_no_model_or_ctx():
     text = ENV_EXAMPLE.read_text(encoding="utf-8")
     assert "A770B_MODEL=" not in text and "A770B_CTX=" not in text

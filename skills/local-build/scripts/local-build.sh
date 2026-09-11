@@ -101,7 +101,7 @@ _serve_start_or_die(){
   local rc=0; _serve_start || rc=$?
   [ "$rc" = 0 ] && return 0
   [ "$rc" = 2 ] && die "server not healthy after 180 s"
-  die "server did not start (budget gate or VRAM cap refused — see above)"
+  die "server did not start — see the error above (a budget-gate or VRAM-cap refusal, or the server's own failure)"
 }
 serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve

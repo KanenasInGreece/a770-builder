@@ -49,7 +49,7 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_GPU_MATCH:=DG2}"                             # substring of the card's name in `nvtop -s`, for VRAM readings and the cap
 : "${A770B_RESET_PATTERN:=engine reset|timedout}"       # kernel-log regex (grep -ciE) for a GPU reset; this is Intel's Xe driver wording — on
                                                           # a non-Intel driver set this to yours (see config/builder.env.example for how to find it)
-: "${A770B_PORT:=8093}";  : "${A770B_HOST:=127.0.0.1}";  : "${A770B_ALIAS:=local-builder}"
+: "${A770B_PORT:=7890}";  : "${A770B_HOST:=127.0.0.1}";  : "${A770B_ALIAS:=local-builder}"
 : "${A770B_UBATCH:=512}";  : "${A770B_BATCH:=2048}"     # ubatch stays 512 in both modes (raising it gained 6 percent prefill when measured)
 : "${A770B_API_KEY_FILE:=${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/api.key}"   # the server's API key (one line, mode 600); created on first serve
 : "${A770B_ALLOW_NO_NVTOP:=0}"                           # 1 = start without VRAM readings (NOT on a card that draws a desktop)
