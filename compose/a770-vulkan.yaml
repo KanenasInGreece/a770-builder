@@ -23,11 +23,16 @@ services:
       - "${A770B_VIDEO_GID}"
     # long syntax: the host path is a PCI by-path node, and its colon (`pci-0000:0b:00.0-render`) makes compose's
     # short `host:container` form ambiguous ("confusing device mapping, please use long syntax")
+    # long syntax: the host path is a PCI by-path node, and its colon (`pci-0000:0b:00.0-render`) makes compose's
+    # short `host:container` form ambiguous. `permissions` is the cgroup access field — omitting it leaves runc's
+    # device-access rule empty ("device access ... field cannot be empty"), so it is stated explicitly.
     devices:
       - source: "${A770B_DRM_CARD}"
         target: /dev/dri/card0
+        permissions: "rwm"
       - source: "${A770B_DRM_RENDER}"
         target: /dev/dri/renderD128
+        permissions: "rwm"
     volumes:
       - "${A770B_MODELS}:/models:ro"
       - "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro"

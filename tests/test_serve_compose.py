@@ -245,6 +245,8 @@ def test_envelope_devices_use_long_syntax_for_colon_bearing_paths():
     assert 'source: "${A770B_DRM_CARD}"' in text and "target: /dev/dri/card0" in text
     assert 'source: "${A770B_DRM_RENDER}"' in text and "target: /dev/dri/renderD128" in text
     assert "${A770B_DRM_CARD}:/dev/dri" not in text
+    # permissions is the cgroup access field; omitting it leaves runc's rule empty
+    assert text.count('permissions: "rwm"') == 2
 
 
 def test_compose_env_example_bakes_no_model_or_ctx():
