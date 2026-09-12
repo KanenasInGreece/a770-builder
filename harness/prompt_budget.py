@@ -64,7 +64,7 @@ def build_prompt(corpus, chars, plant, plant_at):
 
 
 def fit(args):
-    url = args.url or f"http://{os.environ.get('A770B_HOST', '127.0.0.1')}:{os.environ.get('A770B_PORT', '8093')}"
+    url = args.url or f"http://{os.environ.get('A770B_HOST', '127.0.0.1')}:{os.environ.get('A770B_PORT', '7890')}"
     key = args.key or ""
     corpus = open(args.corpus, encoding="utf-8", errors="ignore").read()
     plant = open(args.plant_file, encoding="utf-8", errors="ignore").read() if args.plant_file else ""

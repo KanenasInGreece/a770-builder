@@ -994,6 +994,16 @@ if grep -q 'entrypoint: \["/app/llama-server"\]' "$here/compose/a770-vulkan.yaml
 then echo "ok   compose: the tracked envelope sets the server entrypoint, binds loopback and bakes no model or ctx"
 else echo "FAIL compose: the tracked envelope is not as expected"; fail=1
 fi
+if grep -q -- '-fa on --load-mode none' "$here/harness/serve_a770_llamacpp.sh" \
+  && ! grep -qE -- '^[^#]*--no-mmap' "$here/harness/serve_a770_llamacpp.sh"
+then echo "ok   serve: host serve passes -fa on --load-mode none and has dropped --no-mmap"
+else echo "FAIL serve: host serve does not pass -fa on --load-mode none or still contains --no-mmap"; fail=1
+fi
+if ! grep -q 'budget gate or VRAM cap refused' "$here/skills/local-build/scripts/local-build.sh" \
+  && grep -q 'see the error above' "$here/skills/local-build/scripts/local-build.sh"
+then echo "ok   skill: local-build.sh has dropped the old cause-claiming wording"
+else echo "FAIL skill: local-build.sh's failure wording is not the hedged replacement (old claim present, or 'see the error above' missing)"; fail=1
+fi
 
 # the skill copy finds its own checkout: with A770B_PROJECT unset and no builder.env, a copy that sits inside a
 # checkout resolves to that checkout (so running a branch's script tests the branch); an installed copy, which is

@@ -31,7 +31,7 @@ def _make_bin(dir_: Path, name: str, body: str) -> Path:
 
 
 def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "4242", running: bool = True,
-                  down_clears: bool = True):
+                  down_clears: bool = True, up_fails: bool = False):
     """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path).
 
     The fake docker is stateful: `up` marks a container up, `down` clears it (unless down_clears is False), and
@@ -44,11 +44,12 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
     if running:
         state.write_text("up", encoding="utf-8")
     down_body = f': > "{state}"; exit 0;;' if down_clears else 'exit 0;;'
+    up_body = 'echo "docker compose up failed" >&2; exit 1;;' if up_fails else f'printf up > "{state}"; exit 0;;'
     _make_bin(bin_, "docker", f'''printf '%s\\n' "$*" >> "{log}"
 case " $* " in
   *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
   *" down"*) {down_body}
-  *" up "*) printf up > "{state}"; exit 0;;
+  *" up "*) {up_body}
   *" ps -q "*) [ -s "{state}" ] && printf '%s\\n' "{ps_id}"; exit 0;;
   *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{host_pid}"; exit 0;;
   *) exit 0;;
@@ -83,7 +84,7 @@ def _env(tmp_path: Path, bin_=None, **overrides) -> dict:
         A770B_RENDER_GID="105",
         A770B_VIDEO_GID="39",
         A770B_DOCKER="docker",
-        A770B_PORT="8093",
+        A770B_PORT="7890",
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
         FAKE_PGREP="",
     )
@@ -199,6 +200,14 @@ def test_start_fails_when_the_container_reports_no_live_pid(tmp_path):
         r = _run(_env(d, bin_), "start", GGUF, "8192")
         assert r.returncode == 3, (dead, r.stdout, r.stderr)
         assert not (Path(d) / "data" / "logs" / "llamacpp-a770.pid").exists()
+
+
+def test_start_reports_a_failed_up_plainly(tmp_path):
+    bin_, log = _fake_runtime(tmp_path, up_fails=True)
+    r = _run(_env(tmp_path, bin_), "start", GGUF, "8192")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "⛔ docker compose up failed" in r.stderr
+    assert any(" up " in f" {c} " for c in log.read_text(encoding="utf-8").splitlines())
 
 
 def test_bench_is_a_one_shot_llama_bench_in_the_same_image(tmp_path):
