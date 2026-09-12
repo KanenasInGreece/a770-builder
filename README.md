@@ -57,8 +57,9 @@ load and the live-backend sidecar stay on the host. `restart: "no"` means a rebo
 with `bash skills/local-build/scripts/local-build.sh stop`. Do not start it with a bare `docker compose up`: that
 skips the profile argv, the budget gate, the VRAM cap and the sidecar, and `--no-recreate` would keep the old model.
 The image is `full-vulkan` (not `server-vulkan`, which has no `llama-bench`), so the speed rung's bench runs as a
-one-shot in the same container after the server is stopped. Passthrough is unmeasured until a host brings it up;
-pin the image by digest after the first pull.
+one-shot in the same container after the server is stopped. Passthrough is unmeasured until a host brings it up.
+`compose/a770-vulkan.env` (copied from `compose/a770-vulkan.env.example`) pins the image by digest so every host runs
+the same bytes; `local-build.sh doctor` warns, without failing, while that line is still the floating tag.
 
 The repository holds a coding-worker harness with two card modes — display-safe (the tested default, under a 13 GiB
 VRAM cap, for a card that also drives the desktop) and pure-inference (under a 15.3 GiB cap, for a card with nothing

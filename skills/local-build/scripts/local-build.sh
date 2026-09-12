@@ -167,7 +167,7 @@ status(){ local c; c=$(current); version 2>&1
 }
 # doctor — what this machine lacks to run the seat, one line per check; never stops at the first MISSING. No run lock, no server.
 doctor(){
-  local missing=0 t p m mp n warn_list w u hint _cap_default _vsel_n _envfile_ok _v
+  local missing=0 t p m mp n warn_list w u hint _cap_default _vsel_n _envfile_ok _v _img
   command -v python3 >/dev/null 2>&1 && echo "ok   python3: on PATH" || { echo "MISSING python3: install Python 3 (the registry, the renderer and the capture use it)"; missing=$((missing+1)); }
   for t in bwrap socat uv curl git flock timeout; do
     command -v "$t" >/dev/null 2>&1 && echo "ok   $t: on PATH" || { echo "MISSING $t: install $t"; missing=$((missing+1)); }
@@ -187,6 +187,19 @@ doctor(){
     if [ -f "$A770B_COMPOSE_ENV_FILE" ]; then echo "ok   compose env: $A770B_COMPOSE_ENV_FILE"
     elif [ "$_envfile_ok" = 1 ]; then echo "ok   compose env: the envelope's image/DRM/GID values are set in the environment"
     else echo "MISSING compose env: $A770B_COMPOSE_ENV_FILE not found and the envelope's image/DRM/GID values are not all set — copy compose/a770-vulkan.env.example"; missing=$((missing+1)); fi
+    # A floating tag can be moved by upstream at any time; the plan pins the exact bytes by digest after the first
+    # pull. Warn, never fail: the first pull legitimately starts from the tag, and a digest silences this. The
+    # environment wins over the gitignored env file, so read the value the envelope will actually interpolate.
+    _img="${A770B_LLAMA_IMAGE:-}"
+    if [ -z "$_img" ] && [ -f "$A770B_COMPOSE_ENV_FILE" ]; then
+      _img=$(grep -E '^[[:space:]]*A770B_LLAMA_IMAGE=' "$A770B_COMPOSE_ENV_FILE" | tail -n 1 | cut -d= -f2-)
+    fi
+    _img="${_img%\"}"; _img="${_img#\"}"; _img="${_img%\'}"; _img="${_img#\'}"
+    case "$_img" in
+      *@sha256:*) : ;;   # pinned: name@sha256:<digest> names exactly one image, so nothing to warn about
+      "") : ;;           # unset is already a MISSING above; do not report the same gap twice
+      *) echo "WARN image: A770B_LLAMA_IMAGE=$_img is a floating tag, not a digest — pull it once, then pin the exact bytes (docker inspect --format='{{index .RepoDigests 0}}' $_img) and set A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest> in $A770B_COMPOSE_ENV_FILE; see compose/a770-vulkan.env.example (warning only — doctor still passes)";;
+    esac
   else
     [ -x "$A770B_LLAMA_BIN" ] && echo "ok   llama-server at $A770B_LLAMA_BIN" || { echo "MISSING llama-server at $A770B_LLAMA_BIN: build llama.cpp with the Vulkan backend, or set A770B_LLAMA_BIN"; missing=$((missing+1)); }
   fi

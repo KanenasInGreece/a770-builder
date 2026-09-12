@@ -988,6 +988,33 @@ if printf '%s\n' "$cb_doc" | grep -q 'ok   docker compose' && ! printf '%s\n' "$
 then echo "ok   compose: doctor requires the container runtime and does not require a host llama-server"
 else echo "FAIL compose: doctor in compose mode is not as expected"; printf '%s\n' "$cb_doc" | head -30; fail=1
 fi
+# the image must be pinned by digest: a floating tag is a warning, never a hard failure (the plan pins after the
+# first pull), and a digest silences it. doctor reads the effective value — the environment wins over the gitignored
+# env file, which is the path a host actually sets.
+cb_doctor(){ A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
+  A770B_SERVE=compose A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_API_KEY_FILE="$cb/api.key" \
+  A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" A770B_COMPOSE_ENV_FILE="$cb/a770-vulkan.env" \
+  A770B_LLAMA_IMAGE="${CB_IMAGE:-}" \
+  A770B_DRM_CARD=/dev/dri/card0 A770B_DRM_RENDER=/dev/dri/renderD128 A770B_RENDER_GID=105 A770B_VIDEO_GID=39 \
+  A770B_DOCKER=docker FAKE_DOCKER_LOG="$cb/docker.log" PATH="$cb/bin:$PATH" \
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1; }
+printf 'A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:full-vulkan\n' > "$cb/a770-vulkan.env"
+cb_doc_tag=$(cb_doctor)
+printf 'A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:0000000000000000000000000000000000000000000000000000000000000000\n' > "$cb/a770-vulkan.env"
+cb_doc_pin=$(cb_doctor)
+cb_doc_env=$(CB_IMAGE=ghcr.io/ggml-org/llama.cpp:full-vulkan cb_doctor)
+rm -f "$cb/a770-vulkan.env"
+# the warning is not a hard failure: the tag adds no MISSING over the same run with a digest
+cb_tag_missing=$(printf '%s\n' "$cb_doc_tag" | grep -c '^MISSING ')
+cb_pin_missing=$(printf '%s\n' "$cb_doc_pin" | grep -c '^MISSING ')
+if printf '%s\n' "$cb_doc_tag" | grep -q '^WARN image:' \
+  && printf '%s\n' "$cb_doc_tag" | grep -q 'floating tag' \
+  && [ "$cb_tag_missing" = "$cb_pin_missing" ] \
+  && ! printf '%s\n' "$cb_doc_pin" | grep -q '^WARN image:' \
+  && printf '%s\n' "$cb_doc_env" | grep -q '^WARN image:'
+then echo "ok   compose: doctor warns (not fails) on a floating image tag, is silent on a digest, and the environment wins over the env file"
+else echo "FAIL compose: doctor's image-pin warning is not as expected"; printf 'tag:\n%s\npin:\n%s\nenv:\n%s\n' "$cb_doc_tag" "$cb_doc_pin" "$cb_doc_env" | grep -iE 'image|doctor'; fail=1
+fi
 if grep -q 'entrypoint: \["/app/llama-server"\]' "$here/compose/a770-vulkan.yaml" \
   && grep -q '127.0.0.1:${A770B_PORT}:8080' "$here/compose/a770-vulkan.yaml" \
   && ! grep -qE '\$\{A770B_(MODEL|CTX)\}' "$here/compose/a770-vulkan.yaml"

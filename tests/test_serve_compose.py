@@ -267,3 +267,12 @@ def test_compose_env_example_bakes_no_model_or_ctx():
     text = ENV_EXAMPLE.read_text(encoding="utf-8")
     assert "A770B_MODEL=" not in text and "A770B_CTX=" not in text
     assert "full-vulkan" in text and "getent" in text
+
+
+def test_compose_env_example_documents_the_pinned_digest_form():
+    # the tracked example must make the digest the documented default, not the floating tag: a stranger who copies
+    # it pins the exact bytes they pulled, and doctor's warning stops the moment the line carries @sha256:
+    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:" in text
+    assert "A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:full-vulkan\n" not in text
+    assert "RepoDigests" in text
