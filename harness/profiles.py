@@ -105,14 +105,21 @@ STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
     "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
+    "task", "evidence",
 )
+# The task classes a row competes in. The organizing axis of a registry is now the task,
+# not the window: a row is a (model, quant, KV, context, sampling) cell that wins one of these.
+TASK_VALUES = {
+    "code-edit", "code-read", "debug-test", "prose-docs", "os-ops", "data-structured",
+    "instruction-agentic",
+}
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
     "instrument", "thinking",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
-OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement"}
+OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task", "evidence"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -180,9 +187,26 @@ def validate(data) -> list[str]:
             if k not in OPTIONAL_KEYS and k not in prof:
                 errors.append(f"{name}: missing key {k}")
 
+        # The task and its evidence are required for a row measured on the KIT instrument, and optional for a
+        # legacy `seat:` row: the display registry predates the task axis and stays on the sibling instrument, so
+        # it is not forced to invent a task it never measured. (Task-fit profiles are kit-instrument rows.)
+        _inst = prof.get("instrument")
+        if isinstance(_inst, str) and _inst and not _inst.startswith("seat:"):
+            for _k in ("task", "evidence"):
+                if _k not in prof:
+                    errors.append(f"{name}: missing key {_k} (required on a kit instrument)")
+
         for k in STRING_KEYS:
             if k in prof and not isinstance(prof[k], str):
                 errors.append(f"{name}: {k} must be a string")
+
+        task = prof.get("task")
+        if isinstance(task, str) and task not in TASK_VALUES:
+            errors.append(
+                f"{name}: task {task!r} is not one of: {', '.join(sorted(TASK_VALUES))}"
+            )
+        if isinstance(prof.get("evidence"), str) and not prof["evidence"].strip():
+            errors.append(f"{name}: evidence must be a non-empty string")
 
         if isinstance(prof.get("model"), str) and "/" in prof["model"]:
             errors.append(f"{name}: model must be a bare file name")
@@ -399,6 +423,11 @@ def validate(data) -> list[str]:
                     v = suite["instrument"]
                     if not isinstance(v, str) or not v:
                         errors.append(f"{name}: suite.instrument must be a non-empty string")
+                    elif isinstance(prof.get("instrument"), str) and prof["instrument"] and v != prof["instrument"]:
+                        errors.append(
+                            f"{name}: suite.instrument {v!r} differs from the row's instrument "
+                            f"{prof['instrument']!r} -- a suite and its row are one instrument"
+                        )
 
                 if "stages" in suite:
                     stages = suite["stages"]
@@ -545,15 +574,18 @@ def validate(data) -> list[str]:
         if not isinstance(prof, dict):
             continue
 
+        task = prof.get("task")
+        card = prof.get("card")
         category = prof.get("category")
         weight_class = prof.get("weight_class")
         backend = prof.get("backend")
-        if isinstance(category, str) and isinstance(weight_class, str) and isinstance(backend, str):
-            key = (category, weight_class, backend)
+        if (isinstance(category, str) and isinstance(weight_class, str) and isinstance(backend, str)):
+            key = (task if isinstance(task, str) else None, card, category, weight_class, backend)
             if key in category_class_seen:
                 errors.append(
-                    f"{name}: category {category!r} + weight_class {weight_class!r} + backend {backend!r} duplicates "
-                    f"{category_class_seen[key]}'s -- a registry keeps one best row per class per backend"
+                    f"{name}: task {task!r} + category {category!r} + weight_class {weight_class!r} + "
+                    f"backend {backend!r} on card {card!r} duplicates {category_class_seen[key]}'s -- a registry "
+                    f"keeps one best row per task per class per backend per card"
                 )
             else:
                 category_class_seen[key] = name
@@ -684,24 +716,19 @@ def _card_warnings(profiles: dict) -> dict:
 
 
 def _builder_class(prof: dict) -> bool:
-    """Whether a profile clears the builder-class bar: useful_ctx >= 81920 and a green task.
+    """Whether a profile clears its task's bar: a green task test.
 
-    Computed by `card`; never stored in the registry file itself. `axes` describes what a
-    stage was scored on and never drives the tally -- a stage counts toward the pass ratio
-    when its own `counts_toward_pass` is not false (the same rule `harness/suite_report.py`
-    and `harness/run_suite.sh` honour; `axes` alone would undercount, since no stage in
-    `kit/suite.json` puts "working" in `axes`).
+    Computed by `card`; never stored in the registry file itself. The organizing axis is the
+    task, so builder_class is exactly whether the row's task test passed -- a `suite` object
+    at a counted pass ratio of at least 0.8 (from `suite.stages` when present, else
+    `suite.passed` / `suite.runs`), else an old `task_t1: "pass"`. The suite is the authority
+    whenever it is present: an old `task_t1: "pass"` never overrides a suite that recorded
+    failures, and `task_t1` is consulted only when there is no `suite` object at all.
 
-    The suite is the authority whenever it is present: with a `suite` object, builder_class
-    is exactly whether its counted pass ratio is at least 0.8 (from `suite.stages` when
-    present, else `suite.passed` / `suite.runs`) -- an old `task_t1: "pass"` never overrides
-    a suite that recorded failures. `task_t1` is consulted only when there is no `suite`
-    object at all.
+    SPEED AND WINDOW DO NOT GATE. There is deliberately no `useful_ctx`/decode floor here:
+    speed is a recorded profile field, and the relative comparison of equal-quality rows is a
+    later concern. `useful_ctx` is still measured and recorded, never a bar.
     """
-    useful_ctx = prof.get("useful_ctx")
-    if not _is_pos_int(useful_ctx) or useful_ctx < 81920:
-        return False
-
     suite = prof.get("suite")
     if isinstance(suite, dict):
         stages = suite.get("stages")

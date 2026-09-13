@@ -58,8 +58,9 @@ same numbers are rendered into the client's own agent block too, because the cli
 temperature and silently overrides the server's. A row needing more than the card's VRAM states that as RAM beyond
 VRAM — a mixture-of-experts row that keeps some layers off the card costs host memory the VRAM figure does not show.
 
-`builder_class` is not set by hand; it is computed from the row's own numbers — a useful window at or above 81,920
-tokens and a green task. And `use_for` is not only what a row is good for: it also names what the row is not for,
+`builder_class` is not set by hand; it is computed from the row's own numbers — a green task (the task test the
+row is filed under, at 80 percent or better); the useful window and speed are recorded facts, not gates. And
+`use_for` is not only what a row is good for: it also names what the row is not for,
 or not to be run beside — a reading profile not meant for multi-file edits, a mixture-of-experts row that wants a
 CPU that is not otherwise busy.
 
@@ -250,9 +251,10 @@ never from the corpus itself.
 
 ## The bar
 
-A builder-class row is useful to at least 81,920 tokens AND has a green task — for a row measured on the kit, the
-standard suite's stages that count toward the pass tally at 80 percent or better; for a row measured on the
-sibling repository, T1 passed or the in-house suite at 80 percent or better — every probe in the ladder passed, and
+A builder-class row has a green task — for a row measured on the kit, the standard suite's stages that count
+toward the pass tally at 80 percent or better; for a row measured on the sibling repository, T1 passed or the
+in-house suite at 80 percent or better. The useful window and speed are recorded facts, compared among
+equal-quality rows on the same card, and are not gates: every probe in the ladder passed, and
 no engine reset happened anywhere in the run. A row that misses this bar is not a builder, whatever
 else is true of it — but it can still earn a place as a reader or a reviewer, and its `use_for` says so plainly.
 

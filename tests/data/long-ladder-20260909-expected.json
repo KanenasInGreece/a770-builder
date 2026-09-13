@@ -531,6 +531,7 @@
       "passed": 1,
       "timeouts": 0,
       "source": "long-suite-20260909-224236.json",
+      "instrument": "SUITE-1@0.1.5",
       "mean_wall_s": 86.3,
       "delivered": {
         "prefill_tps": 178.0,

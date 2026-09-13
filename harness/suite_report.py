@@ -239,6 +239,7 @@ def main():
 
     if args.json:
         if instrument:
+            t["instrument"] = instrument
             print(f"instrument: {instrument}", file=sys.stderr)
         if medians is not None:
             t["delivered"] = dict(medians, source=source_name)

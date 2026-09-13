@@ -136,7 +136,8 @@ measured, or the card's GPQA or AIME figure named as the card's), `write` (a rev
 measured"); `sampling`, the model's own recommended temperature, top_p, top_k, min_p and penalties, with its source —
 where a row carries one at all: the display registry's `long` and `fast` rows have none, measured at the client's
 default temperature (0) before this registry carried a sampling line, and their own `use_for` says so; and
-`builder_class`, computed from whether the useful window reaches at least 81,920 tokens and the task is green. The
+`builder_class`, computed from whether the row's task test passes (a green task); the useful window and speed are
+recorded, not gates. The
 orchestrating agent reads these fields against a brief's scope, the token size of the files it names, and the time it
 can spend, and takes the least costly profile whose card covers all three. `local-build.sh menu` prints which measured
 models are already up and which would need a restart; when nothing is loaded it lists the whole card and marks the

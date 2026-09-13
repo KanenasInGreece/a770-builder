@@ -1064,13 +1064,14 @@ def test_builder_class_true_for_inference_long_serious():
         assert data["builder_class"] is True, name
 
 
-def test_builder_class_false_below_useful_ctx_floor():
-    """The shipped display long row: useful_ctx 65536 < 81920, even though task_t1 passes."""
+def test_builder_class_ignores_useful_ctx_floor():
+    """The window/speed floor is gone: a row with a green task is builder_class even below the old 81,920
+    window -- speed and useful_ctx are recorded facts, not gates (the task is the organizing axis)."""
     result = run("card", "--file", str(PROFILES_JSON), "--name", "long")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["useful_ctx"] == 65536
-    assert data["builder_class"] is False
+    assert data["builder_class"] is True
 
 
 def test_builder_class_false_for_weak_task_t1():
@@ -1148,6 +1149,8 @@ def test_check_fails_suite_instrument_empty(tmp_path):
 
 def test_check_passes_valid_suite_instrument(tmp_path):
     data = load_base()
+    for _n in data["profiles"]:
+        data["profiles"][_n]["instrument"] = "SUITE-1@0.2.0"
     data["profiles"]["long"]["suite"] = {
         "briefs": 5, "runs": 15, "passed": 12, "source": "kit", "instrument": "SUITE-1@0.2.0",
     }
@@ -1207,8 +1210,9 @@ def test_check_fails_duplicate_category_weight_class(tmp_path):
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert (
-        "profiles: fast: category 'dense' + weight_class '9b' + backend 'vulkan' duplicates long's -- "
-        "a registry keeps one best row per class per backend" in result.stderr
+        "profiles: fast: task 'code-edit' + category 'dense' + weight_class '9b' + backend 'vulkan' on card "
+        "'a770' duplicates long's -- a registry keeps one best row per task per class per backend per card"
+        in result.stderr
     )
 
 
@@ -1254,6 +1258,93 @@ def test_check_fails_differing_instrument_within_registry(tmp_path):
         "profiles: fast: instrument 'a different rig' differs from long's "
         "'seat: Shared_Memory@3c8e2bb' -- a registry is one instrument" in result.stderr
     )
+
+
+def test_check_fails_missing_task_on_a_kit_instrument(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["instrument"] = "SUITE-1@1"
+    del data["profiles"]["long"]["task"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: missing key task (required on a kit instrument)" in result.stderr
+
+
+def test_check_passes_a_seat_row_without_task(tmp_path):
+    """A legacy seat-instrument row is not forced to invent a task it never measured."""
+    data = load_base()
+    del data["profiles"]["long"]["task"]
+    del data["profiles"]["long"]["evidence"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_bad_task(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["task"] = "vibe-coding"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: task 'vibe-coding' is not one of:" in result.stderr
+
+
+def test_check_fails_missing_evidence_on_a_kit_instrument(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["instrument"] = "SUITE-1@1"
+    del data["profiles"]["long"]["evidence"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: missing key evidence (required on a kit instrument)" in result.stderr
+
+
+def test_check_fails_empty_evidence(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["evidence"] = "  "
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: evidence must be a non-empty string" in result.stderr
+
+
+def test_check_passes_two_tasks_on_the_same_class_and_backend(tmp_path):
+    """The uniqueness axis is the task: two rows that differ only by task coexist (the mutation that proves it)."""
+    data = load_base()
+    data["profiles"]["fast"]["task"] = "code-read"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_suite_instrument_mismatching_the_row(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["suite"] = {
+        "briefs": 3, "runs": 3, "passed": 3, "source": "kit", "instrument": "SUITE-1@9.9.9",
+    }
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "suite.instrument 'SUITE-1@9.9.9' differs from the row's instrument" in result.stderr
+
+
+def test_shipped_rows_carry_a_task_and_evidence():
+    """Every shipped row names the task it competes in and the test that qualified it (the task is the axis)."""
+    for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        for name, prof in data["profiles"].items():
+            assert prof["task"] in {
+                "code-edit", "code-read", "debug-test", "prose-docs", "os-ops",
+                "data-structured", "instruction-agentic",
+            }, f"{f}: {name}: task"
+            assert isinstance(prof["evidence"], str) and prof["evidence"].strip(), f"{f}: {name}: evidence"
 
 
 def _valid_stage(**overrides) -> dict:
@@ -1467,6 +1558,9 @@ def test_check_passes_valid_stages_list(tmp_path):
         _valid_stage(id="s1-frontend", axes=["working", "conformance"], working=True),
         _valid_stage(id="s4-rubric", axes=["maintainable", "usable"], working=False, maintainable=5, usable=5),
     ]
+    data["profiles"]["long"]["instrument"] = "SUITE-1@0.2.0"
+    for _n in ("fast", "serious"):
+        data["profiles"][_n]["instrument"] = "SUITE-1@0.2.0"
     data["profiles"]["long"]["suite"] = {
         "briefs": 3, "runs": 3, "passed": 2, "source": "kit", "instrument": "SUITE-1@0.2.0", "stages": stages,
     }

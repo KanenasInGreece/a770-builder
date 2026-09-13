@@ -33,7 +33,8 @@ cleared them on, since a gate cleared on one is not evidence about the other:
    16 GB card (13 GiB on one that also draws the desktop, 15.3 on one that draws nothing), with zero GPU engine resets.
 2. **It answers**: correct greedy answers on a three-prompt sanity gate and a coherent one-sentence summary after a
    prefill of about 17k tokens of source.
-3. **It is fast enough**: decode at or above 5 tok/s at long context, and tool calls that llama-server parses. The
+3. **Its speed is recorded, not gated**: decode and prefill are measured and compared among equal-quality rows; a
+   row is not kept out for being slow, but tool calls must parse. The
    standard number behind this gate is `harness/bench_speed.sh <profile>` — llama-bench at the row's own served
    flags (`-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe`), at depths 0, 8k, 32k and the far end, one command a
    reader can reproduce and compare row to row, recorded as `speed.bench`; the standard suite's own as-delivered

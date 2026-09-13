@@ -5,6 +5,8 @@
   "notes": "Every number is a measurement on the Arc A770 with nothing else on the card (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. This registry is read when A770B_CARD_MODE=inference; config/profiles.json is read in display mode. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served. useful_ctx is the largest depth at which decode stays above four tokens a second, taken from the 8k and far-end points by extending the time per token linearly, capped by the depth probe where one failed. Rows are compared on their task numbers only within one instrument; the card's comparable_with lists them.",
   "profiles": {
     "long": {
+      "task": "code-edit",
+      "evidence": "T1 pass (sibling instrument): 6 tests green in 122 s",
       "model": "Qwen3.5-9B-Q4_K_M.gguf",
       "source": "lmstudio-community/Qwen3.5-9B-GGUF",
       "family": "qwen3.5",
@@ -49,6 +51,8 @@
     },
 
     "serious": {
+      "task": "code-edit",
+      "evidence": "T1 pass (sibling instrument): 10 tests green in 546 s",
       "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
       "source": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
       "family": "qwen3.8",

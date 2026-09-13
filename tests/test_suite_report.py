@@ -26,7 +26,7 @@ TPOT ms: median=22.0 p90=26.0   decode tok/s median=45.5
 prefill tok/s over all prompts=612
 """
 
-TOTALS_KEYS = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source"}
+TOTALS_KEYS = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source", "instrument"}
 
 
 def make_run(tmp_path: Path, with_capture: bool = True) -> tuple:
@@ -63,6 +63,13 @@ def test_json_totals_keep_their_own_keys(tmp_path):
     out = json.loads(run_json(results, env).stdout)
     assert set(out) - {"delivered"} <= TOTALS_KEYS
     assert out["briefs"] == 1 and out["runs"] == 1 and out["passed"] == 1 and out["timeouts"] == 0
+
+
+def test_json_publishes_instrument_in_the_totals(tmp_path):
+    """The suite object a row carries must name its own instrument (so a registry can check it)."""
+    results, env = make_run(tmp_path)
+    out = json.loads(run_json(results, env).stdout)
+    assert out["instrument"] == "SUITE-TEST"
 
 
 def test_json_omits_delivered_when_no_capture_was_read(tmp_path):

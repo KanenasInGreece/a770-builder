@@ -224,6 +224,12 @@ row = {
     "timeout_s": int(timeout_s) if timeout_s.isdigit() else timeout_s,
     "vram_gib_after_load": vram_gib_after_load, "ram_gb_extra": ram_gb_extra,
     "useful_ctx": useful_ctx, "speed": row_speed, "instrument": instrument,
+    "task": "__TODO__ — the task class this row wins (code-edit, code-read, debug-test, prose-docs, os-ops, data-structured, instruction-agentic); see kit/PROFILE.md §2",
+    "evidence": (
+        f"{instrument}: {suite['passed']}/{suite['runs']} stages passed (this ladder run)"
+        if suite and suite.get("runs") else
+        "__TODO__ — the class test that qualified this row and its pass result"
+    ),
     "measured_on": "__TODO__ — the card and build this was measured on, e.g. \"Arc A770 16 GB, llama.cpp b10805 Vulkan\" (kit/PROFILE.md: never filled by ladder.sh)",
     "use_for": "__TODO__ — write by hand from what this ladder run showed (kit/PROFILE.md: never derived from a measurement)",
     "fit": {
@@ -246,9 +252,10 @@ print(json.dumps(row, indent=2))
 print(
     "\nNot filled above — transcribe once by hand from the GGUF's own metadata and the model's public card "
     "(kit/PROFILE.md §2, \"identity fields, not measurements\"): source, family, architecture, quant, category, "
-    "weight_class, params_b, capability_source, and sampling. measured_on is printed above as a placeholder "
-    "(__TODO__) rather than omitted, so a row pasted straight from this output still has the key check requires "
-    "— replace its text with the card and the serving build."
+    "weight_class, params_b, capability_source, and sampling. task and measured_on are printed above as "
+    "placeholders (__TODO__) rather than omitted, so a row pasted straight from this output still has the keys "
+    "check requires on a kit instrument — set task to the class this row wins and measured_on to the card and "
+    "the serving build; evidence carries the suite's pass result when the task rung ran, else set it by hand."
 )
 if not (far_end >= 90000 and depth_score is not None):
     if depth_not_measured:

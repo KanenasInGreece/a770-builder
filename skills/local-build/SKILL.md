@@ -56,8 +56,8 @@ tokens a second by the two measured points, so a window is a capacity, not a pro
 short strings — `code`, `think`, `write` — each with its source, saying how the row measured on the axis the brief
 needs; `sampling`, the model's own recommended line for the role, already served -- where a row carries one at all:
 the display registry's `long` and `fast` rows have none, measured at the client's default temperature (0) before this
-registry carried a sampling line, and their own `use_for` says so; and `builder_class`, whether the row
-is useful to at least 81,920 tokens and passed a green task. Match these against the brief's edit scope (a change to
+registry carried a sampling line, and their own `use_for` says so; and `builder_class`, whether the row's task
+test passed (a green task — the useful window and speed are recorded, not gates). Match these against the brief's edit scope (a change to
 the files named, several files touched at once, tests written from a specification) and the token size of the files it
 points at, and take the least costly profile whose card covers all three, not the one with the strongest reputation.
 The registry keeps one best-measured row per category, weight class, and graphics backend: a row a sibling beats on quality, speed and

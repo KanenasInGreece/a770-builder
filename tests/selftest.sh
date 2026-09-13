@@ -249,9 +249,10 @@ if [ -n "$res" ]; then
   if printf '%s' "$jout" | python3 -c '
 import json, sys
 d = json.loads(sys.stdin.read())
-need = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source"}
+need = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source", "instrument"}
 assert set(d.keys()) == need, d
 assert d["briefs"] == 3 and d["runs"] == 3 and d["passed"] == 2 and d["timeouts"] == 0, d
+assert d["instrument"] == "SUITE-TEST@1", d
 ' 2>/dev/null; then echo "ok   suite: suite_report.py --json excludes the counts_toward_pass:false stage from all totals (timeouts=0, none of this fixture's stages timed out)"
   else echo "FAIL suite: suite_report.py --json wrong: $jout"; fail=1
   fi
