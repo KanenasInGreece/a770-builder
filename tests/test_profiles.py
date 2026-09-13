@@ -273,7 +273,7 @@ def test_env_matches_expected_lines():
     expected_serious_thinking = [
         ': "${A770B_SERIOUS_THINKING_MODE:=on}"',
         ': "${A770B_SERIOUS_THINKING_EFFORT:=low}"',
-        ': "${A770B_SERIOUS_THINKING_BUDGET:=}"',
+        ': "${A770B_SERIOUS_THINKING_BUDGET:=2048}"',
         "[ -n \"${A770B_SERIOUS_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_SERIOUS_THINKING_BUDGET_MESSAGE=''",
         ': "${A770B_SERIOUS_THINKING_PRESERVE:=true}"',
     ]
@@ -2056,11 +2056,14 @@ def test_card_prints_thinking_as_stored():
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["thinking"] == {
-        "mode": "on", "effort": "low", "preserve": True,
+        "mode": "on", "effort": "low", "budget": 2048, "preserve": True,
         "source": (
             "huggingface.co/Qwen/Qwen3.8-27B model card's thinking line; reasoning effort low "
             "ruled by this project for speed (formerly carried through --chat-template-kwargs, "
-            "now the first-class --reasoning-effort flag)"
+            "now the first-class --reasoning-effort flag); a 2048-token reasoning budget ruled "
+            "2026-09-13 — unbudgeted, the 27B spent 15,415 generated tokens in one reply and never "
+            "reached a tool call, so a delegated build timed out with a 0-line patch; budgeted, it "
+            "delivered the gpu-hang-check fix 13/13 (verify PASS)"
         ),
     }
 

@@ -89,10 +89,10 @@ _envelope_for_backend(){ # the row's backend selects the container envelope. A s
   # unknown backend is refused too, never defaulted onto the Vulkan envelope (both are silent wrong-backend serves).
   local be; be=$(a770b_profile_var "$1" BACKEND)
   [ -n "$be" ] || return 0                                   # a legacy row with no backend: leave the configured path
-  if [ "$be" = sycl ] && [ "${A770B_SERVE:-host}" != compose ]; then
-    die "profile $1 is backend=sycl — the host path is Vulkan-only; serve it with A770B_SERVE=compose (compose/a770-sycl.yaml)"
+  if [ "${A770B_SERVE:-host}" != compose ]; then
+    [ "$be" = vulkan ] || die "profile $1 is backend=$be — the host path is Vulkan-only; serve it with A770B_SERVE=compose"
+    return 0
   fi
-  [ "${A770B_SERVE:-host}" = compose ] || return 0
   _envelope_for_backend_name "$be"
 }
 _envelope_from_sidecar(){ # the running container's backend selects the envelope, so `stop` ends it whatever it is
