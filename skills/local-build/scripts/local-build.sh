@@ -76,6 +76,31 @@ _export_live(){ # A770B_LIVE_* for the sidecar write on start; empty values mean
   A770B_LIVE_PROFILE="$1"
   export A770B_LIVE_CARD A770B_LIVE_BACKEND A770B_LIVE_MODE A770B_LIVE_PROFILE
 }
+_envelope_for_backend_name(){ # select the container envelope for a backend name; refuse one this harness cannot serve
+  case "$1" in
+    vulkan|sycl) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-$1.yaml";;
+    *) die "backend '$1' is not one this harness serves (vulkan, sycl)";;
+  esac
+  A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
+  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE
+}
+_envelope_for_backend(){ # the row's backend selects the container envelope. A sycl row is container-only: under the
+  # host path it is REFUSED, never silently served on the Vulkan host binary with a backend=sycl sidecar. An
+  # unknown backend is refused too, never defaulted onto the Vulkan envelope (both are silent wrong-backend serves).
+  local be; be=$(a770b_profile_var "$1" BACKEND)
+  [ -n "$be" ] || return 0                                   # a legacy row with no backend: leave the configured path
+  if [ "${A770B_SERVE:-host}" != compose ]; then
+    [ "$be" = vulkan ] || die "profile $1 is backend=$be — the host path is Vulkan-only; serve it with A770B_SERVE=compose"
+    return 0
+  fi
+  _envelope_for_backend_name "$be"
+}
+_envelope_from_sidecar(){ # the running container's backend selects the envelope, so `stop` ends it whatever it is
+  local be; be=$(python3 "$A770B_PROJECT/harness/live_backend.py" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend") or "")' 2>/dev/null) || be=""
+  case "$be" in vulkan|sycl) _envelope_for_backend_name "$be";; esac
+  return 0
+}
 _reload_lock_held(){ # true when another process holds the run lock; this shell's own fd 9 does not count
   if { true >&9; } 2>/dev/null; then return 1; fi
   if ( flock -n 8 ) 8>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then return 1; fi
@@ -109,6 +134,7 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local lock_held run_alive msg old_profile LIVE_PY
   local -a rb_args
   profile_vars "$p"
+  _envelope_for_backend "$p"
   [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
   _export_live "$p"
   LIVE_PY="$A770B_PROJECT/harness/live_backend.py"
@@ -137,13 +163,16 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       if [ -n "$msg" ]; then echo "$msg"; return 1; fi
       python3 "$LIVE_PY" reload-sentence --backend "$req_backend" --model "$req_model"
       old_profile=$live_profile
+      a770b_is_profile "$old_profile" && _envelope_for_backend "$old_profile"   # stop the OLD server on ITS envelope
       bash "$SERVE" stop >/dev/null 2>&1
+      _envelope_for_backend "$p"                                                # then start the new one on its own
       if _serve_start; then return 0; fi
       echo "reload failed: rolling back to $old_profile"
       bash "$SERVE" stop >/dev/null 2>&1
       if ! a770b_is_profile "$old_profile"; then echo "rollback failed: server is down"; return 1; fi
       p=$old_profile
       profile_vars "$p"
+      _envelope_for_backend "$p"
       if [ ! -r "$gguf" ]; then echo "rollback failed: server is down"; return 1; fi
       _export_live "$p"
       if _serve_start; then return 0; fi
@@ -293,7 +322,7 @@ case "${1:-}" in
   profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@" ;;
   menu) python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid" ;;
   doctor) doctor ;;
-  stop)   bash "$SERVE" stop ;;
+  stop)   _envelope_from_sidecar; bash "$SERVE" stop ;;
   stop-run)
     # end exactly the run in progress, through its own pid: one TERM to the timeout process ends its whole process
     # group (measured on this host), and the run then unwinds as a timeout does — the capture is written, the seat reset.

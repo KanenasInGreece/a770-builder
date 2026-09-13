@@ -75,13 +75,16 @@ Every row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770
 
 The rows below were measured with nothing else on the card, for the registry that mode reads
 (`config/profiles.inference.json`); the profile column says which of them that registry ships. Every
-row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`.
+row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan` —
+except the `serious-sycl` row, measured on `Arc A770 16 GB, llama.cpp full-intel SYCL container`, a different
+`measured_on` it is compared only with rows sharing.
 
 | model file | source | ctx / KV | VRAM after load | decode 8k / far end | prefill 8k / far end | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
 | `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 262,144 / q8_0 (native) | 9.49 GiB | 43.7 / 11.6 tok/s (far end 100k) | 439 / 147 tok/s | PASS, 6 tests, 122 s, under its instruct line (0.7 / 0.8 / 20 / 0 / presence 1.5) | **long** (inference default) | useful to its whole native window; 100k prompt TTFT 626 s; the same file as the display registry's `long`, served in full on a card with nothing else on it |
 | `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 131,072 / q8_0, `--n-cpu-moe 18` (18 expert layers in host RAM, 22 on the card) | 14.1 GiB, flat | 21.8 / 10.3 tok/s (far end 100k) | 207 / 80 tok/s | PASS, 10 tests, 203 s, under its instruct line | measured, not shipped | useful to its whole 131,072; 100k prompt TTFT 1,150 s; three times the dense 27B's decode; 18 of its expert layers sit in host memory, 22 on the card, which costs about 18 GB of system memory beyond the card and a CPU that is not otherwise busy; the harness has no gate for that memory, so it is not offered as a profile (*Measured and kept out*) |
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 196,608 / q4_0, reasoning on at effort low | 14.62 GiB, 14.82 peak at a 32k prompt | 7.9 / 4.9 tok/s (8k / 64k; 100k not run) | 71 / 42 tok/s (8k / 64k) | PASS, 10 tests, 546 s, under its card line (temperature 1.0, top_p 0.95); 5 tests, 664 s at the client's temperature 0 | **serious** (inference) | useful to about 98k by the four-tokens-a-second rule; the quantiser's task-lossless file, 100.2% of BF16 on its own card (AIME25 100, GPQA-Diamond 89.39 against 89.90, LiveCodeBench v6 85.71 = BF16); the largest IQ3_S window under the 15.3 cap |
+| `Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 100,000 / q8_0, reasoning on at effort low, budget 2048 | 14.61 GiB | 9.91 / 6.29 tok/s (8k / 64k; 100k not run) | 358 / 242 tok/s (8k / 64k) | the same build the Vulkan row passed (gpu-hang-check, a 50-line shell script with 13 hidden scenarios) passed 13/13, verify PASS, 2026-09-13 | **serious-sycl** (inference, SYCL container) | measured on `Arc A770 16 GB, llama.cpp full-intel SYCL container` — a different `measured_on` from the Vulkan rows above, so it is compared only with rows sharing it; ~25% faster decode and ~5x faster prefill than the Vulkan serious row at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000); `useful_ctx` 100,000 is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is ~155k, capped at the window), and the depth probe is not run — a first cut, not a full ladder |
 
 ## On the same card with nothing else on it
 

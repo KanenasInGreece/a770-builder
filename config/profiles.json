@@ -96,8 +96,9 @@
       "thinking": {
         "mode": "on",
         "effort": "low",
+        "budget": 2048,
         "preserve": true,
-        "source": "huggingface.co/Qwen/Qwen3.8-27B model card's thinking line; reasoning effort low ruled by this project for speed (formerly carried through --chat-template-kwargs, now the first-class --reasoning-effort flag)"
+        "source": "huggingface.co/Qwen/Qwen3.8-27B model card's thinking line; reasoning effort low ruled by this project for speed (formerly carried through --chat-template-kwargs, now the first-class --reasoning-effort flag); a 2048-token reasoning budget ruled 2026-09-13 — unbudgeted, the 27B spent 15,415 generated tokens in one reply and never reached a tool call, so a delegated build timed out with a 0-line patch; budgeted, it delivered the gpu-hang-check fix 13/13 (verify PASS)"
       },
       "timeout_s": 3600,
       "vram_gib_after_load": 12.25,

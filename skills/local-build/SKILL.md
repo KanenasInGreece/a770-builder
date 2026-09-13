@@ -37,6 +37,7 @@ Pure-inference: the card draws nothing, cap 15.3 GiB after load.
 |---|---|---|---|---|---|
 | long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+| serious-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358.35 tok/s | The faster sibling of serious: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder. |
 <!-- profiles-inference:end -->
 
 The profiles are configuration, not fixed: `status` shows the mode and the registry actually configured on this

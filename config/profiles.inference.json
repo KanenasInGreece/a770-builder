@@ -2,7 +2,7 @@
   "schema": 1,
   "default": "long",
   "mode": "inference",
-  "notes": "Every number is a measurement on the Arc A770 with nothing else on the card (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. This registry is read when A770B_CARD_MODE=inference; config/profiles.json is read in display mode. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served. useful_ctx is the largest depth at which decode stays above four tokens a second, taken from the 8k and far-end points by extending the time per token linearly, capped by the depth probe where one failed. Rows are compared on their task numbers only within one instrument; the card's comparable_with lists them.",
+  "notes": "Every number is a measurement on the Arc A770 with nothing else on the card (llama.cpp, -ub 512; Vulkan on the host and in the full-vulkan container, SYCL in the full-intel container — each row's measured_on names its platform); the ledger config/models.md holds the rows. This registry is read when A770B_CARD_MODE=inference; config/profiles.json is read in display mode. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served. useful_ctx is the largest depth at which decode stays above four tokens a second, taken from the 8k and far-end points by extending the time per token linearly, capped by the depth probe where one failed. Rows are compared on their task numbers only within one instrument; the card's comparable_with lists them.",
   "profiles": {
     "long": {
       "task": "code-edit",
@@ -70,8 +70,9 @@
       "thinking": {
         "mode": "on",
         "effort": "low",
+        "budget": 2048,
         "preserve": true,
-        "source": "huggingface.co/Qwen/Qwen3.8-27B model card's thinking line; reasoning effort low ruled by this project for speed (formerly carried through --chat-template-kwargs, now the first-class --reasoning-effort flag)"
+        "source": "huggingface.co/Qwen/Qwen3.8-27B model card's thinking line; reasoning effort low ruled by this project for speed (formerly carried through --chat-template-kwargs, now the first-class --reasoning-effort flag); a 2048-token reasoning budget ruled 2026-09-13 — unbudgeted, the 27B spent 15,415 generated tokens in one reply and never reached a tool call, so a delegated build timed out with a 0-line patch; budgeted, it delivered the gpu-hang-check fix 13/13 (verify PASS)"
       },
       "sampling": {
         "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0,
@@ -100,6 +101,59 @@
         "write": "not measured"
       },
       "use_for": "A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens."
+    },
+
+    "serious-sycl": {
+      "task": "code-edit",
+      "evidence": "container SYCL loads the 27B IQ3_S at ctx 100,000 under the 15.3 GiB cap (14.61 GiB after load, q8_0 KV); llama-bench in the same image (2026-09-13): pp512 330.57 / tg128 10.99 at depth 0, and at -d 8192/32768/65536 pp 358.35/297.17/242.48, tg 9.91/8.00/6.29; the same build the Vulkan row passed (gpu-hang-check, 13 hidden scenarios) passed 13/13 on this row's server 2026-09-13 (verify PASS)",
+      "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+      "source": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+      "family": "qwen3.8",
+      "architecture": "dense, hybrid attention (4 KV heads, 64 blocks)",
+      "quant": "IQ3_S",
+      "category": "dense",
+      "weight_class": "27b",
+      "params_b": {"total": 27, "active": 27},
+      "ctx": 100000,
+      "useful_ctx": 100000,
+      "kv": "q8_0",
+      "flash_attention": "on",
+      "reasoning": "on",
+      "extra": "--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0",
+      "thinking": {
+        "mode": "on",
+        "effort": "low",
+        "budget": 2048,
+        "preserve": true,
+        "source": "the same 27B thinking line as serious, carried to the SYCL envelope; the 2048-token reasoning budget is what makes the agentic build complete (see serious)"
+      },
+      "sampling": {
+        "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0,
+        "mode": "thinking", "source": "huggingface.co/Qwen/Qwen3.8-27B, thinking mode; reasoning effort low ruled for speed"
+      },
+      "timeout_s": 3600,
+      "vram_gib_after_load": 14.61,
+      "ram_gb_extra": 0,
+      "speed": {
+        "decode_tps": {"8k": 9.91, "32k": 8.0, "64k": 6.29, "100k": null},
+        "prefill_tps": {"8k": 358.35, "32k": 297.17, "64k": 242.48, "100k": null},
+        "bench": {"tool": "llama-bench", "prompt": 512, "gen": 128, "flags": "-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -d 8192,32768,65536", "at_depth": {"8192": {"pp": 358.35, "tg": 9.91}, "32768": {"pp": 297.17, "tg": 8.0}, "65536": {"pp": 242.48, "tg": 6.29}}, "source": "manual llama-bench run 2026-09-13 in ghcr.io/ggml-org/llama.cpp:full-intel (the SYCL container); pp512 330.57 / tg128 10.99 at depth 0"}
+      },
+      "depth_probe_100k": "not run",
+      "instrument": "seat: Shared_Memory@3c8e2bb",
+      "measured_on": "Arc A770 16 GB, llama.cpp full-intel SYCL container",
+      "card": "a770",
+      "backend": "sycl",
+      "placement": "container",
+      "mode": "inference",
+      "capability": {"LiveCodeBench_v6": 85.71, "GPQA_Diamond": 89.39, "AIME25": 100},
+      "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100; the quantiser's task-lossless file)",
+      "fit": {
+        "code": "the same best-written 27B as serious, served on the faster SYCL container; the gpu-hang-check build (a 50-line shell script, 13 hidden scenarios) passed 13/13 verified 2026-09-13",
+        "think": "GPQA-Diamond 89.39, AIME25 100 (the quantiser's card, IQ3_S vs BF16 89.90 / 100)",
+        "write": "not measured"
+      },
+      "use_for": "The faster sibling of serious: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder."
     }
   }
 }
