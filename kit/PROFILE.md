@@ -60,7 +60,8 @@ clearly marked `__TODO__` placeholder in the row itself, since a pasted row miss
 measurements: transcribed once, by hand, from the GGUF's own metadata, the model's public card and the
 workstation's own build, never re-derived by a rung —
 they exist so the registry never carries two rows that are really the same choice twice, and so comparability can
-ask for the same instrument AND the same card, never one alone. Uniqueness is one best row per class per backend.
+ask for the same instrument AND the same card, never one alone. Uniqueness is one best row per task per class per
+backend per card.
 
 ## 2. From the tests to the fields
 

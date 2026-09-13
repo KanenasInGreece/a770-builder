@@ -565,7 +565,7 @@ def validate(data) -> list[str]:
                     errors.append(f"{name}: thinking.mode {mode!r} contradicts reasoning {reasoning!r}")
 
     # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time:
-    # the project keeps one best row per (category, weight_class, backend) class, and a registry is
+    # the project keeps one best row per (task, card, category, weight_class, backend) class, and a registry is
     # measurements from one instrument, never a mix.
     category_class_seen: dict[tuple, str] = {}
     first_instrument = None

@@ -60,7 +60,7 @@ registry carried a sampling line, and their own `use_for` says so; and `builder_
 test passed (a green task — the useful window and speed are recorded, not gates). Match these against the brief's edit scope (a change to
 the files named, several files touched at once, tests written from a specification) and the token size of the files it
 points at, and take the least costly profile whose card covers all three, not the one with the strongest reputation.
-The registry keeps one best-measured row per category, weight class, and graphics backend: a row a sibling beats on quality, speed and
+The registry keeps one best-measured row per task, category, weight class, graphics backend and card: a row a sibling beats on quality, speed and
 useful window alike is pruned and the ledger says by whom, so a name on the card has already survived that. Each
 profile's `use_for` says in words what it is not for, and that refusal is as much the card's content as what it is
 good at; a brief that needs more than the strongest card covers should not go to the seat at all.

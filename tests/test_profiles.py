@@ -1314,9 +1314,25 @@ def test_check_fails_empty_evidence(tmp_path):
 
 
 def test_check_passes_two_tasks_on_the_same_class_and_backend(tmp_path):
-    """The uniqueness axis is the task: two rows that differ only by task coexist (the mutation that proves it)."""
+    """The uniqueness axis is the task: two rows identical in class/backend/card and differing ONLY by task coexist.
+    Without `task` in the key they would collide, so this is the mutation guard for that axis."""
     data = load_base()
+    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
+    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
     data["profiles"]["fast"]["task"] = "code-read"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_passes_two_cards_on_the_same_task_and_class(tmp_path):
+    """The card is in the uniqueness key: two rows differing ONLY by card coexist (the mutation guard for card)."""
+    data = load_base()
+    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
+    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
+    data["profiles"]["fast"]["task"] = data["profiles"]["long"]["task"]
+    data["profiles"]["fast"]["card"] = "b70"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))

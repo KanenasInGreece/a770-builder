@@ -260,7 +260,7 @@ else is true of it — but it can still earn a place as a reader or a reviewer, 
 
 ## The comparison
 
-The registry holds at most one best row per category and weight class, not a ranked list and not a single scalar
+The registry holds at most one best row per task per category and weight class (on a card and backend), not a ranked list and not a single scalar
 score: the card carries its axes, and a candidate is weighed against the row it would replace on those axes
 directly. A candidate enters when it beats that row on at least one axis — quality by the suite (or T1 where the
 suite was not run), speed by decode at 8k, or the useful window — without losing on the others, or when it fills an
