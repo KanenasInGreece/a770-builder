@@ -992,10 +992,25 @@ then echo "ok   compose: a sycl row selects the SYCL envelope from its backend, 
 else echo "FAIL compose: a sycl row did not select the SYCL envelope"; printf '%s\n' "$cb_sycl" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
 fi
 : > "$cb/docker.log"
+rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid"   # a cold start, not a reload from the sycl row above
 cb_vk=$( _iso; cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve long 2>&1 )
 if grep -q 'a770-vulkan.yaml' "$cb/docker.log" && ! grep -q 'a770-sycl.yaml' "$cb/docker.log"
 then echo "ok   compose: a vulkan row selects the vulkan envelope from its backend"
 else echo "FAIL compose: a vulkan row did not select the vulkan envelope"; printf '%s\n' "$cb_vk" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
+fi
+# a sycl row must be REFUSED on the host path, never silently served on the host Vulkan binary with a backend=sycl sidecar
+cb_host=$( _iso; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
+  A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_SERVE=host \
+  bash "$here/skills/local-build/scripts/local-build.sh" serve serious-sycl 2>&1 )
+if printf '%s' "$cb_host" | grep -q "backend=sycl — the host path is Vulkan-only"; then
+  echo "ok   compose: a sycl row is refused on the host path, not silently served"
+else echo "FAIL compose: a sycl row was not refused on the host path"; printf '%s\n' "$cb_host" | tail -5; fail=1
+fi
+# an unknown backend must be refused, never defaulted onto the Vulkan envelope
+cb_unk=$( _iso; A770B_SERIOUS_SYCL_BACKEND=cuda cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve serious-sycl 2>&1 )
+if printf '%s' "$cb_unk" | grep -q "backend 'cuda' is not one this harness serves"; then
+  echo "ok   compose: an unknown backend is refused, not defaulted"
+else echo "FAIL compose: an unknown backend was not refused"; printf '%s\n' "$cb_unk" | tail -5; fail=1
 fi
 cb_doc=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data2" A770B_CARD_MODE=inference \
   A770B_SERVE=compose A770B_ALLOW_NO_NVTOP=1 A770B_DOCKER=docker A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" \

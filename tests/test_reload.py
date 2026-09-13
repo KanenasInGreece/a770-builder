@@ -159,6 +159,7 @@ def _serve_env(tmp_path: Path, *, fail_start: bool = False) -> dict:
         A770B_REFUSE="/nonexistent",
         A770B_CARD_MODE="display",
         A770B_PROFILES_FILE=str(registry),
+        A770B_SERVE="compose",   # a sycl row is container-only; the reload tests drive a sycl profile
         A770B_HOST="127.0.0.1",
         A770B_PORT="9",
         A770B_LLAMA_BIN=str(llama),

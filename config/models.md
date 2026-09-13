@@ -75,7 +75,9 @@ Every row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770
 
 The rows below were measured with nothing else on the card, for the registry that mode reads
 (`config/profiles.inference.json`); the profile column says which of them that registry ships. Every
-row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`.
+row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan` —
+except the `serious-sycl` row, measured on `Arc A770 16 GB, llama.cpp full-intel SYCL container`, a different
+`measured_on` it is compared only with rows sharing.
 
 | model file | source | ctx / KV | VRAM after load | decode 8k / far end | prefill 8k / far end | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
