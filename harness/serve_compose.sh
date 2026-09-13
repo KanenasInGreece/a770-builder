@@ -104,7 +104,7 @@ fi
 # environment does; refuse early and name the fix rather than fail inside `docker compose up`
 if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
   for _v in A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID; do
-    [ -n "${!_v:-}" ] || { echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy compose/a770-vulkan.env.example and edit it" >&2; exit 2; }
+    [ -n "${!_v:-}" ] || { echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy ${A770B_COMPOSE_ENV_FILE}.example and edit it" >&2; exit 2; }
   done
 fi
 # a start is a recreate: take any existing container of this project down first, so the budget gate reads the card

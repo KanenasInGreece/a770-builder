@@ -186,7 +186,7 @@ doctor(){
     _envfile_ok=1; for _v in A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID; do [ -n "${!_v:-}" ] || _envfile_ok=0; done
     if [ -f "$A770B_COMPOSE_ENV_FILE" ]; then echo "ok   compose env: $A770B_COMPOSE_ENV_FILE"
     elif [ "$_envfile_ok" = 1 ]; then echo "ok   compose env: the envelope's image/DRM/GID values are set in the environment"
-    else echo "MISSING compose env: $A770B_COMPOSE_ENV_FILE not found and the envelope's image/DRM/GID values are not all set — copy compose/a770-vulkan.env.example"; missing=$((missing+1)); fi
+    else echo "MISSING compose env: $A770B_COMPOSE_ENV_FILE not found and the envelope's image/DRM/GID values are not all set — copy ${A770B_COMPOSE_ENV_FILE}.example"; missing=$((missing+1)); fi
     # A floating tag can be moved by upstream at any time; the plan pins the exact bytes by digest after the first
     # pull. Warn, never fail: the first pull legitimately starts from the tag, and a digest silences this. The
     # environment wins over the gitignored env file, so read the value the envelope will actually interpolate.

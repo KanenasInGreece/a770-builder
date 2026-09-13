@@ -6,9 +6,10 @@
 # config/profiles*.json, so the registry stays the single source.
 #
 # The image is ghcr.io/ggml-org/llama.cpp:full-intel — llama.cpp built with SYCL (oneAPI / Level Zero) support,
-# the A770/DG2-compatible Intel path. Unlike vLLM's XPU line (Xe2-only, which refuses DG2), SYCL runs on DG2.
-# Use full-intel, NOT server-intel: full copies build/bin/* so the one-shot llama-bench job (the speed rung) is
-# in the same image. Pin it by digest after the first pull (compose/a770-sycl.env).
+# the A770/DG2-compatible Intel path (llama.cpp's SYCL docs list the Arc A770 as verified). vLLM's Intel XPU
+# backend is closed on this card; SYCL is the working Intel GPU path here. Use full-intel, NOT server-intel: full
+# copies build/bin/* so the one-shot llama-bench job (the speed rung) is in the same image. Pin it by digest after
+# the first pull (compose/a770-sycl.env).
 #
 # The image's own ENTRYPOINT is /app/tools.sh (a toolbox shell); compose appends `command:` to the entrypoint, so
 # without the explicit entrypoint below a serve would run tools.sh and never reach the server. The ruled start
@@ -41,8 +42,11 @@ services:
       - "${A770B_MODELS}:/models:ro,z"
       - "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro,z"
     environment:
-      # SYCL device selection: the level-zero backend. Passing only the A770's two DRM nodes already hides the
-      # neighbour card; this selector names the backend explicitly (index 0 inside the container is the A770).
+      # SYCL device selection: the level-zero backend. This is a TYPE filter, not a pin — it selects every
+      # level-zero GPU the container can see. What hides the neighbour card is the device pass-through below:
+      # only the A770's two DRM nodes are given, so Level Zero (which opens only the render nodes it has) sees
+      # just the A770. On a driver that mis-handles multiple visible devices, set A770B_ONEAPI_DEVICE_SELECTOR to
+      # level_zero:0 to pin by index.
       ONEAPI_DEVICE_SELECTOR: "${A770B_ONEAPI_DEVICE_SELECTOR}"
     ports:
       - "127.0.0.1:${A770B_PORT}:8080"

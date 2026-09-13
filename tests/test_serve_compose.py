@@ -20,6 +20,8 @@ SERVE = ROOT / "harness" / "serve_compose.sh"
 OVERRIDE_PY = ROOT / "harness" / "compose_override.py"
 ENVELOPE = ROOT / "compose" / "a770-vulkan.yaml"
 ENV_EXAMPLE = ROOT / "compose" / "a770-vulkan.env.example"
+SYCL_ENVELOPE = ROOT / "compose" / "a770-sycl.yaml"
+SYCL_ENV_EXAMPLE = ROOT / "compose" / "a770-sycl.env.example"
 GGUF = "Qwen3.5-9B-Q4_K_M.gguf"
 
 
@@ -276,3 +278,31 @@ def test_compose_env_example_documents_the_pinned_digest_form():
     assert "A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:" in text
     assert "A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:full-vulkan\n" not in text
     assert "RepoDigests" in text
+
+
+def test_sycl_envelope_sets_the_server_entrypoint_and_bakes_no_model():
+    text = SYCL_ENVELOPE.read_text(encoding="utf-8")
+    assert 'entrypoint: ["/app/llama-server"]' in text
+    assert "127.0.0.1:${A770B_PORT}:8080" in text
+    assert "${A770B_LLAMA_IMAGE}" in text
+    assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
+    assert "${A770B_MODELS}:/models:ro,z" in text
+    assert "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro,z" in text
+
+
+def test_sycl_envelope_uses_the_sycl_device_selector_and_hides_the_neighbour():
+    text = SYCL_ENVELOPE.read_text(encoding="utf-8")
+    assert "ONEAPI_DEVICE_SELECTOR" in text
+    # the Vulkan-only env vars must not leak into the SYCL envelope
+    assert "MESA_VK_DEVICE_SELECT" not in text and "GGML_VK_DISABLE_COOPMAT" not in text
+    # long-syntax devices, only the A770's two nodes (this is what hides the neighbour card under Level Zero)
+    assert 'source: "${A770B_DRM_CARD}"' in text and "target: /dev/dri/card0" in text
+    assert 'source: "${A770B_DRM_RENDER}"' in text and "target: /dev/dri/renderD128" in text
+    assert text.count('permissions: "rwm"') == 2
+
+
+def test_sycl_env_example_names_the_sycl_image_and_bakes_no_model():
+    text = SYCL_ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "A770B_MODEL=" not in text and "A770B_CTX=" not in text
+    assert "full-intel" in text and "getent" in text
+    assert "A770B_ONEAPI_DEVICE_SELECTOR" in text

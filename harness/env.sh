@@ -46,6 +46,7 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_LLAMA_BIN:=${LLAMA_BIN:-$HOME/llama.cpp/build/bin/llama-server}}"
 : "${A770B_DEVICE:=Vulkan0}"                             # llama-server --list-devices names the cards; pick the builder card
 : "${A770B_VK_DEVICE_SELECT=8086:56a0!}"                # Mesa device selector, vendor:device of the builder card with '!' = the only Vulkan device the server sees (A770 = 8086:56a0); Vulkan lists the boot card first, so an index alone drifts when the desktop moves
+: "${A770B_ONEAPI_DEVICE_SELECTOR:=level_zero:gpu}"      # SYCL/Level Zero selector for the SYCL envelope (compose/a770-sycl.yaml); a TYPE filter, not a pin — the A770's two DRM nodes are what hide the neighbour card. `level_zero:0` pins by index where a driver mis-handles multiple devices
 : "${A770B_GPU_MATCH:=DG2}"                             # substring of the card's name in `nvtop -s`, for VRAM readings and the cap
 : "${A770B_RESET_PATTERN:=engine reset|timedout}"       # kernel-log regex (grep -ciE) for a GPU reset; this is Intel's Xe driver wording — on
                                                           # a non-Intel driver set this to yours (see config/builder.env.example for how to find it)
@@ -62,7 +63,7 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_SERVE:=host}"
 case "$A770B_SERVE" in host|compose) ;; *) echo "⛔ A770B_SERVE must be host or compose (it is '$A770B_SERVE')" >&2; return 2 2>/dev/null || exit 2;; esac
 : "${A770B_COMPOSE_FILE:=$A770B_PROJECT/compose/a770-vulkan.yaml}"     # the envelope: devices, groups, mounts, port, entrypoint
-: "${A770B_COMPOSE_ENV_FILE:=$A770B_PROJECT/compose/a770-vulkan.env}"  # gitignored: image, PCI nodes, host group ids (getent)
+: "${A770B_COMPOSE_ENV_FILE:=${A770B_COMPOSE_FILE%.yaml}.env}"         # gitignored: image, PCI nodes, host group ids (getent). Derived from the envelope so a SYCL envelope cannot silently pair with the Vulkan env file (which would serve the Vulkan image while the operator believes it is SYCL)
 : "${A770B_COMPOSE_PROJECT:=a770-builder}"                             # the compose project name: its own container namespace
 : "${A770B_DOCKER:=docker}"                                            # the container runtime CLI (podman compose is untested)
 # The uid:gid the container runs as. It must match the owner of A770B_API_KEY_FILE (mode 600), because the envelope
@@ -94,7 +95,7 @@ esac
 export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE A770B_RESET_PATTERN
 export A770B_PROFILES A770B_DEFAULT_PROFILE
 # exported for the compose envelope's ${…} interpolation (the values this file is the single source of)
-export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT A770B_CONTAINER_UID A770B_CONTAINER_GID
+export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT A770B_ONEAPI_DEVICE_SELECTOR A770B_CONTAINER_UID A770B_CONTAINER_GID
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }
 # a770b_profile_var <profile> <FIELD> — the value of A770B_<PROFILE>_<FIELD> (name upper-cased, - → _); empty if unset
