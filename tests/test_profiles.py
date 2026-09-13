@@ -1099,7 +1099,7 @@ def test_builder_class_true_for_suite_pass_rate(tmp_path):
 def test_env_inference_registry_first_line():
     result = run("env", "--file", str(PROFILES_INFERENCE_JSON))
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines()[0] == ': "${A770B_PROFILES:=long serious}"'
+    assert result.stdout.splitlines()[0] == ': "${A770B_PROFILES:=long serious serious-sycl}"'
 
 
 # --- KU8: suite.stages, suite.reviewer, suite.instrument, profile-level instrument, comparable_with ---
@@ -1233,7 +1233,7 @@ def test_check_passes_on_both_shipped_registries_with_card_backend_mode():
         file_mode = data["mode"]
         for name, prof in data["profiles"].items():
             assert prof["card"] == "a770", f"{f}: {name}: card"
-            assert prof["backend"] == "vulkan", f"{f}: {name}: backend"
+            assert prof["backend"] in {"vulkan", "sycl"}, f"{f}: {name}: backend"
             assert prof["mode"] == file_mode, f"{f}: {name}: mode"
         result = run("check", "--file", str(f))
         assert result.returncode == 0, result.stderr

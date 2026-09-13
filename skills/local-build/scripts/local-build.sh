@@ -76,6 +76,19 @@ _export_live(){ # A770B_LIVE_* for the sidecar write on start; empty values mean
   A770B_LIVE_PROFILE="$1"
   export A770B_LIVE_CARD A770B_LIVE_BACKEND A770B_LIVE_MODE A770B_LIVE_PROFILE
 }
+_envelope_for_backend(){ # A770B_SERVE=compose only: the row's backend selects the container envelope, so a sycl
+  # row is never served on the vulkan image (which would answer /health and write backend=sycl to the sidecar — a
+  # silent wrong-backend serve). host serving has one path and is left alone. The env file is derived from the
+  # envelope, exactly as env.sh derives it, so the two cannot silently mismatch.
+  [ "${A770B_SERVE:-host}" = compose ] || return 0
+  case "$(a770b_profile_var "$1" BACKEND)" in
+    sycl)   A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-sycl.yaml";;
+    vulkan) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-vulkan.yaml";;
+    *) return 0;;
+  esac
+  A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
+  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE
+}
 _reload_lock_held(){ # true when another process holds the run lock; this shell's own fd 9 does not count
   if { true >&9; } 2>/dev/null; then return 1; fi
   if ( flock -n 8 ) 8>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then return 1; fi
@@ -109,6 +122,7 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local lock_held run_alive msg old_profile LIVE_PY
   local -a rb_args
   profile_vars "$p"
+  _envelope_for_backend "$p"
   [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
   _export_live "$p"
   LIVE_PY="$A770B_PROJECT/harness/live_backend.py"
@@ -144,6 +158,7 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       if ! a770b_is_profile "$old_profile"; then echo "rollback failed: server is down"; return 1; fi
       p=$old_profile
       profile_vars "$p"
+      _envelope_for_backend "$p"
       if [ ! -r "$gguf" ]; then echo "rollback failed: server is down"; return 1; fi
       _export_live "$p"
       if _serve_start; then return 0; fi
