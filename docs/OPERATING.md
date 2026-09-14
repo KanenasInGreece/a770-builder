@@ -11,7 +11,7 @@ this is, why it exists, how it installs and its security state; [`SECURITY.md`](
 ## Run it
 
 ```bash
-bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long                     # long profile (default), on the default seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile serious-sycl            # the profile you chose, on the default seat
 bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>  # with a run specification (below)
 bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --profile serious  # serious profile, on a named seat
 bash skills/local-build/scripts/local-build.sh run <brief.md> --profile fast                     # fast profile: the reader
@@ -87,7 +87,7 @@ doctor` reports it, and `local-build.sh profiles` shows what is actually served 
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| long | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
 | fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 
@@ -122,7 +122,7 @@ is why it is set aside. Every file the model reads lands in that window, and a 1
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long (default) | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
+| long | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
 | serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
 | serious-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358 tok/s | The faster sibling of serious: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
 
@@ -211,7 +211,7 @@ raised only after a fresh measurement, never by guesswork.
 (20,000 MB by default), read from the kernel's own `MemAvailable`. It is a page-cache floor for reading the weights
 off disk, not a budget for weights that stay in system memory, so it cannot refuse a load whose weights will not
 fit in RAM. A model that keeps part of its weights in host memory can still be started here, by four routes: the
-expert-placement flag `--n-cpu-moe N` passed to `harness/serve_a770_llamacpp.sh start <gguf> <ctx>`, which hands
+expert-placement flag `--n-cpu-moe N` passed to `harness/serve_compose.sh start <gguf> <ctx>`, which hands
 any argument after the window straight to the server; a profile's `A770B_<PROFILE>_EXTRA` set in the environment,
 which wins over the value the registry supplies; `harness/ladder.sh <gguf> --ctx N --extra "--n-cpu-moe N"` on a
 bare model file, the path for a model with no row; and serving one of the mixture-of-experts files the ledger
@@ -251,7 +251,7 @@ cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j
 ./build/bin/llama-server --list-devices        # the builder card's name goes into A770B_DEVICE
 ```
 
-`A770B_LLAMA_BIN` defaults to `~/llama.cpp/build/bin/llama-server`; point it elsewhere if you built elsewhere.
+`A770B_LLAMA_BIN` is unused now: the server runs in a container, and the host llama.cpp build was removed.
 
 **The kit's own toolchain.** `harness/run_suite.sh` needs nothing installed beyond what a normal development host
 already has on its path: `node` (the system one; a version manager an interactive shell layers on top of it is not
@@ -402,8 +402,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `skills/local-build/` | the agent skill: `SKILL.md`, `scripts/local-build.sh` (`run` with an optional `--spec`, `verify`, `reset`, `serve`, `status`, `stop`, `--version`, `check-update`), `CONSTITUTION_SNIPPET.md` (optional, agents add it to their own constitution) |
 | `render_readme.sh` | generates the operator's local recap page, `README.html` — gitignored, never shipped; `README.md` is the document of record, written and reviewed first at every change, and the recap is regenerated from the repository's current state afterwards, never instead |
 | `harness/` | the scripts that run and guard a profiling or build session: starting the model server, wrapping the coding agent in the sandbox, capturing what it did, and measuring how fast and how far it can go — every script here runs on the host, outside the sandbox |
-| `harness/serve_a770_llamacpp.sh` | the host way a server starts: budget gate, VRAM cap (the mode's: 13 GiB after load on a display card, 15.3 on a free one), `-ub 512`, the API key, model marker |
-| `harness/serve_compose.sh` | the container way, chosen by `A770B_SERVE=compose`: builds the same llama-server argv from the registry, writes it as a compose override, and recreates the container (`up -d --force-recreate`); enforces the VRAM cap and writes the live-backend sidecar on the host; `plan` prints the argv without touching docker, and `bench` runs a one-shot `/app/llama-bench` in the same image |
+| `harness/serve_compose.sh` | the container way a server starts (`A770B_SERVE=compose`, the only value): builds the same llama-server argv from the registry, writes it as a compose override, and recreates the container (`up -d --force-recreate`); enforces the VRAM cap and writes the live-backend sidecar on the host; `plan` prints the argv without touching docker, and `bench` runs a one-shot `/app/llama-bench` in the same image |
 | `compose/a770-vulkan.yaml` | the container ENVELOPE for `A770B_SERVE=compose`: official llama.cpp `full-vulkan` image (not `server-vulkan`: that image has no `llama-bench`), the `/app/llama-server` entrypoint (the image's own is `tools.sh`, and compose appends `command:` to it), the two PCI DRM nodes, the host group ids, the MESA pin, the read-only GGUF and API-key mounts, and a loopback port. It bakes no model or context — the argv comes from the registry at serve time. A bare `docker compose up` is not the skill's start path (it skips the profile argv, the budget gate, the VRAM cap and the sidecar); `serve` recreates so a profile change takes effect. Take the server down before a bench one-shot. Passthrough unmeasured until a host brings it up. Pin the image by digest after the first pull; `doctor` warns, without failing, while the reference is still the floating tag. |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
 | `harness/sandbox_run.sh` | the bubblewrap boundary: path policy before the bind, then only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |

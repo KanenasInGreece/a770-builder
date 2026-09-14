@@ -46,7 +46,7 @@
         "think": "not measured (the thinking arm is owed)",
         "write": "not measured"
       },
-      "use_for": "The default: every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k."
+      "use_for": "Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k."
     },
 
     "serious": {

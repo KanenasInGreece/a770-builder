@@ -2,7 +2,7 @@
 # ladder.sh — the one command a stranger runs to produce a registry row. Runs the rungs AGENTS.md's "The ladder"
 # names, in the order it names them, stopping at the first failure (a later rung is wasted on a model that failed
 # an earlier one):
-#   1. load and VRAM at the target window  — harness/serve_a770_llamacpp.sh, wrapped inside harness/bench_model.sh
+#   1. load and VRAM at the target window  — harness/serve_compose.sh, wrapped inside harness/bench_model.sh
 #   2. the probes and the 17k summary       — harness/bench_model.sh <label> <gguf> <ctx> [flags]
 #   3. the standard speed rung              — harness/bench_speed.sh <profile>  (llama-bench, the row's own flags)
 #   4. the window rung                      — harness/ctx_sweep.sh 8000 <far end>  (VRAM/kernel-log safety read;

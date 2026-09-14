@@ -37,7 +37,7 @@
       "capability": {},
       "capability_source": "",
       "fit": {"code": "T1: 11 tests green in 121 s, the repository's test idiom followed unprompted (measured at the client's temperature 0)", "think": "not measured", "write": "not measured"},
-      "use_for": "The default: every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line."
+      "use_for": "Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line."
     },
     "fast": {
       "task": "code-edit",

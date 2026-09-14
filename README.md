@@ -38,16 +38,15 @@ A770 builder harness ── guard · run lock · budget gate · capture · verif
       │
       ├── bubblewrap sandbox ── opencode ── the seat (a standalone clone of your repository)
       │                          │ loopback bridge, the only network
-      └── the model server ────────┘── host llama.cpp, or the same OpenAI URL from compose/a770-vulkan.yaml
+      └── the model server ────────┘── the containerized server (compose/a770-vulkan.yaml)
 ```
 
-The server runs on the host by default. To run it in a container instead, set `A770B_SERVE=compose` in
-`builder.env` and copy `compose/a770-vulkan.env.example` to `compose/a770-vulkan.env`, editing the image, the two
-PCI DRM nodes and the host group ids (`getent group render`, `getent group video`). Start it the same way as the
-host server:
+The server runs in a container (`A770B_SERVE=compose`, the only value). Copy
+`compose/a770-vulkan.env.example` to `compose/a770-vulkan.env`, editing the image, the two
+PCI DRM nodes and the host group ids (`getent group render`, `getent group video`). Start it:
 
 ```
-A770B_SERVE=compose bash skills/local-build/scripts/local-build.sh serve long
+bash skills/local-build/scripts/local-build.sh serve serious-sycl
 ```
 
 `serve` recreates the container with the profile's own llama-server argv, so the registry stays the single source;
@@ -97,7 +96,7 @@ plainly which problem each solves, where each stops, and how they fit together.
 |---|---|---|---|
 | **a Linux host** | the whole harness: the sandbox is bubblewrap, which is Linux kernel namespaces; the VRAM cap reads `nvtop`; the reset watch reads the kernel log; the serving line rests on Mesa's Vulkan driver and the Xe watchdog rules. Measured on Fedora 44 only. On Windows the plausible route is the harness under WSL2 with `llama-server` running natively on Windows and reached over the loopback, but that has not been measured here and the VRAM cap would not see the card; macOS has no bubblewrap | any distribution with user namespaces enabled (the default on Fedora, Ubuntu, Debian, Arch) | `bwrap`, `nvtop`, `journalctl` on `PATH` |
 | Vulkan driver for the card | the GPU backend llama.cpp runs on | your distribution's Mesa Vulkan driver (`mesa-vulkan-drivers`) and `vulkan-tools`; `vulkaninfo --summary` must list the card | `A770B_DEVICE` = the name `llama-server --list-devices` prints |
-| `llama.cpp` with the Vulkan backend | serves the model (`llama-server`) | build it from source per [llama.cpp `docs/build.md`, *Vulkan*](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md#vulkan) (measured here on b10805) | `A770B_LLAMA_BIN` (default `~/llama.cpp/build/bin/llama-server`) |
+| **Docker or Podman** | runs the model server container (`harness/serve_compose.sh`) | your distribution's `docker` (or `podman`) with Compose v2; `local-build.sh doctor` checks the compose CLI | `A770B_DOCKER` (default `docker`) |
 | `node`, `cmake`, `make`, `g++`, `ctest` | the toolchain the profiling kit's own graders build and test against, inside the sandbox, nothing else installed | your distribution's packages (Node.js, `cmake`, `make`, `gcc-c++`) | on `PATH`; `tests/kit_selftest.sh` and `local-build.sh doctor` both check the sandboxed toolchain is reachable |
 | the model files of the mode's registry (`config/profiles.json`, `config/profiles.inference.json`) | the profiles of whichever card mode this machine serves | Hugging Face: [`lmstudio-community/Qwen3.5-9B-GGUF`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF), [`ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF) and [`lmstudio-community/gemma-4-E4B-it-GGUF`](https://huggingface.co/lmstudio-community/gemma-4-E4B-it-GGUF); the download lines are in [`docs/OPERATING.md`](docs/OPERATING.md#getting-llamacpp-and-the-models); every model measured on this card is in [`config/models.md`](config/models.md), and a new one enters by the procedure in `docs/OPERATING.md` | `A770B_MODELS` (default `~/LLM/tested`), `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` |
 | [opencode](https://opencode.ai/docs) | the coding agent that runs inside the sandbox | its install script or package, per its docs | found on `PATH`, or `A770B_OPENCODE_BIN` |
@@ -167,7 +166,7 @@ nothing the model wrote, and `verify` re-runs a capture's tests inside a fresh s
 reviews have read the boundary and what sits on it, two of them by a second model family, and found and closed real
 holes. All of it, with what you must still do yourself and how to report a hole, is in [`SECURITY.md`](SECURITY.md).
 
-This project stands alone. It needs an OpenAI-compatible model server (host llama.cpp, or the Compose example in `compose/`), opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
+This project stands alone. It needs an OpenAI-compatible model server (the containerized server in `compose/`), opencode, bubblewrap, socat, uv and the mode's model files, and nothing else:
 no database, no account, no memory system, and no network call of its own except the model server on loopback. The
 profiling kit is the same way: it needs no second repository, since its own seat, corners and hidden graders all
 live inside `kit/` here. It was
