@@ -28,8 +28,8 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot _a770b_selected_mode
 # flash attention off is the Gemma 4 condition on this card (with it on, prefill collapses with position and the GPU
 # watchdog fires); without it the V cache must be f16, which the sliding window keeps small
 # ── the profiles: config/profiles.json is the single source (harness/profiles.py env prints ${VAR:=…} defaults, so
-#    builder.env and the environment still win per variable); A770B_PROFILES lists the names, A770B_DEFAULT_PROFILE
-#    the default. Among what it prints per profile: A770B_<P>_THINKING_MODE/_EFFORT/_BUDGET/_BUDGET_MESSAGE/_PRESERVE
+#    builder.env and the environment still win per variable); A770B_PROFILES lists the names, and there is no
+#    default profile — a card is chosen explicitly. Among what it prints per profile: A770B_<P>_THINKING_MODE/_EFFORT/_BUDGET/_BUDGET_MESSAGE/_PRESERVE
 #    from the registry row's optional `thinking` object (harness/profiles.py's docstring) — empty when the row sets
 #    none. `a770b_profile_var <profile> THINKING_MODE` (etc., below) reads them like any other profile field; the
 #    caller that starts the server (skills/local-build/scripts/local-build.sh's `serve`) is what maps them onto the
@@ -91,7 +91,7 @@ case "$A770B_SERVE" in compose) ;; *) echo "⛔ A770B_SERVE must be compose — 
 : "${A770B_CORPUS_FILE:=$A770B_KIT/corpus/large.py}"     # kit/corpus.py's generated file: real source only, sized for the display serious profile's window
 : "${A770B_SUMMARY_CORPUS:=$A770B_SEAT/**/*.py}"         # bench_model.sh's judged 17k summary rung: the SEAT's own source, never the kit's generated corpus
 export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE A770B_RESET_PATTERN
-export A770B_PROFILES A770B_DEFAULT_PROFILE
+export A770B_PROFILES
 # exported for the compose envelope's ${…} interpolation (the values this file is the single source of)
 export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT A770B_ONEAPI_DEVICE_SELECTOR A770B_CONTAINER_UID A770B_CONTAINER_GID
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true

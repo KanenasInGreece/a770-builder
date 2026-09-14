@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build_local.sh — dispatch a brief to the local builder through opencode, inside the sandbox.
 #   build_local.sh <worktree> <brief-file-or-text>
-# Env: PROFILE (a name in A770B_PROFILES, default A770B_DEFAULT_PROFILE), LOCAL_AGENT, LOCAL_TIMEOUT (s), SANDBOX=0 to run unconfined (testing).
+# Env: PROFILE (required: a name in A770B_PROFILES; there is no default), LOCAL_AGENT, LOCAL_TIMEOUT (s), SANDBOX=0 to run unconfined (testing).
 # The opencode config is RENDERED per run from config/opencode.profile.template.jsonc with the server URL, the
 # profile's context window and the output limit from env.sh, so the model's client and the server can never disagree.
 # Rules: the target is a self-contained clone that is not a protected checkout (guard.sh); opencode runs with
@@ -10,7 +10,7 @@
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 WT=$(guard_worktree "${1:?worktree path}"); BRIEF="${2:?brief file or task text}"
-PROFILE="${PROFILE:-$A770B_DEFAULT_PROFILE}"
+PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a name from A770B_PROFILES}"
 a770b_is_profile "$PROFILE" || { echo "⛔ PROFILE must be one of: $A770B_PROFILES" >&2; exit 2; }
 CTX=$(a770b_profile_var "$PROFILE" CTX)
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"

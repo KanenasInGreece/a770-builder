@@ -188,7 +188,7 @@ status(){ local c; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo
   echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · mode $A770B_CARD_MODE · registry $A770B_PROFILES_FILE · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
-  printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s%s = %s ctx %s ·' "$p" "$([ "$p" = "$A770B_DEFAULT_PROFILE" ] && echo ' (default)')" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"
+  printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s = %s ctx %s ·' "$p" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"
   echo "project $A770B_PROJECT · data $A770B_DATA · seat $A770B_SEAT"
   if ! : 9>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then echo "run lock: unknown (cannot open $A770B_DATA/logs/local-build.lock)"; elif ( flock -n 9 ) 9>>"$A770B_DATA/logs/local-build.lock"; then echo "run lock: free"; else echo "run lock: HELD — a run, verify, serve or reset is in progress; wait for it"; fi
   if pid=$(run_pid_alive "$A770B_DATA/logs/run.pid"); then echo "run: pid $pid in progress since $(date -r "$A770B_DATA/logs/run.pid" +%H:%M:%S 2>/dev/null || echo "a moment ago") — local-build.sh stop-run ends exactly it"; else echo "run: none"; fi
@@ -299,7 +299,7 @@ doctor(){
   if [ "$missing" = 0 ]; then echo "ok   doctor: all checks passed"; return 0; else echo "MISSING doctor: $missing missing"; return 1; fi
 }
 case "${1:-}" in
-  serve)  run_lock; serve "${2:-$A770B_DEFAULT_PROFILE}" ;;
+  serve)  run_lock; [ -n "${2:-}" ] || die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; serve "$2" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@" ;;
@@ -318,7 +318,7 @@ case "${1:-}" in
     kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
-    shift; profile=$A770B_DEFAULT_PROFILE; timeout=""; spec=""; profile_set=0
+    shift; profile=""; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
     while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; a770b_is_profile "$profile" || die "profile must be one of: $A770B_PROFILES (got '$profile')"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
@@ -336,6 +336,7 @@ case "${1:-}" in
       [ "$profile_set" = 1 ] || [ "$spec_profile" = "-" ] || profile="$spec_profile"
       [ -n "$timeout" ] || [ "$spec_timeout" = "-" ] || timeout="$spec_timeout"
     fi
+    [ -n "$profile" ] || die "no profile: pass --profile <name> (there is no default profile) or set \"profile\" in the specification — one of: $A770B_PROFILES"
     run_lock                                                       # one run at a time on this card
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
     profile_vars "$profile"; t=${timeout:-$t}
@@ -410,8 +411,8 @@ case "${1:-}" in
       CMD=(bash -c "$TEST"' && exec uv run --with pytest --with pytest-asyncio python -m pytest -q "$@"' _ "${files[@]}")
     elif [ -n "$TEST" ]; then CMD=(bash -c "$TEST"); else CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}"); fi
     label=$(basename "${PATCH%.patch}"); OUT="$A770B_DATA/results/$label.verify.md"
-    CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify "$(a770b_profile_var "$A770B_DEFAULT_PROFILE" CTX)" "$CFG" nokey || exit 2
-    t=${timeout:-$(a770b_profile_var "$A770B_DEFAULT_PROFILE" TIMEOUT)}
+    CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify 32768 "$CFG" nokey || exit 2
+    t=${timeout:-1500}
     echo "▶ verify $label · seat $WT · inside the sandbox: ${CMD[*]}"
     { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "hidden tests: ${HIDDEN[*]:-none}"; echo "command, inside the sandbox (no model, no bridge, no key): ${CMD[*]}"; echo; echo '```'; } > "$OUT"
     ( A770B_NO_BRIDGE=1 timeout "$t" bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"

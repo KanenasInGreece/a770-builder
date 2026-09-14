@@ -470,7 +470,7 @@ else echo "FAIL selftest: suite_report.py delivered speed did not parse — stdo
 fi
 # the profiles registry: config/profiles.json is the single source now that env.sh evals `harness/profiles.py env`
 python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
-[ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = "long" ] && echo "ok   profiles: names and default come from the registry" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='$A770B_DEFAULT_PROFILE'"; fail=1; }
+[ "$A770B_PROFILES" = "long fast serious" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ] && echo "ok   profiles: the names come from the registry and there is no default" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='${A770B_DEFAULT_PROFILE:-}'"; fail=1; }
 # the helper reads a numeric field (long's CTX), a string field that can only come from `extra` (--top-k has no
 # A770B_<P>_* variable of its own, unlike --temp and --top-p), and a field of the row's own `thinking` object
 # (serious's effort, served through --reasoning-effort; it used to sit inside `extra` as reasoning_effort, which
@@ -492,7 +492,7 @@ out=$( ( _iso; export A770B_CARD_MODE=x XDG_CONFIG_HOME="$t/xdg"; . "$here/harne
   && echo "ok   mode: I1 an invalid mode refuses (exit 2) and names it" || { echo "FAIL mode: I1 x -> rc=$rc: $out"; fail=1; }
 ( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   case "$A770B_PROFILES_FILE" in *config/profiles.json) : ;; *) exit 1;; esac
-  [ "$A770B_VRAM_CAP_GIB" = 13.0 ] && [ "$A770B_PROFILES" = "long fast serious" ] && [ "$A770B_DEFAULT_PROFILE" = long ]
+  [ "$A770B_VRAM_CAP_GIB" = 13.0 ] && [ "$A770B_PROFILES" = "long fast serious" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ]
 ) && echo "ok   mode: I2 the v0.1.4 defaults hold with the mode unset" || { echo "FAIL mode: I2 the display defaults did not all hold"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
