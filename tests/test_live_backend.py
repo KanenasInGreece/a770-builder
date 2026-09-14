@@ -119,7 +119,23 @@ def test_serve_stop_removes_the_sidecar(tmp_path):
     sidecar.write_text("{}\n", encoding="utf-8")
     xdg = tmp_path / "xdg"
     xdg.mkdir()
+
+    # A fake docker that records every invocation and succeeds with no output, so `stop` never reaches
+    # the real daemon and never touches the live compose project.
+    docker_stub = tmp_path / "docker"
+    docker_log = tmp_path / "docker.log"
+    docker_stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, pathlib\n"
+        f"pathlib.Path({str(docker_log)!r}).open('a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+    )
+    docker_stub.chmod(0o755)
+
     env = {k: v for k, v in os.environ.items() if not k.startswith("A770B_")}
+    env["A770B_DOCKER"] = str(docker_stub)
+    env["A770B_COMPOSE_PROJECT"] = f"a770b-test-{os.getpid()}"
+    env["A770B_COMPOSE_FILE"] = str(ROOT / "compose" / "a770-vulkan.yaml")
+    env["A770B_COMPOSE_ENV_FILE"] = str(tmp_path / "env")
     env["A770B_PROJECT"] = str(ROOT)
     env["A770B_DATA"] = str(data)
     env["A770B_REFUSE"] = "/nonexistent"
@@ -134,3 +150,8 @@ def test_serve_stop_removes_the_sidecar(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert not sidecar.exists()
+
+    # Regression guard: the stub ran, and every call used the test-only project, never the live one.
+    log_content = docker_log.read_text()
+    assert f"-p a770b-test-{os.getpid()}" in log_content, log_content
+    assert "-p a770-builder " not in log_content, log_content
