@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bench_speed.sh — the standard speed instrument: llama-bench built from the profile's own registry values, the
-# same flags serve_a770_llamacpp.sh would serve the row at. Touches no server: refuses outright while the harness's
+# same flags serve_compose.sh would serve the row at. Touches no server: refuses outright while the harness's
 # own server is up (one GPU process on the card at a time; MESA_VK_DEVICE_SELECT pins the same builder card).
 #   bench_speed.sh <profile> [--depths 0,8192,32768] [--prompt 8192] [--gen 128] [--reps 3] [--dry-run]
 # Writes $A770B_DATA/results/<profile>-bench-<date>.json: the raw llama-bench JSON plus a header (profile, model,
@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# the row's own registry values, exactly as serve_a770_llamacpp.sh would serve them: KV/KV_V/MODEL come from
+# the row's own registry values, exactly as serve_compose.sh would serve them: KV/KV_V/MODEL come from
 # a770b_profile_var, which reads the environment (builder.env or the caller) over the registry default — the same
 # precedence env.sh gives every A770B_<PROFILE>_* variable.
 CARD=$(python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --name "$PROFILE") \
@@ -44,7 +44,7 @@ KV_V=$(a770b_profile_var "$PROFILE" KV_V); KV_V="${KV_V:-$KV}"
 # -fa: A770B_<P>_FA if env.sh (or builder.env, or the caller) prints one, else the registry's own flash_attention
 FA=$(a770b_profile_var "$PROFILE" FA); FA="${FA:-$CARD_FLASH_ATTENTION}"
 
-# a MoE row's --n-cpu-moe N lives in its own `extra` string (the same one serve_a770_llamacpp.sh appends verbatim)
+# a MoE row's --n-cpu-moe N lives in its own `extra` string (the same one serve_compose.sh appends verbatim)
 NCMOE=""
 if [[ "$CARD_EXTRA" =~ (^|[[:space:]])(-ncmoe|--n-cpu-moe)[[:space:]]+([0-9]+) ]]; then NCMOE="${BASH_REMATCH[3]}"; fi
 
@@ -59,8 +59,6 @@ if [ "$A770B_SERVE" = compose ]; then
   CMD_DISPLAY="bash $A770B_SERVE_SCRIPT bench -- -m /models/$(basename "$MODEL") ${COMMON[*]}   (llama-bench one-shot in the $A770B_COMPOSE_PROJECT container; the server must be down)"
   if [ "$DRY_RUN" = 1 ]; then bash "$A770B_SERVE_SCRIPT" bench --dry-run -- "${ARGS[@]}"; exit 0; fi
   compose_project_running && { echo "⛔ the compose server is up — one GPU process on the card; stop it first: bash $A770B_SERVE_SCRIPT stop" >&2; exit 2; }
-  # a host-side server left up (or reached by flipping A770B_SERVE without stopping) also holds the card
-  if pid=$(llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid"); then echo "⛔ a llama-server is up (pid $pid) — one GPU process on the card; stop it first: A770B_SERVE=host bash harness/serve_a770_llamacpp.sh stop" >&2; exit 2; fi
   [ -r "$MODEL" ] || { echo "⛔ model not readable: $MODEL (A770B_MODELS=$A770B_MODELS)" >&2; exit 2; }
   echo "▶ $CMD_DISPLAY"
   RAW_FILE=$(mktemp)
@@ -82,11 +80,7 @@ else
     exit 0
   fi
 
-  # only past this point does the script touch the pidfile or the GPU — a dry run never refuses
-  if pid=$(llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid"); then
-    echo "⛔ the harness's server is up (pid $pid) — one GPU process on the card; stop it first: harness/serve_a770_llamacpp.sh stop" >&2
-    exit 2
-  fi
+  # only past this point does the script touch the GPU — a dry run never refuses
   [ -x "$BENCH_BIN" ] || { echo "⛔ llama-bench not found or not executable: $BENCH_BIN (set A770B_LLAMA_BENCH)" >&2; exit 2; }
   [ -r "$MODEL" ] || { echo "⛔ model not readable: $MODEL (A770B_MODELS=$A770B_MODELS)" >&2; exit 2; }
 

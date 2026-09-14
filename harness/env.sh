@@ -34,7 +34,7 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot _a770b_selected_mode
 #    none. `a770b_profile_var <profile> THINKING_MODE` (etc., below) reads them like any other profile field; the
 #    caller that starts the server (skills/local-build/scripts/local-build.sh's `serve`) is what maps them onto the
 #    THINKING_MODE/THINKING_EFFORT/THINKING_BUDGET/THINKING_BUDGET_MESSAGE/THINKING_PRESERVE environment variables
-#    harness/serve_a770_llamacpp.sh reads to build its --reasoning* flags.
+#    harness/serve_compose.sh reads to build its --reasoning* flags.
 # the mode's two defaults: the registry it reads and its VRAM cap. 15.3 is measured on the A770 with no display (15.9
 # on the card, prefill growth at or under 0.3 GiB under ub 512, a 0.3 GiB reserve); 13.0 leaves an unmeasured desktop 3 GiB.
 case "$A770B_CARD_MODE" in inference) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.inference.json}"; : "${A770B_VRAM_CAP_GIB:=15.3}";; *) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.json}"; : "${A770B_VRAM_CAP_GIB:=13.0}";; esac
@@ -55,13 +55,14 @@ eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_API_KEY_FILE:=${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/api.key}"   # the server's API key (one line, mode 600); created on first serve
 : "${A770B_ALLOW_NO_NVTOP:=0}"                           # 1 = start without VRAM readings (NOT on a card that draws a desktop)
 : "${GGML_VK_DISABLE_COOPMAT:=1}"; export GGML_VK_DISABLE_COOPMAT
-# ── how the server is placed: host (default) or compose ────────────────────────────────────────────────────────
-# host    = the host llama.cpp binary (harness/serve_a770_llamacpp.sh) — today's path, unchanged.
-# compose = the same server in a container (harness/serve_compose.sh): the profile row still becomes llama-server
-#           argv from THIS registry, the container envelope (devices, groups, MESA pin, mounts, port) is
-#           compose/a770-vulkan.yaml, and the VRAM cap after load and the live-backend sidecar stay on the HOST.
-: "${A770B_SERVE:=host}"
-case "$A770B_SERVE" in host|compose) ;; *) echo "⛔ A770B_SERVE must be host or compose (it is '$A770B_SERVE')" >&2; return 2 2>/dev/null || exit 2;; esac
+# ── how the server is placed: container only ───────────────────────────────────────────────────────────────────
+# The container envelope is the only way a server starts: A770B_SERVE=compose, driven by
+# harness/serve_compose.sh. The profile row still becomes the llama-server argv from THIS registry; the
+# container envelope (devices, groups, MESA pin, mounts, port) is compose/a770-vulkan.yaml; and the
+# VRAM cap after load and the live-backend sidecar stay on the host. The host llama-server path was
+# removed: A770B_LLAMA_BIN is only a path variable now; nothing runs it.
+: "${A770B_SERVE:=compose}"
+case "$A770B_SERVE" in compose) ;; *) echo "⛔ A770B_SERVE must be compose — host serving was removed (it is '$A770B_SERVE')" >&2; return 2 2>/dev/null || exit 2;; esac
 : "${A770B_COMPOSE_FILE:=$A770B_PROJECT/compose/a770-vulkan.yaml}"     # the envelope: devices, groups, mounts, port, entrypoint
 : "${A770B_COMPOSE_ENV_FILE:=${A770B_COMPOSE_FILE%.yaml}.env}"         # gitignored: image, PCI nodes, host group ids (getent). Derived from the envelope so a SYCL envelope cannot silently pair with the Vulkan env file (which would serve the Vulkan image while the operator believes it is SYCL)
 : "${A770B_COMPOSE_PROJECT:=a770-builder}"                             # the compose project name: its own container namespace
@@ -70,10 +71,7 @@ case "$A770B_SERVE" in host|compose) ;; *) echo "⛔ A770B_SERVE must be host or
 # mounts that file read-only; a fixed 1000 would break on a host whose operator is another uid. Defaults to this host.
 : "${A770B_CONTAINER_UID:=$(id -u 2>/dev/null || echo 1000)}"
 : "${A770B_CONTAINER_GID:=$(id -g 2>/dev/null || echo 1000)}"
-case "$A770B_SERVE" in
-  compose) : "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_compose.sh}";;
-  *)       : "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_a770_llamacpp.sh}";;
-esac
+: "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_compose.sh}"
 # ── the budget gate (built in; set A770B_BUDGET_GATE to an external script to use that instead) ─────────────
 : "${A770B_BUDGET_GATE:=}"
 : "${A770B_MIN_AVAIL_MB:=20000}"; : "${A770B_MIN_VRAM_MB:=3000}"

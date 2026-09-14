@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # serve_compose.sh — the ONE way the containerized llama.cpp server starts on the builder card (A770B_SERVE=compose).
-# Same interface as serve_a770_llamacpp.sh, so skills/local-build/scripts/local-build.sh's serve() drives either:
+# The one way the containerized server starts; skills/local-build/scripts/local-build.sh's serve() drives it:
 #   serve_compose.sh plan  <gguf> <ctx> [extra…]   print the llama-server argv and the compose invocation; no docker
 #   serve_compose.sh start <gguf> <ctx> [extra…]   recreate the container, wait for /health, enforce the cap, sidecar
 #   serve_compose.sh stop | status
@@ -13,7 +13,7 @@
 # script writes sets entrypoint ["/app/llama-server"]; a bare `docker compose up` must not be a start path.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
-[ "$A770B_SERVE" = compose ] || { echo "⛔ serve_compose.sh is for A770B_SERVE=compose (it is '$A770B_SERVE') — use serve_a770_llamacpp.sh" >&2; exit 2; }
+[ "$A770B_SERVE" = compose ] || { echo "⛔ serve_compose.sh is for A770B_SERVE=compose (it is '$A770B_SERVE')" >&2; exit 2; }
 PIDFILE="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"; SIDECAR="$A770B_DATA/logs/live-backend.json"
 OVERRIDE="$A770B_DATA/logs/compose-argv.override.json"
 CONTAINER="llama"                      # the compose service name; the project name namespaces it
@@ -25,11 +25,10 @@ _compose(){
   local -a envf=(); [ -f "$A770B_COMPOSE_ENV_FILE" ] && envf=(--env-file "$A770B_COMPOSE_ENV_FILE")
   "$A770B_DOCKER" compose "${envf[@]}" -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" "$@"
 }
-# _build_argv <model-in-container> <ctx> [extra…] — the measured Vulkan flag set, mirrored from
-# serve_a770_llamacpp.sh:49-51 with the container differences only: the /models path and the in-container
-# host/port/key path (the envelope mounts the key). The binary is NOT an argv word here: it is the container's
-# ENTRYPOINT (/app/llama-server), and compose runs entrypoint + command, so a binary in `command` too would exec
-# `/app/llama-server /app/llama-server …`. The host server's own flags are otherwise unchanged.
+# _build_argv <model-in-container> <ctx> [extra…] — the measured Vulkan flag set, with the container differences
+# only: the /models path and the in-container host/port/key path (the envelope mounts the key). The binary is NOT
+# an argv word here: it is the container's ENTRYPOINT (/app/llama-server), and compose runs entrypoint + command,
+# so a binary in `command` too would exec `/app/llama-server /app/llama-server …`.
 _build_argv(){
   local model="$1" ctx="$2"; shift 2
   local -a thinking=()
