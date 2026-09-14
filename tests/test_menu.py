@@ -114,7 +114,6 @@ def test_menu_no_sidecar_is_cold_full_slice(tmp_path):
     assert "long" in names
     assert "long-sycl" in names
     assert names == list(data["profiles"].keys())
-    assert payload["default"] == "long"
     for row in payload["slice"]:
         assert set(row) == {
             "name", "card", "backend", "mode", "model",
@@ -144,7 +143,6 @@ def test_menu_live_vulkan_ready_and_sycl_also(tmp_path, live_pid):
     assert "long-sycl" in also_names
     assert "long" not in also_names
     assert "slice" not in payload
-    assert payload["default"] == "long"
 
     also0 = payload["also"][0]
     model = data["profiles"]["long-sycl"]["model"]
@@ -194,7 +192,6 @@ def test_menu_dead_pid_is_cold(tmp_path):
     names = [row["name"] for row in payload["slice"]]
     assert "long" in names
     assert "long-sycl" in names
-    assert payload["default"] == "long"
 
 
 def test_menu_deltas_absent_when_gguf_filename_differs(tmp_path, live_pid):

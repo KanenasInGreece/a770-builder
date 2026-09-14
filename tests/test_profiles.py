@@ -243,7 +243,7 @@ def test_env_matches_expected_lines():
 
     lines = result.stdout.splitlines()
     assert lines[0] == ': "${A770B_PROFILES:=long fast serious}"'
-    assert lines[1] == ': "${A770B_DEFAULT_PROFILE:=long}"'
+    assert not any("A770B_DEFAULT_PROFILE" in ln for ln in lines)
 
     expected_long_block = [
         ': "${A770B_LONG_MODEL:=Qwen3.5-9B-Q4_K_M.gguf}"',
@@ -345,7 +345,7 @@ def test_card_carries_mode_and_registry():
 def test_inference_registry_shape():
     data = json.loads(PROFILES_INFERENCE_JSON.read_text(encoding="utf-8"))
     assert data["mode"] == "inference"
-    assert data["default"] == "long"
+    assert "default" not in data
     for name in data["profiles"]:
         assert NAME_RE.match(name), name
 
@@ -405,7 +405,7 @@ def test_render_updates_skill_table_and_snippet(tmp_path):
     assert "10.35 GiB" in skill_text
 
     expected_snippet_line = (
-        "**--profile long** (default) = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~65k), ~37 tok/s; "
+        "**--profile long** = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~65k), ~37 tok/s; "
         "**--profile fast** = gemma-4-E4B-Q4_K_M, 131,072-token window (useful to ~100k), ~60 tok/s; "
         "**--profile serious** = Qwen3.8-27B-GSQ-RCO-IQ3_XXS, 131,072-token window (useful to ~32k), ~8 tok/s."
     )
@@ -1767,7 +1767,7 @@ def test_card_prints_instrument():
 
 
 def test_snippet_labels_use_profile_flag(tmp_path):
-    """--profile <name>, the default additionally marked (default)."""
+    """--profile <name>; there is no default to mark."""
     skill = tmp_path / "SKILL.md"
     skill.write_text("<!-- profiles:begin -->\nold\n<!-- profiles:end -->\n", encoding="utf-8")
     snippet = tmp_path / "snippet.md"
@@ -1777,7 +1777,7 @@ def test_snippet_labels_use_profile_flag(tmp_path):
     assert result.returncode == 0, result.stderr
 
     text = snippet.read_text(encoding="utf-8")
-    assert "**--profile long** (default) = " in text
+    assert "**--profile long** = " in text
     assert "**--profile fast** = " in text
     assert "**--profile serious** = " in text
 

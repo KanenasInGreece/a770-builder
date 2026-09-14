@@ -170,7 +170,7 @@ def validate(data) -> list[str]:
         profiles = {}
 
     default = data.get("default")
-    if not isinstance(default, str) or default not in profiles:
+    if default is not None and (not isinstance(default, str) or default not in profiles):
         errors.append(f"default: no such profile {default!r}")
 
     for name, prof in profiles.items():
@@ -647,7 +647,6 @@ def cmd_env(args) -> int:
     names = list(profiles.keys())
 
     print(': "${A770B_PROFILES:=%s}"' % " ".join(names))
-    print(': "${A770B_DEFAULT_PROFILE:=%s}"' % data["default"])
 
     for name, prof in profiles.items():
         upper = name.upper().replace("-", "_")
@@ -852,7 +851,7 @@ def cmd_menu(args) -> int:
         live = read(args.sidecar, args.pidfile)
 
     profiles = data["profiles"]
-    default = data["default"]
+    default = data.get("default")
 
     if live is None:
         out = {
@@ -860,7 +859,6 @@ def cmd_menu(args) -> int:
             "ready": [],
             "also": [],
             "slice": [_menu_row(name, prof) for name, prof in profiles.items()],
-            "default": default,
         }
         rows = out["slice"] if out["state"] == "cold" else (out["ready"] + out["also"])
         over = [r["name"] for r in rows if r["operator_override"]]
@@ -899,7 +897,6 @@ def cmd_menu(args) -> int:
         "live": live,
         "ready": ready,
         "also": also,
-        "default": default,
     }
     rows = out["slice"] if out["state"] == "cold" else (out["ready"] + out["also"])
     over = [r["name"] for r in rows if r["operator_override"]]
@@ -919,7 +916,7 @@ def _short_model_name(model: str) -> str:
 def _table_rows(data: dict) -> list[str]:
     """The skill table's header, separator, and one row per profile."""
     profiles = data["profiles"]
-    default = data["default"]
+    default = data.get("default")
 
     lines = [SKILL_HEADER, SKILL_SEPARATOR]
     for name, prof in profiles.items():
@@ -928,7 +925,7 @@ def _table_rows(data: dict) -> list[str]:
         decode8k = prof["speed"]["decode_tps"]["8k"]
         prefill8k = prof["speed"]["prefill_tps"]["8k"]
 
-        display_name = name + (" (default)" if name == default else "")
+        display_name = name
         lines.append(
             f"| {display_name} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
             f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof['use_for']} |"
@@ -939,7 +936,7 @@ def _table_rows(data: dict) -> list[str]:
 def _snippet_sentence(data: dict) -> str:
     """The one-line snippet sentence for a registry."""
     profiles = data["profiles"]
-    default = data["default"]
+    default = data.get("default")
 
     segments = []
     for name, prof in profiles.items():
@@ -947,7 +944,7 @@ def _snippet_sentence(data: dict) -> str:
         useful_k = prof["useful_ctx"] // 1000
         decode8k = prof["speed"]["decode_tps"]["8k"]
 
-        label = f"**--profile {name}**" + (" (default)" if name == default else "")
+        label = f"**--profile {name}**"
         decode_round = round(decode8k)
         segments.append(
             f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
