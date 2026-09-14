@@ -24,7 +24,13 @@ DEFAULT_PROMPT = (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_TOP_KEYS = {"profile", "timeout", "card", "scope", "bash_allow", "context", "verify"}
-DEFAULT_ALLOWED_PROFILES = ["fast", "serious", "long"]
+DEFAULT_ALLOWED_PROFILES = [
+    "gemma4-8b-e4b-q4km-vulkan",
+    "qwen35-9b-q4km-vulkan",
+    "qwen38-27b-iq3xxs-vulkan",
+    "qwen38-27b-iq3s-vulkan",
+    "qwen38-27b-iq3s-sycl",
+]
 REGISTRY_FILES = ("config/profiles.json", "config/profiles.inference.json")
 SCOPE_EDIT_RE = re.compile(r"^[A-Za-z0-9._/*-]+$")
 BASH_ALLOW_RE = re.compile(r"^[A-Za-z0-9 ._/*:-]+$")

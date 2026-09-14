@@ -16,7 +16,7 @@ The orchestrating agent never re-runs the ladder before picking a model for a br
 the brief's scope, the size of the files it names, and the time it can spend. The card is data the calling agent
 reads, not code it executes.
 
-The kit's own designated first row is the inference `serious` profile: its grading against `kit/SUITE.md` is what
+The kit's own designated first row is the inference `qwen38-27b-iq3s-vulkan` profile: its grading against `kit/SUITE.md` is what
 re-judges the design set by the earlier, sibling-repository instrument, so it is the row this document reproduces
 throughout, abridged to its fields with one gloss each, real values, unedited:
 
@@ -47,7 +47,7 @@ cost · `depth_probe_100k`/`task_t1` pass/fail of two rungs · `instrument` what
 `capability` the model's own public benchmark numbers · `use_for` what the ladder showed the row is good for.
 Added by `card`, never stored in the file: `"builder_class": true` (the task test passes — a `suite` at 80
 percent or better, else `task_t1` reads pass; the useful window and speed are recorded, not gates) and `"comparable_with": {"instrument": "seat: Shared_Memory@3c8e2bb", "measured_on": "Arc A770 16 GB,
-llama.cpp b10805 Vulkan", "profiles": ["long"]}` (the other inference row shares this row's exact
+llama.cpp b10805 Vulkan", "profiles": ["qwen35-9b-q4km-vulkan"]}` (the other inference row shares this row's exact
 `instrument` AND `measured_on` today).
 
 Besides the fields shown above, every row also carries `architecture` (a one-line prose description — attention
@@ -191,7 +191,7 @@ own card. Its `use_for` follows from exactly that: a deliverable larger than its
 useful to about 98k before the read gets slow — never a claim invented past what the fields above actually hold.
 
 A green field-by-field card is not the whole story, and reading a row means reading a stage's own grade before
-trusting it. The kit's own standard suite has been run on this card against the model file the shipped `long`
+trusting it. The kit's own standard suite has been run on this card against the model file the shipped `qwen35-9b-q4km-vulkan`
 profile serves, which is not a reading of that row: the row was measured on the sibling-repository instrument and
 carries its own task result, while this is the same file put through the kit. Every stage that counts toward the
 pass ratio ran. The backend stage passed, the front end and the C++ optimisation failed, so the file stands at one

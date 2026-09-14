@@ -5,7 +5,7 @@
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 set -uo pipefail
 WT=$(guard_worktree "$A770B_SEAT") || exit 2; LOG=$A770B_DATA/logs/llamacpp-a770.log
-CFG=$A770B_DATA/logs/opencode.overhead.jsonc; a770b_render_profile fast "$A770B_FAST_CTX" "$CFG" || exit 2
+CFG=$A770B_DATA/logs/opencode.overhead.jsonc; a770b_render_profile gemma4-8b-e4b-q4km-vulkan "$A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_CTX" "$CFG" || exit 2
 export OPENCODE_CONFIG=$CFG
 run(){ label="$1"; shift; n0=$(grep -c 'prompt eval time' "$LOG"); t0=$(date +%s)
   ( cd "$WT" && timeout 900 opencode run --dir "$WT" -m local-a770/local-builder "$@" "Reply with the single word OK and nothing else." < /dev/null >/dev/null 2>&1 )

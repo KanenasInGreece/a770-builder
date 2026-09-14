@@ -11,10 +11,10 @@ this is, why it exists, how it installs and its security state; [`SECURITY.md`](
 ## Run it
 
 ```bash
-bash skills/local-build/scripts/local-build.sh run <brief.md> --profile serious-sycl            # the profile you chose, on the default seat
-bash skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>  # with a run specification (below)
-bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --profile serious  # serious profile, on a named seat
-bash skills/local-build/scripts/local-build.sh run <brief.md> --profile fast                     # fast profile: the reader
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile qwen38-27b-iq3s-sycl            # the profile you chose, on the default seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile qwen35-9b-q4km-vulkan --spec <spec.json>  # with a run specification (below)
+bash skills/local-build/scripts/local-build.sh run ~/local-ai/seat <brief.md> --profile qwen38-27b-iq3xxs-vulkan  # a deliverable larger than its brief, on a named seat
+bash skills/local-build/scripts/local-build.sh run <brief.md> --profile gemma4-8b-e4b-q4km-vulkan                     # the reader
 bash harness/run_suite.sh <profile>                                                      # the standard suite (kit/), stage by stage, one results file
 bash skills/local-build/scripts/local-build.sh verify <label>                            # the reviewer's proof
 bash skills/local-build/scripts/local-build.sh reset                                     # a seat the skill refuses as dirty
@@ -80,34 +80,34 @@ Numbers in the tables below are properties of this card, build and quantisation,
 measured with llama.cpp b10805 and the Vulkan backend, on the qualification task.
 
 A `builder.env` written for a release before the registry may name `A770B_FAST_*` or `A770B_LONG_*` for the other
-profile's file: the environment wins over the registry, so such a file inverts fast and long silently. `local-build.sh
+profile's file: the environment wins over the registry, so such a file inverts the gemma4-8b-e4b-q4km-vulkan and qwen35-9b-q4km-vulkan rows silently. `local-build.sh
 doctor` reports it, and `local-build.sh profiles` shows what is actually served beside what the registry says.
 
 **Display-safe** (the default): measured on this A770 (16 GB, also driving the desktop).
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| gemma4-8b-e4b-q4km-vulkan | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| qwen38-27b-iq3xxs-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 
-This workstation's own `builder.display.env` runs `serious` on the quantiser's task-lossless file instead, IQ3_S, at
+This workstation's own `builder.display.env` runs `qwen38-27b-iq3xxs-vulkan` on the quantiser's task-lossless file instead, IQ3_S, at
 114,688 under a 14.1 cap: 13.78 GiB after load, peaking at 14.21 GiB during a 32k prompt, ~9 minutes (five tests,
 542 s); `local-build.sh profiles --served` shows it in place of the registry's row.
 
 The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM sampled and the
-kernel log watched. The long profile serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
+kernel log watched. The 9B serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
 flat within 0.3 GiB of its load; by the four-tokens-a-second rule (below) its useful window is 65,536 tokens, this
 row's own registry `useful_ctx`. The three 27B files share one speed profile, decode being compute-bound on this
 card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and under four tokens a second by 64k, so
-the serious profile's useful window is 32,768 whether it serves 131,072 or 114,688, and a brief for it points at
+the 27B's useful window is 32,768 whether it serves 131,072 or 114,688, and a brief for it points at
 files that fit that.
 
-The fast profile exists for the read, not the edit: files the long window cannot hold, and the "read this whole thing
+The E4B exists for the read, not the edit: files the 9B's window cannot hold, and the "read this whole thing
 and tell me" step before a brief is written. Its useful depth is about 100k tokens: at that depth it answered a probe's
 planted detail exactly, while its broad recall of "three other functions" blended real names into ones that do not
 exist; at 120k it misread a number. Ask it precise questions about a passage, not to recall the file: asked to index every definition of a 6,300-line
-file it paged through 60% and got 34 of 40 names right and 19 lines; the long profile paged through all of it in
+file it paged through 60% and got 34 of 40 names right and 19 lines; the 9B paged through all of it in
 15 minutes and listed constants instead of definitions. Neither seat indexes a large file. Judge what it reports the
 way every capture is judged. It is not the profile for multi-file shell edits: on the harness's own brief it made one
 edit of three and reported all three done. Flash attention off is its condition on this card, and with it off the V
@@ -115,16 +115,16 @@ cache is f16.
 
 The window is the server's. opencode's opening request costs about 5.4k tokens with the seat's `AGENTS.md` set aside
 (the skill does this for the run and restores it after); with it in place the opening request was about 32k tokens, which
-is why it is set aside. Every file the model reads lands in that window, and a 17k-token prefill costs the long profile
-37 s and the serious profile 4 min. Keep briefs pointed at files, not directories.
+is why it is set aside. Every file the model reads lands in that window, and a 17k-token prefill costs the 9B
+37 s and the 27B 4 min. Keep briefs pointed at files, not directories.
 
 **Pure-inference**: measured on the same card with nothing else on it.
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
-| serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
-| serious-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358 tok/s | The faster sibling of serious: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
+| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+| qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358 tok/s | The faster sibling of qwen38-27b-iq3s-vulkan: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
 
 `useful_ctx` is the largest depth at which decode stays above four tokens a second, taken from the two measured points
 (8k and the far end of the window) by extending the time per token linearly, capped at the depth probe's last
@@ -135,7 +135,7 @@ carries the full card for each row: `speed` at 8k and the far end (decode, prefi
 short strings with their source — `code` (the in-house suite or T1, tests passed and wall), `think` (a reasoning arm
 measured, or the card's GPQA or AIME figure named as the card's), `write` (a reviewer-graded prose brief, or "not
 measured"); `sampling`, the model's own recommended temperature, top_p, top_k, min_p and penalties, with its source —
-where a row carries one at all: the display registry's `long` and `fast` rows have none, measured at the client's
+where a row carries one at all: the display registry's `qwen35-9b-q4km-vulkan` and `gemma4-8b-e4b-q4km-vulkan` rows have none, measured at the client's
 default temperature (0) before this registry carried a sampling line, and their own `use_for` says so; and
 `builder_class`, computed from whether the row's task test passes (a green task); the useful window and speed are
 recorded, not gates. The
@@ -175,7 +175,7 @@ The installed skill copy finds the project via `A770B_PROJECT`.
 (the default) reads `config/profiles.json` under a 13.0 GiB cap, for a card that also draws the desktop; `inference`
 reads `config/profiles.inference.json` under a 15.3 GiB cap, for a card that draws nothing else. A per-mode file,
 `builder.<mode>.env` beside each `builder.env`, lets one machine keep different overrides for each mode in the load
-order above — this workstation keeps `serious` at IQ3_S under a 14.1 cap only in `builder.display.env`, and drops that
+order above — this workstation keeps `qwen38-27b-iq3xxs-vulkan` at IQ3_S under a 14.1 cap only in `builder.display.env`, and drops that
 override in inference mode. `status` prints the mode and the registry file on the builder-card line. `doctor` measures,
 only while the seat's own server is down, what the builder card actually holds: in inference mode a reading above
 0.5 GiB is reported MISSING — something else is still drawing the card; in display mode a reading at or under 0.1 GiB
@@ -200,8 +200,8 @@ The cap is measured after load, in either mode. On a card that also draws the de
 assumes a desktop share that has never been measured on your card. Measure it before raising the cap: run `nvtop -s`,
 start something that actually draws the card (a video playing is enough), and sum every process on it that is not the
 server. On this workstation that came to 1.0 GiB, so the cap here runs at 14.1 in `builder.display.env` rather than
-the public 13.0. That extra headroom is what admits the serious profile's task-lossless file, IQ3_S, at 114,688, which
-loads at 13.78 GiB and peaks at 14.21 GiB during a 32k prompt; the long profile's full native window loads at
+the public 13.0. That extra headroom is what admits the 27B's task-lossless file, IQ3_S, at 114,688, which
+loads at 13.78 GiB and peaks at 14.21 GiB during a 32k prompt; the 9B's full native window loads at
 10.35 GiB and fits under either cap. On a card that draws nothing, the free card here reported 15.9 GiB total and
 0.08 GiB used besides the server; prefill growth above the after-load reading has measured 0.04 to 0.3 GiB under
 `-ub 512`, so the inference cap is 15.3: 15.9 minus a 0.3 GiB growth allowance minus a 0.3 GiB reserve. Either cap is
@@ -268,11 +268,11 @@ account needed for these), straight into that directory, one line per row of the
 registry order:
 
 ```bash
-uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # display: --profile long (5.6 GB)
-uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested        # display: --profile fast (5.3 GB)
-uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested     # display: --profile serious (10.1 GB)
-uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # inference: --profile long (5.6 GB; the same file as display's long)
-uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested       # inference: --profile serious (11.8 GB)
+uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # display: --profile qwen35-9b-q4km-vulkan (5.6 GB)
+uvx --from huggingface_hub hf download lmstudio-community/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_K_M.gguf --local-dir ~/LLM/tested        # display: --profile gemma4-8b-e4b-q4km-vulkan (5.3 GB)
+uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf --local-dir ~/LLM/tested     # display: --profile qwen38-27b-iq3xxs-vulkan (10.1 GB)
+uvx --from huggingface_hub hf download lmstudio-community/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/LLM/tested                # inference: --profile qwen35-9b-q4km-vulkan (5.6 GB; the same file as display's qwen35-9b-q4km-vulkan)
+uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf --local-dir ~/LLM/tested       # inference: --profile qwen38-27b-iq3s-vulkan (11.8 GB)
 ```
 
 llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M` downloads into

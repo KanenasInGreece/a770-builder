@@ -3,7 +3,7 @@
   "mode": "display",
   "notes": "Every number is a measurement on the Arc A770 (llama.cpp Vulkan, -ub 512); the ledger config/models.md holds the rows. capability values are the model card's or the quantiser's own evaluation, named in capability_source. builder.env and the environment override any A770B_<NAME>_* value; the card reports what is served. useful_ctx is the largest depth at which decode stays above four tokens a second, taken from the 8k and far-end points by extending the time per token linearly, capped by the depth probe where one failed. Its rows were measured under the client's default temperature (0), before the profiles carried a sampling line. Rows are compared on their task numbers only within one instrument; the card's comparable_with lists them.",
   "profiles": {
-    "long": {
+    "qwen35-9b-q4km-vulkan": {
       "task": "code-edit",
       "evidence": "T1 pass (sibling instrument): 11 tests green in 121 s",
       "model": "Qwen3.5-9B-Q4_K_M.gguf",
@@ -39,7 +39,7 @@
       "fit": {"code": "T1: 11 tests green in 121 s, the repository's test idiom followed unprompted (measured at the client's temperature 0)", "think": "not measured", "write": "not measured"},
       "use_for": "Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line."
     },
-    "fast": {
+    "gemma4-8b-e4b-q4km-vulkan": {
       "task": "code-edit",
       "evidence": "T1 partial (sibling instrument): green twice, partial once",
       "model": "gemma-4-E4B-it-Q4_K_M.gguf",
@@ -75,7 +75,7 @@
       "fit": {"code": "T1: green twice and partial once (17, 6, 6 tests) at 74 to 82 s; on the harness's own brief one edit of three made, three reported (measured at temperature 0)", "think": "not measured", "write": "not measured"},
       "use_for": "The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line."
     },
-    "serious": {
+    "qwen38-27b-iq3xxs-vulkan": {
       "task": "code-edit",
       "evidence": "T1 pass (sibling instrument): 5 tests green in 1,492 s",
       "model": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf",

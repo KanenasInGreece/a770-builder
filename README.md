@@ -46,7 +46,7 @@ The server runs in a container (`A770B_SERVE=compose`, the only value). Copy
 PCI DRM nodes and the host group ids (`getent group render`, `getent group video`). Start it:
 
 ```
-bash skills/local-build/scripts/local-build.sh serve serious-sycl
+bash skills/local-build/scripts/local-build.sh serve qwen38-27b-iq3s-sycl
 ```
 
 `serve` recreates the container with the profile's own llama-server argv, so the registry stays the single source;
@@ -126,7 +126,7 @@ git clone <your target repo> ~/local-ai/seat                        # 3. the sea
 #    4. put the GGUFs named in the profiles into A770B_MODELS (the profiled models and the exact file of each, per mode, are listed in docs/OPERATING.md, *Getting llama.cpp and the models*; to profile a model of your own, AGENTS.md)
 bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
 npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # 6. install the skill into your agents
-bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md --profile long
+bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md --profile qwen35-9b-q4km-vulkan
 ```
 
 The skill follows the [Agent Skills](https://agentskills.io) open standard: a folder `skills/local-build/` holding

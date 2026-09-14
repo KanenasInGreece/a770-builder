@@ -33,11 +33,11 @@ Order: registry order, model warnings before ctx warnings within a profile.
 
 ### 2. `tests/test_profiles.py` — two tests
 
-`test_card_warns_on_inverted_profiles`: with `A770B_FAST_MODEL=Qwen3.5-9B-Q4_K_M.gguf` and
-`A770B_LONG_MODEL=gemma-4-E4B-it-Q4_K_M.gguf` in the environment, `card --served` has two warnings, the first starting
-`profile fast serves long's file (Qwen3.5-9B-Q4_K_M.gguf)` and the second starting `profile long serves fast's file`.
+`test_card_warns_on_inverted_profiles`: with `A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_MODEL=Qwen3.5-9B-Q4_K_M.gguf` and
+`A770B_QWEN35_9B_Q4KM_VULKAN_MODEL=gemma-4-E4B-it-Q4_K_M.gguf` in the environment, `card --served` has two warnings, the first starting
+`profile gemma4-8b-e4b-q4km-vulkan serves qwen35-9b-q4km-vulkan's file (Qwen3.5-9B-Q4_K_M.gguf)` and the second starting `profile qwen35-9b-q4km-vulkan serves gemma4-8b-e4b-q4km-vulkan's file`.
 `test_card_no_warnings_when_clean`: with no `A770B_*_MODEL` or `A770B_*_CTX` in the environment (strip them from a copy
-of `os.environ`), `card --served` has `warnings == []`, and `card --served --name long` has `warnings == []`.
+of `os.environ`), `card --served` has `warnings == []`, and `card --served --name qwen35-9b-q4km-vulkan` has `warnings == []`.
 
 ### 3. `skills/local-build/scripts/local-build.sh` — the `doctor` subcommand
 
@@ -60,8 +60,8 @@ Add `doctor` to the header comment (one line: `#   doctor            what this m
 ### 4. `tests/selftest.sh` — two lines before `rm -rf "$t"`
 
 With the self-test's exported `A770B_PROJECT`, `A770B_REFUSE=/nonexistent`, `A770B_DATA` and additionally
-`A770B_FAST_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_LONG_MODEL=gemma-4-E4B-it-Q4_K_M.gguf` set for the call only:
-`bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1 | grep -q "MISSING profiles: profile fast serves long's file"` →
+`A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_QWEN35_9B_Q4KM_VULKAN_MODEL=gemma-4-E4B-it-Q4_K_M.gguf` set for the call only:
+`bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1 | grep -q "MISSING profiles: profile gemma4-8b-e4b-q4km-vulkan serves qwen35-9b-q4km-vulkan's file"` →
 `ok   doctor: an inverted builder.env is reported` else `FAIL doctor: the inversion was not reported`, `fail=1`.
 And: the same call without those two variables prints a line starting `ok   profiles:` →
 `ok   doctor: a clean environment is not warned about` else `FAIL doctor: warned on a clean environment`, `fail=1`.

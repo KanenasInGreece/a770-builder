@@ -38,7 +38,7 @@ def test_check_passes_on_shipped_file():
 
 def test_check_fails_missing_key(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["kv"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["kv"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -49,17 +49,17 @@ def test_check_fails_missing_key(tmp_path):
 
 def test_check_fails_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["bogus"] = 1
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["bogus"] = 1
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: unknown key bogus" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: unknown key bogus" in result.stderr
 
 
 def test_check_fails_useful_ctx_over_ctx(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["useful_ctx"] = data["profiles"]["long"]["ctx"] + 1
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["useful_ctx"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["ctx"] + 1
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -69,7 +69,7 @@ def test_check_fails_useful_ctx_over_ctx(tmp_path):
 
 def test_check_fails_bad_kv(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["kv"] = "q9_9"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kv"] = "q9_9"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -79,12 +79,12 @@ def test_check_fails_bad_kv(tmp_path):
 
 def test_check_fails_bad_kv_v(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["kv_v"] = "q9_9"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kv_v"] = "q9_9"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: kv_v must be one of f16, q8_0, q4_0" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: kv_v must be one of f16, q8_0, q4_0" in result.stderr
 
 
 def test_check_fails_bad_mode(tmp_path):
@@ -99,80 +99,80 @@ def test_check_fails_bad_mode(tmp_path):
 
 def test_check_fails_sampling_not_object(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["sampling"] = "hot"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = "hot"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling must be an object" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling must be an object" in result.stderr
 
 
 def test_check_fails_sampling_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["sampling"] = {"source": "x", "bogus": 1}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"source": "x", "bogus": 1}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling: unknown key bogus" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling: unknown key bogus" in result.stderr
 
 
 def test_check_fails_sampling_key_not_number(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["sampling"] = {"source": "x", "temperature": True}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"source": "x", "temperature": True}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling.temperature must be a number" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling.temperature must be a number" in result.stderr
 
 
 def test_check_fails_sampling_bad_mode(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["sampling"] = {"source": "x", "mode": "bogus"}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"source": "x", "mode": "bogus"}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling.mode must be thinking or instruct" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling.mode must be thinking or instruct" in result.stderr
 
 
 def test_check_fails_sampling_missing_source(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["sampling"] = {"temperature": 0.6}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"temperature": 0.6}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling.source must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling.source must be a non-empty string" in result.stderr
 
 
 def test_check_fails_sampling_empty_source(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["sampling"] = {"source": "", "top_k": 20}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"source": "", "top_k": 20}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling.source must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling.source must be a non-empty string" in result.stderr
 
 
 def test_check_fails_sampling_temperature_without_extra_temp(tmp_path):
     """The honesty check: a sampling.temperature with no --temp in extra is refused."""
     data = load_base()
-    data["profiles"]["long"]["sampling"] = {"source": "test card", "temperature": 0.6}
-    assert "--temp" not in data["profiles"]["long"]["extra"]
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"source": "test card", "temperature": 0.6}
+    assert "--temp" not in data["profiles"]["qwen35-9b-q4km-vulkan"]["extra"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling.temperature is set but extra carries no --temp" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling.temperature is set but extra carries no --temp" in result.stderr
 
 
 def test_check_passes_valid_sampling(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["extra"] = "--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0"
-    data["profiles"]["long"]["sampling"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["extra"] = "--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {
         "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0,
         "mode": "thinking", "source": "Qwen3.5-9B model card",
     }
@@ -185,19 +185,19 @@ def test_check_passes_valid_sampling(tmp_path):
 def test_env_temperature_top_p_empty_on_shipped_display_registry():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
-    assert ': "${A770B_LONG_TEMPERATURE:=}"' in result.stdout.splitlines()
-    assert ': "${A770B_LONG_TOP_P:=}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TEMPERATURE:=}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TOP_P:=}"' in result.stdout.splitlines()
 
 
 def test_env_temperature_from_sampling(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["extra"] = "--temp 0.6"
-    data["profiles"]["long"]["sampling"] = {"temperature": 0.6, "source": "test card"}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["extra"] = "--temp 0.6"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"temperature": 0.6, "source": "test card"}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("env", "--file", str(path))
     assert result.returncode == 0, result.stderr
-    assert ': "${A770B_LONG_TEMPERATURE:=0.6}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TEMPERATURE:=0.6}"' in result.stdout.splitlines()
 
 
 def test_check_passes_on_both_shipped_registries():
@@ -218,7 +218,7 @@ def test_check_fails_bad_default(tmp_path):
 
 def test_check_fails_bad_name(tmp_path):
     data = load_base()
-    data["profiles"]["Long1"] = data["profiles"].pop("long")
+    data["profiles"]["Long1"] = data["profiles"].pop("qwen35-9b-q4km-vulkan")
     data["default"] = "Long1"
     path = write_json(tmp_path / "p.json", data)
 
@@ -229,7 +229,7 @@ def test_check_fails_bad_name(tmp_path):
 
 def test_check_fails_speed_missing_100k(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["speed"]["decode_tps"]["100k"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["decode_tps"]["100k"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -242,40 +242,40 @@ def test_env_matches_expected_lines():
     assert result.returncode == 0, result.stderr
 
     lines = result.stdout.splitlines()
-    assert lines[0] == ': "${A770B_PROFILES:=long fast serious}"'
+    assert lines[0] == ': "${A770B_PROFILES:=qwen35-9b-q4km-vulkan gemma4-8b-e4b-q4km-vulkan qwen38-27b-iq3xxs-vulkan}"'
     assert not any("A770B_DEFAULT_PROFILE" in ln for ln in lines)
 
     expected_long_block = [
-        ': "${A770B_LONG_MODEL:=Qwen3.5-9B-Q4_K_M.gguf}"',
-        ': "${A770B_LONG_CTX:=262144}"',
-        ': "${A770B_LONG_KV:=q8_0}"',
-        ': "${A770B_LONG_KV_V:=q8_0}"',
-        ': "${A770B_LONG_TEMPERATURE:=}"',
-        ': "${A770B_LONG_TOP_P:=}"',
-        ': "${A770B_LONG_OUTPUT_TOKENS:=}"',
-        ': "${A770B_LONG_REASONING:=off}"',
-        ': "${A770B_LONG_THINKING_MODE:=}"',
-        ': "${A770B_LONG_THINKING_EFFORT:=}"',
-        ': "${A770B_LONG_THINKING_BUDGET:=}"',
-        "[ -n \"${A770B_LONG_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_LONG_THINKING_BUDGET_MESSAGE=''",
-        ': "${A770B_LONG_THINKING_PRESERVE:=}"',
-        ': "${A770B_LONG_TIMEOUT:=1500}"',
-        "[ -n \"${A770B_LONG_EXTRA:-}\" ] || A770B_LONG_EXTRA=''",
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_MODEL:=Qwen3.5-9B-Q4_K_M.gguf}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_CTX:=262144}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_KV:=q8_0}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_KV_V:=q8_0}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TEMPERATURE:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TOP_P:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_REASONING:=off}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_EFFORT:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=}"',
+        "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE=''",
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_PRESERVE:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT:=1500}"',
+        "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_EXTRA:-}\" ] || A770B_QWEN35_9B_Q4KM_VULKAN_EXTRA=''",
     ]
     idx = lines.index(expected_long_block[0])
     assert lines[idx: idx + len(expected_long_block)] == expected_long_block
 
     expected_serious_extra = (
-        '[ -n "${A770B_SERIOUS_EXTRA:-}" ] || A770B_SERIOUS_EXTRA='
+        '[ -n "${A770B_QWEN38_27B_IQ3XXS_VULKAN_EXTRA:-}" ] || A770B_QWEN38_27B_IQ3XXS_VULKAN_EXTRA='
         "'--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0'"
     )
     assert expected_serious_extra in lines
     expected_serious_thinking = [
-        ': "${A770B_SERIOUS_THINKING_MODE:=on}"',
-        ': "${A770B_SERIOUS_THINKING_EFFORT:=low}"',
-        ': "${A770B_SERIOUS_THINKING_BUDGET:=2048}"',
-        "[ -n \"${A770B_SERIOUS_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_SERIOUS_THINKING_BUDGET_MESSAGE=''",
-        ': "${A770B_SERIOUS_THINKING_PRESERVE:=true}"',
+        ': "${A770B_QWEN38_27B_IQ3XXS_VULKAN_THINKING_MODE:=on}"',
+        ': "${A770B_QWEN38_27B_IQ3XXS_VULKAN_THINKING_EFFORT:=low}"',
+        ': "${A770B_QWEN38_27B_IQ3XXS_VULKAN_THINKING_BUDGET:=2048}"',
+        "[ -n \"${A770B_QWEN38_27B_IQ3XXS_VULKAN_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_QWEN38_27B_IQ3XXS_VULKAN_THINKING_BUDGET_MESSAGE=''",
+        ': "${A770B_QWEN38_27B_IQ3XXS_VULKAN_THINKING_PRESERVE:=true}"',
     ]
     for line in expected_serious_thinking:
         assert line in lines
@@ -286,16 +286,16 @@ def test_env_roundtrips_extra_and_survives_preset(tmp_path):
     assert result.returncode == 0, result.stderr
 
     base_data = load_base()
-    expected_extra = base_data["profiles"]["serious"]["extra"]
+    expected_extra = base_data["profiles"]["qwen38-27b-iq3xxs-vulkan"]["extra"]
 
-    script = result.stdout + '\necho "$A770B_SERIOUS_EXTRA"\n'
+    script = result.stdout + '\necho "$A770B_QWEN38_27B_IQ3XXS_VULKAN_EXTRA"\n'
     bash_result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert bash_result.returncode == 0, bash_result.stderr
     assert bash_result.stdout.strip() == expected_extra
 
     env = os.environ.copy()
-    env["A770B_LONG_CTX"] = "1"
-    script2 = result.stdout + '\necho "$A770B_LONG_CTX"\n'
+    env["A770B_QWEN35_9B_Q4KM_VULKAN_CTX"] = "1"
+    script2 = result.stdout + '\necho "$A770B_QWEN35_9B_Q4KM_VULKAN_CTX"\n'
     bash_result2 = subprocess.run(["bash", "-c", script2], capture_output=True, text=True, env=env)
     assert bash_result2.returncode == 0, bash_result2.stderr
     assert bash_result2.stdout.strip() == "1"
@@ -304,14 +304,14 @@ def test_env_roundtrips_extra_and_survives_preset(tmp_path):
 def test_env_kv_v_defaults_to_kv_and_can_be_set(tmp_path):
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
-    assert ': "${A770B_LONG_KV_V:=q8_0}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_KV_V:=q8_0}"' in result.stdout.splitlines()
 
     data = load_base()
-    data["profiles"]["long"]["kv_v"] = "f16"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kv_v"] = "f16"
     path = write_json(tmp_path / "p.json", data)
     result2 = run("env", "--file", str(path))
     assert result2.returncode == 0, result2.stderr
-    assert ': "${A770B_LONG_KV_V:=f16}"' in result2.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_KV_V:=f16}"' in result2.stdout.splitlines()
 
 
 def test_env_output_is_valid_shell():
@@ -325,7 +325,7 @@ def test_card_has_three_profiles():
     result = run("card", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    assert set(data["profiles"].keys()) == {"long", "fast", "serious"}
+    assert set(data["profiles"].keys()) == {"qwen35-9b-q4km-vulkan", "gemma4-8b-e4b-q4km-vulkan", "qwen38-27b-iq3xxs-vulkan"}
 
 
 def test_card_carries_mode_and_registry():
@@ -335,7 +335,7 @@ def test_card_carries_mode_and_registry():
     assert data["mode"] == "display"
     assert data["registry"] == str(PROFILES_JSON.resolve())
 
-    result = run("card", "--file", str(PROFILES_JSON), "--name", "long")
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["mode"] == "display"
@@ -351,10 +351,10 @@ def test_inference_registry_shape():
 
 
 def test_card_name_fast():
-    result = run("card", "--file", str(PROFILES_JSON), "--name", "fast")
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "gemma4-8b-e4b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    assert data["name"] == "fast"
+    assert data["name"] == "gemma4-8b-e4b-q4km-vulkan"
 
 
 def test_card_unknown_name():
@@ -365,11 +365,11 @@ def test_card_unknown_name():
 
 def test_card_served_overrides_without_changing_model():
     env = os.environ.copy()
-    env["A770B_SERIOUS_MODEL"] = "x.gguf"
+    env["A770B_QWEN38_27B_IQ3XXS_VULKAN_MODEL"] = "x.gguf"
     result = run("card", "--file", str(PROFILES_JSON), "--served", env=env)
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    serious = data["profiles"]["serious"]
+    serious = data["profiles"]["qwen38-27b-iq3xxs-vulkan"]
     assert serious["served_model"] == "x.gguf"
     assert serious["model"] == "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf"
 
@@ -378,7 +378,7 @@ def test_card_without_served_leaves_defaults():
     result = run("card", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    long_prof = data["profiles"]["long"]
+    long_prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
     assert long_prof["served_model"] == long_prof["model"]
     assert long_prof["served_ctx"] == long_prof["ctx"]
 
@@ -405,9 +405,9 @@ def test_render_updates_skill_table_and_snippet(tmp_path):
     assert "10.35 GiB" in skill_text
 
     expected_snippet_line = (
-        "**--profile long** = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~65k), ~37 tok/s; "
-        "**--profile fast** = gemma-4-E4B-Q4_K_M, 131,072-token window (useful to ~100k), ~60 tok/s; "
-        "**--profile serious** = Qwen3.8-27B-GSQ-RCO-IQ3_XXS, 131,072-token window (useful to ~32k), ~8 tok/s."
+        "**--profile qwen35-9b-q4km-vulkan** = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~65k), ~37 tok/s; "
+        "**--profile gemma4-8b-e4b-q4km-vulkan** = gemma-4-E4B-Q4_K_M, 131,072-token window (useful to ~100k), ~60 tok/s; "
+        "**--profile qwen38-27b-iq3xxs-vulkan** = Qwen3.8-27B-GSQ-RCO-IQ3_XXS, 131,072-token window (useful to ~32k), ~8 tok/s."
     )
     snippet_text = snippet.read_text(encoding="utf-8")
     assert expected_snippet_line in snippet_text
@@ -503,8 +503,8 @@ def test_check_refuses_unknown_top_level_key(tmp_path):
 
 def test_card_served_ctx_is_an_int(tmp_path):
     """A served window from the environment comes back as a number, like the file's."""
-    env = dict(os.environ); env["A770B_LONG_CTX"] = "131072"
-    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--name", "long", "--served"], capture_output=True, text=True, env=env)
+    env = dict(os.environ); env["A770B_QWEN35_9B_Q4KM_VULKAN_CTX"] = "131072"
+    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--name", "qwen35-9b-q4km-vulkan", "--served"], capture_output=True, text=True, env=env)
     assert r.returncode == 0
     assert json.loads(r.stdout)["served_ctx"] == 131072
 
@@ -512,14 +512,14 @@ def test_card_served_ctx_is_an_int(tmp_path):
 def test_card_warns_on_inverted_profiles():
     """A builder.env written for an earlier release, with fast and long's files swapped, is caught."""
     env = dict(os.environ)
-    env["A770B_FAST_MODEL"] = "Qwen3.5-9B-Q4_K_M.gguf"
-    env["A770B_LONG_MODEL"] = "gemma-4-E4B-it-Q4_K_M.gguf"
+    env["A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_MODEL"] = "Qwen3.5-9B-Q4_K_M.gguf"
+    env["A770B_QWEN35_9B_Q4KM_VULKAN_MODEL"] = "gemma-4-E4B-it-Q4_K_M.gguf"
     r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--served"], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     warnings = json.loads(r.stdout)["warnings"]
     assert len(warnings) == 2
-    assert warnings[0].startswith("profile long serves fast's file (gemma-4-E4B-it-Q4_K_M.gguf)")
-    assert warnings[1].startswith("profile fast serves long's file (Qwen3.5-9B-Q4_K_M.gguf)")
+    assert warnings[0].startswith("profile qwen35-9b-q4km-vulkan serves gemma4-8b-e4b-q4km-vulkan's file (gemma-4-E4B-it-Q4_K_M.gguf)")
+    assert warnings[1].startswith("profile gemma4-8b-e4b-q4km-vulkan serves qwen35-9b-q4km-vulkan's file (Qwen3.5-9B-Q4_K_M.gguf)")
 
 
 def test_card_no_warnings_when_clean():
@@ -532,7 +532,7 @@ def test_card_no_warnings_when_clean():
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["warnings"] == []
 
-    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--served", "--name", "long"], capture_output=True, text=True, env=env)
+    r = subprocess.run([sys.executable, str(PROFILES_PY), "card", "--file", str(PROFILES_JSON), "--served", "--name", "qwen35-9b-q4km-vulkan"], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["warnings"] == []
 
@@ -542,53 +542,53 @@ def test_card_no_warnings_when_clean():
 
 def test_check_fails_missing_category(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["category"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["category"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: missing key category" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: missing key category" in result.stderr
 
 
 def test_check_fails_bad_category(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["category"] = "small"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["category"] = "small"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: category must be dense or moe" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: category must be dense or moe" in result.stderr
 
 
 def test_check_fails_missing_weight_class(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["weight_class"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: missing key weight_class" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: missing key weight_class" in result.stderr
 
 
 def test_check_fails_bad_weight_class(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["weight_class"] = "9"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"] = "9"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: weight_class must look like 9b, 35b-a3b or 8b-e4b" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: weight_class must look like 9b, 35b-a3b or 8b-e4b" in result.stderr
 
 
 def test_check_passes_weight_class_shapes(tmp_path):
     for shape in ("9b", "12b", "27b", "35b-a3b", "8b-e4b"):
         data = load_base()
-        data["profiles"]["long"]["weight_class"] = shape
+        data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"] = shape
         # long's new weight_class may now collide with fast's or serious's own (category,
         # weight_class) -- move those out of the way so this test stays about weight_class's
         # shape, not the registry's one-row-per-class rule (covered separately).
-        data["profiles"]["fast"]["category"] = "moe"
-        data["profiles"]["serious"]["category"] = "moe"
+        data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["category"] = "moe"
+        data["profiles"]["qwen38-27b-iq3xxs-vulkan"]["category"] = "moe"
         path = write_json(tmp_path / "p.json", data)
         result = run("check", "--file", str(path))
         assert result.returncode == 0, f"{shape}: {result.stderr}"
@@ -596,7 +596,7 @@ def test_check_passes_weight_class_shapes(tmp_path):
 
 def test_check_fails_missing_card(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["card"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["card"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -606,7 +606,7 @@ def test_check_fails_missing_card(tmp_path):
 
 def test_check_fails_missing_backend(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["backend"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["backend"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -616,7 +616,7 @@ def test_check_fails_missing_backend(tmp_path):
 
 def test_check_fails_missing_mode(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["mode"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["mode"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -626,7 +626,7 @@ def test_check_fails_missing_mode(tmp_path):
 
 def test_check_fails_uppercase_card(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["card"] = "A770"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["card"] = "A770"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -635,7 +635,7 @@ def test_check_fails_uppercase_card(tmp_path):
 
 def test_check_fails_uppercase_backend(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["backend"] = "Vulkan"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["backend"] = "Vulkan"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -644,7 +644,7 @@ def test_check_fails_uppercase_backend(tmp_path):
 
 def test_check_fails_bad_mode(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["mode"] = "gpu"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["mode"] = "gpu"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -653,51 +653,51 @@ def test_check_fails_bad_mode(tmp_path):
 
 def test_check_fails_row_mode_disagrees_with_file(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["mode"] = "inference"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["mode"] = "inference"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: mode 'inference' disagrees with file mode 'display'" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: mode 'inference' disagrees with file mode 'display'" in result.stderr
 
 
 def test_check_fails_far_end_missing_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["far_end"] = {"tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["far_end"] = {"tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.far_end must be an object with tokens, decode_tps, prefill_tps, ttft_s" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.far_end must be an object with tokens, decode_tps, prefill_tps, ttft_s" in result.stderr
 
 
 def test_check_fails_far_end_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["far_end"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["far_end"] = {
         "tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147, "ttft_s": 626, "bogus": 1,
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.far_end must be an object with tokens, decode_tps, prefill_tps, ttft_s" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.far_end must be an object with tokens, decode_tps, prefill_tps, ttft_s" in result.stderr
 
 
 def test_check_fails_far_end_bad_type(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["far_end"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["far_end"] = {
         "tokens": "100000", "decode_tps": 11.6, "prefill_tps": 147, "ttft_s": 626,
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.far_end.tokens must be a positive int" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.far_end.tokens must be a positive int" in result.stderr
 
 
 def test_check_passes_valid_far_end(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["far_end"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["far_end"] = {
         "tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147, "ttft_s": 626,
     }
     path = write_json(tmp_path / "p.json", data)
@@ -726,87 +726,87 @@ def test_check_fails_bench_missing_key(tmp_path):
     data = load_base()
     bench = _valid_bench()
     del bench["gen"]
-    data["profiles"]["long"]["speed"]["bench"] = bench
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = bench
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
 
 
 def test_check_fails_bench_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(bogus=1)
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(bogus=1)
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench must be an object with tool, prompt, gen, flags, at_depth, source" in result.stderr
 
 
 def test_check_fails_bench_empty_string_field(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(tool="")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(tool="")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench.tool must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench.tool must be a non-empty string" in result.stderr
 
 
 def test_check_fails_bench_bad_prompt_type(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(prompt="8192")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(prompt="8192")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench.prompt must be a positive int" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench.prompt must be a positive int" in result.stderr
 
 
 def test_check_fails_bench_at_depth_not_object(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth=[])
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(at_depth=[])
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench.at_depth must be a non-empty object" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench.at_depth must be a non-empty object" in result.stderr
 
 
 def test_check_fails_bench_at_depth_bad_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"8k": {"pp": 1, "tg": 1}})
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(at_depth={"8k": {"pp": 1, "tg": 1}})
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench.at_depth: key '8k' must be a digit string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench.at_depth: key '8k' must be a digit string" in result.stderr
 
 
 def test_check_fails_bench_at_depth_value_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": 1, "tg": 1, "bogus": 1}})
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": 1, "tg": 1, "bogus": 1}})
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench.at_depth.0 must be an object with pp, tg" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench.at_depth.0 must be an object with pp, tg" in result.stderr
 
 
 def test_check_fails_bench_at_depth_value_bad_type(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": "1", "tg": 1}})
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": "1", "tg": 1}})
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.bench.at_depth.0.pp must be a number or null" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.bench.at_depth.0.pp must be a number or null" in result.stderr
 
 
 def test_check_passes_bench_at_depth_null_values(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": None, "tg": None}})
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench(at_depth={"0": {"pp": None, "tg": None}})
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -815,7 +815,7 @@ def test_check_passes_bench_at_depth_null_values(tmp_path):
 
 def test_check_passes_valid_bench(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench()
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -824,51 +824,51 @@ def test_check_passes_valid_bench(tmp_path):
 
 def test_check_fails_delivered_missing_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["delivered"] = {"prefill_tps": 500.0}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["delivered"] = {"prefill_tps": 500.0}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
 
 
 def test_check_fails_delivered_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["delivered"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["delivered"] = {
         "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json", "bogus": 1,
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.delivered must be an object with prefill_tps, decode_tps, source" in result.stderr
 
 
 def test_check_fails_delivered_bad_value(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["delivered"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["delivered"] = {
         "prefill_tps": -1.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.delivered.prefill_tps must be a positive number" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.delivered.prefill_tps must be a positive number" in result.stderr
 
 
 def test_check_fails_delivered_empty_source(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["delivered"] = {"prefill_tps": 500.0, "decode_tps": 30.0, "source": ""}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["delivered"] = {"prefill_tps": 500.0, "decode_tps": 30.0, "source": ""}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: speed.delivered.source must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: speed.delivered.source must be a non-empty string" in result.stderr
 
 
 def test_check_passes_valid_delivered(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["delivered"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["delivered"] = {
         "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -879,8 +879,8 @@ def test_check_passes_valid_delivered(tmp_path):
 
 def test_check_passes_bench_and_delivered_together(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["speed"]["bench"] = _valid_bench()
-    data["profiles"]["long"]["speed"]["delivered"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["bench"] = _valid_bench()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["delivered"] = {
         "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908.json",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -906,20 +906,20 @@ def _suite_totals(**overrides) -> dict:
 
 def test_check_fails_delivered_under_suite(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = _suite_totals(
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = _suite_totals(
         delivered={"prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908-120000.json"},
     )
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite: unknown key delivered" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite: unknown key delivered" in result.stderr
 
 
 def test_check_passes_the_same_row_with_delivered_under_speed(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = _suite_totals()
-    data["profiles"]["long"]["speed"]["delivered"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = _suite_totals()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["delivered"] = {
         "prefill_tps": 500.0, "decode_tps": 30.0, "source": "long-suite-20260908-120000.json",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -930,27 +930,27 @@ def test_check_passes_the_same_row_with_delivered_under_speed(tmp_path):
 
 def test_check_fails_fit_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["fit"] = {"code": "T1: 6 tests green in 122 s", "bogus": "x"}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["fit"] = {"code": "T1: 6 tests green in 122 s", "bogus": "x"}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: fit: unknown key bogus" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: fit: unknown key bogus" in result.stderr
 
 
 def test_check_fails_fit_empty_string(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["fit"] = {"code": ""}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["fit"] = {"code": ""}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: fit.code must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: fit.code must be a non-empty string" in result.stderr
 
 
 def test_check_passes_valid_fit(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["fit"] = {"code": "T1: 6 tests green in 122 s"}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["fit"] = {"code": "T1: 6 tests green in 122 s"}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -959,39 +959,39 @@ def test_check_passes_valid_fit(tmp_path):
 
 def test_check_fails_suite_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {"briefs": 5, "bogus": 1}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {"briefs": 5, "bogus": 1}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite: unknown key bogus" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite: unknown key bogus" in result.stderr
 
 
 def test_check_fails_suite_passed_out_of_range(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {"passed": 16, "runs": 15}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {"passed": 16, "runs": 15}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.passed must be between 0 and runs" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.passed must be between 0 and runs" in result.stderr
 
 
 def test_check_fails_suite_timeouts_out_of_range(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {"briefs": 5, "runs": 15, "passed": 12, "timeouts": 16, "source": "s"}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {"briefs": 5, "runs": 15, "passed": 12, "timeouts": 16, "source": "s"}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.timeouts must be between 0 and runs" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.timeouts must be between 0 and runs" in result.stderr
 
 
 def test_check_passes_valid_suite_with_timeouts(tmp_path):
     """timeouts (harness/suite_report.py's count of "timeout"-outcome stages) is optional, and a valid count
     between 0 and runs passes."""
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 5, "runs": 15, "passed": 12, "timeouts": 2, "mean_wall_s": 120.5, "source": "in-house suite",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1002,7 +1002,7 @@ def test_check_passes_valid_suite_with_timeouts(tmp_path):
 
 def test_check_passes_valid_suite(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 5, "runs": 15, "passed": 12, "mean_wall_s": 120.5, "source": "in-house suite",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1014,18 +1014,18 @@ def test_check_passes_valid_suite(tmp_path):
 def test_check_fails_suite_missing_key(tmp_path):
     """briefs, runs, passed and source are required in a suite object; mean_wall_s is optional."""
     data = load_base()
-    data["profiles"]["long"]["suite"] = {"briefs": 5, "runs": 15, "passed": 12}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {"briefs": 5, "runs": 15, "passed": 12}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite: missing key source" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite: missing key source" in result.stderr
 
 
 def test_check_passes_valid_suite_without_mean_wall_s(tmp_path):
     """mean_wall_s stays optional when the other four suite keys are present."""
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 5, "runs": 15, "passed": 12, "source": "in-house suite",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1037,27 +1037,27 @@ def test_check_passes_valid_suite_without_mean_wall_s(tmp_path):
 def test_check_fails_sampling_top_p_without_extra_top_p(tmp_path):
     """The widened honesty check: a sampling.top_p with no --top-p in extra is refused."""
     data = load_base()
-    data["profiles"]["long"]["extra"] = "--temp 0.6"
-    data["profiles"]["long"]["sampling"] = {"source": "test card", "temperature": 0.6, "top_p": 0.9}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["extra"] = "--temp 0.6"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"source": "test card", "temperature": 0.6, "top_p": 0.9}
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: sampling.top_p is set but extra carries no --top-p" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: sampling.top_p is set but extra carries no --top-p" in result.stderr
 
 
 def test_output_tokens_in_env(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["output_tokens"] = 32768
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["output_tokens"] = 32768
     path = write_json(tmp_path / "p.json", data)
 
     result = run("env", "--file", str(path))
     assert result.returncode == 0, result.stderr
-    assert ': "${A770B_LONG_OUTPUT_TOKENS:=32768}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS:=32768}"' in result.stdout.splitlines()
 
 
 def test_builder_class_true_for_inference_long_serious():
-    for name in ("long", "serious"):
+    for name in ("qwen35-9b-q4km-vulkan", "qwen38-27b-iq3s-vulkan"):
         result = run("card", "--file", str(PROFILES_INFERENCE_JSON), "--name", name)
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)
@@ -1067,7 +1067,7 @@ def test_builder_class_true_for_inference_long_serious():
 def test_builder_class_ignores_useful_ctx_floor():
     """The window/speed floor is gone: a row with a green task is builder_class even below the old 81,920
     window -- speed and useful_ctx are recorded facts, not gates (the task is the organizing axis)."""
-    result = run("card", "--file", str(PROFILES_JSON), "--name", "long")
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["useful_ctx"] == 65536
@@ -1076,7 +1076,7 @@ def test_builder_class_ignores_useful_ctx_floor():
 
 def test_builder_class_false_for_weak_task_t1():
     """The shipped display fast row: useful_ctx 100000 clears the floor but task_t1 is weak."""
-    result = run("card", "--file", str(PROFILES_JSON), "--name", "fast")
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "gemma4-8b-e4b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["useful_ctx"] >= 81920
@@ -1086,12 +1086,12 @@ def test_builder_class_false_for_weak_task_t1():
 
 def test_builder_class_true_for_suite_pass_rate(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["useful_ctx"] = 100000
-    data["profiles"]["long"]["task_t1"] = "weak: not the row's own task"
-    data["profiles"]["long"]["suite"] = {"passed": 12, "runs": 15}
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["useful_ctx"] = 100000
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["task_t1"] = "weak: not the row's own task"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {"passed": 12, "runs": 15}
     path = write_json(tmp_path / "p.json", data)
 
-    result = run("card", "--file", str(path), "--name", "long")
+    result = run("card", "--file", str(path), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["builder_class"] is True
 
@@ -1099,7 +1099,7 @@ def test_builder_class_true_for_suite_pass_rate(tmp_path):
 def test_env_inference_registry_first_line():
     result = run("env", "--file", str(PROFILES_INFERENCE_JSON))
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines()[0] == ': "${A770B_PROFILES:=long serious serious-sycl}"'
+    assert result.stdout.splitlines()[0] == ': "${A770B_PROFILES:=qwen35-9b-q4km-vulkan qwen38-27b-iq3s-vulkan qwen38-27b-iq3s-sycl}"'
 
 
 # --- KU8: suite.stages, suite.reviewer, suite.instrument, profile-level instrument, comparable_with ---
@@ -1107,51 +1107,51 @@ def test_env_inference_registry_first_line():
 
 def test_check_fails_missing_instrument(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["instrument"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: missing key instrument" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: missing key instrument" in result.stderr
 
 
 def test_check_fails_empty_instrument(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["instrument"] = ""
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] = ""
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: instrument must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: instrument must be a non-empty string" in result.stderr
 
 
 def test_check_fails_bad_instrument_type(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["instrument"] = 1
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] = 1
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: instrument must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: instrument must be a non-empty string" in result.stderr
 
 
 def test_check_fails_suite_instrument_empty(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 5, "runs": 15, "passed": 12, "source": "kit", "instrument": "",
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.instrument must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.instrument must be a non-empty string" in result.stderr
 
 
 def test_check_passes_valid_suite_instrument(tmp_path):
     data = load_base()
     for _n in data["profiles"]:
         data["profiles"][_n]["instrument"] = "SUITE-1@0.2.0"
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 5, "runs": 15, "passed": 12, "source": "kit", "instrument": "SUITE-1@0.2.0",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1165,12 +1165,12 @@ def test_check_passes_valid_suite_instrument(tmp_path):
 
 def test_check_fails_missing_measured_on(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["measured_on"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_on"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: missing key measured_on" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: missing key measured_on" in result.stderr
 
 
 def test_check_passes_on_both_shipped_registries_with_measured_on():
@@ -1186,16 +1186,16 @@ def test_comparable_with_excludes_differing_measured_on(tmp_path):
     read as comparable: comparable_with matches on the pair (instrument, measured_on), not
     instrument alone."""
     data = load_base()
-    assert data["profiles"]["long"]["instrument"] == data["profiles"]["fast"]["instrument"]
-    data["profiles"]["long"]["measured_on"] = "RTX 4090 24 GB, llama.cpp b10805 CUDA"
+    assert data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] == data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["instrument"]
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_on"] = "RTX 4090 24 GB, llama.cpp b10805 CUDA"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("card", "--file", str(path))
     assert result.returncode == 0, result.stderr
     data_out = json.loads(result.stdout)
-    assert data_out["profiles"]["long"]["comparable_with"]["profiles"] == []
-    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]["profiles"]
-    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]["profiles"]
+    assert data_out["profiles"]["qwen35-9b-q4km-vulkan"]["comparable_with"]["profiles"] == []
+    assert "qwen35-9b-q4km-vulkan" not in data_out["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["comparable_with"]["profiles"]
+    assert "qwen35-9b-q4km-vulkan" not in data_out["profiles"]["qwen38-27b-iq3xxs-vulkan"]["comparable_with"]["profiles"]
 
 
 # --- registry-wide rules: one best row per (category, weight_class, backend), one instrument per registry ---
@@ -1203,24 +1203,24 @@ def test_comparable_with_excludes_differing_measured_on(tmp_path):
 
 def test_check_fails_duplicate_category_weight_class(tmp_path):
     data = load_base()
-    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
-    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["category"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["category"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["weight_class"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert (
-        "profiles: fast: task 'code-edit' + category 'dense' + weight_class '9b' + backend 'vulkan' on card "
-        "'a770' duplicates long's -- a registry keeps one best row per task per class per backend per card"
+        "profiles: gemma4-8b-e4b-q4km-vulkan: task 'code-edit' + category 'dense' + weight_class '9b' + backend 'vulkan' on card "
+        "'a770' duplicates qwen35-9b-q4km-vulkan's -- a registry keeps one best row per task per class per backend per card"
         in result.stderr
     )
 
 
 def test_check_passes_same_class_different_backend(tmp_path):
     data = load_base()
-    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
-    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
-    data["profiles"]["fast"]["backend"] = "sycl"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["category"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["category"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["weight_class"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["backend"] = "sycl"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -1242,40 +1242,40 @@ def test_check_passes_on_both_shipped_registries_with_card_backend_mode():
 def test_env_exports_card_backend_mode():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
-    assert "A770B_LONG_CARD:=a770" in result.stdout
-    assert "A770B_LONG_BACKEND:=vulkan" in result.stdout
-    assert "A770B_LONG_MODE:=display" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_CARD:=a770" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_BACKEND:=vulkan" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_MODE:=display" in result.stdout
 
 
 def test_check_fails_differing_instrument_within_registry(tmp_path):
     data = load_base()
-    data["profiles"]["fast"]["instrument"] = "a different rig"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["instrument"] = "a different rig"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert (
-        "profiles: fast: instrument 'a different rig' differs from long's "
+        "profiles: gemma4-8b-e4b-q4km-vulkan: instrument 'a different rig' differs from qwen35-9b-q4km-vulkan's "
         "'seat: Shared_Memory@3c8e2bb' -- a registry is one instrument" in result.stderr
     )
 
 
 def test_check_fails_missing_task_on_a_kit_instrument(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["instrument"] = "SUITE-1@1"
-    del data["profiles"]["long"]["task"]
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] = "SUITE-1@1"
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["task"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: missing key task (required on a kit instrument)" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: missing key task (required on a kit instrument)" in result.stderr
 
 
 def test_check_passes_a_seat_row_without_task(tmp_path):
     """A legacy seat-instrument row is not forced to invent a task it never measured."""
     data = load_base()
-    del data["profiles"]["long"]["task"]
-    del data["profiles"]["long"]["evidence"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["task"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["evidence"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -1284,42 +1284,42 @@ def test_check_passes_a_seat_row_without_task(tmp_path):
 
 def test_check_fails_bad_task(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["task"] = "vibe-coding"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["task"] = "vibe-coding"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: task 'vibe-coding' is not one of:" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: task 'vibe-coding' is not one of:" in result.stderr
 
 
 def test_check_fails_missing_evidence_on_a_kit_instrument(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["instrument"] = "SUITE-1@1"
-    del data["profiles"]["long"]["evidence"]
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] = "SUITE-1@1"
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["evidence"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: missing key evidence (required on a kit instrument)" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: missing key evidence (required on a kit instrument)" in result.stderr
 
 
 def test_check_fails_empty_evidence(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["evidence"] = "  "
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["evidence"] = "  "
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: evidence must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: evidence must be a non-empty string" in result.stderr
 
 
 def test_check_passes_two_tasks_on_the_same_class_and_backend(tmp_path):
     """The uniqueness axis is the task: two rows identical in class/backend/card and differing ONLY by task coexist.
     Without `task` in the key they would collide, so this is the mutation guard for that axis."""
     data = load_base()
-    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
-    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
-    data["profiles"]["fast"]["task"] = "code-read"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["category"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["category"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["weight_class"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["task"] = "code-read"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -1329,10 +1329,10 @@ def test_check_passes_two_tasks_on_the_same_class_and_backend(tmp_path):
 def test_check_passes_two_cards_on_the_same_task_and_class(tmp_path):
     """The card is in the uniqueness key: two rows differing ONLY by card coexist (the mutation guard for card)."""
     data = load_base()
-    data["profiles"]["fast"]["category"] = data["profiles"]["long"]["category"]
-    data["profiles"]["fast"]["weight_class"] = data["profiles"]["long"]["weight_class"]
-    data["profiles"]["fast"]["task"] = data["profiles"]["long"]["task"]
-    data["profiles"]["fast"]["card"] = "b70"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["category"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["category"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["weight_class"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["task"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["task"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["card"] = "b70"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -1341,7 +1341,7 @@ def test_check_passes_two_cards_on_the_same_task_and_class(tmp_path):
 
 def test_check_fails_suite_instrument_mismatching_the_row(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 3, "runs": 3, "passed": 3, "source": "kit", "instrument": "SUITE-1@9.9.9",
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1375,98 +1375,98 @@ def _valid_stage(**overrides) -> dict:
 
 def test_check_fails_stages_not_a_list(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": "nope",
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages must be a list" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages must be a list" in result.stderr
 
 
 def test_check_fails_stage_not_an_object(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": ["nope"],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0] must be an object" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0] must be an object" in result.stderr
 
 
 def test_check_fails_stage_unknown_key(tmp_path):
     data = load_base()
     stage = _valid_stage(bogus=1)
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0]: unknown key bogus" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0]: unknown key bogus" in result.stderr
 
 
 def test_check_fails_stage_missing_key(tmp_path):
     data = load_base()
     stage = _valid_stage()
     del stage["wall_s"]
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0]: missing key wall_s" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0]: missing key wall_s" in result.stderr
 
 
 def test_check_fails_stage_bad_id(tmp_path):
     data = load_base()
     stage = _valid_stage(id="")
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].id must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].id must be a non-empty string" in result.stderr
 
 
 def test_check_fails_stage_bad_working(tmp_path):
     data = load_base()
     stage = _valid_stage(working="yes")
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].working must be a bool" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].working must be a bool" in result.stderr
 
 
 def test_check_fails_stage_bad_conformance(tmp_path):
     data = load_base()
     stage = _valid_stage(conformance="pass")
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].conformance must be a bool or null" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].conformance must be a bool or null" in result.stderr
 
 
 def test_check_passes_stage_conformance_null(tmp_path):
     data = load_base()
     stage = _valid_stage(conformance=None)
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1478,93 +1478,93 @@ def test_check_passes_stage_conformance_null(tmp_path):
 def test_check_fails_stage_bad_lines(tmp_path):
     data = load_base()
     stage = _valid_stage(lines="40")
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].lines must be an int or null" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].lines must be an int or null" in result.stderr
 
 
 def test_check_fails_stage_bad_budget_lines(tmp_path):
     data = load_base()
     stage = _valid_stage(budget_lines=60.5)
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].budget_lines must be an int or null" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].budget_lines must be an int or null" in result.stderr
 
 
 def test_check_fails_stage_bad_maintainable(tmp_path):
     data = load_base()
     stage = _valid_stage(maintainable=4)
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].maintainable must be 0, 3, 5 or null" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].maintainable must be 0, 3, 5 or null" in result.stderr
 
 
 def test_check_fails_stage_bool_not_maintainable(tmp_path):
     """A bool is never 0, 3 or 5, even though False == 0 in Python."""
     data = load_base()
     stage = _valid_stage(maintainable=False)
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].maintainable must be 0, 3, 5 or null" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].maintainable must be 0, 3, 5 or null" in result.stderr
 
 
 def test_check_fails_stage_bad_usable(tmp_path):
     data = load_base()
     stage = _valid_stage(usable=2)
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].usable must be 0, 3, 5 or null" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].usable must be 0, 3, 5 or null" in result.stderr
 
 
 def test_check_fails_stage_bad_wall_s(tmp_path):
     data = load_base()
     stage = _valid_stage(wall_s="12.5")
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].wall_s must be a number" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].wall_s must be a number" in result.stderr
 
 
 def test_check_fails_stage_bad_axes(tmp_path):
     data = load_base()
     stage = _valid_stage(axes=["working", 1])
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].axes must be a list of strings" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].axes must be a list of strings" in result.stderr
 
 
 def test_check_passes_valid_stages_list(tmp_path):
@@ -1574,10 +1574,10 @@ def test_check_passes_valid_stages_list(tmp_path):
         _valid_stage(id="s1-frontend", axes=["working", "conformance"], working=True),
         _valid_stage(id="s4-rubric", axes=["maintainable", "usable"], working=False, maintainable=5, usable=5),
     ]
-    data["profiles"]["long"]["instrument"] = "SUITE-1@0.2.0"
-    for _n in ("fast", "serious"):
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] = "SUITE-1@0.2.0"
+    for _n in ("gemma4-8b-e4b-q4km-vulkan", "qwen38-27b-iq3xxs-vulkan"):
         data["profiles"][_n]["instrument"] = "SUITE-1@0.2.0"
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 3, "runs": 3, "passed": 2, "source": "kit", "instrument": "SUITE-1@0.2.0", "stages": stages,
     }
     path = write_json(tmp_path / "p.json", data)
@@ -1588,48 +1588,48 @@ def test_check_passes_valid_stages_list(tmp_path):
 
 def test_check_fails_reviewer_not_an_object(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "reviewer": "nope",
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.reviewer must be an object" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.reviewer must be an object" in result.stderr
 
 
 def test_check_fails_reviewer_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit",
-        "reviewer": {"profile": "long", "bogus": 1},
+        "reviewer": {"profile": "qwen35-9b-q4km-vulkan", "bogus": 1},
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.reviewer: unknown key bogus" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.reviewer: unknown key bogus" in result.stderr
 
 
 def test_check_fails_reviewer_bad_value_type(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit",
-        "reviewer": {"profile": "long", "rubric_sha256": True},
+        "reviewer": {"profile": "qwen35-9b-q4km-vulkan", "rubric_sha256": True},
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.reviewer.rubric_sha256 must be a string or int" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.reviewer.rubric_sha256 must be a string or int" in result.stderr
 
 
 def test_check_passes_valid_reviewer(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit",
         "reviewer": {
-            "profile": "serious", "model": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf", "ctx": 32768,
+            "profile": "qwen38-27b-iq3xxs-vulkan", "model": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf", "ctx": 32768,
             "sampling": "temp 0, thinking off", "rubric_sha256": "abc123",
         },
     }
@@ -1648,9 +1648,9 @@ def test_builder_class_tally_uses_counts_toward_pass_not_axes(tmp_path):
     (task_t1 is deliberately weak so the old code's other fallback can't paper over it).
     The honest rule counts a stage when its own `counts_toward_pass` is not false."""
     data = load_base()
-    data["profiles"]["long"]["useful_ctx"] = 100000
-    data["profiles"]["long"]["task_t1"] = "weak: not the row's own task"
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["useful_ctx"] = 100000
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["task_t1"] = "weak: not the row's own task"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 4, "runs": 4, "passed": 3, "source": "kit",
         "stages": [
             _valid_stage(id="s0-design", axes=["maintainable", "usable"], working=True, counts_toward_pass=False),
@@ -1661,7 +1661,7 @@ def test_builder_class_tally_uses_counts_toward_pass_not_axes(tmp_path):
     }
     path = write_json(tmp_path / "p.json", data)
 
-    result = run("card", "--file", str(path), "--name", "long")
+    result = run("card", "--file", str(path), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["builder_class"] is True
 
@@ -1670,9 +1670,9 @@ def test_builder_class_false_from_stages_when_counted_ratio_low(tmp_path):
     """Same counts_toward_pass-driven tally, the other direction: two counted stages, one
     failing, is a 0.5 ratio -- below the 0.8 bar."""
     data = load_base()
-    data["profiles"]["long"]["useful_ctx"] = 100000
-    data["profiles"]["long"]["task_t1"] = "weak: not the row's own task"
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["useful_ctx"] = 100000
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["task_t1"] = "weak: not the row's own task"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 2, "runs": 2, "passed": 1, "source": "kit",
         "stages": [
             _valid_stage(id="s1-frontend", axes=["maintainable", "usable"], working=True, counts_toward_pass=True),
@@ -1681,7 +1681,7 @@ def test_builder_class_false_from_stages_when_counted_ratio_low(tmp_path):
     }
     path = write_json(tmp_path / "p.json", data)
 
-    result = run("card", "--file", str(path), "--name", "long")
+    result = run("card", "--file", str(path), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["builder_class"] is False
 
@@ -1691,9 +1691,9 @@ def test_builder_class_false_when_suite_fails_despite_task_t1_pass(tmp_path):
     even when `suite` recorded failures. The suite is now the authority whenever it is
     present -- a failing suite makes the row false no matter what task_t1 says."""
     data = load_base()
-    data["profiles"]["long"]["useful_ctx"] = 100000
-    assert data["profiles"]["long"]["task_t1"] == "pass"
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["useful_ctx"] = 100000
+    assert data["profiles"]["qwen35-9b-q4km-vulkan"]["task_t1"] == "pass"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 4, "runs": 4, "passed": 0, "source": "kit",
         "stages": [
             _valid_stage(id="s0-design", axes=["maintainable", "usable"], working=True, counts_toward_pass=False),
@@ -1704,7 +1704,7 @@ def test_builder_class_false_when_suite_fails_despite_task_t1_pass(tmp_path):
     }
     path = write_json(tmp_path / "p.json", data)
 
-    result = run("card", "--file", str(path), "--name", "long")
+    result = run("card", "--file", str(path), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["builder_class"] is False
 
@@ -1712,14 +1712,14 @@ def test_builder_class_false_when_suite_fails_despite_task_t1_pass(tmp_path):
 def test_check_fails_stage_bad_counts_toward_pass(tmp_path):
     data = load_base()
     stage = _valid_stage(counts_toward_pass="yes")
-    data["profiles"]["long"]["suite"] = {
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["suite"] = {
         "briefs": 1, "runs": 1, "passed": 1, "source": "kit", "stages": [stage],
     }
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: suite.stages[0].counts_toward_pass must be a bool" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: suite.stages[0].counts_toward_pass must be a bool" in result.stderr
 
 
 def test_comparable_with_on_display_registry():
@@ -1727,8 +1727,8 @@ def test_comparable_with_on_display_registry():
     result = run("card", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    for name in ("long", "fast", "serious"):
-        others = sorted(n for n in ("long", "fast", "serious") if n != name)
+    for name in ("qwen35-9b-q4km-vulkan", "gemma4-8b-e4b-q4km-vulkan", "qwen38-27b-iq3xxs-vulkan"):
+        others = sorted(n for n in ("qwen35-9b-q4km-vulkan", "gemma4-8b-e4b-q4km-vulkan", "qwen38-27b-iq3xxs-vulkan") if n != name)
         assert sorted(data["profiles"][name]["comparable_with"]["profiles"]) == others, name
         assert data["profiles"][name]["comparable_with"]["instrument"] == data["profiles"][name]["instrument"]
         assert data["profiles"][name]["comparable_with"]["measured_on"] == data["profiles"][name]["measured_on"]
@@ -1740,8 +1740,8 @@ def test_comparable_with_on_inference_registry():
     result = run("card", "--file", str(PROFILES_INFERENCE_JSON))
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    for name in ("long", "serious"):
-        others = sorted(n for n in ("long", "serious") if n != name)
+    for name in ("qwen35-9b-q4km-vulkan", "qwen38-27b-iq3s-vulkan"):
+        others = sorted(n for n in ("qwen35-9b-q4km-vulkan", "qwen38-27b-iq3s-vulkan") if n != name)
         assert sorted(data["profiles"][name]["comparable_with"]["profiles"]) == others, name
         assert data["profiles"][name]["comparable_with"]["instrument"] == data["profiles"][name]["instrument"]
         assert data["profiles"][name]["comparable_with"]["measured_on"] == data["profiles"][name]["measured_on"]
@@ -1749,19 +1749,19 @@ def test_comparable_with_on_inference_registry():
 
 def test_comparable_with_excludes_differing_instrument(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["instrument"] = "SUITE-1@0.2.0"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] = "SUITE-1@0.2.0"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("card", "--file", str(path))
     assert result.returncode == 0, result.stderr
     data_out = json.loads(result.stdout)
-    assert data_out["profiles"]["long"]["comparable_with"]["profiles"] == []
-    assert "long" not in data_out["profiles"]["fast"]["comparable_with"]["profiles"]
-    assert "long" not in data_out["profiles"]["serious"]["comparable_with"]["profiles"]
+    assert data_out["profiles"]["qwen35-9b-q4km-vulkan"]["comparable_with"]["profiles"] == []
+    assert "qwen35-9b-q4km-vulkan" not in data_out["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["comparable_with"]["profiles"]
+    assert "qwen35-9b-q4km-vulkan" not in data_out["profiles"]["qwen38-27b-iq3xxs-vulkan"]["comparable_with"]["profiles"]
 
 
 def test_card_prints_instrument():
-    result = run("card", "--file", str(PROFILES_JSON), "--name", "long")
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["instrument"] == "seat: Shared_Memory@3c8e2bb"
 
@@ -1777,9 +1777,9 @@ def test_snippet_labels_use_profile_flag(tmp_path):
     assert result.returncode == 0, result.stderr
 
     text = snippet.read_text(encoding="utf-8")
-    assert "**--profile long** = " in text
-    assert "**--profile fast** = " in text
-    assert "**--profile serious** = " in text
+    assert "**--profile qwen35-9b-q4km-vulkan** = " in text
+    assert "**--profile gemma4-8b-e4b-q4km-vulkan** = " in text
+    assert "**--profile qwen38-27b-iq3xxs-vulkan** = " in text
 
 
 # --- thinking: the server's five thinking controls (--reasoning, --reasoning-effort,
@@ -1800,78 +1800,78 @@ def _valid_thinking(**overrides) -> dict:
 
 def test_check_fails_thinking_not_object(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = "hot"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = "hot"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking must be an object" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking must be an object" in result.stderr
 
 
 def test_check_fails_thinking_unknown_key(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(bogus=1)
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(bogus=1)
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking: unknown key bogus" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking: unknown key bogus" in result.stderr
 
 
 def test_check_fails_thinking_bad_mode(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(mode="maybe")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(mode="maybe")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.mode must be on, off or auto" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.mode must be on, off or auto" in result.stderr
 
 
 def test_check_fails_thinking_bad_effort(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(effort="extreme")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(effort="extreme")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.effort must be one of low, medium, high, xhigh, default" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.effort must be one of low, medium, high, xhigh, default" in result.stderr
 
 
 def test_check_fails_thinking_effort_not_string(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(effort=1)
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(effort=1)
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.effort must be one of low, medium, high, xhigh, default" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.effort must be one of low, medium, high, xhigh, default" in result.stderr
 
 
 def test_check_fails_thinking_budget_not_int(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(budget="512")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(budget="512")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.budget must be -1, 0 or a positive int" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.budget must be -1, 0 or a positive int" in result.stderr
 
 
 def test_check_fails_thinking_budget_below_minus_one(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(budget=-2)
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(budget=-2)
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.budget must be -1, 0 or a positive int" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.budget must be -1, 0 or a positive int" in result.stderr
 
 
 def test_check_passes_thinking_budget_minus_one_and_zero(tmp_path):
     for b in (-1, 0, 512):
         data = load_base()
-        data["profiles"]["long"]["thinking"] = _valid_thinking(budget=b)
+        data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(budget=b)
         path = write_json(tmp_path / "p.json", data)
 
         result = run("check", "--file", str(path))
@@ -1880,59 +1880,59 @@ def test_check_passes_thinking_budget_minus_one_and_zero(tmp_path):
 
 def test_check_fails_thinking_budget_message_not_string(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(budget_message=1)
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(budget_message=1)
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.budget_message must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.budget_message must be a non-empty string" in result.stderr
 
 
 def test_check_fails_thinking_budget_message_empty(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(budget_message="")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(budget_message="")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.budget_message must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.budget_message must be a non-empty string" in result.stderr
 
 
 def test_check_fails_thinking_preserve_not_bool(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(preserve="yes")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(preserve="yes")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.preserve must be a bool" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.preserve must be a bool" in result.stderr
 
 
 def test_check_fails_thinking_source_empty(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(source="")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(source="")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.source must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.source must be a non-empty string" in result.stderr
 
 
 def test_check_fails_thinking_source_not_string(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(source=1)
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(source=1)
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.source must be a non-empty string" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.source must be a non-empty string" in result.stderr
 
 
 def test_check_passes_thinking_every_key_optional(tmp_path):
     """Every thinking key is optional: an empty object, and a single-key object, both pass."""
     for partial in ({}, {"mode": "auto"}, {"preserve": False}, {"source": "x"}):
         data = load_base()
-        data["profiles"]["long"]["thinking"] = partial
+        data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = partial
         path = write_json(tmp_path / "p.json", data)
 
         result = run("check", "--file", str(path))
@@ -1941,7 +1941,7 @@ def test_check_passes_thinking_every_key_optional(tmp_path):
 
 def test_check_passes_valid_thinking(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking()
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -1951,30 +1951,30 @@ def test_check_passes_valid_thinking(tmp_path):
 def test_check_fails_thinking_mode_contradicts_reasoning_on(tmp_path):
     """long ships with reasoning: off -- a thinking.mode of on contradicts it."""
     data = load_base()
-    assert data["profiles"]["long"]["reasoning"] == "off"
-    data["profiles"]["long"]["thinking"] = _valid_thinking(mode="on")
+    assert data["profiles"]["qwen35-9b-q4km-vulkan"]["reasoning"] == "off"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(mode="on")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: thinking.mode 'on' contradicts reasoning 'off'" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: thinking.mode 'on' contradicts reasoning 'off'" in result.stderr
 
 
 def test_check_fails_thinking_mode_contradicts_reasoning_off(tmp_path):
     """serious ships with reasoning: on -- a thinking.mode of off contradicts it."""
     data = load_base()
-    assert data["profiles"]["serious"]["reasoning"] == "on"
-    data["profiles"]["serious"]["thinking"]["mode"] = "off"
+    assert data["profiles"]["qwen38-27b-iq3xxs-vulkan"]["reasoning"] == "on"
+    data["profiles"]["qwen38-27b-iq3xxs-vulkan"]["thinking"]["mode"] = "off"
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: serious: thinking.mode 'off' contradicts reasoning 'on'" in result.stderr
+    assert "profiles: qwen38-27b-iq3xxs-vulkan: thinking.mode 'off' contradicts reasoning 'on'" in result.stderr
 
 
 def test_check_passes_thinking_mode_auto_never_contradicts(tmp_path):
     """auto is compatible with either reasoning value -- it is not a fixed state."""
-    for name in ("long", "serious"):
+    for name in ("qwen35-9b-q4km-vulkan", "qwen38-27b-iq3xxs-vulkan"):
         data = load_base()
         thinking = dict(data["profiles"][name].get("thinking") or {})
         thinking["mode"] = "auto"
@@ -1988,7 +1988,7 @@ def test_check_passes_thinking_mode_auto_never_contradicts(tmp_path):
 
 def test_check_passes_thinking_mode_matches_reasoning(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(mode="off")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(mode="off")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -1999,16 +1999,16 @@ def test_env_thinking_empty_when_unset():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert ': "${A770B_LONG_THINKING_MODE:=}"' in lines
-    assert ': "${A770B_LONG_THINKING_EFFORT:=}"' in lines
-    assert ': "${A770B_LONG_THINKING_BUDGET:=}"' in lines
-    assert "[ -n \"${A770B_LONG_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_LONG_THINKING_BUDGET_MESSAGE=''" in lines
-    assert ': "${A770B_LONG_THINKING_PRESERVE:=}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_EFFORT:=}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=}"' in lines
+    assert "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE=''" in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_PRESERVE:=}"' in lines
 
 
 def test_env_thinking_set_from_registry(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(
         mode="off", budget=0, budget_message="stop thinking, it's time",
     )
     path = write_json(tmp_path / "p.json", data)
@@ -2016,26 +2016,26 @@ def test_env_thinking_set_from_registry(tmp_path):
     result = run("env", "--file", str(path))
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert ': "${A770B_LONG_THINKING_MODE:=off}"' in lines
-    assert ': "${A770B_LONG_THINKING_EFFORT:=low}"' in lines
-    assert ': "${A770B_LONG_THINKING_BUDGET:=0}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=off}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_EFFORT:=low}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=0}"' in lines
     assert (
-        "[ -n \"${A770B_LONG_THINKING_BUDGET_MESSAGE:-}\" ] || "
-        "A770B_LONG_THINKING_BUDGET_MESSAGE='stop thinking, it'\\''s time'"
+        "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE:-}\" ] || "
+        "A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE='stop thinking, it'\\''s time'"
     ) in lines
-    assert ': "${A770B_LONG_THINKING_PRESERVE:=true}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_PRESERVE:=true}"' in lines
 
 
 def test_env_thinking_output_is_valid_shell(tmp_path):
     """A budget_message with an embedded single quote (an apostrophe, plausible in real prose)
     must round-trip through the shell unbroken."""
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(budget_message="don't stop, it's fine")
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(budget_message="don't stop, it's fine")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("env", "--file", str(path))
     assert result.returncode == 0, result.stderr
-    script = result.stdout + '\necho "$A770B_LONG_THINKING_BUDGET_MESSAGE"\n'
+    script = result.stdout + '\necho "$A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE"\n'
     bash_result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert bash_result.returncode == 0, bash_result.stderr
     assert bash_result.stdout.strip() == "don't stop, it's fine"
@@ -2043,16 +2043,16 @@ def test_env_thinking_output_is_valid_shell(tmp_path):
 
 def test_env_thinking_negative_one_budget(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["thinking"] = _valid_thinking(budget=-1)
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(budget=-1)
     path = write_json(tmp_path / "p.json", data)
 
     result = run("env", "--file", str(path))
     assert result.returncode == 0, result.stderr
-    assert ': "${A770B_LONG_THINKING_BUDGET:=-1}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=-1}"' in result.stdout.splitlines()
 
 
 def test_card_prints_thinking_as_stored():
-    result = run("card", "--file", str(PROFILES_JSON), "--name", "serious")
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "qwen38-27b-iq3xxs-vulkan")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["thinking"] == {
@@ -2071,7 +2071,7 @@ def test_card_prints_thinking_as_stored():
 def test_card_no_thinking_on_unmeasured_rows():
     """long (both registries) carry no thinking object yet -- the measured
     bounded-budget arm is not a ruled row, and card must not invent one."""
-    for f, names in ((PROFILES_JSON, ("long",)), (PROFILES_INFERENCE_JSON, ("long",))):
+    for f, names in ((PROFILES_JSON, ("qwen35-9b-q4km-vulkan",)), (PROFILES_INFERENCE_JSON, ("qwen35-9b-q4km-vulkan",))):
         for name in names:
             result = run("card", "--file", str(f), "--name", name)
             assert result.returncode == 0, result.stderr
@@ -2132,16 +2132,16 @@ def test_shipped_kit_instrument_is_suite_at_kit_version():
 
 def test_check_fails_bad_placement(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["placement"] = "disk"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["placement"] = "disk"
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: placement must be host, container or remote" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: placement must be host, container or remote" in result.stderr
 
 
 def test_check_passes_placement_host(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["placement"] = "host"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["placement"] = "host"
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 0, result.stderr
@@ -2152,7 +2152,7 @@ def test_check_passes_placement_host(tmp_path):
 
 def test_check_passes_operator_override_true(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["operator_override"] = True
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["operator_override"] = True
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 0, result.stderr
@@ -2160,8 +2160,8 @@ def test_check_passes_operator_override_true(tmp_path):
 
 def test_check_fails_operator_override_non_bool(tmp_path):
     data = load_base()
-    data["profiles"]["long"]["operator_override"] = "yes"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["operator_override"] = "yes"
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: long: operator_override must be true or false" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: operator_override must be true or false" in result.stderr

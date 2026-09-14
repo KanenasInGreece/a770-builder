@@ -120,9 +120,9 @@ def _chmod_x(path: Path) -> Path:
 
 def _registry_with_sycl(path: Path) -> Path:
     data = json.loads(PROFILES_JSON.read_text(encoding="utf-8"))
-    row = copy.deepcopy(data["profiles"]["long"])
+    row = copy.deepcopy(data["profiles"]["qwen35-9b-q4km-vulkan"])
     row["backend"] = "sycl"
-    data["profiles"]["long-sycl"] = row
+    data["profiles"]["qwen35-9b-q4km-sycl"] = row
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
 
@@ -182,7 +182,7 @@ def _write_live_sidecar(env: dict, pid: int) -> None:
             "backend": "vulkan",
             "mode": "display",
             "model": QWEN,
-            "profile": "long",
+            "profile": "qwen35-9b-q4km-vulkan",
             "pid": pid,
         },
     )
@@ -221,7 +221,7 @@ def test_serve_busy_reload_prints_busy_and_does_not_stop(tmp_path, live_pid):
         (Path(env["A770B_DATA"]) / "logs" / "run.pid").write_text(
             f"{busy.pid}\n", encoding="utf-8"
         )
-        result = _run_serve(env, "long-sycl")
+        result = _run_serve(env, "qwen35-9b-q4km-sycl")
     finally:
         busy.kill()
         busy.wait()
@@ -236,7 +236,7 @@ def test_serve_remote_backend_switch_refuses_and_does_not_stop(tmp_path, live_pi
     env = _serve_env(tmp_path)
     env["A770B_HOST"] = "10.0.0.1"
     _write_live_sidecar(env, live_pid)
-    result = _run_serve(env, "long-sycl")
+    result = _run_serve(env, "qwen35-9b-q4km-sycl")
     assert REMOTE in result.stdout
     assert result.returncode != 0
     lines = _log_lines(env)
@@ -247,18 +247,18 @@ def test_serve_remote_backend_switch_refuses_and_does_not_stop(tmp_path, live_pi
 def test_serve_failed_reload_stops_before_starting_the_old_profile(tmp_path, live_pid):
     env = _serve_env(tmp_path, fail_start=True)
     _write_live_sidecar(env, live_pid)
-    result = _run_serve(env, "long-sycl")
-    assert "reload failed: rolling back to long" in result.stdout
+    result = _run_serve(env, "qwen35-9b-q4km-sycl")
+    assert "reload failed: rolling back to qwen35-9b-q4km-vulkan" in result.stdout
     assert "rollback failed: server is down" in result.stdout
     assert result.returncode != 0
     lines = _log_lines(env)
     i_new = next(
         i for i, line in enumerate(lines)
-        if line.startswith("start ") and "profile=long-sycl" in line
+        if line.startswith("start ") and "profile=qwen35-9b-q4km-sycl" in line
     )
     i_old = next(
         i for i, line in enumerate(lines)
-        if line.startswith("start ") and "profile=long " in line
+        if line.startswith("start ") and "profile=qwen35-9b-q4km-vulkan " in line
     )
     assert i_old > i_new
     assert any(lines[i] == "stop" for i in range(i_new + 1, i_old))
@@ -272,7 +272,7 @@ def test_serve_exports_live_identity_on_successful_stub_start(tmp_path):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
-        result = _run_serve(env, "long", timeout=30)
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -284,4 +284,4 @@ def test_serve_exports_live_identity_on_successful_stub_start(tmp_path):
     assert "card=a770" in last
     assert "backend=vulkan" in last
     assert "mode=display" in last
-    assert "profile=long" in last
+    assert "profile=qwen35-9b-q4km-vulkan" in last

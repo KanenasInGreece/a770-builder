@@ -157,9 +157,9 @@ case "${1:-}" in
 esac
 FAKE
 chmod +x "$ku3/fake-local-build.sh"
-rm -f "$A770B_DATA"/results/long-suite-*.json
-out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
-res=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
+rm -f "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json
+out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
+res=$(ls -t "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json 2>/dev/null | head -1)
 if [ "$rc" = 0 ] && [ -n "$res" ] && python3 - "$res" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -201,14 +201,14 @@ if [ -f "$t/ku3-seat/.gitignore" ] && grep -qx 'CMakeFiles/' "$t/ku3-seat/.gitig
 else
   echo "FAIL suite: $t/ku3-seat has no .gitignore, or it is missing an expected pattern"; fail=1
 fi
-# the fake local-build.sh's own argv, recorded per call: a "run ... --spec ... --profile long" line and a
+# the fake local-build.sh's own argv, recorded per call: a "run ... --spec ... --profile qwen35-9b-q4km-vulkan" line and a
 # "verify fake-<id>" line per stage, in order, and no reviewer step (stop/serve) since --reviewer was not given
 if [ -f "$ku3/argv.log" ] && python3 - "$ku3/argv.log" <<'PY'
 import re, sys
 lines = [l for l in open(sys.argv[1]).read().splitlines() if l.strip()]
 ids = ["s0-pass", "s1-fail", "s2-note", "ref-cpp-example"]
 assert len(lines) == 2 * len(ids), lines
-run_re = re.compile(r"^run \S+ \S+ --spec \S+ --profile long$")
+run_re = re.compile(r"^run \S+ \S+ --spec \S+ --profile qwen35-9b-q4km-vulkan$")
 for i, id_ in enumerate(ids):
     run_line, verify_line = lines[2 * i], lines[2 * i + 1]
     assert run_re.match(run_line), (id_, run_line)
@@ -227,7 +227,7 @@ fi
 # ref-cpp-example must run it alone (no main stage matches it), and both must be named in a line printed before
 # the first stage starts.
 rm -f "$ku3/argv.log"
-outF=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat-b" --suite "$ku3/suite.json" --stages s1-fail 2>&1); rcF=$?
+outF=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat-b" --suite "$ku3/suite.json" --stages s1-fail 2>&1); rcF=$?
 if [ "$rcF" = 0 ] && printf '%s\n' "$outF" | grep -q -- '--stages s1-fail selects: s1-fail' \
   && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] \
   && grep -q "$ku3/tasks/s1-fail.md" "$ku3/argv.log" && ! grep -q 'ref-cpp-example' "$ku3/argv.log"
@@ -235,7 +235,7 @@ then echo "ok   suite: --stages s1-fail filters the reference exercises exactly 
 else echo "FAIL suite: --stages s1-fail did not select exactly s1-fail (see $ku3/argv.log, output below)"; printf '%s\n' "$outF" | tail -10; fail=1
 fi
 rm -f "$ku3/argv.log"
-outF2=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" long "$t/ku3-seat-c" --suite "$ku3/suite.json" --stages ref-cpp-example 2>&1); rcF2=$?
+outF2=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat-c" --suite "$ku3/suite.json" --stages ref-cpp-example 2>&1); rcF2=$?
 if [ "$rcF2" = 0 ] && printf '%s\n' "$outF2" | grep -q -- '--stages ref-cpp-example selects: ref-cpp-example' \
   && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] && grep -q 'ref-cpp-example' "$ku3/argv.log"
 then echo "ok   suite: --stages also selects a reference exercise on its own (ref-cpp-example alone, no main stage matched it)"
@@ -270,20 +270,20 @@ echo "witness" > "$u8/proj/inside/deep/witness.txt"
 cp "$here/harness/profiles.py" "$u8/proj/harness/profiles.py"; cp "$here/config/profiles.json" "$u8/proj/config/profiles.json"
 # 1. a seat inside A770B_REFUSE, with --fresh
 u8a=$(A770B_REFUSE="$u8/refused" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
-      bash "$here/harness/run_suite.sh" long "$u8/refused/live" --suite "$ku3/suite.json" --fresh 2>&1); u8a_rc=$?
+      bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/refused/live" --suite "$ku3/suite.json" --fresh 2>&1); u8a_rc=$?
 if [ ! -f "$u8/refused/live/deep/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED a seat inside A770B_REFUSE before refusing it"; fail=1
 elif [ "$u8a_rc" != 2 ]; then echo "FAIL policy: a seat inside A770B_REFUSE was not refused (rc=$u8a_rc)"; printf '%s\n' "$u8a" | tail -5; fail=1
 else echo "ok   policy: a refused seat keeps its contents — --fresh deleted nothing"; fi
 # 2. a seat inside the harness's own project directory, with --fresh
 u8b=$(A770B_PROJECT="$u8/proj" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
-      bash "$here/harness/run_suite.sh" long "$u8/proj/inside" --suite "$ku3/suite.json" --fresh 2>&1); u8b_rc=$?
+      bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/proj/inside" --suite "$ku3/suite.json" --fresh 2>&1); u8b_rc=$?
 if [ ! -f "$u8/proj/inside/deep/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED a seat inside the harness's own project directory before refusing it"; fail=1
 elif [ "$u8b_rc" != 2 ]; then echo "FAIL policy: a seat inside A770B_PROJECT was not refused (rc=$u8b_rc)"; printf '%s\n' "$u8b" | tail -5; fail=1
 else echo "ok   policy: a seat inside the harness's own project directory keeps its contents and is refused"; fi
 # 3. the control: a legitimate seat is still accepted, and --fresh still replaces what was there
 echo "stale" > "$u8/good/STALE.txt"
 u8c=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
-      bash "$here/harness/run_suite.sh" long "$u8/good" --suite "$ku3/suite.json" --fresh 2>&1); u8c_rc=$?
+      bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/good" --suite "$ku3/suite.json" --fresh 2>&1); u8c_rc=$?
 if [ "$u8c_rc" = 0 ] && [ ! -e "$u8/good/STALE.txt" ] && [ -d "$u8/good/.git" ]; then
   echo "ok   policy: a legitimate seat is still accepted and still replaced by --fresh"
 else echo "FAIL policy: the path policy refused or failed to replace a legitimate seat (rc=$u8c_rc)"; printf '%s\n' "$u8c" | tail -10; fail=1
@@ -347,7 +347,7 @@ grep -q 'A770B_REFUSE=/nonexistent' "$here/tests/kit_selftest.sh" && echo "ok   
 # reached the profile's own timeout before capture_task.sh's own SLOG parse ever had anything to report) must be
 # recorded with requests/prompt_tokens/gen_tokens = null, never 0, and the stage's own "outcome" must read
 # "timeout", not a plain failure — so a reader can tell a slow model from a wrong one — carried through into
-# suite_report.py's table (TIMEOUT, not FAIL) and its --json (a "timeouts" count). A770B_LONG_TIMEOUT=1 shrinks
+# suite_report.py's table (TIMEOUT, not FAIL) and its --json (a "timeouts" count). A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT=1 shrinks
 # the profile's own timeout window to one second so a two-second fake run trips it without an hour of card time.
 # This fixture's own fresh kit/seat/ export (export_kit_seat, one main stage, never touched by the fake run) also
 # proves the other half of Defect 3: the .gitignore lands there too, not only from export_reference_seat above.
@@ -366,7 +366,7 @@ set -uo pipefail
 case "${1:-}" in
   run)
     shift; WT="$1"; BRIEF="$2"; shift 2
-    sleep 2   # longer than A770B_LONG_TIMEOUT=1 below, so this stage's wall_s trips the timeout comparison
+    sleep 2   # longer than A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT=1 below, so this stage's wall_s trips the timeout comparison
     label="fake-$(basename "$BRIEF" .md)"
     mkdir -p "$A770B_DATA/results"
     echo "# fake capture — no server-side timings line at all (the run never got that far)" > "$A770B_DATA/results/$label.task.md"
@@ -379,9 +379,9 @@ case "${1:-}" in
 esac
 FAKE
 chmod +x "$kut/fake-local-build.sh"
-rm -f "$A770B_DATA"/results/long-suite-*.json
-outT=$(A770B_LOCAL_BUILD="$kut/fake-local-build.sh" A770B_LONG_TIMEOUT=1 bash "$here/harness/run_suite.sh" long "$t/kutimeout-seat" --suite "$kut/suite.json" 2>&1); rcT=$?
-resT=$(ls -t "$A770B_DATA"/results/long-suite-*.json 2>/dev/null | head -1)
+rm -f "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json
+outT=$(A770B_LOCAL_BUILD="$kut/fake-local-build.sh" A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT=1 bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/kutimeout-seat" --suite "$kut/suite.json" 2>&1); rcT=$?
+resT=$(ls -t "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json 2>/dev/null | head -1)
 if [ "$rcT" = 0 ] && [ -n "$resT" ] && python3 - "$resT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -470,16 +470,16 @@ else echo "FAIL selftest: suite_report.py delivered speed did not parse — stdo
 fi
 # the profiles registry: config/profiles.json is the single source now that env.sh evals `harness/profiles.py env`
 python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
-[ "$A770B_PROFILES" = "long fast serious" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ] && echo "ok   profiles: the names come from the registry and there is no default" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='${A770B_DEFAULT_PROFILE:-}'"; fail=1; }
+[ "$A770B_PROFILES" = "qwen35-9b-q4km-vulkan gemma4-8b-e4b-q4km-vulkan qwen38-27b-iq3xxs-vulkan" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ] && echo "ok   profiles: the names come from the registry and there is no default" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='${A770B_DEFAULT_PROFILE:-}'"; fail=1; }
 # the helper reads a numeric field (long's CTX), a string field that can only come from `extra` (--top-k has no
 # A770B_<P>_* variable of its own, unlike --temp and --top-p), and a field of the row's own `thinking` object
 # (serious's effort, served through --reasoning-effort; it used to sit inside `extra` as reasoning_effort, which
 # is why this line greps for a sampling knob now and not for that string).
-pv_ctx=$(a770b_profile_var long CTX); pv_extra=$(a770b_profile_var serious EXTRA); pv_effort=$(a770b_profile_var serious THINKING_EFFORT)
+pv_ctx=$(a770b_profile_var qwen35-9b-q4km-vulkan CTX); pv_extra=$(a770b_profile_var qwen38-27b-iq3xxs-vulkan EXTRA); pv_effort=$(a770b_profile_var qwen38-27b-iq3xxs-vulkan THINKING_EFFORT)
 { [ "$pv_ctx" = "262144" ] && printf '%s' "$pv_extra" | grep -q -- '--top-k' && [ "$pv_effort" = "low" ]; } \
   && echo "ok   profiles: the helper reads the registry's variables" \
   || { echo "FAIL profiles: a770b_profile_var read long CTX='$pv_ctx' (want 262144), serious EXTRA='$pv_extra' (want a --top-k in it), serious THINKING_EFFORT='$pv_effort' (want low)"; fail=1; }
-[ "$( (export A770B_LONG_CTX=4096; . "$here/harness/env.sh" >/dev/null 2>&1; a770b_profile_var long CTX) )" = "4096" ] && echo "ok   profiles: the environment wins over the registry" || { echo "FAIL profiles: A770B_LONG_CTX=4096 did not win over the registry default"; fail=1; }
+[ "$( (export A770B_QWEN35_9B_Q4KM_VULKAN_CTX=4096; . "$here/harness/env.sh" >/dev/null 2>&1; a770b_profile_var qwen35-9b-q4km-vulkan CTX) )" = "4096" ] && echo "ok   profiles: the environment wins over the registry" || { echo "FAIL profiles: A770B_QWEN35_9B_Q4KM_VULKAN_CTX=4096 did not win over the registry default"; fail=1; }
 # ── the card mode (I1-I4, I5a, I7b, I8-I10): a temporary registry/override tree under $t so nothing here reads the
 #    machine's own ~/.config/a770-builder/builder(.<mode>).env; every check that switches the mode, the registry file
 #    or the PATH runs in its own subshell (see _iso above), so nothing — PATH included — leaks into this shell.
@@ -492,7 +492,7 @@ out=$( ( _iso; export A770B_CARD_MODE=x XDG_CONFIG_HOME="$t/xdg"; . "$here/harne
   && echo "ok   mode: I1 an invalid mode refuses (exit 2) and names it" || { echo "FAIL mode: I1 x -> rc=$rc: $out"; fail=1; }
 ( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   case "$A770B_PROFILES_FILE" in *config/profiles.json) : ;; *) exit 1;; esac
-  [ "$A770B_VRAM_CAP_GIB" = 13.0 ] && [ "$A770B_PROFILES" = "long fast serious" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ]
+  [ "$A770B_VRAM_CAP_GIB" = 13.0 ] && [ "$A770B_PROFILES" = "qwen35-9b-q4km-vulkan gemma4-8b-e4b-q4km-vulkan qwen38-27b-iq3xxs-vulkan" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ]
 ) && echo "ok   mode: I2 the v0.1.4 defaults hold with the mode unset" || { echo "FAIL mode: I2 the display defaults did not all hold"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
@@ -528,23 +528,23 @@ printf 'A770B_CARD_MODE=display\n' > "$i4d/a770-builder/builder.inference.env"
 out=$( ( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$i4d"; . "$here/harness/env.sh" ) 2>&1 ); rc=$?
 { [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "cannot switch the mode"; } \
   && echo "ok   mode: I4 a per-mode file naming the other mode is refused" || { echo "FAIL mode: I4 rc=$rc: $out"; fail=1; }
-[ "$(a770b_profile_var long KV_V)" = q8_0 ] \
-  && echo "ok   mode: I5a a770b_profile_var long KV_V defaults to kv under the display baseline" \
-  || { echo "FAIL mode: I5a a770b_profile_var long KV_V='$(a770b_profile_var long KV_V)'"; fail=1; }
+[ "$(a770b_profile_var qwen35-9b-q4km-vulkan KV_V)" = q8_0 ] \
+  && echo "ok   mode: I5a a770b_profile_var qwen35-9b-q4km-vulkan KV_V defaults to kv under the display baseline" \
+  || { echo "FAIL mode: I5a a770b_profile_var qwen35-9b-q4km-vulkan KV_V='$(a770b_profile_var qwen35-9b-q4km-vulkan KV_V)'"; fail=1; }
 out=$(bash "$here/skills/local-build/scripts/local-build.sh" status 2>&1)
 printf '%s' "$out" | grep -q '· mode display · registry ' \
   && echo "ok   mode: I8 status prints the mode and registry in display" || { echo "FAIL mode: I8 status (display): $out"; fail=1; }
 out=$( ( _iso; export A770B_CARD_MODE=inference; bash "$here/skills/local-build/scripts/local-build.sh" status ) 2>&1 )
 printf '%s' "$out" | grep -q '· mode inference · registry ' \
   && echo "ok   mode: I8 status prints the mode and registry in inference" || { echo "FAIL mode: I8 status (inference): $out"; fail=1; }
-out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile fast ) 2>&1 ); rc=$?
+out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile gemma4-8b-e4b-q4km-vulkan ) 2>&1 ); rc=$?
 { [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "worktree does not exist: /nonexistent-seat"; } \
-  && echo "ok   mode: I7b --profile fast is accepted, the run fails at the guard, naming the seat" || { echo "FAIL mode: I7b fast rc=$rc: $out"; fail=1; }
+  && echo "ok   mode: I7b --profile gemma4-8b-e4b-q4km-vulkan is accepted, the run fails at the guard, naming the seat" || { echo "FAIL mode: I7b fast rc=$rc: $out"; fail=1; }
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile nosuch ) 2>&1 )
 printf '%s' "$out" | grep -q "profile must be one of:" \
   && echo "ok   mode: I7b --profile nosuch is refused before the guard" || { echo "FAIL mode: I7b nosuch: $out"; fail=1; }
 out=$( ( _iso; export A770B_CARD_MODE=inference; bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile moe ) 2>&1 )
-printf '%s' "$out" | grep -q "profile must be one of: long serious serious-sycl (got 'moe')" \
+printf '%s' "$out" | grep -q "profile must be one of: qwen35-9b-q4km-vulkan qwen38-27b-iq3s-vulkan qwen38-27b-iq3s-sycl (got 'moe')" \
   && echo "ok   mode: I7b --profile moe is refused and the refusal names the profiles the inference registry serves" || { echo "FAIL mode: I7b moe: $out"; fail=1; }
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --fast ) 2>&1 )
 printf '%s' "$out" | grep -q "unknown arg --fast" \
@@ -562,11 +562,11 @@ grep -q 'bench_build_id\.py" "\$RAW_FILE" "\$BUILD_ID"' "$here/harness/bench_spe
 grep -q '4096' "$here/harness/bench_model.sh" && grep -q 'REASONING' "$here/harness/bench_model.sh" \
   && echo "ok   harness: bench_model's probe gate reads REASONING for its 4096 budget" \
   || { echo "FAIL harness: bench_model.sh does not read REASONING for a 4096 gate"; fail=1; }
-( _iso; export A770B_LONG_OUTPUT_TOKENS=4242 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
-  a770b_render_profile long 4096 "$t/harness-output.jsonc" nokey >/dev/null 2>&1
+( _iso; export A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS=4242 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
+  a770b_render_profile qwen35-9b-q4km-vulkan 4096 "$t/harness-output.jsonc" nokey >/dev/null 2>&1
   grep -q '"output": 4242' "$t/harness-output.jsonc"
 ) && echo "ok   harness: a770b_render_profile carries the profile's own output_tokens" \
-  || { echo "FAIL harness: a770b_render_profile did not carry A770B_LONG_OUTPUT_TOKENS=4242"; fail=1; }
+  || { echo "FAIL harness: a770b_render_profile did not carry A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS=4242"; fail=1; }
 # I9 — doctor's card: and mode: lines; a fake nvtop prints the JSON file $NVTOP_FAKE names, in 'nvtop -s' shape
 mkdir -p "$t/bin"
 cat > "$t/bin/nvtop" <<'NVEOF'
@@ -668,7 +668,7 @@ fi
 rm -f "$RUNPID"
 [ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && echo "ok   device: the builder card is pinned by PCI id by default" || { echo "FAIL device: A770B_VK_DEVICE_SELECT default is '$A770B_VK_DEVICE_SELECT'"; fail=1; }
 grep -q 'MESA_VK_DEVICE_SELECT: "${A770B_VK_DEVICE_SELECT}"' "$here/compose/a770-vulkan.yaml" && echo "ok   device: the container envelope pins the server to the selector" || { echo "FAIL device: the envelope does not pass the selector to the container"; fail=1; }
-out=$(A770B_FAST_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_LONG_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile fast serves long's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
+out=$(A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_QWEN35_9B_Q4KM_VULKAN_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile gemma4-8b-e4b-q4km-vulkan serves qwen35-9b-q4km-vulkan's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
 out=$(bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "^ok   profiles:" && echo "ok   doctor: a clean environment is not warned about" || { echo "FAIL doctor: warned on a clean environment"; fail=1; }
 # ── depth_probe.sh grades itself (item 1): the two shared-helper fixes another builder landed (commit 637c4a1) —
 # a770b_ensure_corpus_file (never a silent seat-glob fallback) and kernel_resets_since (A770B_RESET_PATTERN, not a
@@ -859,9 +859,9 @@ fi
 # a GGUF with no registry row: the dry-run paths never open the file, so this is a name inside the test's own
 # temporary directory — never a path on the machine that happens to be running the suite.
 lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run 2>&1)
-lad_seat=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad4" bash "$here/harness/ladder.sh" long --seat "$t/mine" --dry-run 2>&1)
+lad_seat=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad4" bash "$here/harness/ladder.sh" qwen35-9b-q4km-vulkan --seat "$t/mine" --dry-run 2>&1)
 lad_small=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad5" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 8192 --dry-run 2>&1); lad_small_rc=$?
-lad_flag=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad6" bash "$here/harness/ladder.sh" long --seat --fresh --dry-run 2>&1); lad_flag_rc=$?
+lad_flag=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad6" bash "$here/harness/ladder.sh" qwen35-9b-q4km-vulkan --seat --fresh --dry-run 2>&1); lad_flag_rc=$?
 if printf '%s\n' "$lad_res" | grep -q 'far_end=38976' && printf '%s\n' "$lad_res" | grep -q 'ctx_sweep.sh --bench' \
   && printf '%s\n' "$lad_res" | grep -q 'depth_probe.sh 38976 --bench' \
   && printf '%s\n' "$lad_res" | grep -q -- 'kit-seat --fresh' && ! printf '%s\n' "$lad_seat" | grep -q -- '--fresh' \
@@ -873,7 +873,7 @@ fi
 kill "$tok_pid" 2>/dev/null; wait "$tok_pid" 2>/dev/null
 
 # ── harness/ladder.sh (item 2): the one command that produces a row — --dry-run prints all six rungs and writes nothing
-lad_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data" bash "$here/harness/ladder.sh" long --dry-run 2>&1)
+lad_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data" bash "$here/harness/ladder.sh" qwen35-9b-q4km-vulkan --dry-run 2>&1)
 if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | grep -q 'bench_model.sh' \
   && printf '%s\n' "$lad_out" | grep -q 'bench_speed.sh' && printf '%s\n' "$lad_out" | grep -q 'ctx_sweep.sh' \
   && printf '%s\n' "$lad_out" | grep -q 'depth_probe.sh' && printf '%s\n' "$lad_out" | grep -q 'run_suite.sh' \
@@ -905,7 +905,7 @@ if printf '%s\n' "$rs_model_out" | grep -q "ephemeral profile 'candidate'" && pr
 then echo "ok   run_suite: --model/--ctx builds an ephemeral 'candidate' profile and drives every stage with it, with no registry row"
 else echo "FAIL run_suite: --model/--ctx did not build the candidate profile as expected"; printf '%s\n' "$rs_model_out"; fail=1
 fi
-rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-combo-data" bash "$here/harness/run_suite.sh" long --model "$t/no-row-model.gguf" --ctx 8192 --dry-run 2>&1); rs_combo_rc=$?
+rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-combo-data" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan --model "$t/no-row-model.gguf" --ctx 8192 --dry-run 2>&1); rs_combo_rc=$?
 if [ "$rs_combo_rc" = 2 ] && printf '%s\n' "$rs_combo_out" | grep -q 'mutually exclusive'
 then echo "ok   run_suite: a registry profile name together with --model is refused (mutually exclusive)"
 else echo "FAIL run_suite: the profile-name + --model combination was not refused (rc=$rs_combo_rc)"; printf '%s\n' "$rs_combo_out"; fail=1
@@ -986,14 +986,14 @@ fi
 # vulkan file (which would answer /health and write backend=sycl to the sidecar — a silent wrong-backend serve)
 printf 'dummy\n' > "$cb/models/Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf"
 : > "$cb/docker.log"
-cb_sycl=$( _iso; cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve serious-sycl 2>&1 )
+cb_sycl=$( _iso; cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve qwen38-27b-iq3s-sycl 2>&1 )
 if grep -q 'a770-sycl.yaml' "$cb/docker.log" && ! grep -q 'a770-vulkan.yaml' "$cb/docker.log"
 then echo "ok   compose: a sycl row selects the SYCL envelope from its backend, not the default vulkan file"
 else echo "FAIL compose: a sycl row did not select the SYCL envelope"; printf '%s\n' "$cb_sycl" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
 fi
 : > "$cb/docker.log"
 rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid"   # a cold start, not a reload from the sycl row above
-cb_vk=$( _iso; cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve long 2>&1 )
+cb_vk=$( _iso; cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve qwen35-9b-q4km-vulkan 2>&1 )
 if grep -q 'a770-vulkan.yaml' "$cb/docker.log" && ! grep -q 'a770-sycl.yaml' "$cb/docker.log"
 then echo "ok   compose: a vulkan row selects the vulkan envelope from its backend"
 else echo "FAIL compose: a vulkan row did not select the vulkan envelope"; printf '%s\n' "$cb_vk" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
@@ -1001,13 +1001,13 @@ fi
 # the host serve path was removed: A770B_SERVE=host is refused, never served
 cb_host=$( _iso; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
   A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_SERVE=host \
-  bash "$here/skills/local-build/scripts/local-build.sh" serve serious-sycl 2>&1 )
+  bash "$here/skills/local-build/scripts/local-build.sh" serve qwen38-27b-iq3s-sycl 2>&1 )
 if printf '%s' "$cb_host" | grep -q "A770B_SERVE must be compose"; then
   echo "ok   compose: the host serve path is refused — serving is container-only"
 else echo "FAIL compose: the host serve path was not refused"; printf '%s\n' "$cb_host" | tail -5; fail=1
 fi
 # an unknown backend must be refused, never defaulted onto the Vulkan envelope
-cb_unk=$( _iso; A770B_SERIOUS_SYCL_BACKEND=cuda cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve serious-sycl 2>&1 )
+cb_unk=$( _iso; A770B_QWEN38_27B_IQ3S_SYCL_BACKEND=cuda cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve qwen38-27b-iq3s-sycl 2>&1 )
 if printf '%s' "$cb_unk" | grep -q "backend 'cuda' is not one this harness serves"; then
   echo "ok   compose: an unknown backend is refused, not defaulted"
 else echo "FAIL compose: an unknown backend was not refused"; printf '%s\n' "$cb_unk" | tail -5; fail=1

@@ -23,7 +23,7 @@ RECORD = {
     "backend": "vulkan",
     "mode": "inference",
     "model": "Qwen3.5-9B-Q4_K_M.gguf",
-    "profile": "long",
+    "profile": "qwen35-9b-q4km-vulkan",
     "pid": 12345,
 }
 

@@ -75,7 +75,7 @@ def pick(cmds, needle, avoid=()):
             return c.split("#")[0].strip()
     return None
 
-run_cmd = pick(cmd_lines, "run <brief.md> --profile long", avoid=("--spec",))
+run_cmd = pick(cmd_lines, "run <brief.md> --profile qwen35-9b-q4km-vulkan", avoid=("--spec",))
 verify_cmd = pick(cmd_lines, "verify <label>")
 serve_cmd = pick(cmd_lines, "serve <profile>")
 

@@ -2,7 +2,7 @@
 """Tests for `harness/profiles.py menu` — ready / also / the cold full slice.
 
 A tiny registry in tmp_path that `check` accepts: the shipped display file plus a
-second row `long-sycl` (same GGUF, different backend) and a `b580` row that must
+second row `qwen35-9b-q4km-sycl` (same GGUF, different backend) and a `b580` row that must
 not appear in ready or also when the sidecar's card is a770. A sidecar and a
 pidfile name a live sleep process (teardown kills it). Never llama-server, never
 the network, never the card.
@@ -42,17 +42,17 @@ def write_json(path: Path, data) -> Path:
 
 
 def menu_registry(tmp_path: Path) -> tuple[Path, dict]:
-    """A check-accepted registry with long-sycl (same model) and a b580 row."""
+    """A check-accepted registry with qwen35-9b-q4km-sycl (same model) and a b580 row."""
     data = load_base()
-    long_sycl = copy.deepcopy(data["profiles"]["long"])
+    long_sycl = copy.deepcopy(data["profiles"]["qwen35-9b-q4km-vulkan"])
     long_sycl["backend"] = "sycl"
     long_sycl["ctx"] = SYCL_CTX
     long_sycl["useful_ctx"] = SYCL_USEFUL_CTX
     long_sycl["speed"]["decode_tps"]["8k"] = SYCL_DECODE_8K
     long_sycl["use_for"] = SYCL_USE_FOR
-    data["profiles"]["long-sycl"] = long_sycl
+    data["profiles"]["qwen35-9b-q4km-sycl"] = long_sycl
 
-    other = copy.deepcopy(data["profiles"]["long"])
+    other = copy.deepcopy(data["profiles"]["qwen35-9b-q4km-vulkan"])
     other["card"] = "b580"
     other["category"] = "moe"
     other["weight_class"] = "4b"
@@ -85,7 +85,7 @@ def write_sidecar(path: Path, pid: int, **overrides) -> dict:
         "backend": "vulkan",
         "mode": "display",
         "model": SYCL_MODEL,
-        "profile": "long",
+        "profile": "qwen35-9b-q4km-vulkan",
         "pid": pid,
     }
     record.update(overrides)
@@ -111,8 +111,8 @@ def test_menu_no_sidecar_is_cold_full_slice(tmp_path):
     assert payload["ready"] == []
     assert payload["also"] == []
     names = [row["name"] for row in payload["slice"]]
-    assert "long" in names
-    assert "long-sycl" in names
+    assert "qwen35-9b-q4km-vulkan" in names
+    assert "qwen35-9b-q4km-sycl" in names
     assert names == list(data["profiles"].keys())
     for row in payload["slice"]:
         assert set(row) == {
@@ -138,30 +138,30 @@ def test_menu_live_vulkan_ready_and_sycl_also(tmp_path, live_pid):
     assert payload["live"] == live
     ready_names = [row["name"] for row in payload["ready"]]
     also_names = [row["name"] for row in payload["also"]]
-    assert "long" in ready_names
-    assert "long-sycl" not in ready_names
-    assert "long-sycl" in also_names
-    assert "long" not in also_names
+    assert "qwen35-9b-q4km-vulkan" in ready_names
+    assert "qwen35-9b-q4km-sycl" not in ready_names
+    assert "qwen35-9b-q4km-sycl" in also_names
+    assert "qwen35-9b-q4km-vulkan" not in also_names
     assert "slice" not in payload
 
     also0 = payload["also"][0]
-    model = data["profiles"]["long-sycl"]["model"]
-    assert also0["name"] == "long-sycl"
+    model = data["profiles"]["qwen35-9b-q4km-sycl"]["model"]
+    assert also0["name"] == "qwen35-9b-q4km-sycl"
     assert also0["reload"] == f"reload: stop the live backend, start sycl, load {model}"
     assert also0["deltas"]["ctx"] == {
-        "ready": data["profiles"]["long"]["ctx"],
+        "ready": data["profiles"]["qwen35-9b-q4km-vulkan"]["ctx"],
         "also": SYCL_CTX,
     }
     assert also0["deltas"]["useful_ctx"] == {
-        "ready": data["profiles"]["long"]["useful_ctx"],
+        "ready": data["profiles"]["qwen35-9b-q4km-vulkan"]["useful_ctx"],
         "also": SYCL_USEFUL_CTX,
     }
     assert also0["deltas"]["decode_tps_8k"] == {
-        "ready": data["profiles"]["long"]["speed"]["decode_tps"]["8k"],
+        "ready": data["profiles"]["qwen35-9b-q4km-vulkan"]["speed"]["decode_tps"]["8k"],
         "also": SYCL_DECODE_8K,
     }
     assert also0["deltas"]["use_for"] == {
-        "ready": data["profiles"]["long"]["use_for"],
+        "ready": data["profiles"]["qwen35-9b-q4km-vulkan"]["use_for"],
         "also": SYCL_USE_FOR,
     }
 
@@ -190,13 +190,13 @@ def test_menu_dead_pid_is_cold(tmp_path):
     assert payload["ready"] == []
     assert payload["also"] == []
     names = [row["name"] for row in payload["slice"]]
-    assert "long" in names
-    assert "long-sycl" in names
+    assert "qwen35-9b-q4km-vulkan" in names
+    assert "qwen35-9b-q4km-sycl" in names
 
 
 def test_menu_deltas_absent_when_gguf_filename_differs(tmp_path, live_pid):
     path, data = menu_registry(tmp_path)
-    data["profiles"]["long-sycl"]["model"] = "other-model.gguf"
+    data["profiles"]["qwen35-9b-q4km-sycl"]["model"] = "other-model.gguf"
     write_json(path, data)
     sidecar = tmp_path / "live-backend.json"
     pidfile = tmp_path / "llamacpp-a770.pid"
@@ -209,8 +209,8 @@ def test_menu_deltas_absent_when_gguf_filename_differs(tmp_path, live_pid):
     )
     payload = parse(result)
     also_names = [row["name"] for row in payload["also"]]
-    assert "long-sycl" in also_names
-    also0 = next(row for row in payload["also"] if row["name"] == "long-sycl")
+    assert "qwen35-9b-q4km-sycl" in also_names
+    also0 = next(row for row in payload["also"] if row["name"] == "qwen35-9b-q4km-sycl")
     assert "deltas" not in also0
     assert also0["reload"] == "reload: stop the live backend, start sycl, load other-model.gguf"
 
@@ -235,7 +235,7 @@ def test_menu_other_card_is_in_neither_list(tmp_path, live_pid):
 
 def test_menu_file_that_fails_check_exits_2(tmp_path):
     data = load_base()
-    del data["profiles"]["long"]["kv"]
+    del data["profiles"]["qwen35-9b-q4km-vulkan"]["kv"]
     path = write_json(tmp_path / "bad.json", data)
     result = run("menu", "--file", str(path))
     assert result.returncode == 2
@@ -249,14 +249,14 @@ def test_menu_file_that_fails_check_exits_2(tmp_path):
 def test_menu_cold_with_operator_override(tmp_path):
     """A cold registry with one override row reports presented_due_to and override."""
     path, data = menu_registry(tmp_path)
-    data["profiles"]["long"]["operator_override"] = True
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["operator_override"] = True
     write_json(path, data)
 
     result = run("menu", "--file", str(path))
     payload = parse(result)
     assert payload["state"] == "cold"
     assert payload["presented_due_to"] == "operator_override"
-    assert payload["override"] == ["long"]
+    assert payload["override"] == ["qwen35-9b-q4km-vulkan"]
 
 
 def test_menu_cold_no_override_keys_absent(tmp_path):

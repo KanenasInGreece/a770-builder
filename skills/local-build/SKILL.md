@@ -1,6 +1,6 @@
 ---
 name: local-build
-description: A harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles with packaged tests anyone can run on their own model, and presents the result to an LLM orchestrator as a skill it calls. The shipped models are this project's own picks, measured so far on that one card; the harness reaches its GPU through a handful of named settings rather than anything card-specific. Dispatch a coding task to the LOCAL builder model (llama.cpp Vulkan, opencode seat) instead of an online LLM seat. Two card modes, each with its registry of profiles: display-safe (long = Qwen3.5-9B, fast = Gemma 4 E4B, serious = Qwen3.8-27B) and pure-inference (the same card with nothing else on it: long at its whole window, serious at a larger window); the flag is --profile <name>. Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout. Developed and tested on a 16 GB Intel Arc A770.
+description: A harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles with packaged tests anyone can run on their own model, and presents the result to an LLM orchestrator as a skill it calls. Serving is container-only (one compose envelope per backend: vulkan or sycl). A profile key is a card identity — family, weight, quant, backend — never a window name; two card modes (display-safe, pure-inference) each read their own registry, and there is no default: run/serve take an explicit --profile <card>. Use for bounded, well-specified work the calling agent chooses to delegate: a small change to named files, tests from a specification, the read of a file its own window cannot hold; and as the fallback when online seats are down or rate-limited. Always in a standalone clone of the target repository, never in a live checkout. Developed and tested on a 16 GB Intel Arc A770.
 ---
 
 # local-build — the A770 builder seat
@@ -25,9 +25,9 @@ Display-safe (the default): the card also draws the desktop, cap 13 GiB after lo
 <!-- profiles:begin -->
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| fast | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| serious | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| gemma4-8b-e4b-q4km-vulkan | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| qwen38-27b-iq3xxs-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 <!-- profiles:end -->
 
 Pure-inference: the card draws nothing, cap 15.3 GiB after load.
@@ -35,15 +35,15 @@ Pure-inference: the card draws nothing, cap 15.3 GiB after load.
 <!-- profiles-inference:begin -->
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| long | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
-| serious | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
-| serious-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358.35 tok/s | The faster sibling of serious: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder. |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
+| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+| qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358.35 tok/s | The faster sibling of qwen38-27b-iq3s-vulkan: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder. |
 <!-- profiles-inference:end -->
 
 The profiles are configuration, not fixed: `status` shows the mode and the registry actually configured on this
 machine, and the project's `config/models.md` is the ledger of every model qualified on this card with its numbers; a
 new model enters through `docs/OPERATING.md`, *Qualifying a new model*. Every file the model reads lands in that
-window, and prefill is what you pay for: a 17k-token read costs the long profile 37 s and the serious profile 4 min.
+window, and prefill is what you pay for: a 17k-token read costs the 9B card 37 s and the 27B card 4 min.
 Point briefs at files, not directories. (The seat's `AGENTS.md` is set aside for the run and restored after; the
 skill does that.)
 
@@ -56,7 +56,7 @@ tokens a second by the two measured points, so a window is a capacity, not a pro
 `speed` (decode and prefill) at 8k and at the far end of the window, set against the time you can spend; `fit`, three
 short strings — `code`, `think`, `write` — each with its source, saying how the row measured on the axis the brief
 needs; `sampling`, the model's own recommended line for the role, already served -- where a row carries one at all:
-the display registry's `long` and `fast` rows have none, measured at the client's default temperature (0) before this
+the display registry's `qwen35-9b-q4km-vulkan` and `gemma4-8b-e4b-q4km-vulkan` rows have none, measured at the client's default temperature (0) before this
 registry carried a sampling line, and their own `use_for` says so; and `builder_class`, whether the row's task
 test passed (a green task — the useful window and speed are recorded, not gates). Match these against the brief's edit scope (a change to
 the files named, several files touched at once, tests written from a specification) and the token size of the files it
@@ -72,10 +72,10 @@ good at; a brief that needs more than the strongest card covers should not go to
 # 1. the seat: a STANDALONE CLONE of the target repository (its own .git directory), never a live checkout or a
 #    linked worktree — the script refuses both. Default: A770B_SEAT (~/local-ai/seat).
 # 2. a brief: a Markdown file that names the files, the exact test command, and the stop condition
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile serious-sycl        # the profile you chose, on the default seat
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile long --spec <spec.json>   # with a run specification (below)
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --profile fast        # fast, on a given seat: the reader
-bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile serious            # serious: a deliverable larger than its brief
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile qwen38-27b-iq3s-sycl   # the card you chose, on the default seat
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile qwen35-9b-q4km-vulkan --spec <spec.json>   # with a run specification (below)
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <seat> <brief.md> --profile gemma4-8b-e4b-q4km-vulkan   # the reader, on a given seat
+bash ~/.claude/skills/local-build/scripts/local-build.sh run <brief.md> --profile qwen38-27b-iq3xxs-vulkan   # a deliverable larger than its brief
 bash ~/.claude/skills/local-build/scripts/local-build.sh verify <label>                       # re-run a capture's tests in a fresh sandbox
 bash ~/.claude/skills/local-build/scripts/local-build.sh serve <profile>      # start/switch the server only
 bash ~/.claude/skills/local-build/scripts/local-build.sh profiles [--name <profile>]   # the card, one profile or all, with what is actually served
@@ -101,7 +101,7 @@ capture decides. A cheap reviewer prompt for it lives at `~/local-ai/A770_Builde
 The brief is prose. Beside it you may pass `--spec <spec.json>`, every key optional:
 
 ```json
-{ "profile": "long", "timeout": 1500,
+{ "profile": "qwen35-9b-q4km-vulkan", "timeout": 1500,
   "card": "Local_Documentation/BUILDER_CARD.md",
   "scope": { "edit": ["src/foo.py", "tests/test_foo.py"] },
   "bash_allow": ["make check"],
@@ -129,9 +129,9 @@ an echo of what was rendered as `<label>.echo.json`. A flag on the command line 
 - **Seat only, inside the sandbox.** The seat must be a standalone clone not listed in `A770B_REFUSE`. The model's
   process sees the seat, a private home and a read-only uv cache; no credentials, no other tree, no network except the
   model server. Every test package a brief needs must be pre-warmed into the uv cache (`harness/warm_cache.sh`).
-- **Timeouts** are the registry's: each profile's `timeout_s` (1,500 s for long and fast, 3,600 s for serious);
+- **Timeouts** are the registry's: each profile's `timeout_s` (1,500 s for the 9B and E4B cards, 3,600 s for the 27B cards);
   `--timeout` overrides.
-- **Flash attention is per model family.** The Qwen profiles run with it on; the fast profile's Gemma runs with it off,
+- **Flash attention is per model family.** The Qwen profiles run with it on; the gemma4-8b-e4b-q4km-vulkan card's Gemma runs with it off,
   because with it on every Gemma 4 measured here collapsed on prefill and reset the GPU. The profile carries the flag.
 
 ## Brief shape that works (measured)

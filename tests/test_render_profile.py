@@ -632,7 +632,7 @@ def test_profile_key_checks_against_registry_union_without_env(tmp_path):
     env = dict(os.environ)
     env.pop("A770B_PROFILES", None)
 
-    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "fast"})
+    spec_ok = write_spec(tmp_path / "spec_ok.json", {"profile": "gemma4-8b-e4b-q4km-vulkan"})
     result_ok = subprocess.run(
         [sys.executable, str(RENDERER), "check", "--spec", str(spec_ok), "--seat", str(seat)],
         capture_output=True, text=True, env=env,
@@ -645,7 +645,7 @@ def test_profile_key_checks_against_registry_union_without_env(tmp_path):
         capture_output=True, text=True, env=env,
     )
     assert result_bad.returncode == 2
-    assert "must be one of fast, long, serious" in result_bad.stderr
+    assert "must be one of gemma4-8b-e4b-q4km-vulkan, qwen35-9b-q4km-vulkan, qwen38-27b-iq3s-sycl, qwen38-27b-iq3s-vulkan, qwen38-27b-iq3xxs-vulkan" in result_bad.stderr
 
 
 def test_profile_key_checks_against_a770b_profiles_env(tmp_path):
@@ -663,7 +663,7 @@ def test_profile_key_checks_against_a770b_profiles_env(tmp_path):
     )
     assert result_ok.returncode == 0, result_ok.stderr
 
-    spec_bad = write_spec(tmp_path / "spec_bad.json", {"profile": "fast"})
+    spec_bad = write_spec(tmp_path / "spec_bad.json", {"profile": "gemma4-8b-e4b-q4km-vulkan"})
     result_bad = subprocess.run(
         [sys.executable, str(RENDERER), "check", "--spec", str(spec_bad), "--seat", str(seat)],
         capture_output=True, text=True, env=env,
