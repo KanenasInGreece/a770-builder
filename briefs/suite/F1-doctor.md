@@ -7,8 +7,8 @@ You are in a standalone clone of a770-builder at its current main. The task is e
 ## Why
 
 A stranger installing this repository on another Linux machine needs to know, before the first run, what their system
-lacks; and a `builder.env` written for an earlier release can name `A770B_FAST_*` or `A770B_LONG_*` for the other
-profile's file, which the environment-wins rule turns into a silent inversion. Both are checks, not prose.
+lacks; and a `builder.env` written for an earlier release can name one card's `A770B_<CARD>_*` variables for the other
+card's file, which the environment-wins rule turns into a silent inversion. Both are checks, not prose.
 
 ## The files
 

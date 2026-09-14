@@ -14,7 +14,7 @@ PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a 
 a770b_is_profile "$PROFILE" || { echo "⛔ PROFILE must be one of: $A770B_PROFILES" >&2; exit 2; }
 CTX=$(a770b_profile_var "$PROFILE" CTX)
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"
-curl -sf --max-time 5 -H "Authorization: Bearer $(a770b_api_key)" "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve fast|serious)" >&2; exit 3; }
+curl -sf --max-time 5 -H "Authorization: Bearer $(a770b_api_key)" "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve <card>)" >&2; exit 3; }
 # render the profile config (server URL, key, window, output limit)
 CFG="$A770B_DATA/logs/opencode.$PROFILE.jsonc"
 export A770B_RENDER_SEAT="$WT"; a770b_render_profile "$PROFILE" "$CTX" "$CFG" || exit 2

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The profiles registry: validate, export, inspect and render `config/profiles.json`.
 
-`config/profiles.json` is the single source of truth for the three seat profiles (fast,
-long, serious). This tool: validates the file (`check`); prints the shell defaults the
+`config/profiles.json` is the single source of truth for the seat's display-mode profiles
+(one row per card identity). This tool: validates the file (`check`); prints the shell defaults the
 harness `eval`s (`env`); prints the file as JSON, optionally with what is actually served
 (`card`); prints ready / also / the cold full slice a caller can pick a row from (`menu`);
 and regenerates the profile table in the skill and the one-line snippet from the

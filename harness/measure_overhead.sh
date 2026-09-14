@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # measure_overhead.sh — how many prompt tokens does opencode's FIRST request cost on this repo, per configuration?
-# Reads the llama-server log's prompt eval line for the request. Server must be up (local-build.sh serve fast).
+# Reads the llama-server log's prompt eval line for the request. Server must be up (local-build.sh serve <card>).
 # TESTING ONLY: opencode runs unconfined here with the rendered profile, on the seat, to measure the request — not to build.
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 set -uo pipefail

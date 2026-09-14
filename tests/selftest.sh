@@ -478,7 +478,7 @@ python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles
 pv_ctx=$(a770b_profile_var qwen35-9b-q4km-vulkan CTX); pv_extra=$(a770b_profile_var qwen38-27b-iq3xxs-vulkan EXTRA); pv_effort=$(a770b_profile_var qwen38-27b-iq3xxs-vulkan THINKING_EFFORT)
 { [ "$pv_ctx" = "262144" ] && printf '%s' "$pv_extra" | grep -q -- '--top-k' && [ "$pv_effort" = "low" ]; } \
   && echo "ok   profiles: the helper reads the registry's variables" \
-  || { echo "FAIL profiles: a770b_profile_var read long CTX='$pv_ctx' (want 262144), serious EXTRA='$pv_extra' (want a --top-k in it), serious THINKING_EFFORT='$pv_effort' (want low)"; fail=1; }
+  || { echo "FAIL profiles: a770b_profile_var read qwen35-9b-q4km-vulkan CTX='$pv_ctx' (want 262144), qwen38-27b-iq3xxs-vulkan EXTRA='$pv_extra' (want a --top-k in it), qwen38-27b-iq3xxs-vulkan THINKING_EFFORT='$pv_effort' (want low)"; fail=1; }
 [ "$( (export A770B_QWEN35_9B_Q4KM_VULKAN_CTX=4096; . "$here/harness/env.sh" >/dev/null 2>&1; a770b_profile_var qwen35-9b-q4km-vulkan CTX) )" = "4096" ] && echo "ok   profiles: the environment wins over the registry" || { echo "FAIL profiles: A770B_QWEN35_9B_Q4KM_VULKAN_CTX=4096 did not win over the registry default"; fail=1; }
 # ── the card mode (I1-I4, I5a, I7b, I8-I10): a temporary registry/override tree under $t so nothing here reads the
 #    machine's own ~/.config/a770-builder/builder(.<mode>).env; every check that switches the mode, the registry file

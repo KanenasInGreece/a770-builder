@@ -79,9 +79,9 @@ what is actually configured on this machine for the mode it is running in, `--se
 Numbers in the tables below are properties of this card, build and quantisation, not of the models in general,
 measured with llama.cpp b10805 and the Vulkan backend, on the qualification task.
 
-A `builder.env` written for a release before the registry may name `A770B_FAST_*` or `A770B_LONG_*` for the other
-profile's file: the environment wins over the registry, so such a file inverts the gemma4-8b-e4b-q4km-vulkan and qwen35-9b-q4km-vulkan rows silently. `local-build.sh
-doctor` reports it, and `local-build.sh profiles` shows what is actually served beside what the registry says.
+A `builder.env` (or the environment) that names one card's `A770B_<CARD>_MODEL` as another card's file inverts the two
+cards silently — the environment wins over the registry. `local-build.sh doctor` reports it, and `local-build.sh
+profiles` shows what is actually served beside what the registry says.
 
 **Display-safe** (the default): measured on this A770 (16 GB, also driving the desktop).
 
@@ -277,14 +277,14 @@ uvx --from huggingface_hub hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen
 
 llama.cpp can also fetch a model itself: `llama-server -hf lmstudio-community/Qwen3.5-9B-GGUF:Q4_K_M` downloads into
 `~/.cache/llama.cpp/` and serves it. The harness starts the server with `-m <file>`, so if you go that way set
-`A770B_FAST_MODEL` (or `A770B_SERIOUS_MODEL`) to the absolute path of the cached file rather than moving it.
+the card's `A770B_<CARD>_MODEL` (e.g. `A770B_QWEN35_9B_Q4KM_VULKAN_MODEL`) to the absolute path of the cached file rather than moving it.
 
 ## Models — where to put them, how the skill reaches them
 
 1. Put the GGUFs in `A770B_MODELS` (default `~/LLM/tested`); keep a README there saying why each earned its place.
-2. Name the profiles' files: `A770B_FAST_MODEL`, `A770B_SERIOUS_MODEL`, `A770B_LONG_MODEL` (bare name = looked up in `A770B_MODELS`;
-   absolute paths work). Set the context and KV type per profile (`A770B_*_CTX`, `A770B_*_KV`); reasoning models take
-   `A770B_*_REASONING=on` plus their template kwargs in `A770B_*_EXTRA`.
+2. Name the profiles' files with each card's stem, `A770B_<CARD>_MODEL` (e.g. `A770B_QWEN35_9B_Q4KM_VULKAN_MODEL`): a bare
+   name is looked up in `A770B_MODELS`, an absolute path works. Set the context and KV type per card (`A770B_<CARD>_CTX`,
+   `A770B_<CARD>_KV`); reasoning models take `A770B_<CARD>_REASONING=on` plus their sampling line in `A770B_<CARD>_EXTRA`.
 3. The llama-server process on the host reads the weights and answers on `A770B_HOST:A770B_PORT` under the alias
    `local-builder`. The model's own process runs inside the sandbox and never sees `A770B_MODELS`; it only talks to the
    server over the bridge. So the weights can live anywhere the server can read, including a read-only share.

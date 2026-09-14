@@ -2,7 +2,8 @@
 # run_one.sh — one matrix row, unattended: probes → T1 coding task through opencode → capture. TESTING ONLY.
 #   bash $A770B_DATA/A770_Builder/harness/run_one.sh <label> <gguf> <ctx> [extra llama-server args…]
 # Env knobs: KV_K KV_V UBATCH VRAM_CAP_GIB (server), AGENTS_ASIDE=1 (set the repo's 25k-token AGENTS.md aside for the
-# opencode run and restore it after), LEAN_AGENT=1 (opencode --agent local-builder), BUILD_TIMEOUT (s, default 1500).
+# opencode run and restore it after), LEAN_AGENT=1 (opencode --agent local-builder), BUILD_TIMEOUT (s, default 1500),
+# PROFILE (required: a card name from A770B_PROFILES; there is no default).
 # Leaves the server running for follow-up probes; the worktree is reset by capture_task.sh.
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 set -uo pipefail
@@ -16,7 +17,7 @@ if ! bash "$A770B_PROJECT/harness/bench_model.sh" "$LABEL" "$GGUF" "$CTX" "$@"; 
 python3 -c "import json,sys; r=json.load(open('$R/$LABEL.json')); sys.exit(0 if r.get('quality_ok') else 1)" || { echo "✗ quality gate failed for $LABEL — no coding task"; exit 1; }
 # coding task
 [ "${AGENTS_ASIDE:-1}" = 1 ] && [ -f "$WT/AGENTS.md" ] && mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"
-export LOCAL_TIMEOUT="${BUILD_TIMEOUT:-1500}" PROFILE="${PROFILE:-fast}"
+export LOCAL_TIMEOUT="${BUILD_TIMEOUT:-1500}"; PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a card name from A770B_PROFILES}"
 if [ "${LEAN_AGENT:-1}" = 1 ]; then export LOCAL_AGENT=local-builder; fi
 t0=$(date +%s)
 bash "$A770B_PROJECT/harness/build_local.sh" "$WT" "$A770B_TASK_BRIEF" 2>&1 | grep -vE '^\s*$' | tail -12 | cut -c1-240
