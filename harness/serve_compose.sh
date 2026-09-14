@@ -57,6 +57,12 @@ _container_host_pid(){
 case "${1:-}" in
   stop)
     _compose down >/dev/null 2>&1 || true
+    # a live llama-server named by the pidfile that is not this project's container is a host server from
+    # before container-only serving; removing the pidfile would orphan it, so keep it and say so
+    if pid=$(llama_pid_alive "$PIDFILE"); then
+      echo "⛔ the pidfile names a live llama-server (pid $pid) that is not a container of $A770B_COMPOSE_PROJECT — a host server from before container-only serving; it still holds the card. Stop it yourself (kill $pid), then remove $PIDFILE" >&2
+      exit 3
+    fi
     rm -f "$PIDFILE" "$MARK" "$SIDECAR"
     if compose_project_running; then echo "⛔ the container is still running after down — the card is NOT free; check the docker daemon" >&2; exit 3; fi
     echo "stopped (compose project $A770B_COMPOSE_PROJECT)"
