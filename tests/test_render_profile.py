@@ -27,7 +27,7 @@ COMMON_ARGS = [
     "--apikey", "k-test",
     "--ctx", "81920",
     "--output", "4096",
-    "--name", "fast",
+    "--name", "test-agent",
 ]
 
 
@@ -102,7 +102,7 @@ def test_matches_plain_substitution(tmp_path):
         .replace("__APIKEY__", "k-test")
         .replace("__CTX__", "81920")
         .replace("__OUTPUT__", "4096")
-        .replace("__NAME__", "fast")
+        .replace("__NAME__", "test-agent")
         .replace("__PROMPT__", json.dumps(DEFAULT)[1:-1])
         .replace("__EDIT_RULES__", '"*": "allow"')
         .replace("__BASH_ALLOW__", "")
