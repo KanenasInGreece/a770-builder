@@ -54,7 +54,7 @@ check_update(){ local url latest pv
 }
 case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
-. "$A770B_PROJECT/harness/env.sh"; . "$A770B_PROJECT/harness/guard.sh"
+. "$A770B_PROJECT/harness/env.sh" || exit 2; . "$A770B_PROJECT/harness/guard.sh"
 SERVE="${SERVE:-${A770B_SERVE_SCRIPT:?the project at $A770B_PROJECT has no A770B_SERVE_SCRIPT in its env.sh — that checkout predates A770B_SERVE; run this copy from its own checkout or set A770B_PROJECT to it}}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }

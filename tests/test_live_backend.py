@@ -16,7 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_BACKEND_PY = ROOT / "harness" / "live_backend.py"
-SERVE_SH = ROOT / "harness" / "serve_a770_llamacpp.sh"
+SERVE_SH = ROOT / "harness" / "serve_compose.sh"
 
 RECORD = {
     "card": "a770",

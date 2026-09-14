@@ -200,21 +200,28 @@ def test_doctor_labels_an_overridden_knob_as_the_users_own():
     assert "this project's default" not in lines[0]
 
 
-# ── A770B_SERVE: host (default) or compose ───────────────────────────────────────────────────────────────────
+# ── A770B_SERVE: compose only ───────────────────────────────────────────────────────────────────────────────
 
 
-def test_env_sh_defaults_serve_to_host(tmp_path):
+def test_env_sh_defaults_serve_to_compose(tmp_path):
     env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_SERVE="")
     r = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_SERVE"', env=env)
     assert r.returncode == 0, r.stderr
-    assert r.stdout == "host"
+    assert r.stdout == "compose"
 
 
 def test_env_sh_refuses_an_unknown_serve_value(tmp_path):
     env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_SERVE="bogus")
     r = run_bash(f'set -e; . "{ENV_SH}"', env=env)
     assert r.returncode != 0
-    assert "A770B_SERVE must be host or compose" in r.stderr
+    assert "A770B_SERVE must be compose" in r.stderr
+
+
+def test_env_sh_refuses_host(tmp_path):
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_SERVE="host")
+    r = run_bash(f'set -e; . "{ENV_SH}"', env=env)
+    assert r.returncode != 0
+    assert "A770B_SERVE must be compose" in r.stderr
 
 
 def test_env_sh_selects_the_compose_serve_script(tmp_path):
@@ -262,7 +269,7 @@ def test_doctor_compose_flags_a_missing_env_file(tmp_path):
 
 def test_doctor_flags_missing_when_the_a770_defaults_are_in_force_on_a_non_matching_card(tmp_path):
     # fake nvtop (no device names it as DG2) and a fake llama-server whose --list-devices pins nothing:
-    # both A770B_GPU_MATCH and A770B_VK_DEVICE_SELECT are left at this project's default, so doctor must say so.
+    # in compose mode, A770B_GPU_MATCH is checked but VK_DEVICE_SELECT check is host-only and skipped.
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _make_bin(bin_dir, "nvtop", 'printf \'[{"device_name": "NotTheA770", "mem_total": 8000000000, "mem_used": 100, "mem_free": 7999999900}]\'')
@@ -271,9 +278,11 @@ def test_doctor_flags_missing_when_the_a770_defaults_are_in_force_on_a_non_match
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     r = _run_doctor(env)
     out = r.stdout
+    # in compose mode: GPU_MATCH is checked (will be MISSING), but VK_DEVICE_SELECT check is skipped
     assert any(
         ln.startswith("MISSING input A770B_GPU_MATCH=DG2") for ln in out.splitlines()
     ), out
-    assert any(
+    # VK_DEVICE_SELECT check is host-only, so it should NOT appear as MISSING in compose mode
+    assert not any(
         ln.startswith("MISSING input A770B_VK_DEVICE_SELECT=8086:56a0!") for ln in out.splitlines()
     ), out
