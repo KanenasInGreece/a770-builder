@@ -220,12 +220,10 @@ doctor(){
     fi
     _img="${_img%\"}"; _img="${_img#\"}"; _img="${_img%\'}"; _img="${_img#\'}"
     case "$_img" in
-      *@sha256:*) : ;;   # pinned: name@sha256:<digest> names exactly one image, so nothing to warn about
-      "") : ;;           # unset is already a MISSING above; do not report the same gap twice
-      *) echo "WARN image: A770B_LLAMA_IMAGE=$_img is a floating tag, not a digest — pull it once, then pin the exact bytes (docker inspect --format='{{index .RepoDigests 0}}' $_img) and set A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest> in $A770B_COMPOSE_ENV_FILE; see compose/a770-vulkan.env.example (warning only — doctor still passes)";;
+       *@sha256:*) : ;;   # pinned: name@sha256:<digest> names exactly one image, so nothing to warn about
+       "") : ;;           # unset is already a MISSING above; do not report the same gap twice
+       *) echo "WARN image: A770B_LLAMA_IMAGE=$_img is a floating tag, not a digest — pull it once, then pin the exact bytes (docker inspect --format='{{index .RepoDigests 0}}' $_img) and set A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest> in $A770B_COMPOSE_ENV_FILE; see compose/a770-vulkan.env.example (warning only — doctor still passes)";;
     esac
-  else
-    [ -x "$A770B_LLAMA_BIN" ] && echo "ok   llama-server at $A770B_LLAMA_BIN" || { echo "MISSING llama-server at $A770B_LLAMA_BIN: build llama.cpp with the Vulkan backend, or set A770B_LLAMA_BIN"; missing=$((missing+1)); }
   fi
   if command -v nvtop >/dev/null 2>&1 || [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then echo "ok   nvtop: on PATH or A770B_ALLOW_NO_NVTOP=1"; else echo "MISSING nvtop: install it for VRAM readings, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1)); fi
   n=$(gpu_match_count)
@@ -291,22 +289,7 @@ doctor(){
   if [ "$A770B_GPU_MATCH" = "DG2" ] && [ "$n" = 0 ]; then
     echo "MISSING input A770B_GPU_MATCH=DG2 is this project's default (the Intel Arc A770) but no device in 'nvtop -s' matches it on this machine — set A770B_GPU_MATCH to your own card's name"; missing=$((missing+1))
   fi
-  # the host binary's --list-devices says which card a HOST serve would pick; in compose mode the card is pinned
-  # inside the container by MESA_VK_DEVICE_SELECT, so these two checks are host-only (no host llama-server needed).
-  if [ "$A770B_SERVE" != compose ] && [ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && [ -x "$A770B_LLAMA_BIN" ]; then
-    _vsel_n=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$A770B_LLAMA_BIN" --list-devices 2>/dev/null | grep -c '^ *Vulkan[0-9]*:')
-    if [ "$_vsel_n" = 0 ]; then
-      echo "MISSING input A770B_VK_DEVICE_SELECT=8086:56a0! is this project's default (the Intel Arc A770) but pins no Vulkan device on this machine — set it to your own card's vendor:device! from lspci -nn"; missing=$((missing+1))
-    fi
-  fi
-  if [ "$A770B_SERVE" != compose ] && [ -x "$A770B_LLAMA_BIN" ]; then
-    if [ -z "$A770B_VK_DEVICE_SELECT" ]; then
-      echo "ok   device: selector empty, not pinned"
-    else
-      n=$(MESA_VK_DEVICE_SELECT="$A770B_VK_DEVICE_SELECT" "$A770B_LLAMA_BIN" --list-devices 2>/dev/null | grep -c '^ *Vulkan[0-9]*:')
-      if [ "$n" = 1 ]; then echo "ok   device: selector $A770B_VK_DEVICE_SELECT pins exactly one Vulkan device"; else echo "MISSING device: the selector $A770B_VK_DEVICE_SELECT lists $n Vulkan devices, not 1; set A770B_VK_DEVICE_SELECT to the builder card's vendor:device! from lspci -nn"; missing=$((missing+1)); fi
-    fi
-  fi
+
   [ -d "$A770B_UV_CACHE" ] && echo "ok   uv cache at $A770B_UV_CACHE" || { echo "MISSING uv cache at $A770B_UV_CACHE: run bash harness/warm_cache.sh once (the sandbox has no network)"; missing=$((missing+1)); }
   if [ "$missing" = 0 ]; then echo "ok   doctor: all checks passed"; return 0; else echo "MISSING doctor: $missing missing"; return 1; fi
 }

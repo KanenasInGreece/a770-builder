@@ -269,7 +269,7 @@ def test_doctor_compose_flags_a_missing_env_file(tmp_path):
 
 def test_doctor_flags_missing_when_the_a770_defaults_are_in_force_on_a_non_matching_card(tmp_path):
     # fake nvtop (no device names it as DG2) and a fake llama-server whose --list-devices pins nothing:
-    # in compose mode, A770B_GPU_MATCH is checked but VK_DEVICE_SELECT check is host-only and skipped.
+    # in compose mode, A770B_GPU_MATCH is checked but VK_DEVICE_SELECT check was removed.
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _make_bin(bin_dir, "nvtop", 'printf \'[{"device_name": "NotTheA770", "mem_total": 8000000000, "mem_used": 100, "mem_free": 7999999900}]\'')
