@@ -115,6 +115,7 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   [ -n "$thinking_budget" ] && thinking_desc="$thinking_desc · budget $thinking_budget"
   [ "$thinking_preserve" = "false" ] && thinking_desc="$thinking_desc · preserve off" || thinking_desc="$thinking_desc · preserve on"
   echo "✓ $p serving $(basename "$gguf") · ctx $ctx · KV $kv/${kv_v:-$kv} · thinking $thinking_desc · $A770B_HOST:$A770B_PORT"
+  _override_warn "$p"
   return 0
 }
 _serve_start_or_die(){
@@ -122,6 +123,10 @@ _serve_start_or_die(){
   [ "$rc" = 0 ] && return 0
   [ "$rc" = 2 ] && die "server not healthy after 180 s"
   die "server did not start — see the error above (a budget-gate or VRAM-cap refusal, or the server's own failure)"
+}
+_override_warn(){ # a card the operator marked operator_override: say so, so it is never a surprise
+  local p="$1" v; v=$(a770b_profile_var "$p" OPERATOR_OVERRIDE)
+  case "${v,,}" in true|1|yes) echo "⚠ $p is presented by operator override — set on the card (operator_override) or in A770B_${p^^}_OPERATOR_OVERRIDE; unset it to choose from all cards";; esac
 }
 serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
@@ -142,7 +147,7 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
     live_profile=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])')
     if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ]; then
       if curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
-        if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; return 0; fi
+        if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
         echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
       fi
     else

@@ -119,6 +119,7 @@ def test_menu_no_sidecar_is_cold_full_slice(tmp_path):
         assert set(row) == {
             "name", "card", "backend", "mode", "model",
             "ctx", "useful_ctx", "decode_tps_8k", "use_for",
+            "operator_override",
         }
 
 
@@ -243,3 +244,29 @@ def test_menu_file_that_fails_check_exits_2(tmp_path):
     assert result.returncode == 2
     assert any(line.startswith("profiles: ") for line in result.stderr.splitlines())
     assert "missing key kv" in result.stderr
+
+
+# --- W3a: operator_override in menu ---
+
+
+def test_menu_cold_with_operator_override(tmp_path):
+    """A cold registry with one override row reports presented_due_to and override."""
+    path, data = menu_registry(tmp_path)
+    data["profiles"]["long"]["operator_override"] = True
+    write_json(path, data)
+
+    result = run("menu", "--file", str(path))
+    payload = parse(result)
+    assert payload["state"] == "cold"
+    assert payload["presented_due_to"] == "operator_override"
+    assert payload["override"] == ["long"]
+
+
+def test_menu_cold_no_override_keys_absent(tmp_path):
+    """A cold registry with no override row carries no presented_due_to or override key."""
+    path, _data = menu_registry(tmp_path)
+    result = run("menu", "--file", str(path))
+    payload = parse(result)
+    assert payload["state"] == "cold"
+    assert "presented_due_to" not in payload
+    assert "override" not in payload

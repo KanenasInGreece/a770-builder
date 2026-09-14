@@ -153,7 +153,8 @@
         "think": "GPQA-Diamond 89.39, AIME25 100 (the quantiser's card, IQ3_S vs BF16 89.90 / 100)",
         "write": "not measured"
       },
-      "use_for": "The faster sibling of serious: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder."
+      "use_for": "The faster sibling of serious: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder.",
+      "operator_override": true
     }
   }
 }

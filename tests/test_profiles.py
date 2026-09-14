@@ -2145,3 +2145,23 @@ def test_check_passes_placement_host(tmp_path):
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 0, result.stderr
+
+
+# --- W3a: operator_override ---
+
+
+def test_check_passes_operator_override_true(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["operator_override"] = True
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_operator_override_non_bool(tmp_path):
+    data = load_base()
+    data["profiles"]["long"]["operator_override"] = "yes"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: long: operator_override must be true or false" in result.stderr

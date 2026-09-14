@@ -116,10 +116,10 @@ TASK_VALUES = {
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
-    "instrument", "thinking",
+    "instrument", "thinking", "operator_override",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
-OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task", "evidence"}
+OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task", "evidence", "operator_override"}
 
 SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
 SKILL_SEPARATOR = "|---|---|---|---|---|---|"
@@ -266,6 +266,9 @@ def validate(data) -> list[str]:
             v = prof["placement"]
             if not isinstance(v, str) or v not in PLACEMENT_VALUES:
                 errors.append(f"{name}: placement must be host, container or remote")
+
+        if "operator_override" in prof and not isinstance(prof["operator_override"], bool):
+            errors.append(f"{name}: operator_override must be true or false")
 
         if "kv" in prof and isinstance(prof["kv"], str) and prof["kv"] not in KV_VALUES:
             errors.append(f"{name}: kv must be one of f16, q8_0, q4_0")
@@ -689,6 +692,8 @@ def cmd_env(args) -> int:
         print(': "${A770B_%s_CARD:=%s}"' % (upper, prof["card"]))
         print(': "${A770B_%s_BACKEND:=%s}"' % (upper, prof["backend"]))
         print(': "${A770B_%s_MODE:=%s}"' % (upper, prof["mode"]))
+        if prof.get("operator_override") is True:
+            print(': "${A770B_%s_OPERATOR_OVERRIDE:=true}"' % upper)
 
     return 0
 
@@ -827,6 +832,7 @@ def _menu_row(name: str, prof: dict) -> dict:
         "useful_ctx": prof["useful_ctx"],
         "decode_tps_8k": decode.get("8k"),
         "use_for": prof["use_for"],
+        "operator_override": bool(prof.get("operator_override", False)),
     }
 
 
@@ -856,6 +862,11 @@ def cmd_menu(args) -> int:
             "slice": [_menu_row(name, prof) for name, prof in profiles.items()],
             "default": default,
         }
+        rows = out["slice"] if out["state"] == "cold" else (out["ready"] + out["also"])
+        over = [r["name"] for r in rows if r["operator_override"]]
+        if over:
+            out["presented_due_to"] = "operator_override"
+            out["override"] = over
         print(json.dumps(out, indent=2))
         return 0
 
@@ -890,6 +901,11 @@ def cmd_menu(args) -> int:
         "also": also,
         "default": default,
     }
+    rows = out["slice"] if out["state"] == "cold" else (out["ready"] + out["also"])
+    over = [r["name"] for r in rows if r["operator_override"]]
+    if over:
+        out["presented_due_to"] = "operator_override"
+        out["override"] = over
     print(json.dumps(out, indent=2))
     return 0
 
