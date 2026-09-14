@@ -549,13 +549,13 @@ printf '%s' "$out" | grep -q "profile must be one of: long serious serious-sycl 
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --fast ) 2>&1 )
 printf '%s' "$out" | grep -q "unknown arg --fast" \
   && echo "ok   mode: I7b the removed --fast arm is an unknown argument" || { echo "FAIL mode: I7b --fast: $out"; fail=1; }
-grep -q 'mode \$A770B_CARD_MODE · cap \$A770B_VRAM_CAP_GIB GiB' "$here/harness/serve_a770_llamacpp.sh" \
-  && grep -q 'A770B_CARD_MODE=inference' "$here/harness/serve_a770_llamacpp.sh" \
-  && echo "ok   mode: I10 the server's start and refusal lines name the mode and cap" \
-  || { echo "FAIL mode: I10 serve_a770_llamacpp.sh does not name the mode/cap as expected"; fail=1; }
-grep -q 'the server died during load' "$here/harness/serve_a770_llamacpp.sh" \
-  && echo "ok   harness: serve refuses when the pid dies during load" \
-  || { echo "FAIL harness: serve_a770_llamacpp.sh does not name the death message"; fail=1; }
+grep -q 'mode \$A770B_CARD_MODE · cap \$A770B_VRAM_CAP_GIB GiB' "$here/harness/serve_compose.sh" \
+  && grep -q 'A770B_CARD_MODE=inference' "$here/harness/serve_compose.sh" \
+  && echo "ok   mode: I10 the container's start and refusal lines name the mode and cap" \
+  || { echo "FAIL mode: I10 serve_compose.sh does not name the mode/cap as expected"; fail=1; }
+grep -q 'the container did not answer /health' "$here/harness/serve_compose.sh" \
+  && echo "ok   harness: the container serve fails when the server does not answer /health" \
+  || { echo "FAIL harness: serve_compose.sh does not name the health-failure message"; fail=1; }
 grep -q 'bench_build_id\.py" "\$RAW_FILE" "\$BUILD_ID"' "$here/harness/bench_speed.sh" \
   && echo "ok   harness: bench_speed.sh takes the build id it records from bench_build_id.py, its own reading the fallback" \
   || { echo "FAIL harness: bench_speed.sh does not read its build id from bench_build_id.py"; fail=1; }
@@ -667,7 +667,7 @@ else echo "FAIL gate: run_pid_alive refused the recorded run, or stop-run did no
 fi
 rm -f "$RUNPID"
 [ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && echo "ok   device: the builder card is pinned by PCI id by default" || { echo "FAIL device: A770B_VK_DEVICE_SELECT default is '$A770B_VK_DEVICE_SELECT'"; fail=1; }
-grep -q '^MESA_VK_DEVICE_SELECT="\$A770B_VK_DEVICE_SELECT" nohup "\$A770B_LLAMA_BIN"' "$here/harness/serve_a770_llamacpp.sh" && echo "ok   device: the server starts under the selector" || { echo "FAIL device: serve_a770_llamacpp.sh does not export the selector to the server"; fail=1; }
+grep -q 'MESA_VK_DEVICE_SELECT: "${A770B_VK_DEVICE_SELECT}"' "$here/compose/a770-vulkan.yaml" && echo "ok   device: the container envelope pins the server to the selector" || { echo "FAIL device: the envelope does not pass the selector to the container"; fail=1; }
 out=$(A770B_FAST_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_LONG_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile fast serves long's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
 out=$(bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "^ok   profiles:" && echo "ok   doctor: a clean environment is not warned about" || { echo "FAIL doctor: warned on a clean environment"; fail=1; }
 # ── depth_probe.sh grades itself (item 1): the two shared-helper fixes another builder landed (commit 637c4a1) —
@@ -998,13 +998,13 @@ if grep -q 'a770-vulkan.yaml' "$cb/docker.log" && ! grep -q 'a770-sycl.yaml' "$c
 then echo "ok   compose: a vulkan row selects the vulkan envelope from its backend"
 else echo "FAIL compose: a vulkan row did not select the vulkan envelope"; printf '%s\n' "$cb_vk" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
 fi
-# a sycl row must be REFUSED on the host path, never silently served on the host Vulkan binary with a backend=sycl sidecar
+# the host serve path was removed: A770B_SERVE=host is refused, never served
 cb_host=$( _iso; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
   A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_SERVE=host \
   bash "$here/skills/local-build/scripts/local-build.sh" serve serious-sycl 2>&1 )
-if printf '%s' "$cb_host" | grep -q "backend=sycl — the host path is Vulkan-only"; then
-  echo "ok   compose: a sycl row is refused on the host path, not silently served"
-else echo "FAIL compose: a sycl row was not refused on the host path"; printf '%s\n' "$cb_host" | tail -5; fail=1
+if printf '%s' "$cb_host" | grep -q "A770B_SERVE must be compose"; then
+  echo "ok   compose: the host serve path is refused — serving is container-only"
+else echo "FAIL compose: the host serve path was not refused"; printf '%s\n' "$cb_host" | tail -5; fail=1
 fi
 # an unknown backend must be refused, never defaulted onto the Vulkan envelope
 cb_unk=$( _iso; A770B_SERIOUS_SYCL_BACKEND=cuda cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve serious-sycl 2>&1 )
@@ -1052,10 +1052,10 @@ if grep -q 'entrypoint: \["/app/llama-server"\]' "$here/compose/a770-vulkan.yaml
 then echo "ok   compose: the tracked envelope sets the server entrypoint, binds loopback and bakes no model or ctx"
 else echo "FAIL compose: the tracked envelope is not as expected"; fail=1
 fi
-if grep -q -- '-fa on --load-mode none' "$here/harness/serve_a770_llamacpp.sh" \
-  && ! grep -qE -- '^[^#]*--no-mmap' "$here/harness/serve_a770_llamacpp.sh"
-then echo "ok   serve: host serve passes -fa on --load-mode none and has dropped --no-mmap"
-else echo "FAIL serve: host serve does not pass -fa on --load-mode none or still contains --no-mmap"; fail=1
+if grep -q -- '-fa on --load-mode none' "$here/harness/serve_compose.sh" \
+  && ! grep -qE -- '^[^#]*--no-mmap' "$here/harness/serve_compose.sh"
+then echo "ok   serve: the container serve passes -fa on --load-mode none and has dropped --no-mmap"
+else echo "FAIL serve: the container serve does not pass -fa on --load-mode none or still contains --no-mmap"; fail=1
 fi
 if ! grep -q 'budget gate or VRAM cap refused' "$here/skills/local-build/scripts/local-build.sh" \
   && grep -q 'see the error above' "$here/skills/local-build/scripts/local-build.sh"
