@@ -11,7 +11,7 @@ set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log}"
 [ -f "$BLOG" ] || { echo "⛔ build log not found: $BLOG" >&2; exit 2; }
-OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; SLOG="$A770B_DATA/logs/llamacpp-a770.log"
+OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; TMPLOG=$(mktemp)
 # the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
 { safe_git_diff "$WT"
   safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
@@ -31,7 +31,7 @@ safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Doc
   echo "### $f"; echo '```'; head -200 -- "$WT/$f"; echo '```'; done
 echo; echo "## ignored files the run left behind (names only; removed by the reset, never applied by verify)"
 safe_git "$WT" ls-files --others --ignored --exclude-standard | grep -vE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || echo "none"
-echo; echo "## pytest summary as reported by the model inside the run (NOT re-executed here)"
+echo; echo "## pytest summary as reported by the model inside the run (UNVERIFIED, proven only by verify, NOT re-executed here)"
 grep -E '[0-9]+ (passed|failed|error)' "$BLOG" | tail -3 || echo "no pytest summary line in the transcript"
 echo; echo "## run specification"
 if [ -n "${A770B_SPEC:-}" ] && [ -f "$A770B_SPEC" ]; then
@@ -44,7 +44,11 @@ else
 fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
-python3 - "$SLOG" <<'PY'
+# Dump container log to temp file and parse from there (not stale host log)
+CONTAINER="${A770B_COMPOSE_PROJECT}-llama-1"
+"$A770B_DOCKER" logs --no-color "$CONTAINER" > "$TMPLOG" 2>/dev/null || true
+if [ -s "$TMPLOG" ]; then
+  python3 - "$TMPLOG" <<'PY'
 import re,sys
 lines=open(sys.argv[1],errors='ignore').read().splitlines()
 pe=[l for l in lines if 'prompt eval time' in l]; ev=[l for l in lines if 'eval time' in l and 'prompt eval' not in l]
@@ -59,7 +63,11 @@ print(f"TTFT ms (prompt eval): median={q(ttft,.5):.0f} p90={q(ttft,.9):.0f} max=
 print(f"TPOT ms: median={q(tpot,.5):.1f} p90={q(tpot,.9):.1f}   decode tok/s median={1000/q(tpot,.5) if q(tpot,.5) else 0:.1f}")
 print(f"prefill tok/s over all prompts={pt/ (sum(p[0] for p in P)/1000) if P else 0:.0f}")
 PY
+else
+  echo "timings unavailable (no container log)"
+fi
 } > "$OUT" 2>&1
+rm -f -- "$TMPLOG"
 rm -f -- "$DIFF"
 echo "captured → $OUT ($(wc -l < "$OUT") lines) · patch $PATCH ($(wc -l < "$PATCH") lines)"
 reset_worktree "$WT"
