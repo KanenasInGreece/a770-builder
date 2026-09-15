@@ -43,7 +43,7 @@ STAGES_FILTER=""
 REVIEWER=""
 FRESH=0
 DRYRUN=0
-MODEL_GGUF=""; MODEL_CTX=""; MODEL_KV=""; MODEL_KV_V=""; MODEL_EXTRA=""; MODEL_TIMEOUT=""
+MODEL_GGUF=""; MODEL_CTX=""; MODEL_KV=""; MODEL_KV_V=""; MODEL_EXTRA=""; MODEL_TIMEOUT=""; MODEL_REASONING=""; MODEL_BUDGET=""
 POSITIONALS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -55,6 +55,8 @@ while [ $# -gt 0 ]; do
     --kv) MODEL_KV="${2:?kv cache type}"; shift 2 ;;
     --kv-v) MODEL_KV_V="${2:?kv_v cache type}"; shift 2 ;;
     --extra) MODEL_EXTRA="${2:?extra llama-server flags}"; shift 2 ;;
+    --reasoning) MODEL_REASONING="${2:?on|off}"; shift 2 ;;
+    --reasoning-budget) MODEL_BUDGET="${2:?token budget}"; shift 2 ;;
     --timeout) MODEL_TIMEOUT="${2:?timeout seconds}"; shift 2 ;;
     --fresh) FRESH=1; shift ;;
     --dry-run) DRYRUN=1; shift ;;
@@ -81,7 +83,8 @@ if [ -n "$MODEL_GGUF" ]; then
   export A770B_CANDIDATE_CTX="$MODEL_CTX"
   export A770B_CANDIDATE_KV="${MODEL_KV:-q8_0}"
   export A770B_CANDIDATE_KV_V="${MODEL_KV_V:-${MODEL_KV:-q8_0}}"
-  export A770B_CANDIDATE_REASONING="off"
+  export A770B_CANDIDATE_REASONING="${MODEL_REASONING:-off}"
+  export A770B_CANDIDATE_THINKING_BUDGET="${MODEL_BUDGET:-}"
   export A770B_CANDIDATE_TIMEOUT="${MODEL_TIMEOUT:-1500}"
   export A770B_CANDIDATE_EXTRA="${MODEL_EXTRA:-}"
   case " $A770B_PROFILES " in *" candidate "*) ;; *) export A770B_PROFILES="$A770B_PROFILES candidate" ;; esac

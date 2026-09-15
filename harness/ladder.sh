@@ -45,15 +45,17 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
 
-[ $# -ge 1 ] || die "usage: ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q8_0|q4_0] [--extra \"<flags>\"] [--timeout S] [--seat <path>] [--suite <suite.json>] [--reviewer <profile>] [--fresh] [--dry-run]"
+[ $# -ge 1 ] || die "usage: ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q8_0|q4_0] [--extra \"<flags>\"] [--reasoning on|off] [--reasoning-budget N] [--timeout S] [--seat <path>] [--suite <suite.json>] [--reviewer <profile>] [--fresh] [--dry-run]"
 SPEC="$1"; shift
-CTX_ARG=""; KV_ARG=""; KV_V_ARG=""; EXTRA_ARG=""; TIMEOUT_ARG=""; SEAT=""; SUITE=""; REVIEWER=""; FRESH=0; DRYRUN=0
+CTX_ARG=""; KV_ARG=""; KV_V_ARG=""; EXTRA_ARG=""; TIMEOUT_ARG=""; SEAT=""; SUITE=""; REVIEWER=""; REASONING_ARG=""; BUDGET_ARG=""; FRESH=0; DRYRUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --ctx) CTX_ARG="${2:?window}"; shift 2 ;;
     --kv) KV_ARG="${2:?kv cache type}"; shift 2 ;;
     --kv-v) KV_V_ARG="${2:?kv_v cache type}"; shift 2 ;;
     --extra) EXTRA_ARG="${2:?extra llama-server flags}"; shift 2 ;;
+    --reasoning) REASONING_ARG="${2:?on|off}"; shift 2 ;;
+    --reasoning-budget) BUDGET_ARG="${2:?token budget}"; shift 2 ;;
     --timeout) TIMEOUT_ARG="${2:?seconds}"; shift 2 ;;
     --seat) SEAT="${2:?path}"; shift 2 ;;
     --suite) SUITE="${2:?path}"; shift 2 ;;
@@ -75,14 +77,26 @@ if a770b_is_profile "$SPEC"; then
   KV_V=$(a770b_profile_var "$PROFILE_NAME" KV_V); KV_V="${KV_V:-$KV}"
   EXTRA=$(a770b_profile_var "$PROFILE_NAME" EXTRA)
   REAS=$(a770b_profile_var "$PROFILE_NAME" REASONING); REAS="${REAS:-off}"
+  BUDGET=$(a770b_profile_var "$PROFILE_NAME" THINKING_BUDGET); BUDGET="${BUDGET:-}"
   TIMEOUT="${TIMEOUT_ARG:-$(a770b_profile_var "$PROFILE_NAME" TIMEOUT)}"
   NAME="$PROFILE_NAME"
 else
   GGUF=$(a770b_model_path "$SPEC")
   [ -n "$CTX_ARG" ] || die "--ctx N is required for a GGUF with no registry row ('$SPEC' is not one of: $A770B_PROFILES)"
-  CTX="$CTX_ARG"; KV="${KV_ARG:-q8_0}"; KV_V="${KV_V_ARG:-$KV}"; EXTRA="${EXTRA_ARG:-}"; REAS="off"
+  CTX="$CTX_ARG"; KV="${KV_ARG:-q8_0}"; KV_V="${KV_V_ARG:-$KV}"; EXTRA="${EXTRA_ARG:-}"; REAS="${REASONING_ARG:-off}"; BUDGET="${BUDGET_ARG:-}"
   TIMEOUT="${TIMEOUT_ARG:-1500}"
   NAME=$(basename "$GGUF"); NAME="${NAME%.gguf}"
+fi
+# the depth probe must leave room for the reasoning budget plus the answer: a fixed answer-only budget (320) starves
+# a thinking card of its answer — the class of defect that made the serious-sycl probe come back empty. The budget
+# is never hard-coded here: it is the row's own thinking budget (or the caller's, for a bare GGUF), or off.
+GEN=320
+if [ "$REAS" = "on" ]; then
+  case "$BUDGET" in
+    0) GEN=320 ;;            # thinking cut off immediately — answer-only budget
+    ''|-1) GEN=4096 ;;       # unbudgeted thinking — a generous room, matching bench_model.sh's reasoning gate
+    *) GEN=$((BUDGET + 320)) ;;
+  esac
 fi
 SEAT_IS_OURS=0; [ -n "$SEAT" ] || SEAT_IS_OURS=1
 SEAT="${SEAT:-$A770B_DATA/kit-seat}"
@@ -107,19 +121,19 @@ if [ "$DRYRUN" = 1 ]; then
   FRESH_FLAG=""; { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && FRESH_FLAG=" --fresh"
   echo "[dry-run] ladder for ${PROFILE_NAME:-$GGUF} — ctx=$CTX kv=$KV/$KV_V extra='$EXTRA' reasoning=$REAS timeout=${TIMEOUT}s far_end=$FAR_END"
   echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (ram_gb_extra)"
-  echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
+  echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 3/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; bash harness/bench_speed.sh $PROFILE_NAME --depths $DEPTHS"
   else
     echo "[dry-run] rung 3/6: SKIPPED — harness/bench_speed.sh needs a registry profile ('harness/profiles.py card --name <profile>' has no ephemeral form); $GGUF has no row yet"
   fi
-  echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
+  echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
   echo "[dry-run]           both are sized in real tokens by the server's tokeniser, and their deadlines come from rung 3's measured curve (harness/prompt_budget.py)"
-  echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --bench <rung 3's file>  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+  echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --bench <rung 3's file> --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 6/6: bash harness/run_suite.sh $PROFILE_NAME $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   else
-    echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V --extra '$EXTRA' --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
+    echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V --extra '$EXTRA' --reasoning $REAS --reasoning-budget ${BUDGET:-0} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   fi
   echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, ram_gb_extra, suite, instrument computed; use_for/fit.write/capability left as placeholders)"
   echo "[dry-run] nothing written"
@@ -135,7 +149,7 @@ echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(d
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 echo "▶ rung 1-2/6 — load, VRAM, probes, 17k summary (bench_model.sh)"
 # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
-if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" bash "$here/bench_model.sh" "$NAME" "$GGUF" "$CTX" $EXTRA; then
+if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$here/bench_model.sh" "$NAME" "$GGUF" "$CTX" $EXTRA; then
   FAIL_RUNG="load+probes"; FAIL_MSG="bench_model.sh failed — read $LOGDIR/llamacpp-a770.log"
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
@@ -164,7 +178,7 @@ if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 4/6 — window (ctx_sweep.sh at 8000 and $FAR_END)"
   bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
   # shellcheck disable=SC2086
-  if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" $EXTRA; then
+  if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" $EXTRA; then
     FAIL_RUNG="window-serve"; FAIL_MSG="the server did not come up for the window rung"
   else
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
@@ -181,7 +195,7 @@ DEPTH_LOG=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 5/6 — depth probe at $FAR_END (graded: PASS/FAIL per question)"
   DEPTH_LOG="$LOGDIR/ladder-depth-probe-$$.log"
-  PROBE_ARGS=(); [ -n "$BENCH_SPEED_JSON" ] && PROBE_ARGS=(--bench "$BENCH_SPEED_JSON")
+  PROBE_ARGS=(--gen "$GEN"); [ -n "$BENCH_SPEED_JSON" ] && PROBE_ARGS+=(--bench "$BENCH_SPEED_JSON")
   bash "$here/depth_probe.sh" "$FAR_END" "${PROBE_ARGS[@]}" 2>&1 | tee "$DEPTH_LOG"; rc=${PIPESTATUS[0]}
   case "$rc" in
     0) ;;
@@ -198,7 +212,7 @@ if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 6/6 — task (run_suite.sh)"
   RS_ARGS=()
   if [ -n "$PROFILE_NAME" ]; then RS_ARGS=("$PROFILE_NAME" "$SEAT")
-  else RS_ARGS=(--model "$GGUF" --ctx "$CTX" --kv "$KV" --kv-v "$KV_V" --extra "$EXTRA" --timeout "$TIMEOUT" "$SEAT"); fi
+  else RS_ARGS=(--model "$GGUF" --ctx "$CTX" --kv "$KV" --kv-v "$KV_V" --extra "$EXTRA" --reasoning "$REAS" --reasoning-budget "${BUDGET:-0}" --timeout "$TIMEOUT" "$SEAT"); fi
   [ -n "$SUITE" ] && RS_ARGS+=(--suite "$SUITE")
   [ -n "$REVIEWER" ] && RS_ARGS+=(--reviewer "$REVIEWER")
   # a ladder run owns the kit's own scratch seat and replaces it without being asked: a leftover from an earlier
