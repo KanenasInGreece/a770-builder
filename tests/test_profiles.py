@@ -1056,12 +1056,16 @@ def test_output_tokens_in_env(tmp_path):
     assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS:=32768}"' in result.stdout.splitlines()
 
 
-def test_builder_class_true_for_inference_long_serious():
-    for name in ("qwen35-9b-q4km-vulkan", "qwen38-27b-iq3s-vulkan"):
+def test_builder_class_reflects_the_suite_on_the_inference_registry():
+    # the two 27B cards clear the suite (3/3 counted); the 9B does not (1/3), so it is no longer builder-class.
+    for name in ("qwen38-27b-iq3s-vulkan", "qwen38-27b-iq3s-sycl"):
         result = run("card", "--file", str(PROFILES_INFERENCE_JSON), "--name", name)
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)
         assert data["builder_class"] is True, name
+    result = run("card", "--file", str(PROFILES_INFERENCE_JSON), "--name", "qwen35-9b-q4km-vulkan")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["builder_class"] is False
 
 
 def test_builder_class_ignores_useful_ctx_floor():

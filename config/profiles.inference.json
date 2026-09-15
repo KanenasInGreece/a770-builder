@@ -5,7 +5,7 @@
   "profiles": {
     "qwen35-9b-q4km-vulkan": {
       "task": "code-edit",
-      "evidence": "T1 pass (sibling instrument): 6 tests green in 122 s",
+      "evidence": "SUITE-1@1: 1 of 3 counted stages passed (the backend); the front end and the C++ optimisation failed",
       "model": "Qwen3.5-9B-Q4_K_M.gguf",
       "source": "lmstudio-community/Qwen3.5-9B-GGUF",
       "family": "qwen3.5",
@@ -33,8 +33,8 @@
         "far_end": {"tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147, "ttft_s": 626}
       },
       "depth_probe_100k": "pass",
-      "task_t1": "pass",
-      "instrument": "seat: Shared_Memory@3c8e2bb",
+      "instrument": "SUITE-1@1",
+      "suite": {"briefs": 3, "runs": 3, "passed": 1, "timeouts": 0, "mean_wall_s": 163.7, "source": "qwen35-9b-q4km-vulkan-suite-20260915-081437-393449.json", "instrument": "SUITE-1@1"},
       "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
       "card": "a770",
       "backend": "vulkan",
@@ -42,16 +42,16 @@
       "capability": {},
       "capability_source": "",
       "fit": {
-        "code": "T1 under the card line: 6 tests green in 122 s",
+        "code": "SUITE-1@1: 1 of 3 counted stages passed (the backend), mean wall 164 s; the front end and the C++ optimisation failed",
         "think": "not measured (the thinking arm is owed)",
         "write": "not measured"
       },
-      "use_for": "Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k."
+      "use_for": "Every ordinary bounded change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. Not the kit's multi-stage project: SUITE-1@1 passed 1 of 3 counted stages."
     },
 
     "qwen38-27b-iq3s-vulkan": {
       "task": "code-edit",
-      "evidence": "T1 pass (sibling instrument): 10 tests green in 546 s",
+      "evidence": "SUITE-1@1: 3 of 3 counted stages passed (front end, backend, C++)",
       "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
       "source": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
       "family": "qwen3.8",
@@ -86,8 +86,8 @@
         "far_end": {"tokens": 64000, "decode_tps": 4.9, "prefill_tps": 42, "ttft_s": 753}
       },
       "depth_probe_100k": "not run",
-      "task_t1": "pass",
-      "instrument": "seat: Shared_Memory@3c8e2bb",
+      "instrument": "SUITE-1@1",
+      "suite": {"briefs": 3, "runs": 3, "passed": 3, "timeouts": 0, "mean_wall_s": 1658.0, "source": "qwen38-27b-iq3s-vulkan-suite-20260915-093915-406088.json", "instrument": "SUITE-1@1"},
       "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
       "card": "a770",
       "backend": "vulkan",
@@ -95,16 +95,16 @@
       "capability": {"LiveCodeBench_v6": 85.71, "GPQA_Diamond": 89.39, "AIME25": 100},
       "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100; the quantiser's task-lossless file)",
       "fit": {
-        "code": "T1 under the card line: 10 tests green in 546 s at 196,608 (5 in 664 s at the client's temperature 0)",
+        "code": "SUITE-1@1: 3 of 3 counted stages passed (front end, backend, C++), mean wall 1658 s",
         "think": "GPQA-Diamond 89.39, AIME25 100 (the quantiser's card, IQ3_S vs BF16 89.90 / 100)",
         "write": "not measured"
       },
-      "use_for": "A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens."
+      "use_for": "A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. Clears the kit's builder bar (SUITE-1@1: 3 of 3 counted stages)."
     },
 
     "qwen38-27b-iq3s-sycl": {
       "task": "code-edit",
-      "evidence": "container SYCL loads the 27B IQ3_S at ctx 100,000 under the 15.3 GiB cap (14.61 GiB after load, q8_0 KV); llama-bench in the same image (2026-09-13): pp512 330.57 / tg128 10.99 at depth 0, and at -d 8192/32768/65536 pp 358.35/297.17/242.48, tg 9.91/8.00/6.29; the same build the Vulkan row passed (gpu-hang-check, 13 hidden scenarios) passed 13/13 on this row's server 2026-09-13 (verify PASS)",
+      "evidence": "SUITE-1@1: 3 of 3 counted stages passed (front end, backend, C++); the earlier gpu-hang-check build passed 13/13 (verify PASS)",
       "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
       "source": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
       "family": "qwen3.8",
@@ -139,7 +139,8 @@
         "bench": {"tool": "llama-bench", "prompt": 512, "gen": 128, "flags": "-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -d 8192,32768,65536", "at_depth": {"8192": {"pp": 358.35, "tg": 9.91}, "32768": {"pp": 297.17, "tg": 8.0}, "65536": {"pp": 242.48, "tg": 6.29}}, "source": "manual llama-bench run 2026-09-13 in ghcr.io/ggml-org/llama.cpp:full-intel (the SYCL container); pp512 330.57 / tg128 10.99 at depth 0"}
       },
       "depth_probe_100k": "not run",
-      "instrument": "seat: Shared_Memory@3c8e2bb",
+      "instrument": "SUITE-1@1",
+      "suite": {"briefs": 3, "runs": 3, "passed": 3, "timeouts": 0, "mean_wall_s": 1697.0, "source": "qwen38-27b-iq3s-sycl-suite-20260915-133226-426245.json", "instrument": "SUITE-1@1"},
       "measured_on": "Arc A770 16 GB, llama.cpp full-intel SYCL container",
       "card": "a770",
       "backend": "sycl",
@@ -148,11 +149,11 @@
       "capability": {"LiveCodeBench_v6": 85.71, "GPQA_Diamond": 89.39, "AIME25": 100},
       "capability_source": "ISTA-DASLab GSQ-RCO model card (quantiser's evaluation; BF16 85.71 / 89.90 / 100; the quantiser's task-lossless file)",
       "fit": {
-        "code": "the same best-written 27B as qwen38-27b-iq3s-vulkan, served on the faster SYCL container; the gpu-hang-check build (a 50-line shell script, 13 hidden scenarios) passed 13/13 verified 2026-09-13",
+        "code": "SUITE-1@1: 3 of 3 counted stages passed (front end, backend, C++), mean wall 1697 s, all three reference exercises passed; the earlier gpu-hang-check build passed 13/13",
         "think": "GPQA-Diamond 89.39, AIME25 100 (the quantiser's card, IQ3_S vs BF16 89.90 / 100)",
         "write": "not measured"
       },
-      "use_for": "The faster sibling of qwen38-27b-iq3s-vulkan: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder.",
+      "use_for": "The faster sibling of qwen38-27b-iq3s-vulkan: the same best-written 27B at about ten tokens a second at 8k (SYCL container, q8_0 KV) instead of eight (Vulkan), with prefill about five times faster (358 vs 71 t/s at 8k), on a 100,000-token window that fits under the 15.3 GiB cap; 131,072 does not load — the SYCL server segfaults above 100,000. Clears the kit's builder bar (SUITE-1@1: 3 of 3 counted stages, all three reference exercises passed). useful_ctx is derived from THIS row's measured 8k/64k decode (the four-tokens-a-second crossing is about 155k, above the served 100k, so it is capped at the window); the depth probe is not run, so this is a first cut, not a full ladder.",
       "operator_override": true
     }
   }
