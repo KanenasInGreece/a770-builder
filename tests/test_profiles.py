@@ -160,13 +160,13 @@ def test_check_fails_sampling_empty_source(tmp_path):
 def test_check_fails_sampling_temperature_without_extra_temp(tmp_path):
     """The honesty check: a sampling.temperature with no --temp in extra is refused."""
     data = load_base()
-    data["profiles"]["qwen35-9b-q4km-vulkan"]["sampling"] = {"source": "test card", "temperature": 0.6}
-    assert "--temp" not in data["profiles"]["qwen35-9b-q4km-vulkan"]["extra"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["sampling"] = {"source": "test card", "temperature": 0.6}
+    assert "--temp" not in data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["extra"]
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: qwen35-9b-q4km-vulkan: sampling.temperature is set but extra carries no --temp" in result.stderr
+    assert "profiles: gemma4-8b-e4b-q4km-vulkan: sampling.temperature is set but extra carries no --temp" in result.stderr
 
 
 def test_check_passes_valid_sampling(tmp_path):
@@ -182,11 +182,11 @@ def test_check_passes_valid_sampling(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-def test_env_temperature_top_p_empty_on_shipped_display_registry():
+def test_env_temperature_top_p_from_thinking_on_shipped_display_registry():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
-    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TEMPERATURE:=}"' in result.stdout.splitlines()
-    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TOP_P:=}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TEMPERATURE:=0.6}"' in result.stdout.splitlines()
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TOP_P:=0.95}"' in result.stdout.splitlines()
 
 
 def test_env_temperature_from_sampling(tmp_path):
@@ -250,17 +250,17 @@ def test_env_matches_expected_lines():
         ': "${A770B_QWEN35_9B_Q4KM_VULKAN_CTX:=262144}"',
         ': "${A770B_QWEN35_9B_Q4KM_VULKAN_KV:=q8_0}"',
         ': "${A770B_QWEN35_9B_Q4KM_VULKAN_KV_V:=q8_0}"',
-        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TEMPERATURE:=}"',
-        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TOP_P:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TEMPERATURE:=0.6}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TOP_P:=0.95}"',
         ': "${A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS:=}"',
-        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_REASONING:=off}"',
-        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=}"',
-        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_EFFORT:=}"',
-        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_REASONING:=on}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=on}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_EFFORT:=low}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=8192}"',
         "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE=''",
-        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_PRESERVE:=}"',
+        ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_PRESERVE:=true}"',
         ': "${A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT:=1500}"',
-        "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_EXTRA:-}\" ] || A770B_QWEN35_9B_Q4KM_VULKAN_EXTRA=''",
+        "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_EXTRA:-}\" ] || A770B_QWEN35_9B_Q4KM_VULKAN_EXTRA='--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0'",
     ]
     idx = lines.index(expected_long_block[0])
     assert lines[idx: idx + len(expected_long_block)] == expected_long_block
@@ -1791,11 +1791,11 @@ def test_snippet_labels_use_profile_flag(tmp_path):
 
 
 def _valid_thinking(**overrides) -> dict:
-    # mode "off" matches the shipped long profile's own reasoning: off, so a caller testing an
-    # unrelated field (budget, effort, source, ...) does not incidentally trip the
-    # mode-vs-reasoning contradiction rule; tests of that rule itself override mode explicitly.
+    # mode "on" matches the reasoning row the tests mutate (the shipped 9B is reasoning: on since
+    # 2026-09-15), so a caller testing an unrelated field (budget, effort, source, ...) does not
+    # incidentally trip the mode-vs-reasoning contradiction rule; tests of that rule override mode explicitly.
     thinking = {
-        "mode": "off", "effort": "low", "budget": 512, "budget_message": "budget spent, answer now",
+        "mode": "on", "effort": "low", "budget": 512, "budget_message": "budget spent, answer now",
         "preserve": True, "source": "test card",
     }
     thinking.update(overrides)
@@ -1952,16 +1952,16 @@ def test_check_passes_valid_thinking(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-def test_check_fails_thinking_mode_contradicts_reasoning_on(tmp_path):
-    """long ships with reasoning: off -- a thinking.mode of on contradicts it."""
+def test_check_fails_thinking_mode_on_contradicts_reasoning_off(tmp_path):
+    """the E4B ships with reasoning: off -- a thinking.mode of on contradicts it."""
     data = load_base()
-    assert data["profiles"]["qwen35-9b-q4km-vulkan"]["reasoning"] == "off"
-    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(mode="on")
+    assert data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["reasoning"] == "off"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["thinking"] = _valid_thinking(mode="on")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: qwen35-9b-q4km-vulkan: thinking.mode 'on' contradicts reasoning 'off'" in result.stderr
+    assert "profiles: gemma4-8b-e4b-q4km-vulkan: thinking.mode 'on' contradicts reasoning 'off'" in result.stderr
 
 
 def test_check_fails_thinking_mode_contradicts_reasoning_off(tmp_path):
@@ -1992,7 +1992,7 @@ def test_check_passes_thinking_mode_auto_never_contradicts(tmp_path):
 
 def test_check_passes_thinking_mode_matches_reasoning(tmp_path):
     data = load_base()
-    data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(mode="off")
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["thinking"] = _valid_thinking(mode="off")
     path = write_json(tmp_path / "p.json", data)
 
     result = run("check", "--file", str(path))
@@ -2003,24 +2003,24 @@ def test_env_thinking_empty_when_unset():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=}"' in lines
-    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_EFFORT:=}"' in lines
-    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=}"' in lines
-    assert "[ -n \"${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE=''" in lines
-    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_PRESERVE:=}"' in lines
+    assert ': "${A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_THINKING_MODE:=}"' in lines
+    assert ': "${A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_THINKING_EFFORT:=}"' in lines
+    assert ': "${A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_THINKING_BUDGET:=}"' in lines
+    assert "[ -n \"${A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE:-}\" ] || A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_THINKING_BUDGET_MESSAGE=''" in lines
+    assert ': "${A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_THINKING_PRESERVE:=}"' in lines
 
 
 def test_env_thinking_set_from_registry(tmp_path):
     data = load_base()
     data["profiles"]["qwen35-9b-q4km-vulkan"]["thinking"] = _valid_thinking(
-        mode="off", budget=0, budget_message="stop thinking, it's time",
+        mode="on", budget=0, budget_message="stop thinking, it's time",
     )
     path = write_json(tmp_path / "p.json", data)
 
     result = run("env", "--file", str(path))
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=off}"' in lines
+    assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_MODE:=on}"' in lines
     assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_EFFORT:=low}"' in lines
     assert ': "${A770B_QWEN35_9B_Q4KM_VULKAN_THINKING_BUDGET:=0}"' in lines
     assert (
@@ -2073,13 +2073,10 @@ def test_card_prints_thinking_as_stored():
 
 
 def test_card_no_thinking_on_unmeasured_rows():
-    """long (both registries) carry no thinking object yet -- the measured
-    bounded-budget arm is not a ruled row, and card must not invent one."""
-    for f, names in ((PROFILES_JSON, ("qwen35-9b-q4km-vulkan",)), (PROFILES_INFERENCE_JSON, ("qwen35-9b-q4km-vulkan",))):
-        for name in names:
-            result = run("card", "--file", str(f), "--name", name)
-            assert result.returncode == 0, result.stderr
-            assert json.loads(result.stdout).get("thinking") is None, name
+    """the E4B carries no thinking object -- it is measured non-thinking, and card must not invent one."""
+    result = run("card", "--file", str(PROFILES_JSON), "--name", "gemma4-8b-e4b-q4km-vulkan")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout).get("thinking") is None
 
 
 def test_check_passes_both_shipped_registries_thinking():

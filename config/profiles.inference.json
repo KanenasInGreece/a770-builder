@@ -18,11 +18,18 @@
       "useful_ctx": 262144,
       "kv": "q8_0",
       "flash_attention": "on",
-      "reasoning": "off",
-      "extra": "--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --presence-penalty 1.5",
+      "reasoning": "on",
+      "extra": "--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0",
+      "thinking": {
+        "mode": "on",
+        "effort": "low",
+        "budget": 8192,
+        "preserve": true,
+        "source": "operator directive 2026-09-15: the 9B thinks to improve its code; budget 8192 tokens (roughly 10% of context to think)"
+      },
       "sampling": {
-        "temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5,
-        "mode": "instruct", "source": "huggingface.co/Qwen/Qwen3.5-9B, non-thinking general line"
+        "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0,
+        "mode": "thinking", "source": "huggingface.co/Qwen/Qwen3.5-9B, precise-coding thinking line"
       },
       "timeout_s": 1500,
       "vram_gib_after_load": 9.49,
