@@ -1,45 +1,68 @@
-# a770-builder — the profiling guide
+# a770-builder
 
-Runs one local Intel Arc GPU as a coding-model seat. A model earns a profile here by being measured on
-this card, never by reputation. This file is how an agent runs the kit and adds a model.
+Run one local Intel Arc GPU as a coding-model seat, and measure models into profiles with the profiling kit.
+Stack: a bash + Python 3 (stdlib) harness; llama.cpp in a Docker/Podman container (vulkan or sycl backend);
+opencode inside a bubblewrap sandbox.
+
+## Commands
+
+| Action | Command |
+|---|---|
+| Check the machine | `bash skills/local-build/scripts/local-build.sh doctor` |
+| Serve a card | `bash skills/local-build/scripts/local-build.sh serve <card>` |
+| Status | `bash skills/local-build/scripts/local-build.sh status` |
+| Pick a card | `bash skills/local-build/scripts/local-build.sh profiles` / `menu` |
+| Profile a model | `bash harness/ladder.sh <gguf> --ctx N [--kv f16|q8_0|q4_0] [--reasoning on|off] [--reasoning-budget N] [--dry-run]` |
+| Validate the registry | `python3 harness/profiles.py check --file config/profiles.inference.json` |
+| Test | `uv run --with pytest python -m pytest -q tests/` |
+| Self-test | `env -u A770B_CARD_MODE -u A770B_PROFILES_FILE -u A770B_CORPUS_FILE A770B_PROJECT=$PWD bash tests/selftest.sh` |
 
 ## A profile
 
-One row of `config/profiles.json` (display-safe) or `config/profiles.inference.json` (pure-inference): the model
-file, quant, window, KV, sampling line, measured speed, and the task class it wins. The key is the card identity
-(family-weight-quant-backend), never a window name. One best row per (task, card, category, weight_class, backend);
-`config/models.md` is the ledger. A row's numbers are measured, never copied.
-
-## Run the kit
-
-`bash skills/local-build/scripts/local-build.sh doctor` must report all ok; put the GGUF in `A770B_MODELS`;
-work from a standalone clone, never a live checkout. The one command:
-
-    bash harness/ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v …] [--extra "…"] [--seat <path>] [--dry-run]
-
-It runs every rung in order, stops at the first failure, and writes one JSON plus a REGISTRY ROW to paste.
+One row of `config/profiles.json` (display-safe) or `config/profiles.inference.json` (pure-inference). The key is a
+card identity (family-weight-quant-backend), never a window name. One best row per (task, card, category,
+weight_class, backend). Numbers are measured, never copied; `config/models.md` is the ledger.
 
 ## The ladder
 
-1. Load and VRAM (`bench_model.sh`) — does the window load under the mode's cap (13.0 display / 15.3 inference)?
-2. Probes and the 17k summary — sane answers, a tool call, a coherent summary.
-3. Speed (`bench_speed.sh`) — llama-bench from the row's own flags at depths 0, 8k, 32k and the far end.
-4. Window (`ctx_sweep.sh 8000 <far end>`) — the 8k and far-end points, VRAM and kernel resets watched.
-5. Depth probe (`depth_probe.sh`) — a planted detail answered at depth; caps `useful_ctx` when it fails.
-6. Task (`run_suite.sh`) — the standard suite (design note, front end, backend, C++), pass tally.
+`ladder.sh` runs six rungs in order and stops at the first failure:
 
-## The bar
+1. Load + VRAM (`bench_model.sh`) under the mode's cap (13.0 display / 15.3 inference).
+2. Probes + 17k summary.
+3. Speed (`bench_speed.sh`) at depths 0, 8k, 32k, far end.
+4. Window (`ctx_sweep.sh 8000 <far end>`).
+5. Depth probe (`depth_probe.sh`) — caps `useful_ctx` when it fails.
+6. Task (`run_suite.sh`) — the standard suite.
 
-A builder-class row is green on its task (the suite at 80 percent or better, or a T1 pass on the sibling
-instrument), every probe passed, and no engine reset. Speed and useful window are recorded, not gates. A row
-that misses the bar can still be a reader or a reviewer; its `use_for` says so.
+A builder-class row is green on the task (suite at 80% or better, or a T1 pass), every probe passed, and no engine
+reset. Speed and window are recorded, not gates.
 
-## Submit
+## Submit a profile
 
-The ladder leaves the results JSON and capture under `A770B_DATA/results/`, a ledger row in `config/models.md`,
-and a registry row. Then `python3 harness/profiles.py check`, and render the skill tables:
+1. Put the GGUF in `A770B_MODELS`; `doctor` must report all ok.
+2. Run the ladder; fill the printed row's `__TODO__` fields by hand.
+3. `python3 harness/profiles.py check`, then render the skill tables:
+   `python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet skills/local-build/CONSTITUTION_SNIPPET.md --inference-file config/profiles.inference.json`
+4. Open a pull request whose description carries the numbers and the rows compared.
 
-    python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet skills/local-build/CONSTITUTION_SNIPPET.md --inference-file config/profiles.inference.json
+## Boundaries
 
-The submission is a pull request whose description carries the numbers and the rows compared. `release.sh` is
-the only way a version number moves.
+### Always
+- Work from a standalone clone, never the live checkout.
+- Judge a local-build result by `verify <label>`, never by the model's own test line.
+- Run the suite and selftest before merging a harness change.
+
+### Ask first
+- Changing the registry schema or the kit instrument (`kit/suite.json`).
+- Bumping the version.
+
+### Never
+- Touch `VERSION`, `SKILL_VERSION`, or `release.sh` — `release.sh` is the only way a number moves.
+- Copy a number into a profile you did not measure.
+- Commit secrets, `.env`, keys, or the HF token.
+
+## Load when needed
+- `docs/OPERATING.md` — day-to-day running and qualifying a new model.
+- `kit/PROFILE.md` — how a kit run becomes a registry row.
+- `kit/SUITE.md` — the standard suite's stages.
+- `config/models.md` — the ledger of every model measured.
