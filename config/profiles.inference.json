@@ -5,7 +5,7 @@
   "profiles": {
     "qwen35-9b-q4km-vulkan": {
       "task": "code-edit",
-      "evidence": "SUITE-1@1: 1 of 3 counted stages passed (the backend); the front end and the C++ optimisation failed",
+      "evidence": "SUITE-1@1 under thinking: 2 of 3 counted stages passed (front end, backend); the C++ optimisation failed",
       "model": "Qwen3.5-9B-Q4_K_M.gguf",
       "source": "lmstudio-community/Qwen3.5-9B-GGUF",
       "family": "qwen3.5",
@@ -35,13 +35,14 @@
       "vram_gib_after_load": 9.49,
       "ram_gb_extra": 0,
       "speed": {
-        "decode_tps": {"8k": 43.7, "32k": null, "64k": null, "100k": 11.6},
-        "prefill_tps": {"8k": 439, "32k": null, "64k": null, "100k": 147},
-        "far_end": {"tokens": 100000, "decode_tps": 11.6, "prefill_tps": 147, "ttft_s": 626}
+        "decode_tps": {"8k": 29.3, "32k": 18.6, "64k": null, "100k": 9.2},
+        "prefill_tps": {"8k": 385.9, "32k": 174.6, "64k": null, "100k": 62.1},
+        "far_end": {"tokens": 99845, "decode_tps": 9.2, "prefill_tps": 117.0, "ttft_s": 787.1},
+        "bench": {"tool": "b10902 (df03399b8)", "prompt": 8192, "gen": 128, "flags": "-m /models/Qwen3.5-9B-Q4_K_M.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -b 2048 -ub 512 --load-mode none -p 8192 -n 128 -d 0,8192,32768,100000 -r 3 -o json", "at_depth": {"0": {"pp": 559.74, "tg": 37.44}, "8192": {"pp": 385.93, "tg": 29.35}, "32768": {"pp": 174.60, "tg": 18.55}, "100000": {"pp": 62.06, "tg": 9.25}}, "source": "qwen35-9b-q4km-vulkan-bench-20260915-182823.json"}
       },
       "depth_probe_100k": "pass",
       "instrument": "SUITE-1@1",
-      "suite": {"briefs": 3, "runs": 3, "passed": 1, "timeouts": 0, "mean_wall_s": 163.7, "source": "qwen35-9b-q4km-vulkan-suite-20260915-081437-393449.json", "instrument": "SUITE-1@1"},
+      "suite": {"briefs": 3, "runs": 3, "passed": 2, "timeouts": 0, "mean_wall_s": 290.0, "source": "qwen35-9b-q4km-vulkan-suite-20260915-191101-590537.json", "instrument": "SUITE-1@1"},
       "measured_on": "Arc A770 16 GB, llama.cpp b10805 Vulkan",
       "card": "a770",
       "backend": "vulkan",
@@ -49,11 +50,11 @@
       "capability": {},
       "capability_source": "",
       "fit": {
-        "code": "SUITE-1@1: 1 of 3 counted stages passed (the backend), mean wall 164 s; the front end and the C++ optimisation failed",
+        "code": "SUITE-1@1 under thinking: 2 of 3 counted stages passed (front end, backend), mean wall 290 s; the C++ optimisation failed",
         "think": "not measured (the thinking arm is owed)",
         "write": "not measured"
       },
-      "use_for": "Every ordinary bounded change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. Not the kit's multi-stage project: SUITE-1@1 passed 1 of 3 counted stages."
+      "use_for": "Every ordinary bounded change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. Thinking helps the kit's front end and backend but not the C++ stage: SUITE-1@1 passed 2 of 3 counted stages under thinking (the trivial probes over-think, quality_ok false)."
     },
 
     "qwen38-27b-iq3s-vulkan": {
