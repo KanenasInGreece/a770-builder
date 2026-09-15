@@ -90,6 +90,8 @@ fi
 # the depth probe must leave room for the reasoning budget plus the answer: a fixed answer-only budget (320) starves
 # a thinking card of its answer — the class of defect that made the serious-sycl probe come back empty. The budget
 # is never hard-coded here: it is the row's own thinking budget (or the caller's, for a bare GGUF), or off.
+case "$REAS" in on|off) ;; *) die "reasoning must be on or off (got '$REAS')" ;; esac
+case "$BUDGET" in ''|-1|0|[0-9]*) ;; *) die "reasoning budget must be a non-negative integer, 0 or -1 (got '$BUDGET')" ;; esac
 GEN=320
 if [ "$REAS" = "on" ]; then
   case "$BUDGET" in
@@ -133,7 +135,7 @@ if [ "$DRYRUN" = 1 ]; then
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 6/6: bash harness/run_suite.sh $PROFILE_NAME $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   else
-    echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V --extra '$EXTRA' --reasoning $REAS --reasoning-budget ${BUDGET:-0} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
+    echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V --extra '$EXTRA' --reasoning $REAS${BUDGET:+ --reasoning-budget $BUDGET} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   fi
   echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, ram_gb_extra, suite, instrument computed; use_for/fit.write/capability left as placeholders)"
   echo "[dry-run] nothing written"
@@ -212,7 +214,11 @@ if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 6/6 — task (run_suite.sh)"
   RS_ARGS=()
   if [ -n "$PROFILE_NAME" ]; then RS_ARGS=("$PROFILE_NAME" "$SEAT")
-  else RS_ARGS=(--model "$GGUF" --ctx "$CTX" --kv "$KV" --kv-v "$KV_V" --extra "$EXTRA" --reasoning "$REAS" --reasoning-budget "${BUDGET:-0}" --timeout "$TIMEOUT" "$SEAT"); fi
+  else
+    RS_ARGS=(--model "$GGUF" --ctx "$CTX" --kv "$KV" --kv-v "$KV_V" --extra "$EXTRA" --reasoning "$REAS")
+    [ -n "$BUDGET" ] && RS_ARGS+=(--reasoning-budget "$BUDGET")
+    RS_ARGS+=(--timeout "$TIMEOUT" "$SEAT")
+  fi
   [ -n "$SUITE" ] && RS_ARGS+=(--suite "$SUITE")
   [ -n "$REVIEWER" ] && RS_ARGS+=(--reviewer "$REVIEWER")
   # a ladder run owns the kit's own scratch seat and replaces it without being asked: a leftover from an earlier

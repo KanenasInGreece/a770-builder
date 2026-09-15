@@ -79,6 +79,8 @@ if [ -n "$MODEL_GGUF" ]; then
     *) die "too many positional arguments with --model: ${POSITIONALS[*]} (a registry profile name and --model are mutually exclusive)" ;;
   esac
   PROFILE="candidate"
+  case "$MODEL_REASONING" in ''|on|off) ;; *) die "reasoning must be on or off (got '$MODEL_REASONING')" ;; esac
+  case "$MODEL_BUDGET" in ''|-1|0|[0-9]*) ;; *) die "reasoning budget must be a non-negative integer, 0 or -1 (got '$MODEL_BUDGET')" ;; esac
   export A770B_CANDIDATE_MODEL="$MODEL_GGUF"
   export A770B_CANDIDATE_CTX="$MODEL_CTX"
   export A770B_CANDIDATE_KV="${MODEL_KV:-q8_0}"
