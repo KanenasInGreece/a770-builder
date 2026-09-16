@@ -187,20 +187,22 @@ card in `nvtop -s`, which the VRAM readings and the cap depend on. `A770B_UBATCH
 it keeps the GPU's job watchdog quiet. The server refuses to stay up past the mode's cap after load. No speculative
 decoding on this card: draft models and MTP heads all made decode slower.
 
-**The device pin.** `A770B_VK_DEVICE_SELECT` (default `8086:56a0!`) pins the server to the builder card by PCI vendor
-and device id rather than by the Vulkan device index `A770B_DEVICE` names, because Vulkan lists the boot card first and
-an index alone drifts when the desktop moves to another card. It is Mesa's Vulkan device selector, passed to the server
-as `MESA_VK_DEVICE_SELECT`: find the id with `lspci -nn`, which prints each card's `[vendor:device]` pair, and the
-trailing `!` makes that card the only Vulkan device the server can see. Set it in `builder.env` with single quotes,
-`A770B_VK_DEVICE_SELECT='8086:56a0!'`, since an interactive shell reads a bare `!` as history expansion; an empty value
-unpins. With the selector set, `llama-server --list-devices` lists exactly one card, the builder's, whatever card the
-machine booted with as its display device. `local-build.sh doctor` checks this with the rest of the installation.
+**The device pin.** `A770B_VK_DEVICE_SELECT` (no default — `doctor` refuses while unset) pins the server to the builder
+card by PCI vendor and device id rather than by the Vulkan device index `A770B_DEVICE` names, because Vulkan lists the
+boot card first and an index alone drifts when the desktop moves to another card. It is Mesa's Vulkan device selector,
+passed to the server as `MESA_VK_DEVICE_SELECT`: find the id with `lspci -nn`, which prints each card's `[vendor:device]`
+pair, and the trailing `!` makes that card the only Vulkan device the server can see. Set it in `builder.env` with
+single quotes, `A770B_VK_DEVICE_SELECT='8086:e223!'` (the Arc Pro B70; the A770 was `8086:56a0`), since an interactive
+shell reads a bare `!` as history expansion. With the selector set, `llama-server --list-devices` lists exactly one
+card, the builder's, whatever card the machine booted with as its display device. `local-build.sh doctor` checks this
+with the rest of the installation.
 
-The cap is measured after load, in either mode. On a card that also draws the desktop, the public default of 13.0
-assumes a desktop share that has never been measured on your card. Measure it before raising the cap: run `nvtop -s`,
-start something that actually draws the card (a video playing is enough), and sum every process on it that is not the
-server. On this workstation that came to 1.0 GiB, so the cap here runs at 14.1 in `builder.display.env` rather than
-the public 13.0. That extra headroom is what admits the 27B's task-lossless file, IQ3_S, at 114,688, which
+The cap is measured after load, in either mode, and has no default — `doctor` refuses while `A770B_VRAM_CAP_GIB` is
+unset. On a card that also draws the desktop, a shared card's cap must account for a desktop share that has never been
+measured on your card. Measure it before setting or raising the cap: run `nvtop -s`, start something that actually
+draws the card (a video playing is enough), and sum every process on it that is not the server. On the A770 this came
+to 1.0 GiB, so the cap there ran at 14.1 in `builder.display.env` rather than a display default. That extra headroom is
+what admitted the 27B's task-lossless file, IQ3_S, at 114,688, which
 loads at 13.78 GiB and peaks at 14.21 GiB during a 32k prompt; the 9B's full native window loads at
 10.35 GiB and fits under either cap. On a card that draws nothing, the free card here reported 15.9 GiB total and
 0.08 GiB used besides the server; prefill growth above the after-load reading has measured 0.04 to 0.3 GiB under

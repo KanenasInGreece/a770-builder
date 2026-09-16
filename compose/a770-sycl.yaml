@@ -6,8 +6,7 @@
 # config/profiles*.json, so the registry stays the single source.
 #
 # The image is ghcr.io/ggml-org/llama.cpp:full-intel — llama.cpp built with SYCL (oneAPI / Level Zero) support,
-# the A770/DG2-compatible Intel path (llama.cpp's SYCL docs list the Arc A770 as verified). vLLM's Intel XPU
-# backend is closed on this card; SYCL is the working Intel GPU path here. Use full-intel, NOT server-intel: full
+# the Intel GPU path that does not depend on vLLM's XPU backend. Use full-intel, NOT server-intel: full
 # copies build/bin/* so the one-shot llama-bench job (the speed rung) is in the same image. Pin it by digest after
 # the first pull (compose/a770-sycl.env).
 #

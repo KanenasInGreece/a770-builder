@@ -492,12 +492,12 @@ out=$( ( _iso; export A770B_CARD_MODE=x XDG_CONFIG_HOME="$t/xdg"; . "$here/harne
   && echo "ok   mode: I1 an invalid mode refuses (exit 2) and names it" || { echo "FAIL mode: I1 x -> rc=$rc: $out"; fail=1; }
 ( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   case "$A770B_PROFILES_FILE" in *config/profiles.json) : ;; *) exit 1;; esac
-  [ "$A770B_VRAM_CAP_GIB" = 13.0 ] && [ "$A770B_PROFILES" = "qwen35-9b-q4km-vulkan gemma4-8b-e4b-q4km-vulkan qwen38-27b-iq3xxs-vulkan" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ]
-) && echo "ok   mode: I2 the v0.1.4 defaults hold with the mode unset" || { echo "FAIL mode: I2 the display defaults did not all hold"; fail=1; }
+  [ -z "$A770B_VRAM_CAP_GIB" ] && [ "$A770B_PROFILES" = "qwen35-9b-q4km-vulkan gemma4-8b-e4b-q4km-vulkan qwen38-27b-iq3xxs-vulkan" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ]
+) && echo "ok   mode: I2 the display registry holds and the cap has no default with the mode unset" || { echo "FAIL mode: I2 the display defaults did not all hold"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
-  [ "$A770B_VRAM_CAP_GIB" = 15.3 ]
-) && echo "ok   mode: I3 inference defaults to its own registry and a 15.3 cap" || { echo "FAIL mode: I3 inference defaults did not hold"; fail=1; }
+  [ -z "$A770B_VRAM_CAP_GIB" ]
+) && echo "ok   mode: I3 inference defaults to its own registry and no cap" || { echo "FAIL mode: I3 inference defaults did not hold"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference A770B_VRAM_CAP_GIB=14.9 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_VRAM_CAP_GIB" = 14.9 ] ) \
   && echo "ok   mode: I3 the environment's cap wins over the inference default" || { echo "FAIL mode: I3 A770B_VRAM_CAP_GIB=14.9 did not win"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference A770B_PROFILES_FILE="$here/config/profiles.json" XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_PROFILES_FILE" = "$here/config/profiles.json" ] ) \
@@ -508,7 +508,7 @@ out=$( ( _iso; export A770B_CARD_MODE=x XDG_CONFIG_HOME="$t/xdg"; . "$here/harne
 ( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   bash -c 'export A770B_CARD_MODE=inference; . "$A770B_PROJECT/harness/env.sh" >/dev/null 2>&1
     case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
-    [ "$A770B_VRAM_CAP_GIB" = 15.3 ]'
+    [ -z "$A770B_VRAM_CAP_GIB" ]'
 ) && echo "ok   mode: a second source in another mode takes that mode's registry and cap" \
   || { echo "FAIL mode: a second source in another mode did not take that mode's registry/cap"; fail=1; }
 i4a="$t/i4a/xdg"; mkdir -p "$i4a/a770-builder"
@@ -567,7 +567,10 @@ grep -q '4096' "$here/harness/bench_model.sh" && grep -q 'REASONING' "$here/harn
   grep -q '"output": 4242' "$t/harness-output.jsonc"
 ) && echo "ok   harness: a770b_render_profile carries the profile's own output_tokens" \
   || { echo "FAIL harness: a770b_render_profile did not carry A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS=4242"; fail=1; }
-# I9 — doctor's card: and mode: lines; a fake nvtop prints the JSON file $NVTOP_FAKE names, in 'nvtop -s' shape
+# I9 — doctor's card: and mode: lines; a fake nvtop prints the JSON file $NVTOP_FAKE names, in 'nvtop -s' shape.
+# A770B_GPU_MATCH has no default now, so name it here: mkfake builds the fake device from it, and the card: line
+# must see a non-empty match to exercise the one/ambiguous/none cases (I9h proves the unset refusal separately).
+export A770B_GPU_MATCH=DG2
 mkdir -p "$t/bin"
 cat > "$t/bin/nvtop" <<'NVEOF'
 #!/bin/sh
@@ -641,6 +644,16 @@ out=$( ( _iso; export A770B_CARD_MODE=display PATH="$path_no_nvtop" A770B_ALLOW_
 printf '%s' "$out" | grep -q "MISSING card: no VRAM readings (nvtop absent or its output unreadable); install nvtop, or set A770B_ALLOW_NO_NVTOP=1" \
   && echo "ok   mode: I9g no nvtop without A770B_ALLOW_NO_NVTOP is MISSING card" \
   || { echo "FAIL mode: I9g"; printf '%s\n' "$out" | tail -20; fail=1; }
+# I9h — the no-default card knobs: an unset selector, match or cap is a MISSING input, never a fallback to a card
+# this project once shipped, and never matched against '' (which is a substring of every device name).
+out=$( ( _iso; unset A770B_GPU_MATCH; export A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-1g.json" A770B_ALLOW_NO_NVTOP=0
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+{ printf '%s' "$out" | grep -q "MISSING input A770B_GPU_MATCH is unset" \
+  && printf '%s' "$out" | grep -q "MISSING input A770B_VK_DEVICE_SELECT is unset" \
+  && printf '%s' "$out" | grep -q "MISSING input A770B_VRAM_CAP_GIB is unset" \
+  && ! printf '%s' "$out" | grep -q "ok   card: exactly one"; } \
+  && echo "ok   mode: I9h an unset card knob is MISSING, never matched against ''" \
+  || { echo "FAIL mode: I9h"; printf '%s\n' "$out" | tail -20; fail=1; }
 # the stop-run gate: run_pid_alive is the proof a pid is ours before any signal is sent, proved here without the card
 RUNPID="$A770B_DATA/logs/run.pid"
 rm -f "$RUNPID"
@@ -666,7 +679,7 @@ if [ "$pid" = "$rp" ] && bash "$here/skills/local-build/scripts/local-build.sh" 
 else echo "FAIL gate: run_pid_alive refused the recorded run, or stop-run did not exit 0"; fail=1; kill "$rp" 2>/dev/null
 fi
 rm -f "$RUNPID"
-[ "$A770B_VK_DEVICE_SELECT" = "8086:56a0!" ] && echo "ok   device: the builder card is pinned by PCI id by default" || { echo "FAIL device: A770B_VK_DEVICE_SELECT default is '$A770B_VK_DEVICE_SELECT'"; fail=1; }
+[ -z "$A770B_VK_DEVICE_SELECT" ] && echo "ok   device: A770B_VK_DEVICE_SELECT has no default (doctor refuses while unset)" || { echo "FAIL device: A770B_VK_DEVICE_SELECT default is '$A770B_VK_DEVICE_SELECT'"; fail=1; }
 grep -q 'MESA_VK_DEVICE_SELECT: "${A770B_VK_DEVICE_SELECT}"' "$here/compose/a770-vulkan.yaml" && echo "ok   device: the container envelope pins the server to the selector" || { echo "FAIL device: the envelope does not pass the selector to the container"; fail=1; }
 out=$(A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_QWEN35_9B_Q4KM_VULKAN_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile gemma4-8b-e4b-q4km-vulkan serves qwen35-9b-q4km-vulkan's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
 out=$(bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "^ok   profiles:" && echo "ok   doctor: a clean environment is not warned about" || { echo "FAIL doctor: warned on a clean environment"; fail=1; }
@@ -958,6 +971,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$cb/bin/pgrep"; chmod +x "$cb/bin/pgre
 printf '#!/usr/bin/env bash\necho \x27[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\x27\n' > "$cb/bin/nvtop"; chmod +x "$cb/bin/nvtop"
 cb_env(){ A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
   A770B_SERVE=compose A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_MIN_AVAIL_MB=1 A770B_API_KEY_FILE="$cb/api.key" \
+  A770B_GPU_MATCH=DG2 A770B_VRAM_CAP_GIB=15.3 \
   A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" A770B_COMPOSE_ENV_FILE="$cb/a770-vulkan.env" \
   A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp:full-vulkan" A770B_DRM_CARD=/dev/dri/card0 A770B_DRM_RENDER=/dev/dri/renderD128 \
   A770B_RENDER_GID=105 A770B_VIDEO_GID=39 \
