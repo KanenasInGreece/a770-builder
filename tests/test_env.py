@@ -178,26 +178,25 @@ def _run_doctor(env: dict) -> subprocess.CompletedProcess:
     )
 
 
-def test_doctor_states_each_card_pinning_knob_as_an_input(tmp_path):
+def test_doctor_refuses_the_card_knobs_when_unset(tmp_path):
     r = _run_doctor(_doctor_env(tmp_path))
     out = r.stdout
-    for var in ("A770B_VK_DEVICE_SELECT", "A770B_GPU_MATCH", "A770B_VRAM_CAP_GIB", "A770B_UBATCH"):
-        lines = [ln for ln in out.splitlines() if ln.startswith("ok   input " + var + "=")]
-        assert lines, f"doctor printed no 'input {var}=' line:\n{out}"
-        assert "this project's default" in lines[0] or "your own override" in lines[0]
+    for var in ("A770B_VK_DEVICE_SELECT", "A770B_GPU_MATCH", "A770B_VRAM_CAP_GIB"):
+        assert any(ln.startswith("MISSING input " + var + " is unset") for ln in out.splitlines()), out
+    # A770B_UBATCH is a fixed default, not a card knob: it still reports as an input, never MISSING
+    assert any(ln.startswith("ok   input A770B_UBATCH=") for ln in out.splitlines()), out
 
 
-def test_doctor_labels_an_overridden_knob_as_the_users_own():
+def test_doctor_accepts_a_set_card_knob():
     r = subprocess.run(
         ["bash", str(DOCTOR_SH), "doctor"],
         capture_output=True, text=True, cwd=ROOT,
         env=dict(os.environ, A770B_PROJECT=str(ROOT), A770B_REFUSE="/nonexistent",
                   A770B_GPU_MATCH="SomeOtherCard"),
     )
-    lines = [ln for ln in r.stdout.splitlines() if ln.startswith("ok   input A770B_GPU_MATCH=")]
-    assert lines, r.stdout
-    assert "your own override" in lines[0]
-    assert "this project's default" not in lines[0]
+    out = r.stdout
+    assert any(ln.startswith("ok   input A770B_GPU_MATCH=SomeOtherCard") for ln in out.splitlines()), out
+    assert not any(ln.startswith("MISSING input A770B_GPU_MATCH") for ln in out.splitlines()), out
 
 
 # ── A770B_SERVE: compose only ───────────────────────────────────────────────────────────────────────────────
@@ -267,22 +266,15 @@ def test_doctor_compose_flags_a_missing_env_file(tmp_path):
     assert any(ln.startswith("MISSING compose env") for ln in r.stdout.splitlines()), r.stdout
 
 
-def test_doctor_flags_missing_when_the_a770_defaults_are_in_force_on_a_non_matching_card(tmp_path):
-    # fake nvtop (no device names it as DG2) and a fake llama-server whose --list-devices pins nothing:
-    # in compose mode, A770B_GPU_MATCH is checked but VK_DEVICE_SELECT check was removed.
+def test_doctor_refuses_an_unset_gpu_match_instead_of_matching_everything(tmp_path):
+    # an unset A770B_GPU_MATCH must never be matched: '' is a substring of every device name, so on a one-card
+    # machine it would read as "exactly one match" and pass — a false green. Doctor refuses it by name instead.
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _make_bin(bin_dir, "nvtop", 'printf \'[{"device_name": "NotTheA770", "mem_total": 8000000000, "mem_used": 100, "mem_free": 7999999900}]\'')
-    llama = _make_bin(bin_dir, "llama-server", 'exit 0')  # --list-devices prints nothing: 0 Vulkan lines
-    env = _doctor_env(tmp_path, A770B_LLAMA_BIN=str(llama))
+    _make_bin(bin_dir, "nvtop", 'printf \'[{"device_name": "OnlyOneCard", "mem_total": 8000000000, "mem_used": 100, "mem_free": 7999999900}]\'')
+    env = _doctor_env(tmp_path, A770B_ALLOW_NO_NVTOP="0")
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     r = _run_doctor(env)
     out = r.stdout
-    # in compose mode: GPU_MATCH is checked (will be MISSING), but VK_DEVICE_SELECT check is skipped
-    assert any(
-        ln.startswith("MISSING input A770B_GPU_MATCH=DG2") for ln in out.splitlines()
-    ), out
-    # VK_DEVICE_SELECT check is host-only, so it should NOT appear as MISSING in compose mode
-    assert not any(
-        ln.startswith("MISSING input A770B_VK_DEVICE_SELECT=8086:56a0!") for ln in out.splitlines()
-    ), out
+    assert any(ln.startswith("MISSING input A770B_GPU_MATCH is unset") for ln in out.splitlines()), out
+    assert not any(ln.startswith("ok   card: exactly one") for ln in out.splitlines()), out

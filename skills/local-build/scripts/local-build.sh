@@ -231,17 +231,25 @@ doctor(){
     esac
   fi
   if command -v nvtop >/dev/null 2>&1 || [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then echo "ok   nvtop: on PATH or A770B_ALLOW_NO_NVTOP=1"; else echo "MISSING nvtop: install it for VRAM readings, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1)); fi
-  n=$(gpu_match_count)
-  case "$n" in
-    1) echo "ok   card: exactly one nvtop device matches A770B_GPU_MATCH=$A770B_GPU_MATCH" ;;
-    -1)
-      if [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then
-        echo "ok   card: not measured (no VRAM readings)"
-      else
-        echo "MISSING card: no VRAM readings (nvtop absent or its output unreadable); install nvtop, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1))
-      fi ;;
-    *) echo "MISSING card: $n nvtop devices match A770B_GPU_MATCH=$A770B_GPU_MATCH, not 1; set it to a substring naming the builder card alone in 'nvtop -s'"; missing=$((missing+1)) ;;
-  esac
+  if [ -z "$A770B_GPU_MATCH" ]; then
+    # an unset GPU_MATCH must never be matched: '' is a substring of every device name, so on a one-card machine it
+    # would read as "exactly one match" and pass — a false green. The MISSING input line for A770B_GPU_MATCH names
+    # the fix; here the card and mode lines just say "not measured".
+    n=""
+    echo "ok   card: not measured (A770B_GPU_MATCH unset)"
+  else
+    n=$(gpu_match_count)
+    case "$n" in
+      1) echo "ok   card: exactly one nvtop device matches A770B_GPU_MATCH=$A770B_GPU_MATCH" ;;
+      -1)
+        if [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then
+          echo "ok   card: not measured (no VRAM readings)"
+        else
+          echo "MISSING card: no VRAM readings (nvtop absent or its output unreadable); install nvtop, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1))
+        fi ;;
+      *) echo "MISSING card: $n nvtop devices match A770B_GPU_MATCH=$A770B_GPU_MATCH, not 1; set it to a substring naming the builder card alone in 'nvtop -s'"; missing=$((missing+1)) ;;
+    esac
+  fi
   if llama_pid_alive "$PIDF" >/dev/null; then
     echo "ok   mode: $A770B_CARD_MODE, not measured (the seat's server is up)"
   elif [ "$n" != 1 ]; then
@@ -257,7 +265,7 @@ doctor(){
         fi ;;
       *)
         hint=""
-        python3 -c "import sys; sys.exit(0 if float('$u') <= 0.1 else 1)" && hint=" — no desktop measured on it; A770B_CARD_MODE=inference would serve the inference registry under the inference cap (15.3)"
+        python3 -c "import sys; sys.exit(0 if float('$u') <= 0.1 else 1)" && hint=" — no desktop measured on it; A770B_CARD_MODE=inference would serve the inference registry under its measured cap"
         echo "ok   mode: display; the builder card holds $u GiB with the seat's server down$hint" ;;
     esac
   fi
@@ -274,26 +282,23 @@ doctor(){
   fi
   [ -n "$A770B_REFUSE" ] && echo "ok   A770B_REFUSE: set" || { echo "MISSING A770B_REFUSE: list the live checkouts the seat must never touch, colon-separated, in builder.env"; missing=$((missing+1)); }
   if [ -d "$A770B_SEAT" ] && [ -d "$A770B_SEAT/.git" ] && [ ! -L "$A770B_SEAT/.git" ]; then echo "ok   seat at $A770B_SEAT"; else echo "MISSING seat at $A770B_SEAT: clone the target repository there (git clone <url> $A770B_SEAT)"; missing=$((missing+1)); fi
-  # card inputs: A770B_VK_DEVICE_SELECT, A770B_GPU_MATCH, A770B_VRAM_CAP_GIB and A770B_UBATCH (-ub) pin the
-  # qualification workstation's Intel Arc A770 — Vulkan vendor:device 8086:56a0, nvtop name DG2, a VRAM cap
-  # measured on it per mode, ubatch 512 kept under this driver's GPU reset watchdog (see A770B_RESET_PATTERN in
-  # config/builder.env.example for the kernel-log side of that same watchdog on a non-Intel card). One line per
-  # knob below: the value in force, and whether it is this project's default or your own override for your card;
-  # a MISSING line when a default naming the A770 is still in force but nvtop or the Vulkan selector shows this
-  # machine's card is not one.
+  # card inputs: A770B_VK_DEVICE_SELECT, A770B_GPU_MATCH and A770B_VRAM_CAP_GIB carry NO default — they name THIS
+  # machine's builder card, and an unset value is a MISSING input, never a fallback to a card this project once
+  # shipped (no card identity is the default). A770B_UBATCH stays a fixed default: 512 keeps GPU jobs under the
+  # Intel Xe watchdog on any Intel card. One line per knob: the value in force, or the MISSING it needs.
+  _a770b_required_input(){ local var="$1" label="$2" hint="$3" val
+    val="${!var}"
+    if [ -n "$val" ]; then echo "ok   input $var=$val — $label"; else echo "MISSING input $var is unset — $label; $hint"; missing=$((missing+1)); fi
+  }
   _a770b_doctor_input(){ local var="$1" default="$2" label="$3" val
     val="${!var}"
-    if [ "$val" = "$default" ]; then echo "ok   input $var=$val — $label (this project's default, tuned for the A770)"
+    if [ "$val" = "$default" ]; then echo "ok   input $var=$val — $label (this project's default)"
     else echo "ok   input $var=$val — $label (your own override)"; fi
   }
-  case "$A770B_CARD_MODE" in inference) _cap_default=15.3;; *) _cap_default=13.0;; esac
-  _a770b_doctor_input A770B_VK_DEVICE_SELECT "8086:56a0!" "the Vulkan selector pinning the builder card"
-  _a770b_doctor_input A770B_GPU_MATCH "DG2" "nvtop device-name substring for the builder card"
-  _a770b_doctor_input A770B_VRAM_CAP_GIB "$_cap_default" "the VRAM cap for mode $A770B_CARD_MODE"
-  _a770b_doctor_input A770B_UBATCH "512" "ubatch, kept under this driver's GPU reset watchdog"
-  if [ "$A770B_GPU_MATCH" = "DG2" ] && [ "$n" = 0 ]; then
-    echo "MISSING input A770B_GPU_MATCH=DG2 is this project's default (the Intel Arc A770) but no device in 'nvtop -s' matches it on this machine — set A770B_GPU_MATCH to your own card's name"; missing=$((missing+1))
-  fi
+  _a770b_required_input A770B_VK_DEVICE_SELECT "the Vulkan selector pinning the builder card" "set it to your card's vendor:device! from 'lspci -nn' (e.g. 8086:e223! for the Arc Pro B70)"
+  _a770b_required_input A770B_GPU_MATCH "nvtop device-name substring naming the builder card alone" "set it from 'nvtop -s' (e.g. 'G31' or 'Arc Pro B70')"
+  _a770b_required_input A770B_VRAM_CAP_GIB "the VRAM cap for mode $A770B_CARD_MODE" "measure it on your card, then set it (raise only after measuring what else the card holds)"
+  _a770b_doctor_input A770B_UBATCH "512" "ubatch, kept under the GPU reset watchdog"
 
   [ -d "$A770B_UV_CACHE" ] && echo "ok   uv cache at $A770B_UV_CACHE" || { echo "MISSING uv cache at $A770B_UV_CACHE: run bash harness/warm_cache.sh once (the sandbox has no network)"; missing=$((missing+1)); }
   if [ "$missing" = 0 ]; then echo "ok   doctor: all checks passed"; return 0; else echo "MISSING doctor: $missing missing"; return 1; fi

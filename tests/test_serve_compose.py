@@ -75,6 +75,8 @@ def _env(tmp_path: Path, bin_=None, **overrides) -> dict:
         A770B_CARD_MODE="inference",
         A770B_MODELS=str(models),
         A770B_ALLOW_NO_NVTOP="1",
+        A770B_GPU_MATCH="DG2",                  # matches the fake nvtop's "Intel Arc A770 DG2"
+        A770B_VRAM_CAP_GIB="15.3",              # the card knob serve's post-load cap check reads
         A770B_MIN_AVAIL_MB="1",                 # keep the budget-gate tests hermetic on a small CI box
         A770B_API_KEY_FILE=str(tmp_path / "api.key"),
         A770B_COMPOSE_FILE=str(ENVELOPE),
@@ -190,6 +192,18 @@ def test_start_refuses_early_when_the_envelope_values_are_missing(tmp_path):
     assert r.returncode == 2
     assert "a770-vulkan.env.example" in r.stderr
     assert not log.exists()
+
+
+def test_start_refuses_an_unset_or_non_numeric_vram_cap(tmp_path):
+    # the cap has no default: an empty or non-finite value must refuse before the container starts, never fail
+    # open on the float comparison after it is up
+    for bad in ("", "abc", "nan", "inf", "15.3.3"):
+        d = tmp_path / f"cap-{bad or 'empty'}"
+        d.mkdir()
+        bin_, log = _fake_runtime(d)
+        r = _run(_env(d, bin_, A770B_VRAM_CAP_GIB=bad), "start", GGUF, "8192")
+        assert r.returncode == 2, (bad, r.stdout, r.stderr)
+        assert "A770B_VRAM_CAP_GIB" in r.stderr, (bad, r.stderr)
 
 
 def test_start_fails_when_the_container_reports_no_live_pid(tmp_path):

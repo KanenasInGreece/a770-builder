@@ -35,19 +35,22 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot _a770b_selected_mode
 #    caller that starts the server (skills/local-build/scripts/local-build.sh's `serve`) is what maps them onto the
 #    THINKING_MODE/THINKING_EFFORT/THINKING_BUDGET/THINKING_BUDGET_MESSAGE/THINKING_PRESERVE environment variables
 #    harness/serve_compose.sh reads to build its --reasoning* flags.
-# the mode's two defaults: the registry it reads and its VRAM cap. 15.3 is measured on the A770 with no display (15.9
-# on the card, prefill growth at or under 0.3 GiB under ub 512, a 0.3 GiB reserve); 13.0 leaves an unmeasured desktop 3 GiB.
-case "$A770B_CARD_MODE" in inference) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.inference.json}"; : "${A770B_VRAM_CAP_GIB:=15.3}";; *) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.json}"; : "${A770B_VRAM_CAP_GIB:=13.0}";; esac
+# the mode's registry, and the VRAM cap. The cap is a per-card measurement (absolute GiB on the card, not a fraction of
+# VRAM), and there is no default: doctor refuses while A770B_VRAM_CAP_GIB is unset and serve refuses a non-numeric cap.
+# Set it in builder.env (or builder.<mode>.env) after measuring what else the card holds (`nvtop -s` per process); raise
+# it only after a measurement.
+case "$A770B_CARD_MODE" in inference) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.inference.json}";; *) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.json}";; esac
+: "${A770B_VRAM_CAP_GIB:=}"
 _a770b_profile_lines=$(python3 "$A770B_PROJECT/harness/profiles.py" env --file "$A770B_PROFILES_FILE") || { echo "⛔ the registry $A770B_PROFILES_FILE is invalid (python3 harness/profiles.py check says why)" >&2; return 2 2>/dev/null || exit 2; }
 eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 : "${A770B_OUTPUT_TOKENS:=16384}"                            # opencode's per-reply output limit: a whole file goes out in one tool call, and at 4,096 a test file of two hundred lines was cut mid-JSON, so every write failed (measured 2026-09-08)
 : "${A770B_HIDDEN_ROOT:=$A770B_DATA/hidden}"                  # hidden acceptance tests a run specification may name: files the model never sees, copied into the seat by verify after the patch applies
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_LLAMA_BIN:=${LLAMA_BIN:-$HOME/llama.cpp/build/bin/llama-server}}"
-: "${A770B_DEVICE:=Vulkan0}"                             # llama-server --list-devices names the cards; pick the builder card
-: "${A770B_VK_DEVICE_SELECT=8086:56a0!}"                # Mesa device selector, vendor:device of the builder card with '!' = the only Vulkan device the server sees (A770 = 8086:56a0); Vulkan lists the boot card first, so an index alone drifts when the desktop moves
-: "${A770B_ONEAPI_DEVICE_SELECTOR:=level_zero:gpu}"      # SYCL/Level Zero selector for the SYCL envelope (compose/a770-sycl.yaml); a TYPE filter, not a pin — the A770's two DRM nodes are what hide the neighbour card. `level_zero:0` pins by index where a driver mis-handles multiple devices
-: "${A770B_GPU_MATCH:=DG2}"                             # substring of the card's name in `nvtop -s`, for VRAM readings and the cap
+: "${A770B_DEVICE:=Vulkan0}"                             # llama-server --list-devices names the cards; the selector below pins exactly one, so its index is 0
+: "${A770B_VK_DEVICE_SELECT:=}"                          # REQUIRED: Mesa device selector, vendor:device of the builder card with '!' (from `lspci -nn`); no default — doctor refuses while unset. Vulkan lists the boot card first, so an index alone drifts when the desktop moves
+: "${A770B_ONEAPI_DEVICE_SELECTOR:=level_zero:gpu}"      # SYCL/Level Zero selector for the SYCL envelope (compose/a770-sycl.yaml); a TYPE filter, not a pin — the builder card's two DRM nodes are what hide the neighbour card. `level_zero:0` pins by index where a driver mis-handles multiple devices
+: "${A770B_GPU_MATCH:=}"                                 # REQUIRED: substring of the builder card's name in `nvtop -s`, for VRAM readings and the cap; no default — doctor refuses while unset
 : "${A770B_RESET_PATTERN:=engine reset|timedout}"       # kernel-log regex (grep -ciE) for a GPU reset; this is Intel's Xe driver wording — on
                                                           # a non-Intel driver set this to yours (see config/builder.env.example for how to find it)
 : "${A770B_PORT:=7890}";  : "${A770B_HOST:=127.0.0.1}";  : "${A770B_ALIAS:=local-builder}"

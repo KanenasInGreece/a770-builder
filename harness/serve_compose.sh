@@ -112,6 +112,10 @@ if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
     [ -n "${!_v:-}" ] || { echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy ${A770B_COMPOSE_ENV_FILE}.example and edit it" >&2; exit 2; }
   done
 fi
+# the VRAM cap is a per-card measurement with no default: an empty or non-numeric cap must refuse BEFORE the
+# container starts, not fail open on the float comparison after it is already up
+python3 -c "import sys,math; v=float('$A770B_VRAM_CAP_GIB'); sys.exit(0 if (v>0 and math.isfinite(v)) else 1)" 2>/dev/null \
+  || { echo "⛔ A770B_VRAM_CAP_GIB is not a positive finite number ('$A770B_VRAM_CAP_GIB') — set your card's measured VRAM cap in builder.env (raise it only after measuring what else the card holds)" >&2; exit 2; }
 # a start is a recreate: take any existing container of this project down first, so the budget gate reads the card
 # free (a running container's VRAM is this project's, not a foreign server) and `up --force-recreate` starts from
 # the profile just built — a profile switch must not silently keep the old model.
