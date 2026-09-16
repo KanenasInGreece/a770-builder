@@ -168,6 +168,9 @@ def _doctor_env(tmp_path, **overrides) -> dict:
         A770B_PROJECT=str(ROOT),
         A770B_REFUSE="/nonexistent",
         A770B_DATA=str(tmp_path / "data"),
+        # isolate from the operator's own ~/.config/a770-builder/builder.env (which may set A770B_CARD and friends):
+        # a doctor test asserts what happens when the card knobs are unset, so it must not inherit a real config
+        XDG_CONFIG_HOME=str(tmp_path / "xdg"),
     )
     env.update(overrides)
     return env
