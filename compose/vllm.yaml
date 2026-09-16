@@ -42,4 +42,4 @@ services:
       CCL_ZE_IPC_EXCHANGE: sockets
     ports:
       - "127.0.0.1:${A770B_PORT}:8000"
-    entrypoint: ["vllm", "serve"]
+    entrypoint: ["/bin/sh", "-c", "export VLLM_API_KEY=\"$(cat /run/a770b/api.key 2>/dev/null)\"; exec vllm serve \"$@\"", "vllm-serve"]

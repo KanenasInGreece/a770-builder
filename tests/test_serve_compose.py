@@ -143,12 +143,29 @@ def test_plan_carries_the_thinking_controls_and_the_extra_words(tmp_path):
 def test_override_is_json_with_the_server_entrypoint_and_the_argv(tmp_path):
     out = tmp_path / "ov.json"
     argv = ["-m", "/models/x.gguf", "--chat-template-kwargs", '{"reasoning_effort":"low"}']
-    r = subprocess.run([sys.executable, str(OVERRIDE_PY), "--out", str(out), "--", *argv],
+    r = subprocess.run([sys.executable, str(OVERRIDE_PY), "--entrypoint", "/app/llama-server", "--out", str(out), "--", *argv],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["services"]["llama"]["entrypoint"] == ["/app/llama-server"]
     assert doc["services"]["llama"]["command"] == argv
+
+    # when --entrypoint is empty or absent, entrypoint is omitted so the envelope's entrypoint stands
+    out_no_ep = tmp_path / "ov_no_ep.json"
+    r2 = subprocess.run([sys.executable, str(OVERRIDE_PY), "--out", str(out_no_ep), "--", *argv],
+                        capture_output=True, text=True)
+    assert r2.returncode == 0, r2.stderr
+    doc2 = json.loads(out_no_ep.read_text(encoding="utf-8"))
+    assert "entrypoint" not in doc2["services"]["llama"]
+    assert doc2["services"]["llama"]["command"] == argv
+
+    out_blank = tmp_path / "ov_blank.json"
+    r3 = subprocess.run([sys.executable, str(OVERRIDE_PY), "--entrypoint", "", "--out", str(out_blank), "--", *argv],
+                        capture_output=True, text=True)
+    assert r3.returncode == 0, r3.stderr
+    doc3 = json.loads(out_blank.read_text(encoding="utf-8"))
+    assert "entrypoint" not in doc3["services"]["llama"]
+    assert doc3["services"]["llama"]["command"] == argv
 
 
 def test_start_recreates_never_no_recreate_and_writes_the_host_pid(tmp_path):
@@ -337,18 +354,30 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
     )
     r = _run(env, "plan", GGUF, "8192")
     assert r.returncode == 0, r.stderr
-    assert "entrypoint: vllm serve" in r.stdout
+    assert "entrypoint: " in r.stdout
     argv = _argv_lines(r.stdout)
     assert f"/models/{GGUF}" in argv
     assert argv[argv.index("--quantization") + 1] == "int4"
     assert argv[argv.index("--max-model-len") + 1] == "8192"
-    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.5"
-    key = argv[argv.index("--api-key") + 1]
-    assert key != "/run/a770b/api.key", "vLLM --api-key must be the key value, not the container file path"
-    assert key.startswith("a770b-")
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.500"
+    assert "--api-key" not in argv, "vLLM API key must not sit in the container argv"
+    assert not any("a770b-" in a for a in argv)
     assert argv[argv.index("--host") + 1] == "0.0.0.0"
     assert argv[argv.index("--port") + 1] == "8000"
     assert not log.exists(), "plan must not invoke docker"
+    # the envelope carries the shim entrypoint that sources the key from /run/a770b/api.key
+    envelope_text = VLLM_ENVELOPE.read_text(encoding="utf-8")
+    assert 'entrypoint: ["/bin/sh", "-c", "export VLLM_API_KEY=\\"$(cat /run/a770b/api.key 2>/dev/null)\\"; exec vllm serve \\"$@\\"", "vllm-serve"]' in envelope_text
+    # and the override document generated for vllm omits the entrypoint key so the shim stands
+    out_ov = tmp_path / "ov.json"
+    r_ov = subprocess.run([sys.executable, str(OVERRIDE_PY), "--out", str(out_ov), "--", *argv],
+                          capture_output=True, text=True)
+    assert r_ov.returncode == 0, r_ov.stderr
+    doc = json.loads(out_ov.read_text(encoding="utf-8"))
+    assert "entrypoint" not in doc["services"]["llama"]
+    assert doc["services"]["llama"]["command"] == argv
+    assert "--api-key" not in doc["services"]["llama"]["command"]
+    assert not any("a770b-" in str(x) for x in doc["services"]["llama"]["command"])
 
 
 def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_one_decimal(tmp_path):
@@ -357,13 +386,15 @@ def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_one_decimal(tmp_p
         tmp_path,
         bin_,
         A770B_SERVED_BACKEND="vllm",
-        A770B_CARD_VRAM_TOTAL="32",
-        A770B_VRAM_CAP_GIB="28.8",
+        A770B_CARD_VRAM_TOTAL="16.0",
+        A770B_VRAM_CAP_GIB="15.3",
     )
     r = _run(env, "plan", GGUF, "4096")
     assert r.returncode == 0, r.stderr
     argv = _argv_lines(r.stdout)
-    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.9"
+    # 15.3 / 16.0 = 0.95625; .1f would round UP to 1.0 (bypassing the cap), floor yields 0.956
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.956"
+    assert argv[argv.index("--gpu-memory-utilization") + 1] != "1.0"
     assert argv[argv.index("--max-model-len") + 1] == "4096"
 
 
@@ -386,7 +417,7 @@ def test_dispatch_refuses_an_empty_served_backend(tmp_path):
 
 def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
     text = VLLM_ENVELOPE.read_text(encoding="utf-8")
-    assert 'entrypoint: ["vllm", "serve"]' in text
+    assert 'entrypoint: ["/bin/sh", "-c", "export VLLM_API_KEY=\\"$(cat /run/a770b/api.key 2>/dev/null)\\"; exec vllm serve \\"$@\\"", "vllm-serve"]' in text
     assert "127.0.0.1:${A770B_PORT}:8000" in text
     assert "${A770B_VLLM_IMAGE:-intel/vllm:0.21.0-xpu}" in text
     assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
