@@ -22,6 +22,8 @@ ENVELOPE = ROOT / "compose" / "a770-vulkan.yaml"
 ENV_EXAMPLE = ROOT / "compose" / "a770-vulkan.env.example"
 SYCL_ENVELOPE = ROOT / "compose" / "a770-sycl.yaml"
 SYCL_ENV_EXAMPLE = ROOT / "compose" / "a770-sycl.env.example"
+VLLM_ENVELOPE = ROOT / "compose" / "vllm.yaml"
+VLLM_ENV_EXAMPLE = ROOT / "compose" / "vllm.env.example"
 GGUF = "Qwen3.5-9B-Q4_K_M.gguf"
 
 
@@ -81,6 +83,7 @@ def _env(tmp_path: Path, bin_=None, **overrides) -> dict:
         A770B_API_KEY_FILE=str(tmp_path / "api.key"),
         A770B_COMPOSE_FILE=str(ENVELOPE),
         A770B_COMPOSE_ENV_FILE=str(tmp_path / "a770-vulkan.env"),
+        A770B_SERVED_BACKEND="vulkan",
         # the envelope's image/DRM/GID values, as the gitignored env file would supply them
         A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp:full-vulkan",
         A770B_DRM_CARD="/dev/dri/card0",
@@ -320,3 +323,82 @@ def test_sycl_env_example_names_the_sycl_image_and_bakes_no_model():
     assert "A770B_MODEL=" not in text and "A770B_CTX=" not in text
     assert "full-intel" in text and "getent" in text
     assert "A770B_ONEAPI_DEVICE_SELECTOR" in text
+
+
+def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_key_value(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="int4",
+    )
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    assert "entrypoint: vllm serve" in r.stdout
+    argv = _argv_lines(r.stdout)
+    assert f"/models/{GGUF}" in argv
+    assert argv[argv.index("--quantization") + 1] == "int4"
+    assert argv[argv.index("--max-model-len") + 1] == "8192"
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.5"
+    key = argv[argv.index("--api-key") + 1]
+    assert key != "/run/a770b/api.key", "vLLM --api-key must be the key value, not the container file path"
+    assert key.startswith("a770b-")
+    assert argv[argv.index("--host") + 1] == "0.0.0.0"
+    assert argv[argv.index("--port") + 1] == "8000"
+    assert not log.exists(), "plan must not invoke docker"
+
+
+def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_one_decimal(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="28.8",
+    )
+    r = _run(env, "plan", GGUF, "4096")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.9"
+    assert argv[argv.index("--max-model-len") + 1] == "4096"
+
+
+def test_dispatch_refuses_an_unknown_served_backend(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, A770B_SERVED_BACKEND="cuda")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert "backend 'cuda' is not one this harness serves" in r.stderr
+    assert "must be one of: vulkan, sycl, vllm" in r.stderr
+
+
+def test_dispatch_refuses_an_empty_served_backend(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, A770B_SERVED_BACKEND="")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert "A770B_SERVED_BACKEND is unset or empty — must be one of: vulkan, sycl, vllm" in r.stderr
+
+
+def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
+    text = VLLM_ENVELOPE.read_text(encoding="utf-8")
+    assert 'entrypoint: ["vllm", "serve"]' in text
+    assert "127.0.0.1:${A770B_PORT}:8000" in text
+    assert "${A770B_VLLM_IMAGE:-intel/vllm:0.21.0-xpu}" in text
+    assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
+    assert "${A770B_MODELS}:/models:ro,z" in text
+    assert "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro,z" in text
+    assert "${A770B_BY_PATH_DIR}:/dev/dri/by-path:ro" in text
+
+
+def test_vllm_env_example_documents_filtered_by_path_dir_and_trap():
+    text = VLLM_ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "A770B_MODEL=" not in text and "A770B_CTX=" not in text
+    assert "0.21.0-xpu" in text and "getent" in text
+    assert "TRAP" in text
+    assert "A770B_BY_PATH_DIR=" in text
+    assert "A770B_BY_PATH_DIR=/dev/dri/by-path\n" not in text

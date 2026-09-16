@@ -25,11 +25,11 @@ _compose(){
   local -a envf=(); [ -f "$A770B_COMPOSE_ENV_FILE" ] && envf=(--env-file "$A770B_COMPOSE_ENV_FILE")
   "$A770B_DOCKER" compose "${envf[@]}" -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" "$@"
 }
-# _build_argv <model-in-container> <ctx> [extra…] — the measured Vulkan flag set, with the container differences
+# _build_argv_llama <model-in-container> <ctx> [extra…] — the measured Vulkan flag set, with the container differences
 # only: the /models path and the in-container host/port/key path (the envelope mounts the key). The binary is NOT
 # an argv word here: it is the container's ENTRYPOINT (/app/llama-server), and compose runs entrypoint + command,
 # so a binary in `command` too would exec `/app/llama-server /app/llama-server …`.
-_build_argv(){
+_build_argv_llama(){
   local model="$1" ctx="$2"; shift 2
   local -a thinking=()
   local rmode="${THINKING_MODE:-${REASONING:-off}}"
@@ -41,6 +41,27 @@ _build_argv(){
   ARGV=(-m "$model" --alias "$A770B_ALIAS" --host 0.0.0.0 --port 8080 --api-key-file "$KCONTAINER" \
     -ngl 99 -c "$ctx" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --load-mode none -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
     --jinja "${thinking[@]}" --reasoning-format deepseek "$@")
+}
+
+# _build_argv_vllm <model-in-container> <ctx> [extra…] — the vLLM flag set.
+_build_argv_vllm(){
+  local model="$1" ctx="$2"; shift 2
+  local quant="${QUANT:-${A770B_QUANT:-int4}}"
+  [ -n "${A770B_VRAM_CAP_GIB:-}" ] || { echo "⛔ A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" >&2; exit 2; }
+  [ -n "${A770B_CARD_VRAM_TOTAL:-}" ] || { echo "⛔ A770B_CARD_VRAM_TOTAL must be set to calculate vLLM GPU memory utilization (set A770B_CARD)" >&2; exit 2; }
+  local frac
+  frac=$(python3 -c "cap=float('$A770B_VRAM_CAP_GIB'); tot=float('$A770B_CARD_VRAM_TOTAL'); print(f'{cap/tot:.1f}')")
+  ARGV=(
+    "$model"
+    --served-model-name "$A770B_ALIAS"
+    --quantization "$quant"
+    --max-model-len "$ctx"
+    --gpu-memory-utilization "$frac"
+    --api-key "$(a770b_api_key)"
+    --host 0.0.0.0
+    --port 8000
+    "$@"
+  )
 }
 # _container_host_pid — the host pid of the running compose container (empty when none); the sidecar and the
 # pidfile name a real host process so live_backend.read's liveness check keeps working for a container.
@@ -95,10 +116,29 @@ MODE="$1"
 MODEL=$(a770b_model_path "${2:?gguf}"); CTX="${3:-32768}"; shift 3 2>/dev/null || shift $#
 [ -r "$MODEL" ] || { echo "⛔ model not readable: $MODEL  (A770B_MODELS=$A770B_MODELS)" >&2; exit 2; }
 MODEL_IN_CONTAINER="/models/$(basename "$MODEL")"
-_build_argv "$MODEL_IN_CONTAINER" "$CTX" "$@"
+
+ENTRYPOINT=""
+case "${A770B_SERVED_BACKEND:-}" in
+  vulkan|sycl)
+    ENTRYPOINT="/app/llama-server"
+    _build_argv_llama "$MODEL_IN_CONTAINER" "$CTX" "$@"
+    ;;
+  vllm)
+    ENTRYPOINT="vllm serve"
+    _build_argv_vllm "$MODEL_IN_CONTAINER" "$CTX" "$@"
+    ;;
+  "")
+    echo "⛔ A770B_SERVED_BACKEND is unset or empty — must be one of: vulkan, sycl, vllm" >&2
+    exit 2
+    ;;
+  *)
+    echo "⛔ backend '$A770B_SERVED_BACKEND' is not one this harness serves — must be one of: vulkan, sycl, vllm" >&2
+    exit 2
+    ;;
+esac
 
 if [ "$MODE" = plan ]; then
-  echo "entrypoint: /app/llama-server"
+  echo "entrypoint: $ENTRYPOINT"
   printf 'argv: %q\n' "${ARGV[@]}"
   PLAN_ENVF=""; [ -f "$A770B_COMPOSE_ENV_FILE" ] && PLAN_ENVF="--env-file $A770B_COMPOSE_ENV_FILE "
   echo "compose: $A770B_DOCKER compose ${PLAN_ENVF}-p $A770B_COMPOSE_PROJECT -f $A770B_COMPOSE_FILE -f $OVERRIDE up -d --force-recreate"
@@ -108,7 +148,11 @@ fi
 # the envelope cannot interpolate without its image/DRM/GID values: the gitignored env file supplies them, or the
 # environment does; refuse early and name the fix rather than fail inside `docker compose up`
 if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
-  for _v in A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID; do
+  _needed_vars=(A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID)
+  if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
+    _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
+  fi
+  for _v in "${_needed_vars[@]}"; do
     [ -n "${!_v:-}" ] || { echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy ${A770B_COMPOSE_ENV_FILE}.example and edit it" >&2; exit 2; }
   done
 fi
@@ -122,7 +166,7 @@ python3 -c "import sys,math; v=float('$A770B_VRAM_CAP_GIB'); sys.exit(0 if (v>0 
 _compose down >/dev/null 2>&1 || true
 budget_gate || exit 1
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
-python3 "$(dirname "$0")/compose_override.py" --out "$OVERRIDE" -- "${ARGV[@]}"
+python3 "$(dirname "$0")/compose_override.py" --entrypoint "$ENTRYPOINT" --out "$OVERRIDE" -- "${ARGV[@]}"
 # recreate, never --no-recreate: a profile change must replace the container
 if ! _compose -f "$OVERRIDE" up -d --force-recreate; then
   echo "⛔ docker compose up failed — the container did not start (docker's error is above); nothing was left running" >&2

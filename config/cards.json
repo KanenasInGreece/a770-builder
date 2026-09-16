@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "cards": {
+    "b70": {
+      "pci": "8086:e223",
+      "vram_gib": 32,
+      "gpu_match": "G31",
+      "generation": "xe2",
+      "xmx": ["int4", "int8", "fp16", "bf16"],
+      "role": "builder",
+      "vk_device_select": "8086:e223!",
+      "oneapi_selector": "level_zero:gpu"
+    },
+    "a770": {
+      "pci": "8086:56a0",
+      "vram_gib": 16,
+      "gpu_match": "DG2",
+      "generation": "xe1",
+      "xmx": ["int8", "fp16", "bf16"],
+      "role": "builder",
+      "vk_device_select": "8086:56a0!",
+      "oneapi_selector": "level_zero:gpu"
+    },
+    "b580": {
+      "pci": "8086:e20b",
+      "vram_gib": 12,
+      "gpu_match": "G21",
+      "generation": "xe2",
+      "xmx": ["int4", "int8", "fp16", "bf16"],
+      "role": "encoder",
+      "vk_device_select": "8086:e20b!",
+      "oneapi_selector": "level_zero:gpu"
+    }
+  }
+}

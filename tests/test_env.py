@@ -11,6 +11,7 @@ needed (all faked). Real corpus generation IS exercised (it is deterministic, of
 the shipped floor by test_kit.py's own test_check_passes_at_the_shipped_default).
 """
 
+import json
 import os
 import stat
 import subprocess
@@ -278,3 +279,90 @@ def test_doctor_refuses_an_unset_gpu_match_instead_of_matching_everything(tmp_pa
     out = r.stdout
     assert any(ln.startswith("MISSING input A770B_GPU_MATCH is unset") for ln in out.splitlines()), out
     assert not any(ln.startswith("ok   card: exactly one") for ln in out.splitlines()), out
+
+
+# ── A770B_CARD injection: config/cards.json ─────────────────────────────────────────────────────────────────
+
+
+def _cards_json(cards: dict) -> str:
+    return json.dumps({"schema": 1, "cards": cards})
+
+
+def test_card_injection_exports_values_from_row(tmp_path):
+    cards_file = tmp_path / "cards.json"
+    cards_file.write_text(
+        _cards_json({
+            "b70": {
+                "pci": "8086:e223",
+                "vram_gib": 32,
+                "gpu_match": "G31",
+                "generation": "xe2",
+                "vk_device_select": "8086:e223!",
+                "oneapi_selector": "level_zero:gpu",
+            }
+        }),
+        encoding="utf-8",
+    )
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_CARDS_FILE=str(cards_file), A770B_CARD="b70")
+    for k in ("A770B_VK_DEVICE_SELECT", "A770B_GPU_MATCH", "A770B_CARD_VRAM_TOTAL"):
+        env.pop(k, None)
+    # Child bash checks that variables are exported across the process boundary
+    r = run_bash(
+        f'. "{ENV_SH}"; bash -c \'printf "%s|%s|%s" "$A770B_VK_DEVICE_SELECT" "$A770B_GPU_MATCH" "$A770B_CARD_VRAM_TOTAL"\'',
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "8086:e223!|G31|32"
+
+
+def test_card_injection_fails_on_unknown_card(tmp_path):
+    cards_file = tmp_path / "cards.json"
+    cards_file.write_text(
+        _cards_json({
+            "b70": {
+                "pci": "8086:e223",
+                "vram_gib": 32,
+                "gpu_match": "G31",
+                "generation": "xe2",
+                "vk_device_select": "8086:e223!",
+                "oneapi_selector": "level_zero:gpu",
+            }
+        }),
+        encoding="utf-8",
+    )
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_CARDS_FILE=str(cards_file), A770B_CARD="unknown_card")
+    r = run_bash(f'set -e; . "{ENV_SH}"', env=env)
+    assert r.returncode == 2
+    assert "A770B_CARD 'unknown_card' is not known" in r.stderr
+
+
+def test_card_injection_environment_override_wins(tmp_path):
+    cards_file = tmp_path / "cards.json"
+    cards_file.write_text(
+        _cards_json({
+            "b70": {
+                "pci": "8086:e223",
+                "vram_gib": 32,
+                "gpu_match": "G31",
+                "generation": "xe2",
+                "vk_device_select": "8086:e223!",
+                "oneapi_selector": "level_zero:gpu",
+            }
+        }),
+        encoding="utf-8",
+    )
+    env = dict(
+        os.environ,
+        A770B_DATA=str(tmp_path / "data"),
+        A770B_CARDS_FILE=str(cards_file),
+        A770B_CARD="b70",
+        A770B_VK_DEVICE_SELECT="custom:vk!",
+        A770B_GPU_MATCH="CustomGPU",
+        A770B_CARD_VRAM_TOTAL="64",
+    )
+    r = run_bash(
+        f'. "{ENV_SH}"; bash -c \'printf "%s|%s|%s" "$A770B_VK_DEVICE_SELECT" "$A770B_GPU_MATCH" "$A770B_CARD_VRAM_TOTAL"\'',
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "custom:vk!|CustomGPU|64"
