@@ -182,10 +182,12 @@ def _run_doctor(env: dict) -> subprocess.CompletedProcess:
 def test_doctor_refuses_the_card_knobs_when_unset(tmp_path):
     r = _run_doctor(_doctor_env(tmp_path))
     out = r.stdout
-    for var in ("A770B_VK_DEVICE_SELECT", "A770B_GPU_MATCH", "A770B_VRAM_CAP_GIB"):
+    for var in ("A770B_VK_DEVICE_SELECT", "A770B_GPU_MATCH", "A770B_VRAM_CAP_GIB", "A770B_CARD"):
         assert any(ln.startswith("MISSING input " + var + " is unset") for ln in out.splitlines()), out
     # A770B_UBATCH is a fixed default, not a card knob: it still reports as an input, never MISSING
     assert any(ln.startswith("ok   input A770B_UBATCH=") for ln in out.splitlines()), out
+    assert "checkout predates A770B_SERVE" not in r.stderr
+    assert "checkout predates A770B_SERVE" not in r.stdout
 
 
 def test_doctor_accepts_a_set_card_knob():
@@ -366,3 +368,71 @@ def test_card_injection_environment_override_wins(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout == "custom:vk!|CustomGPU|64"
+
+
+def test_card_injection_refuses_non_builder_role(tmp_path):
+    cards_file = tmp_path / "cards.json"
+    cards_file.write_text(
+        _cards_json({
+            "b580": {
+                "pci": "8086:e20b",
+                "vram_gib": 12,
+                "gpu_match": "G21",
+                "generation": "xe2",
+                "role": "encoder",
+                "vk_device_select": "8086:e20b!",
+                "oneapi_selector": "level_zero:gpu",
+            },
+            "b70": {
+                "pci": "8086:e223",
+                "vram_gib": 32,
+                "gpu_match": "G31",
+                "generation": "xe2",
+                "role": "builder",
+                "vk_device_select": "8086:e223!",
+                "oneapi_selector": "level_zero:gpu",
+            },
+        }),
+        encoding="utf-8",
+    )
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_CARDS_FILE=str(cards_file), A770B_CARD="b580")
+    r = run_bash(f'set -e; . "{ENV_SH}"', env=env)
+    assert r.returncode == 2
+    assert "A770B_CARD 'b580' has role 'encoder'" in r.stderr
+    assert "must be a card with role 'builder'" in r.stderr
+
+
+def test_doctor_reports_missing_for_unknown_card(tmp_path):
+    env = _doctor_env(tmp_path, A770B_CARD="nonexistent_card")
+    r = _run_doctor(env)
+    assert r.returncode != 0
+    assert any(ln.startswith("MISSING input A770B_CARD=nonexistent_card is unknown") for ln in r.stdout.splitlines()), r.stdout
+    assert "checkout predates A770B_SERVE" not in r.stderr
+    assert "checkout predates A770B_SERVE" not in r.stdout
+
+
+def test_doctor_reports_missing_for_encoder_card(tmp_path):
+    # b580 has role encoder, so doctor must report it unknown / not a builder card
+    env = _doctor_env(tmp_path, A770B_CARD="b580")
+    r = _run_doctor(env)
+    assert r.returncode != 0
+    assert any(ln.startswith("MISSING input A770B_CARD=b580 is unknown") for ln in r.stdout.splitlines()), r.stdout
+    assert "checkout predates A770B_SERVE" not in r.stderr
+    assert "checkout predates A770B_SERVE" not in r.stdout
+
+
+def test_doctor_in_vllm_named_directory_does_not_misfire_as_vllm(tmp_path):
+    # If the project clone or compose file is inside a directory whose path contains 'vllm'
+    vllm_dir = tmp_path / "my-vllm-workspace" / "a770-builder"
+    vllm_compose = vllm_dir / "compose" / "a770-vulkan.yaml"
+    env = _doctor_env(
+        tmp_path,
+        A770B_SERVE="compose",
+        A770B_ALLOW_NO_NVTOP="1",
+        A770B_COMPOSE_FILE=str(vllm_compose),
+        A770B_SERVED_BACKEND="vulkan",
+    )
+    r = _run_doctor(env)
+    out = r.stdout + r.stderr
+    assert "A770B_VLLM_IMAGE" not in out
+    assert "A770B_BY_PATH_DIR" not in out

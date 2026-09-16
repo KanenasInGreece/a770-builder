@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# serve_compose.sh — the ONE way the containerized llama.cpp server starts on the builder card (A770B_SERVE=compose).
+# serve_compose.sh — the ONE way the containerized server starts on the builder card (A770B_SERVE=compose).
 # The one way the containerized server starts; skills/local-build/scripts/local-build.sh's serve() drives it:
 #   serve_compose.sh plan  <gguf> <ctx> [extra…]   print the llama-server argv and the compose invocation; no docker
 #   serve_compose.sh start <gguf> <ctx> [extra…]   recreate the container, wait for /health, enforce the cap, sidecar
@@ -46,9 +46,12 @@ _build_argv_llama(){
 # _build_argv_vllm <model-in-container> <ctx> [extra…] — the vLLM flag set.
 _build_argv_vllm(){
   local model="$1" ctx="$2"; shift 2
-  local quant="${QUANT:-${A770B_QUANT:-int4}}"
+  local quant="${QUANT:-${A770B_QUANT:-}}"
+  [ -n "$quant" ] || { echo "⛔ quantization must be set for the vllm backend (e.g. awq, gptq, auto-round) — set QUANT or the profile row's quant field" >&2; exit 2; }
   [ -n "${A770B_VRAM_CAP_GIB:-}" ] || { echo "⛔ A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" >&2; exit 2; }
   [ -n "${A770B_CARD_VRAM_TOTAL:-}" ] || { echo "⛔ A770B_CARD_VRAM_TOTAL must be set to calculate vLLM GPU memory utilization (set A770B_CARD)" >&2; exit 2; }
+  python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= float(sys.argv[2]) else 1)" "$A770B_VRAM_CAP_GIB" "$A770B_CARD_VRAM_TOTAL" 2>/dev/null \
+    || { echo "⛔ A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" >&2; exit 2; }
   local frac
   frac=$(python3 -c "import math,sys; cap=float(sys.argv[1]); tot=float(sys.argv[2]); print(f'{math.floor(cap/tot*1000)/1000:.3f}')" "$A770B_VRAM_CAP_GIB" "$A770B_CARD_VRAM_TOTAL")
   ARGV=(
@@ -114,7 +117,12 @@ esac
 MODE="$1"
 MODEL=$(a770b_model_path "${2:?gguf}"); CTX="${3:-32768}"; shift 3 2>/dev/null || shift $#
 [ -r "$MODEL" ] || { echo "⛔ model not readable: $MODEL  (A770B_MODELS=$A770B_MODELS)" >&2; exit 2; }
-MODEL_IN_CONTAINER="/models/$(basename "$MODEL")"
+if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
+  _rel="${MODEL#"${A770B_MODELS%/}"/}"
+  MODEL_IN_CONTAINER="/models/$_rel"
+else
+  MODEL_IN_CONTAINER="/models/$(basename "$MODEL")"
+fi
 
 ENTRYPOINT=""
 case "${A770B_SERVED_BACKEND:-}" in
@@ -174,7 +182,11 @@ if ! _compose -f "$OVERRIDE" up -d --force-recreate; then
   rm -f "$PIDFILE" "$MARK" "$SIDECAR"
   exit 1
 fi
-for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
+  for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
+else
+  for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+fi
 if ! curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1; then
   echo "⛔ the container did not answer /health — read: $A770B_DOCKER compose -p $A770B_COMPOSE_PROJECT logs $CONTAINER" >&2
   _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3
@@ -197,5 +209,5 @@ fi
 if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ] && [ -n "$CPID" ]; then
   python3 "$(dirname "$0")/live_backend.py" write --path "$SIDECAR" --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" --model "$(basename "$MODEL")" --profile "$A770B_LIVE_PROFILE" --pid "$CPID"
 fi
-echo "▶ started llama-server container ($A770B_COMPOSE_PROJECT) on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB — host pid $CPID"
+echo "▶ started server container ($A770B_COMPOSE_PROJECT) on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB — host pid $CPID"
 echo "✓ VRAM after load: ${used} GiB ≤ cap $A770B_VRAM_CAP_GIB GiB"

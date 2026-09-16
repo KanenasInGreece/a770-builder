@@ -20,29 +20,42 @@ _a770b_load "${XDG_CONFIG_HOME:-$HOME/.config}/a770-builder/builder.$A770B_CARD_
 [ "$A770B_CARD_MODE" = "$_a770b_selected_mode" ] || { echo "⛔ a builder.$_a770b_selected_mode.env (in config/ or ~/.config/a770-builder/) sets A770B_CARD_MODE=$A770B_CARD_MODE: a per-mode file cannot switch the mode that selected it" >&2; return 2 2>/dev/null || exit 2; }
 eval "$_a770b_snapshot"; unset _a770b_snapshot _a770b_selected_mode
 
+: "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_compose.sh}"
+export A770B_SERVE_SCRIPT
+
 # ── the builder card: config/cards.json is the source of device selectors and identity ──────────
 : "${A770B_CARD:=}"
 : "${A770B_CARD_VRAM_TOTAL:=}"
 if [ -n "$A770B_CARD" ]; then
   _a770b_cards_file="${A770B_CARDS_FILE:-$A770B_PROJECT/config/cards.json}"
-  _a770b_card_lines=$(python3 - "$_a770b_cards_file" "$A770B_CARD" <<'PY'
+  _a770b_card_lines=$(python3 - "$_a770b_cards_file" "$A770B_CARD" "${1:-}" <<'PY'
 import json, sys
 
-path, card = sys.argv[1], sys.argv[2]
+path, card, mode_cmd = sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ""
 try:
     with open(path, "r", encoding="utf-8") as fh:
         doc = json.load(fh)
 except Exception as e:
-    print(f"⛔ cannot read cards file {path}: {e}", file=sys.stderr)
+    if mode_cmd != "doctor":
+        print(f"⛔ cannot read cards file {path}: {e}", file=sys.stderr)
     sys.exit(2)
 
 cards = doc.get("cards", {})
+builder_cards = [k for k, v in cards.items() if v.get("role", "builder") == "builder"]
+known = ", ".join(sorted(builder_cards))
+
 if card not in cards:
-    known = ", ".join(sorted(cards.keys()))
-    print(f"⛔ A770B_CARD '{card}' is not known (must be one of: {known})", file=sys.stderr)
+    if mode_cmd != "doctor":
+        print(f"⛔ A770B_CARD '{card}' is not known (must be one of: {known})", file=sys.stderr)
     sys.exit(2)
 
 row = cards[card]
+role = row.get("role", "builder")
+if role != "builder":
+    if mode_cmd != "doctor":
+        print(f"⛔ A770B_CARD '{card}' has role '{role}' (must be a card with role 'builder': {known})", file=sys.stderr)
+    sys.exit(2)
+
 vk = row.get("vk_device_select") or ""
 gpu = row.get("gpu_match") or ""
 vram = row.get("vram_gib") or ""
@@ -53,13 +66,15 @@ print(f'_a770b_row_gpu={json.dumps(str(gpu))}')
 print(f'_a770b_row_vram={json.dumps(str(vram))}')
 print(f'_a770b_row_oneapi={json.dumps(str(oneapi))}')
 PY
-  ) || { return 2 2>/dev/null || exit 2; }
-  eval "$_a770b_card_lines"; unset _a770b_card_lines _a770b_cards_file
-  [ -n "$_a770b_row_vk" ] && : "${A770B_VK_DEVICE_SELECT:=$_a770b_row_vk}"
-  [ -n "$_a770b_row_gpu" ] && : "${A770B_GPU_MATCH:=$_a770b_row_gpu}"
-  [ -n "$_a770b_row_vram" ] && : "${A770B_CARD_VRAM_TOTAL:=$_a770b_row_vram}"
-  [ -n "$_a770b_row_oneapi" ] && : "${A770B_ONEAPI_DEVICE_SELECTOR:=$_a770b_row_oneapi}"
-  unset _a770b_row_vk _a770b_row_gpu _a770b_row_vram _a770b_row_oneapi
+  ) || { [ "${1:-}" = "doctor" ] || { return 2 2>/dev/null || exit 2; }; }
+  if [ -n "$_a770b_card_lines" ]; then
+    eval "$_a770b_card_lines"
+    [ -n "$_a770b_row_vk" ] && : "${A770B_VK_DEVICE_SELECT:=$_a770b_row_vk}"
+    [ -n "$_a770b_row_gpu" ] && : "${A770B_GPU_MATCH:=$_a770b_row_gpu}"
+    [ -n "$_a770b_row_vram" ] && : "${A770B_CARD_VRAM_TOTAL:=$_a770b_row_vram}"
+    [ -n "$_a770b_row_oneapi" ] && : "${A770B_ONEAPI_DEVICE_SELECTOR:=$_a770b_row_oneapi}"
+  fi
+  unset _a770b_card_lines _a770b_cards_file _a770b_row_vk _a770b_row_gpu _a770b_row_vram _a770b_row_oneapi
 fi
 export A770B_CARD A770B_CARD_VRAM_TOTAL
 
