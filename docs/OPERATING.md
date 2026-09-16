@@ -182,12 +182,14 @@ only while the seat's own server is down, what the builder card actually holds: 
 gets a hint that inference mode would serve the larger registry under the larger cap. Either mode's cap is raised only
 on a fresh measurement of what else the card holds, never by hand.
 
+**The builder card.** `A770B_CARD` (no default — `doctor` refuses while unset) names the ONE builder card on this host (e.g. `b70`, `a770`, `b580`). Physical capabilities and selectors are described in `config/cards.json`: PCI IDs, total VRAM, GPU match patterns, architecture generation, XMX native precision formats, and device selectors. Setting `A770B_CARD` supplies default values for `A770B_VK_DEVICE_SELECT`, `A770B_GPU_MATCH`, and `A770B_CARD_VRAM_TOTAL` via `harness/env.sh`, while explicit environment or `builder.env` overrides still win. The VRAM cap (`A770B_VRAM_CAP_GIB`) remains an empirical runtime measurement in `builder.env`/`builder.<mode>.env` with no default.
+
 **The card.** `A770B_DEVICE` is the name from `llama-server --list-devices`; `A770B_GPU_MATCH` is the substring of that
-card in `nvtop -s`, which the VRAM readings and the cap depend on. `A770B_UBATCH` (512) stays the same in both modes:
+card in `nvtop -s`, which the VRAM readings and the cap depend on (supplied from `config/cards.json` by `A770B_CARD`). `A770B_UBATCH` (512) stays the same in both modes:
 it keeps the GPU's job watchdog quiet. The server refuses to stay up past the mode's cap after load. No speculative
 decoding on this card: draft models and MTP heads all made decode slower.
 
-**The device pin.** `A770B_VK_DEVICE_SELECT` (no default — `doctor` refuses while unset) pins the server to the builder
+**The device pin.** `A770B_VK_DEVICE_SELECT` (no default — `doctor` refuses while unset; supplied by `A770B_CARD` from `config/cards.json`) pins the server to the builder
 card by PCI vendor and device id rather than by the Vulkan device index `A770B_DEVICE` names, because Vulkan lists the
 boot card first and an index alone drifts when the desktop moves to another card. It is Mesa's Vulkan device selector,
 passed to the server as `MESA_VK_DEVICE_SELECT`: find the id with `lspci -nn`, which prints each card's `[vendor:device]`
@@ -406,9 +408,11 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `harness/` | the scripts that run and guard a profiling or build session: starting the model server, wrapping the coding agent in the sandbox, capturing what it did, and measuring how fast and how far it can go — every script here runs on the host, outside the sandbox |
 | `harness/serve_compose.sh` | the container way a server starts (`A770B_SERVE=compose`, the only value): builds the same llama-server argv from the registry, writes it as a compose override, and recreates the container (`up -d --force-recreate`); enforces the VRAM cap and writes the live-backend sidecar on the host; `plan` prints the argv without touching docker, and `bench` runs a one-shot `/app/llama-bench` in the same image |
 | `compose/a770-vulkan.yaml` | the container ENVELOPE for `A770B_SERVE=compose`: official llama.cpp `full-vulkan` image (not `server-vulkan`: that image has no `llama-bench`), the `/app/llama-server` entrypoint (the image's own is `tools.sh`, and compose appends `command:` to it), the two PCI DRM nodes, the host group ids, the MESA pin, the read-only GGUF and API-key mounts, and a loopback port. It bakes no model or context — the argv comes from the registry at serve time. A bare `docker compose up` is not the skill's start path (it skips the profile argv, the budget gate, the VRAM cap and the sidecar); `serve` recreates so a profile change takes effect. Take the server down before a bench one-shot. Passthrough unmeasured until a host brings it up. Pin the image by digest after the first pull; `doctor` warns, without failing, while the reference is still the floating tag. |
+| `compose/vllm.yaml` | the container ENVELOPE for vLLM backend serving (`A770B_SERVED_BACKEND=vllm`): `intel/vllm:0.21.0-xpu` image, binds internal port 8000 to `A770B_PORT`, eager memory allocation fraction computed from measured VRAM cap; sibling `compose/vllm.env.example` |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
 | `harness/sandbox_run.sh` | the bubblewrap boundary: path policy before the bind, then only the seat read-write, no credentials, no other checkout, no harness source, no network except the model server |
 | `config/` | the project's configuration: the registries listing every qualified model and its measured numbers, the example environment file a new install copies, and the template opencode reads inside the sandbox |
+| `config/cards.json` | physical capability registry for builder cards (`b70`, `a770`, `b580`): PCI IDs, total VRAM, GPU match strings, generation, XMX native precision formats, and device selectors |
 | `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation; the card mode, the key and profile helpers |
 | `config/profiles.json` · `config/profiles.inference.json` | the two registries, one per card mode, the single source of every profile's numbers; `harness/profiles.py` validates, exports, inspects and renders them |
 | `harness/render_profile.py` | renders the opencode profile from the template (`render`), checks a run specification against the seat (`check`) and prepares its context into the brief copy (`context`); the echo of what was rendered lands beside the profile; `tests/test_render_profile.py` proves it |

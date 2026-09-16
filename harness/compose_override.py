@@ -21,14 +21,16 @@ import sys
 ENTRYPOINT = "/app/llama-server"
 
 
-def override(argv):
+def override(argv, entrypoint=None):
     """The compose override document for an argv list."""
-    return {"services": {"llama": {"entrypoint": [ENTRYPOINT], "command": list(argv)}}}
+    ep = entrypoint if entrypoint is not None else [ENTRYPOINT]
+    return {"services": {"llama": {"entrypoint": ep, "command": list(argv)}}}
 
 
 def main(argv):
     parser = argparse.ArgumentParser(prog="compose_override.py")
     parser.add_argument("--out", required=True, help="the override file to write")
+    parser.add_argument("--entrypoint", default=None, help="the container entrypoint")
     parser.add_argument("argv", nargs=argparse.REMAINDER, help="the llama-server argv, after --")
     args = parser.parse_args(argv[1:])
     words = args.argv
@@ -37,8 +39,9 @@ def main(argv):
     if not words:
         print("compose_override.py: refusing an empty argv", file=sys.stderr)
         return 2
+    ep = args.entrypoint.split() if args.entrypoint else [ENTRYPOINT]
     with open(args.out, "w", encoding="utf-8") as fh:
-        json.dump(override(words), fh, indent=2)
+        json.dump(override(words, entrypoint=ep), fh, indent=2)
         fh.write("\n")
     return 0
 

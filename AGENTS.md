@@ -37,6 +37,20 @@ weight_class, backend). Numbers are measured, never copied; `config/models.md` i
 A builder-class row is green on the task (suite at 80% or better, or a T1 pass), every probe passed, and no engine
 reset. Speed and window are recorded, not gates.
 
+## Profiling a card the registry does not know
+
+When qualifying models on a card that has no rows in the registry, do not measure blindly. Follow the extrapolation heuristic:
+
+1. **Anchor**: Pick the closest known profile row (same `family` + `weight_class`, from any card). Its numbers are a baseline comparison, never copied.
+2. **Densify by VRAM delta**: Compare the new card's measured VRAM cap to the anchor card. Use the anchor's `vram_gib_after_load` to gauge headroom; if more VRAM is available, choose a denser quantization.
+3. **Prefer native dtypes**: Target the hardware's native tensor formats. On Xe2 (Battlemage), XMX runs native `int4`, `int8`, `fp16`, and `bf16`. Sub-4-bit formats like `int3` and `int2` require software dequantization that costs execution time — try native `int4` first.
+4. **Run ONE approximation test**: Run a single benchmark of the candidate quant using `serve_compose.sh bench`:
+   `bash harness/serve_compose.sh bench -- -m /models/<model> -ngl 99 -c <ctx> -n 128`
+5. **Classify**:
+   - **Compute-bound**: If decode tok/s stays flat across quantizations (e.g. Q4 vs Q6), higher precision is essentially free — densify to the larger quant for quality.
+   - **Bandwidth-bound**: If decode speed drops proportionally with larger weights, memory bandwidth is the bottleneck — stay at the faster quant and record the ceiling.
+6. **Suggest next tests**: Use the classification to pick the candidate for the full ladder (`harness/ladder.sh`). Only the full ladder measurement ships a profile row.
+
 ## Submit a profile
 
 1. Put the GGUF in `A770B_MODELS`; `doctor` must report all ok.

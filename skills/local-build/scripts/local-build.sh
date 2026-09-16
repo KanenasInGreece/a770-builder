@@ -54,7 +54,7 @@ check_update(){ local url latest pv
 }
 case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
-. "$A770B_PROJECT/harness/env.sh" || exit 2; . "$A770B_PROJECT/harness/guard.sh"
+. "$A770B_PROJECT/harness/env.sh" || { [ "${1:-}" = "doctor" ] || exit 2; }; . "$A770B_PROJECT/harness/guard.sh"
 SERVE="${SERVE:-${A770B_SERVE_SCRIPT:?the project at $A770B_PROJECT has no A770B_SERVE_SCRIPT in its env.sh — that checkout predates A770B_SERVE; run this copy from its own checkout or set A770B_PROJECT to it}}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
@@ -79,21 +79,27 @@ _export_live(){ # A770B_LIVE_* for the sidecar write on start; empty values mean
 _envelope_for_backend_name(){ # select the container envelope for a backend name; refuse one this harness cannot serve
   case "$1" in
     vulkan|sycl) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-$1.yaml";;
-    *) die "backend '$1' is not one this harness serves (vulkan, sycl)";;
+    vllm) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/vllm.yaml";;
+    *) die "backend '$1' is not one this harness serves (vulkan, sycl, vllm)";;
   esac
+  A770B_SERVED_BACKEND="$1"
   A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
-  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE
+  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_SERVED_BACKEND
 }
 _envelope_for_backend(){ # the row's backend selects the container envelope. An unknown backend is refused, never
   # defaulted onto the Vulkan envelope (a silent wrong-backend serve).
   local be; be=$(a770b_profile_var "$1" BACKEND)
-  [ -n "$be" ] || return 0                                   # a legacy row with no backend: leave the configured envelope
+  if [ -z "$be" ]; then
+    A770B_SERVED_BACKEND="vulkan"
+    export A770B_SERVED_BACKEND
+    return 0
+  fi
   _envelope_for_backend_name "$be"
 }
 _envelope_from_sidecar(){ # the running container's backend selects the envelope, so `stop` ends it whatever it is
   local be; be=$(python3 "$A770B_PROJECT/harness/live_backend.py" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend") or "")' 2>/dev/null) || be=""
-  case "$be" in vulkan|sycl) _envelope_for_backend_name "$be";; esac
+  case "$be" in vulkan|sycl|vllm) _envelope_for_backend_name "$be";; esac
   return 0
 }
 _reload_lock_held(){ # true when another process holds the run lock; this shell's own fd 9 does not count
@@ -104,7 +110,8 @@ _reload_lock_held(){ # true when another process holds the run lock; this shell'
 _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
   # shellcheck disable=SC2086
-  KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
+  local quant; quant=$(a770b_profile_var "$p" QUANT)
+  QUANT=$quant KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
     THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
     THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
     bash "$SERVE" start "$gguf" "$ctx" $extra || return 1
@@ -140,6 +147,7 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   LIVE_PY="$A770B_PROJECT/harness/live_backend.py"
   live_json=$(python3 "$LIVE_PY" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null) || live_json=""
   req_backend=$(a770b_profile_var "$p" BACKEND)
+  export A770B_SERVED_BACKEND="${req_backend:-vulkan}"
   req_model=$(basename "$gguf")
   if [ -n "$live_json" ]; then
     live_backend=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["backend"])')
@@ -212,22 +220,30 @@ doctor(){
     [ -f "$A770B_COMPOSE_FILE" ] && echo "ok   compose envelope: $A770B_COMPOSE_FILE" || { echo "MISSING compose envelope: $A770B_COMPOSE_FILE not found"; missing=$((missing+1)); }
     # the envelope cannot interpolate without its image/DRM/GID values: the gitignored env file supplies them, or
     # they are set in the environment (builder.env is exported). Either way, a missing value is a MISSING check.
-    _envfile_ok=1; for _v in A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID; do [ -n "${!_v:-}" ] || _envfile_ok=0; done
+    local _img_var="A770B_LLAMA_IMAGE"
+    local -a _needed_vars=(A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID)
+    case "$A770B_COMPOSE_FILE" in
+      *vllm*)
+        _img_var="A770B_VLLM_IMAGE"
+        _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
+        ;;
+    esac
+    _envfile_ok=1; for _v in "${_needed_vars[@]}"; do [ -n "${!_v:-}" ] || _envfile_ok=0; done
     if [ -f "$A770B_COMPOSE_ENV_FILE" ]; then echo "ok   compose env: $A770B_COMPOSE_ENV_FILE"
     elif [ "$_envfile_ok" = 1 ]; then echo "ok   compose env: the envelope's image/DRM/GID values are set in the environment"
     else echo "MISSING compose env: $A770B_COMPOSE_ENV_FILE not found and the envelope's image/DRM/GID values are not all set — copy ${A770B_COMPOSE_ENV_FILE}.example"; missing=$((missing+1)); fi
     # A floating tag can be moved by upstream at any time; the plan pins the exact bytes by digest after the first
     # pull. Warn, never fail: the first pull legitimately starts from the tag, and a digest silences this. The
     # environment wins over the gitignored env file, so read the value the envelope will actually interpolate.
-    _img="${A770B_LLAMA_IMAGE:-}"
+    _img="${!_img_var:-}"
     if [ -z "$_img" ] && [ -f "$A770B_COMPOSE_ENV_FILE" ]; then
-      _img=$(grep -E '^[[:space:]]*A770B_LLAMA_IMAGE=' "$A770B_COMPOSE_ENV_FILE" | tail -n 1 | cut -d= -f2-)
+      _img=$(grep -E "^[[:space:]]*${_img_var}=" "$A770B_COMPOSE_ENV_FILE" | tail -n 1 | cut -d= -f2-)
     fi
     _img="${_img%\"}"; _img="${_img#\"}"; _img="${_img%\'}"; _img="${_img#\'}"
     case "$_img" in
        *@sha256:*) : ;;   # pinned: name@sha256:<digest> names exactly one image, so nothing to warn about
        "") : ;;           # unset is already a MISSING above; do not report the same gap twice
-       *) echo "WARN image: A770B_LLAMA_IMAGE=$_img is a floating tag, not a digest — pull it once, then pin the exact bytes (docker inspect --format='{{index .RepoDigests 0}}' $_img) and set A770B_LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest> in $A770B_COMPOSE_ENV_FILE; see compose/a770-vulkan.env.example (warning only — doctor still passes)";;
+       *) echo "WARN image: ${_img_var}=$_img is a floating tag, not a digest — pull it once, then pin the exact bytes (docker inspect --format='{{index .RepoDigests 0}}' $_img) and set ${_img_var}=ghcr.io/ggml-org/llama.cpp@sha256:<digest> in $A770B_COMPOSE_ENV_FILE; see ${A770B_COMPOSE_ENV_FILE}.example (warning only — doctor still passes)";;
     esac
   fi
   if command -v nvtop >/dev/null 2>&1 || [ "$A770B_ALLOW_NO_NVTOP" = 1 ]; then echo "ok   nvtop: on PATH or A770B_ALLOW_NO_NVTOP=1"; else echo "MISSING nvtop: install it for VRAM readings, or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop"; missing=$((missing+1)); fi
@@ -295,6 +311,20 @@ doctor(){
     if [ "$val" = "$default" ]; then echo "ok   input $var=$val — $label (this project's default)"
     else echo "ok   input $var=$val — $label (your own override)"; fi
   }
+  local _cards_file="${A770B_CARDS_FILE:-$A770B_PROJECT/config/cards.json}"
+  local _known_cards=""
+  if [ -f "$_cards_file" ]; then
+    _known_cards=$(python3 -c 'import json,sys; print(", ".join(sorted(json.load(open(sys.argv[1])).get("cards",{}).keys())))' "$_cards_file" 2>/dev/null || true)
+  fi
+  if [ -z "${A770B_CARD:-}" ]; then
+    echo "MISSING input A770B_CARD is unset — the builder card identity; set it in builder.env to one of: ${_known_cards:-b70, a770, b580}"
+    missing=$((missing+1))
+  elif [ -n "$_known_cards" ] && ! python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("cards",{}) else 1)' "$_cards_file" "$A770B_CARD" 2>/dev/null; then
+    echo "MISSING input A770B_CARD=$A770B_CARD is unknown — set it in builder.env to one of: $_known_cards"
+    missing=$((missing+1))
+  else
+    echo "ok   input A770B_CARD=$A770B_CARD — the builder card identity"
+  fi
   _a770b_required_input A770B_VK_DEVICE_SELECT "the Vulkan selector pinning the builder card" "set it to your card's vendor:device! from 'lspci -nn' (e.g. 8086:e223! for the Arc Pro B70)"
   _a770b_required_input A770B_GPU_MATCH "nvtop device-name substring naming the builder card alone" "set it from 'nvtop -s' (e.g. 'G31' or 'Arc Pro B70')"
   _a770b_required_input A770B_VRAM_CAP_GIB "the VRAM cap for mode $A770B_CARD_MODE" "measure it on your card, then set it (raise only after measuring what else the card holds)"

@@ -636,7 +636,7 @@ out=$( ( _iso; export A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t
 out=$( ( _iso; export A770B_CARD_MODE=display PATH="$path_no_nvtop" A770B_ALLOW_NO_NVTOP=1
   bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
 { printf '%s' "$out" | grep -q "ok   card: not measured" && printf '%s' "$out" | grep -q "ok   mode: display, not measured" \
-  && ! printf '%s' "$out" | grep -q "MISSING card" && ! printf '%s' "$out" | grep -q "MISSING mode"; } \
+  && ! printf '%s' "$out" | grep -q "MISSING card:" && ! printf '%s' "$out" | grep -q "MISSING mode:"; } \
   && echo "ok   mode: I9f no nvtop with A770B_ALLOW_NO_NVTOP=1 is not measured, never MISSING" \
   || { echo "FAIL mode: I9f"; printf '%s\n' "$out" | tail -20; fail=1; }
 out=$( ( _iso; export A770B_CARD_MODE=display PATH="$path_no_nvtop" A770B_ALLOW_NO_NVTOP=0
@@ -654,6 +654,17 @@ out=$( ( _iso; unset A770B_GPU_MATCH; export A770B_CARD_MODE=display PATH="$t/bi
   && ! printf '%s' "$out" | grep -q "ok   card: exactly one"; } \
   && echo "ok   mode: I9h an unset card knob is MISSING, never matched against ''" \
   || { echo "FAIL mode: I9h"; printf '%s\n' "$out" | tail -20; fail=1; }
+# A770B_CARD + config/cards.json wiring: card inputs come from the row, doctor reports no MISSING for them
+out=$( ( _iso; unset A770B_GPU_MATCH; export A770B_CARD=b70 A770B_VRAM_CAP_GIB=28.0 A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-1g.json" A770B_ALLOW_NO_NVTOP=1
+  bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+{ printf '%s' "$out" | grep -q "ok   input A770B_CARD=b70" \
+  && printf '%s' "$out" | grep -q "ok   input A770B_VK_DEVICE_SELECT=8086:e223!" \
+  && printf '%s' "$out" | grep -q "ok   input A770B_GPU_MATCH=G31" \
+  && ! printf '%s' "$out" | grep -q "MISSING input A770B_CARD" \
+  && ! printf '%s' "$out" | grep -q "MISSING input A770B_VK_DEVICE_SELECT" \
+  && ! printf '%s' "$out" | grep -q "MISSING input A770B_GPU_MATCH"; } \
+  && echo "ok   cards: A770B_CARD + config/cards.json injects inputs, doctor reports no MISSING for them" \
+  || { echo "FAIL cards: doctor reported MISSING for card inputs with A770B_CARD=b70"; printf '%s\n' "$out" | tail -20; fail=1; }
 # the stop-run gate: run_pid_alive is the proof a pid is ours before any signal is sent, proved here without the card
 RUNPID="$A770B_DATA/logs/run.pid"
 rm -f "$RUNPID"
@@ -970,7 +981,7 @@ printf '#!/usr/bin/env bash\necho \x27{"ok": true}\x27; exit 0\n' > "$cb/bin/cur
 printf '#!/usr/bin/env bash\nexit 0\n' > "$cb/bin/pgrep"; chmod +x "$cb/bin/pgrep"
 printf '#!/usr/bin/env bash\necho \x27[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\x27\n' > "$cb/bin/nvtop"; chmod +x "$cb/bin/nvtop"
 cb_env(){ A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
-  A770B_SERVE=compose A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_MIN_AVAIL_MB=1 A770B_API_KEY_FILE="$cb/api.key" \
+  A770B_SERVE=compose A770B_SERVED_BACKEND=vulkan A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_MIN_AVAIL_MB=1 A770B_API_KEY_FILE="$cb/api.key" \
   A770B_GPU_MATCH=DG2 A770B_VRAM_CAP_GIB=15.3 \
   A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" A770B_COMPOSE_ENV_FILE="$cb/a770-vulkan.env" \
   A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp:full-vulkan" A770B_DRM_CARD=/dev/dri/card0 A770B_DRM_RENDER=/dev/dri/renderD128 \
