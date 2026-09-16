@@ -135,7 +135,8 @@ if [ "$DRYRUN" = 1 ]; then
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 6/6: bash harness/run_suite.sh $PROFILE_NAME $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   else
-    echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V --extra '$EXTRA' --reasoning $REAS${BUDGET:+ --reasoning-budget $BUDGET} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
+    EXTRA_DRY=""; [ -n "$EXTRA" ] && EXTRA_DRY=" --extra '$EXTRA'"
+    echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V$EXTRA_DRY --reasoning $REAS${BUDGET:+ --reasoning-budget $BUDGET} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   fi
   echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, ram_gb_extra, suite, instrument computed; use_for/fit.write/capability left as placeholders)"
   echo "[dry-run] nothing written"
@@ -215,7 +216,9 @@ if [ -z "$FAIL_RUNG" ]; then
   RS_ARGS=()
   if [ -n "$PROFILE_NAME" ]; then RS_ARGS=("$PROFILE_NAME" "$SEAT")
   else
-    RS_ARGS=(--model "$GGUF" --ctx "$CTX" --kv "$KV" --kv-v "$KV_V" --extra "$EXTRA" --reasoning "$REAS")
+    RS_ARGS=(--model "$GGUF" --ctx "$CTX" --kv "$KV" --kv-v "$KV_V" --reasoning "$REAS")
+    # run_suite.sh refuses an empty --extra value (${2:?…}), so a bare GGUF with no extra flags must not pass one
+    [ -n "$EXTRA" ] && RS_ARGS+=(--extra "$EXTRA")
     [ -n "$BUDGET" ] && RS_ARGS+=(--reasoning-budget "$BUDGET")
     RS_ARGS+=(--timeout "$TIMEOUT" "$SEAT")
   fi

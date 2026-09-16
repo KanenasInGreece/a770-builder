@@ -930,6 +930,11 @@ if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_mod
 then echo "ok   ladder: a bare GGUF with no registry row skips the bench_speed.sh rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
 else echo "FAIL ladder: the no-row GGUF path did not skip bench_speed.sh or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
 fi
+# a bare GGUF with no --extra flags must not pass --extra '' to run_suite.sh (its parser refuses an empty value)
+if ! printf '%s\n' "$lad_model_out" | grep -q -- '--extra'
+then echo "ok   ladder: a bare GGUF with no extra flags omits --extra rather than passing an empty one run_suite.sh refuses"
+else echo "FAIL ladder: the no-extra bare-GGUF path still passes --extra ''"; printf '%s\n' "$lad_model_out" | grep -- '--extra'; fail=1
+fi
 # the ladder's inline instrument computation: a present kit_version must yield SUITE@V, and an absent one must refuse.
 # The old form, `raise SystemExit(...) if not (...) else None`, parsed as `raise (X if cond else None)` and raised
 # None -> TypeError whenever kit_version WAS present, killing every non-dry-run ladder at the final step.
