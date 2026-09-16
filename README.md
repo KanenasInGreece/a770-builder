@@ -176,11 +176,3 @@ If you run that framework, or any other service, on the same host: the seat neve
 route to it, and the harness knows of it only through two optional knobs, the ports the model server must never bind and
 a health URL read once before a server starts, both empty by default. `SECURITY.md` lists exactly what the harness touches.
 
-## Contributors
-
-Credits are for people, not a claim of joint copyright on every line (the project is MIT, see
-[LICENSE](LICENSE)).
-
-| who | role |
-|---|---|
-| **Xenofon S. Motsenigos** ([Oratotis](https://www.youtube.com/@Oratotis)) | Author & maintainer |
