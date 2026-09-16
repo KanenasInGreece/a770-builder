@@ -562,6 +562,12 @@ grep -q 'bench_build_id\.py" "\$RAW_FILE" "\$BUILD_ID"' "$here/harness/bench_spe
 grep -q '4096' "$here/harness/bench_model.sh" && grep -q 'REASONING' "$here/harness/bench_model.sh" \
   && echo "ok   harness: bench_model's probe gate reads REASONING for its 4096 budget" \
   || { echo "FAIL harness: bench_model.sh does not read REASONING for a 4096 gate"; fail=1; }
+grep -q 'reasoning_truncated' "$here/harness/bench_model.sh" && grep -q 'A770B_BUDGET_MESSAGE' "$here/harness/bench_model.sh" \
+  && echo "ok   harness: bench_model's probes record reasoning_truncated from A770B_BUDGET_MESSAGE" \
+  || { echo "FAIL harness: bench_model.sh does not record reasoning_truncated"; fail=1; }
+grep -q 'A770B_BUDGET_MESSAGE' "$here/harness/env.sh" && grep -q 'A770B_BUDGET_MESSAGE' "$here/harness/serve_compose.sh" \
+  && echo "ok   harness: the budget message is one string, defaulted in env.sh and passed by serve_compose.sh" \
+  || { echo "FAIL harness: A770B_BUDGET_MESSAGE is not defaulted in env.sh and passed by serve_compose.sh"; fail=1; }
 ( _iso; export A770B_QWEN35_9B_Q4KM_VULKAN_OUTPUT_TOKENS=4242 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   a770b_render_profile qwen35-9b-q4km-vulkan 4096 "$t/harness-output.jsonc" nokey >/dev/null 2>&1
   grep -q '"output": 4242' "$t/harness-output.jsonc"
@@ -807,6 +813,19 @@ if [ "$dp_none_rc" = 3 ] && grep -q 'not measured' "$t/dp-none.out" && ! grep -q
   && [ "$dp_empty_rc" = 1 ] && grep -q 'depth probe at 1000: 0/3' "$t/dp-empty.out"
 then echo "ok   depth_probe: a request the server never answered is 'not measured' and exits 3, while a model that answers with nothing is graded 0/3 and exits 1"
 else echo "FAIL depth_probe: unanswered (rc=$dp_none_rc) and empty-answer (rc=$dp_empty_rc) are not told apart"; cat "$t/dp-none.out" "$t/dp-empty.out"; fail=1
+fi
+# ── the truncation instrumentation: when a reasoning budget cuts thinking off, llama-server injects the budget
+# message into reasoning_content, and the probe records reasoning_truncated from that marker ────────────────────
+python3 -c 'import json,sys; json.dump({"usage":{},"timings":{},"choices":[{"message":{"content":"orbital_checksum_v7 multiplies each byte by its 1-based position, xors the sum with the salt (default 4171), then reduces modulo 65521, the Adler prime. Other definitions include helper_1, helper_2, helper_3.","reasoning_content":"I need to locate the function and check its behaviour step by step... budget spent, answer now"}}]}, open(sys.argv[1],"w"))' "$t/dp-trunc.json"
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" A770B_BUDGET_MESSAGE="budget spent, answer now" PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-trunc.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-trunc.out" 2>&1; dp_trunc_rc=$?
+python3 -c 'import json,sys; json.dump({"usage":{},"timings":{},"choices":[{"message":{"content":"orbital_checksum_v7 multiplies each byte by its 1-based position, xors the sum with the salt (default 4171), then reduces modulo 65521, the Adler prime. Other definitions include helper_1, helper_2, helper_3.","reasoning_content":"I need to locate the function and check its behaviour step by step, then answer."}}]}, open(sys.argv[1],"w"))' "$t/dp-complete.json"
+A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" A770B_BUDGET_MESSAGE="budget spent, answer now" PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-complete.json" \
+  bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-complete.out" 2>&1; dp_complete_rc=$?
+if [ "$dp_trunc_rc" = 0 ] && grep -q 'reasoning_truncated=True' "$t/dp-trunc.out" \
+  && [ "$dp_complete_rc" = 0 ] && grep -q 'reasoning_truncated=False' "$t/dp-complete.out"
+then echo "ok   depth_probe: thinking cut off by the budget is recorded reasoning_truncated=True, completed thinking False"
+else echo "FAIL depth_probe: truncation not recorded (trunc_rc=$dp_trunc_rc complete_rc=$dp_complete_rc)"; cat "$t/dp-trunc.out" "$t/dp-complete.out"; fail=1
 fi
 # ── harness/ctx_sweep.sh's own behaviour: the window rung proved with no card and no server. The stand-in
 # tokeniser above sizes each prompt; a fake curl answers the completion from a file the check names, and answers

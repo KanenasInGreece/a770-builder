@@ -74,7 +74,7 @@ b0=$(kernel_resets_since '-1min')
 t0=$(date +%s); R=$(curl -s --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions"); t1=$(date +%s)
 kill $VP 2>/dev/null; wait $VP 2>/dev/null
 python3 - "$R" "$((t1-t0))" "$(sort -n "$T/vram" | tail -1)" "$(kernel_resets_since '-1min')" "$b0" "$T/prompt" "$want" "$deadline" <<'PY'
-import json, re, sys
+import json, os, re, sys
 
 def _num(v, unit=""):
     # a VRAM sample can come back empty when nvtop is unreadable for a moment; report it rather than crashing
@@ -96,13 +96,20 @@ answer, refusal, answered = "", "", False
 try:
     r = json.loads(r_raw)
     u, t = r.get("usage", {}), r.get("timings", {})
-    print(f"prompt_tokens={u.get('prompt_tokens')} wall={wall}s prefill_tps={t.get('prompt_per_second', 0):.0f} "
-          f"decode_tps={t.get('predicted_per_second', 0):.1f} vram_max={_num(vram_max, 'GiB')} resets={_int(after) - _int(before)}")
+    msg = r["choices"][0]["message"]
     # a content field that came back at all means the model answered, even if it answered with nothing:
     # an empty answer at depth is a quality failure to be graded 0/3, never a request that was not made
-    content = r["choices"][0]["message"].get("content")
+    content = msg.get("content")
     answered = isinstance(content, str)
     answer = (content or "").strip()
+    # the truncation signal: when --reasoning-budget cuts thinking off, llama-server injects the budget message into
+    # reasoning_content; the probe records the marker so a cut-off (and possibly wasted) think is visible
+    rc = msg.get("reasoning_content") or ""
+    bmsg = os.environ.get("A770B_BUDGET_MESSAGE") or ""
+    trunc = bool(bmsg) and (bmsg in rc)
+    print(f"prompt_tokens={u.get('prompt_tokens')} wall={wall}s prefill_tps={t.get('prompt_per_second', 0):.0f} "
+          f"decode_tps={t.get('predicted_per_second', 0):.1f} vram_max={_num(vram_max, 'GiB')} resets={_int(after) - _int(before)} "
+          f"reasoning_chars={len(rc)} reasoning_truncated={trunc}")
     if not answered:
         refusal = (r.get("error") or {}).get("message") or "the reply carried no choices[0].message.content"
 except (json.JSONDecodeError, KeyError, IndexError, TypeError):

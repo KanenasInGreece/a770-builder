@@ -32,7 +32,13 @@ q=[]
 # spend their budget in reasoning_content before the answer; the gate reads the CONTENT field only — a builder must deliver in content.
 GATE_MAX_TOKENS=4096 if os.environ.get("REASONING","off")=="on" else 256
 for p,exp in [("What is 2+2? Answer with the number only.","4"),("What is the capital of Greece? One word.","Athens"),("Write a Python one-liner that prints hello world. Code only.","print(")]:
-    d,ms=chat([{"role":"user","content":p}],max_tokens=GATE_MAX_TOKENS); c=(d['choices'][0]['message'].get('content') or '').strip(); q.append({"prompt":p,"answer":c[:120],"ok":exp.lower() in c.lower(),"ms":round(ms),"reasoning_chars":len(d['choices'][0]['message'].get('reasoning_content') or '')})
+    d,ms=chat([{"role":"user","content":p}],max_tokens=GATE_MAX_TOKENS)
+    m=d['choices'][0]['message']; c=(m.get('content') or '').strip(); rc=m.get('reasoning_content') or ''
+    bmsg=os.environ.get('A770B_BUDGET_MESSAGE') or ''
+    q.append({"prompt":p,"answer":c[:120],"ok":exp.lower() in c.lower(),"ms":round(ms),
+              "reasoning_chars":len(rc),
+              "reasoning_truncated":bool(bmsg) and (bmsg in rc),
+              "reasoning_tail":rc[-120:]})
 r["quality"]=q; r["quality_ok"]=all(x['ok'] for x in q)
 d,ms=chat([{"role":"user","content":"Write a 200-word paragraph about git worktrees."}],max_tokens=GATE_MAX_TOKENS)
 t=d.get('timings',{}); r["short"]={"prompt_tokens":t.get('prompt_n'),"ttft_ms":round(t.get('prompt_ms',0)),"gen_tokens":t.get('predicted_n'),"tpot_ms":round(t.get('predicted_per_token_ms',0),2),"decode_tps":round(t.get('predicted_per_second',0),1),"wall_ms":round(ms)}

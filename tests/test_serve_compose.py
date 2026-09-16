@@ -140,6 +140,35 @@ def test_plan_carries_the_thinking_controls_and_the_extra_words(tmp_path):
     assert argv[argv.index("--temp") + 1] == "1.0"
 
 
+def test_plan_passes_the_budget_message_when_a_budget_is_set(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, THINKING_MODE="on", THINKING_BUDGET="10000")
+    r = _run(env, "plan", GGUF, "4096")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert argv[argv.index("--reasoning-budget") + 1] == "10000"
+    # the plan prints each argv word with %q, so the spaces (and commas) in the one message word come back escaped
+    assert argv[argv.index("--reasoning-budget-message") + 1].replace("\\", "") == "budget spent, answer now"
+
+
+def test_plan_omits_the_budget_message_when_no_budget_is_set(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, THINKING_MODE="on")
+    r = _run(env, "plan", GGUF, "4096")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert "--reasoning-budget-message" not in argv
+
+
+def test_plan_honours_an_explicit_budget_message_override(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, THINKING_MODE="on", THINKING_BUDGET="10000", THINKING_BUDGET_MESSAGE="answer-now")
+    r = _run(env, "plan", GGUF, "4096")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert argv[argv.index("--reasoning-budget-message") + 1] == "answer-now"
+
+
 def test_override_is_json_with_the_server_entrypoint_and_the_argv(tmp_path):
     out = tmp_path / "ov.json"
     argv = ["-m", "/models/x.gguf", "--chat-template-kwargs", '{"reasoning_effort":"low"}']

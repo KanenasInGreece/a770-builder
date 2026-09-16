@@ -152,10 +152,11 @@ case "$A770B_SERVE" in compose) ;; *) echo "⛔ A770B_SERVE must be compose — 
 : "${A770B_CORPUS_FILE:=$A770B_KIT/corpus/large.py}"     # kit/corpus.py's generated file: real source only, sized for the display serious profile's window
 : "${A770B_SUMMARY_CORPUS:=$A770B_SEAT/**/*.py}"         # bench_model.sh's judged 17k summary rung: the SEAT's own source, never the kit's generated corpus
 : "${A770B_SERVED_BACKEND:=}"
+: "${A770B_BUDGET_MESSAGE:=budget spent, answer now}"   # the marker llama-server injects when --reasoning-budget cuts thinking off; the one string the truncation detection (bench_model.sh, depth_probe.sh) greps for, and serve_compose.sh passes it so the marker is deterministic
 export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT A770B_HOST A770B_ALIAS A770B_GPU_MATCH A770B_API_KEY_FILE A770B_CARD_MODE A770B_RESET_PATTERN A770B_CARD A770B_CARD_VRAM_TOTAL
 export A770B_PROFILES
 # exported for the compose envelope's ${…} interpolation (the values this file is the single source of)
-export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT A770B_ONEAPI_DEVICE_SELECTOR A770B_CONTAINER_UID A770B_CONTAINER_GID A770B_SERVED_BACKEND
+export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT A770B_ONEAPI_DEVICE_SELECTOR A770B_CONTAINER_UID A770B_CONTAINER_GID A770B_SERVED_BACKEND A770B_BUDGET_MESSAGE
 mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }
 # a770b_profile_var <profile> <FIELD> — the value of A770B_<PROFILE>_<FIELD> (name upper-cased, - → _); empty if unset

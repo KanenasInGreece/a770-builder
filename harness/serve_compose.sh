@@ -36,7 +36,9 @@ _build_argv_llama(){
   [ -n "$rmode" ] && thinking+=(--reasoning "$rmode")
   [ -n "${THINKING_EFFORT:-}" ] && thinking+=(--reasoning-effort "$THINKING_EFFORT")
   [ -n "${THINKING_BUDGET:-}" ] && thinking+=(--reasoning-budget "$THINKING_BUDGET")
-  [ -n "${THINKING_BUDGET_MESSAGE:-}" ] && thinking+=(--reasoning-budget-message "$THINKING_BUDGET_MESSAGE")
+  # pass the budget message whenever a budget is active (defaulting to the one string A770B_BUDGET_MESSAGE), so the
+  # truncation marker llama-server injects is deterministic and bench_model.sh / depth_probe.sh can grep for it
+  [ -n "${THINKING_BUDGET:-}" ] && [ -n "${THINKING_BUDGET_MESSAGE:-$A770B_BUDGET_MESSAGE}" ] && thinking+=(--reasoning-budget-message "${THINKING_BUDGET_MESSAGE:-$A770B_BUDGET_MESSAGE}")
   [ "${THINKING_PRESERVE:-}" = "false" ] && thinking+=(--no-reasoning-preserve)
   ARGV=(-m "$model" --alias "$A770B_ALIAS" --host 0.0.0.0 --port 8080 --api-key-file "$KCONTAINER" \
     -ngl 99 -c "$ctx" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --load-mode none -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
