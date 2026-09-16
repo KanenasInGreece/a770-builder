@@ -23,8 +23,13 @@ ENTRYPOINT = "/app/llama-server"
 
 def override(argv, entrypoint=None):
     """The compose override document for an argv list."""
-    ep = entrypoint if entrypoint is not None else [ENTRYPOINT]
-    return {"services": {"llama": {"entrypoint": ep, "command": list(argv)}}}
+    svc = {}
+    if entrypoint:
+        ep = list(entrypoint) if isinstance(entrypoint, (list, tuple)) else entrypoint.split()
+        if ep:
+            svc["entrypoint"] = ep
+    svc["command"] = list(argv)
+    return {"services": {"llama": svc}}
 
 
 def main(argv):
@@ -39,7 +44,7 @@ def main(argv):
     if not words:
         print("compose_override.py: refusing an empty argv", file=sys.stderr)
         return 2
-    ep = args.entrypoint.split() if args.entrypoint else [ENTRYPOINT]
+    ep = args.entrypoint.split() if (args.entrypoint and args.entrypoint.strip()) else None
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(override(words, entrypoint=ep), fh, indent=2)
         fh.write("\n")

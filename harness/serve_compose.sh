@@ -50,14 +50,13 @@ _build_argv_vllm(){
   [ -n "${A770B_VRAM_CAP_GIB:-}" ] || { echo "⛔ A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" >&2; exit 2; }
   [ -n "${A770B_CARD_VRAM_TOTAL:-}" ] || { echo "⛔ A770B_CARD_VRAM_TOTAL must be set to calculate vLLM GPU memory utilization (set A770B_CARD)" >&2; exit 2; }
   local frac
-  frac=$(python3 -c "cap=float('$A770B_VRAM_CAP_GIB'); tot=float('$A770B_CARD_VRAM_TOTAL'); print(f'{cap/tot:.1f}')")
+  frac=$(python3 -c "import math,sys; cap=float(sys.argv[1]); tot=float(sys.argv[2]); print(f'{math.floor(cap/tot*1000)/1000:.3f}')" "$A770B_VRAM_CAP_GIB" "$A770B_CARD_VRAM_TOTAL")
   ARGV=(
     "$model"
     --served-model-name "$A770B_ALIAS"
     --quantization "$quant"
     --max-model-len "$ctx"
     --gpu-memory-utilization "$frac"
-    --api-key "$(a770b_api_key)"
     --host 0.0.0.0
     --port 8000
     "$@"
@@ -124,7 +123,7 @@ case "${A770B_SERVED_BACKEND:-}" in
     _build_argv_llama "$MODEL_IN_CONTAINER" "$CTX" "$@"
     ;;
   vllm)
-    ENTRYPOINT="vllm serve"
+    ENTRYPOINT=""
     _build_argv_vllm "$MODEL_IN_CONTAINER" "$CTX" "$@"
     ;;
   "")
@@ -166,7 +165,9 @@ python3 -c "import sys,math; v=float('$A770B_VRAM_CAP_GIB'); sys.exit(0 if (v>0 
 _compose down >/dev/null 2>&1 || true
 budget_gate || exit 1
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
-python3 "$(dirname "$0")/compose_override.py" --entrypoint "$ENTRYPOINT" --out "$OVERRIDE" -- "${ARGV[@]}"
+_ep_arg=()
+[ -n "$ENTRYPOINT" ] && _ep_arg=(--entrypoint "$ENTRYPOINT")
+python3 "$(dirname "$0")/compose_override.py" "${_ep_arg[@]}" --out "$OVERRIDE" -- "${ARGV[@]}"
 # recreate, never --no-recreate: a profile change must replace the container
 if ! _compose -f "$OVERRIDE" up -d --force-recreate; then
   echo "⛔ docker compose up failed — the container did not start (docker's error is above); nothing was left running" >&2
