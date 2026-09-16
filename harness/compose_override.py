@@ -18,8 +18,6 @@ import argparse
 import json
 import sys
 
-ENTRYPOINT = "/app/llama-server"
-
 
 def override(argv, entrypoint=None):
     """The compose override document for an argv list."""

@@ -350,14 +350,14 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
         A770B_SERVED_BACKEND="vllm",
         A770B_CARD_VRAM_TOTAL="32",
         A770B_VRAM_CAP_GIB="16.0",
-        A770B_QUANT="int4",
+        A770B_QUANT="gptq",
     )
     r = _run(env, "plan", GGUF, "8192")
     assert r.returncode == 0, r.stderr
     assert "entrypoint: " in r.stdout
     argv = _argv_lines(r.stdout)
     assert f"/models/{GGUF}" in argv
-    assert argv[argv.index("--quantization") + 1] == "int4"
+    assert argv[argv.index("--quantization") + 1] == "gptq"
     assert argv[argv.index("--max-model-len") + 1] == "8192"
     assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.500"
     assert "--api-key" not in argv, "vLLM API key must not sit in the container argv"
@@ -367,7 +367,8 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
     assert not log.exists(), "plan must not invoke docker"
     # the envelope carries the shim entrypoint that sources the key from /run/a770b/api.key
     envelope_text = VLLM_ENVELOPE.read_text(encoding="utf-8")
-    assert 'entrypoint: ["/bin/sh", "-c", "export VLLM_API_KEY=\\"$(cat /run/a770b/api.key 2>/dev/null)\\"; exec vllm serve \\"$@\\"", "vllm-serve"]' in envelope_text
+    assert 'entrypoint: ["/bin/sh", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; exec vllm serve \\"$@\\"", "vllm-serve"]' in envelope_text
+    assert "2>/dev/null" not in envelope_text
     # and the override document generated for vllm omits the entrypoint key so the shim stands
     out_ov = tmp_path / "ov.json"
     r_ov = subprocess.run([sys.executable, str(OVERRIDE_PY), "--out", str(out_ov), "--", *argv],
@@ -380,7 +381,7 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
     assert not any("a770b-" in str(x) for x in doc["services"]["llama"]["command"])
 
 
-def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_one_decimal(tmp_path):
+def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_three_decimals(tmp_path):
     bin_, _ = _fake_runtime(tmp_path)
     env = _env(
         tmp_path,
@@ -388,6 +389,7 @@ def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_one_decimal(tmp_p
         A770B_SERVED_BACKEND="vllm",
         A770B_CARD_VRAM_TOTAL="16.0",
         A770B_VRAM_CAP_GIB="15.3",
+        A770B_QUANT="gptq",
     )
     r = _run(env, "plan", GGUF, "4096")
     assert r.returncode == 0, r.stderr
@@ -417,7 +419,8 @@ def test_dispatch_refuses_an_empty_served_backend(tmp_path):
 
 def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
     text = VLLM_ENVELOPE.read_text(encoding="utf-8")
-    assert 'entrypoint: ["/bin/sh", "-c", "export VLLM_API_KEY=\\"$(cat /run/a770b/api.key 2>/dev/null)\\"; exec vllm serve \\"$@\\"", "vllm-serve"]' in text
+    assert 'entrypoint: ["/bin/sh", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; exec vllm serve \\"$@\\"", "vllm-serve"]' in text
+    assert "2>/dev/null" not in text
     assert "127.0.0.1:${A770B_PORT}:8000" in text
     assert "${A770B_VLLM_IMAGE:-intel/vllm:0.21.0-xpu}" in text
     assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
@@ -433,3 +436,103 @@ def test_vllm_env_example_documents_filtered_by_path_dir_and_trap():
     assert "TRAP" in text
     assert "A770B_BY_PATH_DIR=" in text
     assert "A770B_BY_PATH_DIR=/dev/dri/by-path\n" not in text
+
+
+def test_vllm_key_shim_fails_closed_when_key_unreadable():
+    r = subprocess.run(
+        ["/bin/sh", "-c", 'VLLM_API_KEY="$(cat /nonexistent/path/to/api.key)" || exit 1; export VLLM_API_KEY; echo "STARTED_UNAUTHENTICATED"'],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0
+    assert "STARTED_UNAUTHENTICATED" not in r.stdout
+
+
+def test_plan_vllm_refuses_empty_quantization(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="",
+    )
+    env.pop("QUANT", None)
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert "quantization must be set for the vllm backend" in r.stderr
+
+
+def test_plan_vllm_preserves_nested_model_path_relative_to_models_dir(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    nested_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    env_vllm = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="gptq",
+    )
+    r_vllm = _run(env_vllm, "plan", "Qwen/Qwen3-32B", "8192")
+    assert r_vllm.returncode == 0, r_vllm.stderr
+    argv_vllm = _argv_lines(r_vllm.stdout)
+    assert argv_vllm[0] == "/models/Qwen/Qwen3-32B"
+
+    # for llama/vulkan, nested directories still collapse to basename
+    env_vulkan = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vulkan",
+    )
+    r_vulkan = _run(env_vulkan, "plan", "Qwen/Qwen3-32B", "8192")
+    assert r_vulkan.returncode == 0, r_vulkan.stderr
+    argv_vulkan = _argv_lines(r_vulkan.stdout)
+    assert f"/models/{nested_dir.name}" in argv_vulkan
+    assert "/models/Qwen/Qwen3-32B" not in argv_vulkan
+
+
+def test_plan_vllm_refuses_vram_cap_exceeding_card_total(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="16.0",
+        A770B_VRAM_CAP_GIB="20.0",
+        A770B_QUANT="gptq",
+    )
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert "A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" in r.stderr
+
+
+def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    # vLLM /health returns an empty HTTP 200 (no body)
+    _make_bin(bin_, "curl", "exit 0")
+    by_path = tmp_path / "by-path"
+    by_path.mkdir(exist_ok=True)
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True, exist_ok=True)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="intel/vllm:0.21.0-xpu",
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+    )
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "▶ started server container" in r.stdout
+    ov = json.loads((Path(env["A770B_DATA"]) / "logs" / "compose-argv.override.json").read_text(encoding="utf-8"))
+    assert "entrypoint" not in ov["services"]["llama"]
+    assert ov["services"]["llama"]["command"][0] == "/models/Qwen/Qwen3-32B"
+    pidf = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid"
+    assert pidf.read_text(encoding="utf-8").strip() == "4242"

@@ -55,7 +55,12 @@ check_update(){ local url latest pv
 case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh" || { [ "${1:-}" = "doctor" ] || exit 2; }; . "$A770B_PROJECT/harness/guard.sh"
-SERVE="${SERVE:-${A770B_SERVE_SCRIPT:?the project at $A770B_PROJECT has no A770B_SERVE_SCRIPT in its env.sh — that checkout predates A770B_SERVE; run this copy from its own checkout or set A770B_PROJECT to it}}"; BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
+if [ "${1:-}" = "doctor" ]; then
+  SERVE="${SERVE:-${A770B_SERVE_SCRIPT:-$A770B_PROJECT/harness/serve_compose.sh}}"
+else
+  SERVE="${SERVE:-${A770B_SERVE_SCRIPT:?the project at $A770B_PROJECT has no A770B_SERVE_SCRIPT in its env.sh — that checkout predates A770B_SERVE; run this copy from its own checkout or set A770B_PROJECT to it}}"
+fi
+BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
 profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fields for a profile named in A770B_PROFILES
@@ -115,7 +120,11 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
     THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
     THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
     bash "$SERVE" start "$gguf" "$ctx" $extra || return 1
-  for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+  if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
+    for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
+  else
+    for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+  fi
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || return 2
   local thinking_desc="mode ${thinking_mode:-$reasoning}"
   [ -n "$thinking_effort" ] && thinking_desc="$thinking_desc · effort $thinking_effort"
@@ -222,10 +231,18 @@ doctor(){
     # they are set in the environment (builder.env is exported). Either way, a missing value is a MISSING check.
     local _img_var="A770B_LLAMA_IMAGE"
     local -a _needed_vars=(A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID)
-    case "$A770B_COMPOSE_FILE" in
-      *vllm*)
+    case "${A770B_SERVED_BACKEND:-}" in
+      vllm)
         _img_var="A770B_VLLM_IMAGE"
         _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
+        ;;
+      *)
+        case "$A770B_COMPOSE_FILE" in
+          */vllm.yaml|vllm.yaml)
+            _img_var="A770B_VLLM_IMAGE"
+            _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
+            ;;
+        esac
         ;;
     esac
     _envfile_ok=1; for _v in "${_needed_vars[@]}"; do [ -n "${!_v:-}" ] || _envfile_ok=0; done
@@ -314,12 +331,12 @@ doctor(){
   local _cards_file="${A770B_CARDS_FILE:-$A770B_PROJECT/config/cards.json}"
   local _known_cards=""
   if [ -f "$_cards_file" ]; then
-    _known_cards=$(python3 -c 'import json,sys; print(", ".join(sorted(json.load(open(sys.argv[1])).get("cards",{}).keys())))' "$_cards_file" 2>/dev/null || true)
+    _known_cards=$(python3 -c 'import json,sys; cards=json.load(open(sys.argv[1])).get("cards",{}); print(", ".join(sorted(k for k, v in cards.items() if v.get("role", "builder") == "builder")))' "$_cards_file" 2>/dev/null || true)
   fi
   if [ -z "${A770B_CARD:-}" ]; then
-    echo "MISSING input A770B_CARD is unset — the builder card identity; set it in builder.env to one of: ${_known_cards:-b70, a770, b580}"
+    echo "MISSING input A770B_CARD is unset — the builder card identity; set it in builder.env to one of: ${_known_cards:-b70, a770}"
     missing=$((missing+1))
-  elif [ -n "$_known_cards" ] && ! python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("cards",{}) else 1)' "$_cards_file" "$A770B_CARD" 2>/dev/null; then
+  elif [ -n "$_known_cards" ] && ! python3 -c 'import json,sys; cards=json.load(open(sys.argv[1])).get("cards",{}); sys.exit(0 if sys.argv[2] in cards and cards[sys.argv[2]].get("role", "builder") == "builder" else 1)' "$_cards_file" "$A770B_CARD" 2>/dev/null; then
     echo "MISSING input A770B_CARD=$A770B_CARD is unknown — set it in builder.env to one of: $_known_cards"
     missing=$((missing+1))
   else
