@@ -65,7 +65,7 @@ elif grep -q 'turns_with_n_gen=' "$here/harness/capture_task.sh"; then echo "ok 
 else echo "FAIL capture: n_gen is not recorded from the container log"; fail=1; fi
 # a stub docker that prints a llama.cpp slot log: capture must report n_gen_max from it, not "timings unavailable"
 mkdir -p "$t/bin"
-printf '#!/bin/bash\ncat "$0.log"\n' > "$t/bin/docker"; chmod +x "$t/bin/docker"
+printf '#!/bin/bash\ncat "$0.log" >&2\n' > "$t/bin/docker"; chmod +x "$t/bin/docker"
 cat > "$t/bin/docker.log" <<'LOG'
 print_timing: id  0 | task 7 | n_gen =    100, tg =   4.49 t/s
 print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s

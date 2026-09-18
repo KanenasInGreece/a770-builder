@@ -12,7 +12,7 @@ set -euo pipefail
 LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log}"
 [ -f "$BLOG" ] || { echo "⛔ build log not found: $BLOG" >&2; exit 2; }
 OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; TMPLOG=$(mktemp)
-trap 'rm -f -- "$TMPLOG" "${TMPLOG}.err"' EXIT
+trap 'rm -f -- "$TMPLOG"' EXIT
 # the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
 { safe_git_diff "$WT"
   safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
@@ -49,9 +49,9 @@ echo; echo "## server-side timings during the run"
 # Do not pass a colour-stripping flag: this docker does not accept one, and discarding
 # stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
 CONTAINER="${A770B_COMPOSE_PROJECT}-llama-1"
-ERRLOG="${TMPLOG}.err"
-if ! "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>"$ERRLOG"; then
-  echo "timings unavailable (docker logs failed: $(head -1 -- "$ERRLOG" | tr -d '\r'))"
+# llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
+if ! "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1; then
+  echo "timings unavailable (docker logs failed: $(head -1 -- "$TMPLOG" | tr -d '\r'))"
 elif [ ! -s "$TMPLOG" ]; then
   echo "timings unavailable (no container log)"
 else
@@ -80,7 +80,6 @@ print(f"turns_with_n_gen={len(gs)} n_gen_max={max(gs) if gs else 0} n_gen_median
 print(f"turns_n_gen_ge_10000={sum(1 for g in gs if g>=10000)}")
 PY
 fi
-rm -f -- "$ERRLOG"
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"
 rm -f -- "$DIFF"
