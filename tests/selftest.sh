@@ -59,6 +59,24 @@ if [ "$bc" = 0 ] && grep -q '## server-side timings' "$A770B_DATA/results/selfte
 echo "MARKER-$$" > "$t/secret"; ln -s "$t/secret" "$r/leak"
 A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" selftest-link "$r" "$t/build.log" >/dev/null 2>&1
 if grep -q "MARKER-$$" "$A770B_DATA/results/selftest-link.task.md" "$A770B_DATA/results/selftest-link.patch" 2>/dev/null; then echo "FAIL capture read through a symlink"; fail=1; else echo "ok   capture: a symlink is named, never read"; fi
+# docker logs has no --no-color (unknown flag; discarding stderr made C9 look like it had no container log)
+if grep -q -- '--no-color' "$here/harness/capture_task.sh"; then echo "FAIL capture: docker logs still passes --no-color, which this docker refuses"; fail=1
+elif grep -q 'turns_with_n_gen=' "$here/harness/capture_task.sh"; then echo "ok   capture: docker logs has no --no-color and records per-turn n_gen"
+else echo "FAIL capture: n_gen is not recorded from the container log"; fail=1; fi
+# a stub docker that prints a llama.cpp slot log: capture must report n_gen_max from it, not "timings unavailable"
+mkdir -p "$t/bin"
+printf '#!/bin/bash\ncat "$0.log"\n' > "$t/bin/docker"; chmod +x "$t/bin/docker"
+cat > "$t/bin/docker.log" <<'LOG'
+print_timing: id  0 | task 7 | n_gen =    100, tg =   4.49 t/s
+print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s
+slot release: id  0 | task 7 | stop processing: n_tokens = 21446, truncated = 0
+prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.80 tokens per second)
+eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
+LOG
+r2="$t/capseat"; git init -q "$r2"; ( cd "$r2" && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init )
+A770B_REFUSE=/nonexistent A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md"; then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
+else echo "FAIL capture: stub llama log did not yield n_gen_max=10082"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)

@@ -12,7 +12,7 @@ set -euo pipefail
 LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log}"
 [ -f "$BLOG" ] || { echo "⛔ build log not found: $BLOG" >&2; exit 2; }
 OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; TMPLOG=$(mktemp)
-trap 'rm -f -- "$TMPLOG"' EXIT
+trap 'rm -f -- "$TMPLOG" "${TMPLOG}.err"' EXIT
 # the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
 { safe_git_diff "$WT"
   safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
@@ -45,10 +45,16 @@ else
 fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
-# Dump container log to temp file and parse from there (not stale host log)
+# Dump container log to temp file and parse from there (not stale host log).
+# Do not pass a colour-stripping flag: this docker does not accept one, and discarding
+# stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
 CONTAINER="${A770B_COMPOSE_PROJECT}-llama-1"
-"$A770B_DOCKER" logs --no-color "$CONTAINER" > "$TMPLOG" 2>/dev/null || true
-if [ -s "$TMPLOG" ]; then
+ERRLOG="${TMPLOG}.err"
+if ! "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>"$ERRLOG"; then
+  echo "timings unavailable (docker logs failed: $(head -1 -- "$ERRLOG" | tr -d '\r'))"
+elif [ ! -s "$TMPLOG" ]; then
+  echo "timings unavailable (no container log)"
+else
   python3 - "$TMPLOG" <<'PY'
 import re,sys
 lines=open(sys.argv[1],errors='ignore').read().splitlines()
@@ -63,10 +69,18 @@ print(f"requests={n} prompt_tokens_total={int(pt)} gen_tokens_total={int(gt)}")
 print(f"TTFT ms (prompt eval): median={q(ttft,.5):.0f} p90={q(ttft,.9):.0f} max={q(ttft,1):.0f}   largest prompt={int(max((p[1] for p in P),default=0))} tokens")
 print(f"TPOT ms: median={q(tpot,.5):.1f} p90={q(tpot,.9):.1f}   decode tok/s median={1000/q(tpot,.5) if q(tpot,.5) else 0:.1f}")
 print(f"prefill tok/s over all prompts={pt/ (sum(p[0] for p in P)/1000) if P else 0:.0f}")
+# last n_gen per slot task — the reasoning-budget ceiling shows up here as a generation that stops at the budget
+ngen={}
+for l in lines:
+    m=re.search(r'task\s+(\d+)\s+\|\s+n_gen\s+=\s+(\d+)', l)
+    if m:
+        ngen[int(m.group(1))]=int(m.group(2))
+gs=list(ngen.values())
+print(f"turns_with_n_gen={len(gs)} n_gen_max={max(gs) if gs else 0} n_gen_median={sorted(gs)[len(gs)//2] if gs else 0}")
+print(f"turns_n_gen_ge_10000={sum(1 for g in gs if g>=10000)}")
 PY
-else
-  echo "timings unavailable (no container log)"
 fi
+rm -f -- "$ERRLOG"
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"
 rm -f -- "$DIFF"
