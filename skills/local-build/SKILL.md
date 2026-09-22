@@ -1,30 +1,55 @@
 ---
 name: local-build
-description: Dispatch a bounded coding task to a LOCAL Intel Arc model (llama.cpp vulkan/sycl in a container, opencode in bwrap). Use for a ruled change to named files, tests from a spec, or a read your window cannot hold. A GGUF Q4/Q6/IQ3 label is weights-only — a slow run is often the wrong file or backend, not the wrong model. Always a standalone clone. No default profile.
+description: Use when delegating a bounded coding task to a LOCAL Intel Arc model — a ruled change to named files, tests from a specification, a read your window cannot hold, or when online seats are down. Do not use for design, a live checkout, or a second OS account on this host.
 ---
 
 # local-build
 
-`run` starts or switches the server, runs the brief through opencode in a seat-only sandbox, captures diff + tests, resets. Judge by `verify`, never the exit code. Bounded work only. Not design. Not a live checkout.
-
-`<skill-dir>` is the folder that contains this SKILL.md (not a hard-coded `~/.claude/...`). `opencode` must be on `PATH`.
+`<skill-dir>` is the folder that contains this SKILL.md. `opencode` must be on `PATH`. **One operator** on this host (the uid that owns Docker and the card).
 
 ## Commands
 
-`doctor` first if this host is unknown. `status` before `run` or `serve` — it reports the live VRAM cap (`A770B_VRAM_CAP_GIB`), not a number in this file. `--profile` is required unless the spec JSON sets `"profile"`.
+`doctor` first if this host is unknown. `status` before `run` or `serve`. `--profile` is required unless the spec sets `"profile"`.
 
 | Action | Command |
 |---|---|
 | Run | `bash <skill-dir>/scripts/local-build.sh run [<seat>] <brief.md> --profile <card> [--spec <spec.json>] [--timeout <s>]` |
 | Verify | `bash <skill-dir>/scripts/local-build.sh verify <label_or_patch> [<seat>] [--test "<cmd>"] [--timeout <s>]` |
-| Cards | `bash <skill-dir>/scripts/local-build.sh profiles` · `profiles --name <card>` (full `use_for`) · `menu` |
+| Cards | `bash <skill-dir>/scripts/local-build.sh profiles` · `profiles --name <card>` · `menu` |
 | State | `bash <skill-dir>/scripts/local-build.sh status` |
 | Doctor | `bash <skill-dir>/scripts/local-build.sh doctor` |
 | Server | `bash <skill-dir>/scripts/local-build.sh serve <card>` · `stop` |
 | Stop run | `bash <skill-dir>/scripts/local-build.sh stop-run` |
 | Reset | `bash <skill-dir>/scripts/local-build.sh reset [<seat>]` |
+| Version | `bash <skill-dir>/scripts/local-build.sh --version` · `check-update` |
 
-`run` writes `~/local-ai/results/<label>.task.md` and `<label>.patch`. Default seat is `A770B_SEAT` when `<seat>` is omitted. Smoke the default seat with the brief only — a spec that names files the seat does not have is refused.
+## Patterns
+
+Copy the command. The line under it is what that command does.
+
+**A — Dispatch.**
+
+```
+bash <skill-dir>/scripts/local-build.sh run <brief.md> --profile qwen35-9b-q4km-vulkan
+```
+
+→ `~/local-ai/results/<label>.task.md` and `<label>.patch`. Judge by `verify`, never the exit code. Default seat is `A770B_SEAT`. Smoke that seat with the brief only.
+
+**B — Confirm.**
+
+```
+bash <skill-dir>/scripts/local-build.sh verify <label>
+```
+
+→ re-applies the patch on a clean seat with no model.
+
+`status` before `run` or `serve` — live cap is `A770B_VRAM_CAP_GIB`, not a number here.
+
+profiles | menu | status
+
+## Pick a card
+
+No learned router. Read the brief (edit scope, file size, time you can spend). **9B** for ordinary edits, tests, and reads under the useful window. **Gemma** for a large cold read. **27B** when the deliverable is larger than the brief or several files. `profiles --name` is the full `use_for` (a card that fails a dimension says so there). A GGUF Q4/Q6/IQ3 label is the **weight** encoding — a slow run is often the wrong file or backend, not the wrong family.
 
 Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=inference`). Tables are rendered — do not edit them.
 
@@ -55,14 +80,14 @@ Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=infer
   "verify": { "test": "uv run --with pytest python -m pytest -q tests/test_foo.py", "hidden": ["test_foo_hidden.py"] } }
 ```
 
-`card` is standing instructions (file in the seat, or `{"text":"…"}`, ≤8000 chars). `scope.edit` limits edits. A CLI flag wins over a spec key.
+`card` is standing instructions (file in the seat, or `{"text":"…"}`, ≤8000 chars). A CLI flag wins over a spec key.
 
 ## Always / Ask / Never
 
-- **Always:** standalone clone; judge by `verify`; end a run with `stop-run`; brief names files, the exact test, and a stop (`briefs/TEMPLATE.md`).
-- **Ask:** raise a cap; a second OS user on docker/render.
-- **Never:** live checkout or linked worktree; raise the mode cap or `-ub 512` by hand; speculative decoding; kill `bwrap` by name.
+- **Always:** standalone clone; judge by `verify`; end a run with `stop-run`; brief names files, the exact test, and a stop (`briefs/TEMPLATE.md`). One operator on this host.
+- **Ask:** raise a cap.
+- **Never:** live checkout or linked worktree; raise the mode cap or `-ub 512` by hand; speculative decoding; kill `bwrap` by name; install this skill for another OS account or put a service user in `docker`.
 
 ## Load when needed
 
-`docs/OPERATING.md` — run, knobs, logs, diagnosing a slow file/backend. `AGENTS.md` — ladder. `kit/PROFILE.md` — registry fields. `config/models.md` — ledger.
+`docs/OPERATING.md` — run, knobs, logs. `AGENTS.md` — ladder. `kit/PROFILE.md` — registry fields. `config/models.md` — ledger.

@@ -10,10 +10,12 @@ machine-specific values (PCI BDF, group ids, image digest, keys) are gitignored 
 - **Host tools**: `git`, `curl`, `python3`, `bubblewrap` (`bwrap`), `socat`, `uv`, and **`opencode` on `PATH`**
   (a private `~/.opencode/bin/opencode` is not on the default PATH until that directory is added; `doctor` is
   the check). The seat runs offline in a bubblewrap sandbox and needs these on `PATH`.
-- **The account that runs the skill** must be in `docker` (or the equivalent for Podman) and `render` (usually
-  `video` as well), and must be able to open `/dev/dri/renderD*`. A second login on the same host does not inherit
-  those groups. The skill directory is that agent's own (`~/.claude/skills/local-build`, `~/.openclaw/skills/local-build`,
-  …); do not copy a `~/.claude/...` path from SKILL.md if the copy lives elsewhere.
+- **One operator.** The account that runs the skill must be in `docker` (or the equivalent for Podman) and `render`
+  (usually `video` as well), and must open `/dev/dri/renderD*`. Do not install this skill for a second OS account
+  or a service user; `docker` is root-equivalent. Other users on the host, if they need the model, are HTTP clients
+  of a port the operator already served — not of `run`/`serve`. The skill directory is that operator's agent home
+  (`~/.claude/skills/local-build`, `~/.grok/skills/local-build`, …); do not copy a `~/.claude/...` path from SKILL.md
+  if the copy lives elsewhere.
 - **GPU drivers**: `mesa-vulkan-drivers` + `vulkan-loader` for the Vulkan path (the SYCL path's oneAPI / Level
   Zero runtime lives inside the image).
 - **The kit toolchain** inside the sandbox: `node`, `cmake`, `make`, `g++` — the profiling kit's graders build and
