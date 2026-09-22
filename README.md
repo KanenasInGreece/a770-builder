@@ -127,6 +127,7 @@ git clone <your target repo> ~/local-ai/seat                        # 3. the sea
 bash ~/local-ai/A770_Builder/harness/warm_cache.sh                  # 5. pre-fill the read-only uv cache (the sandbox has no network)
 npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy   # 6. install the skill into your agents
 bash ~/.claude/skills/local-build/scripts/local-build.sh run ~/local-ai/A770_Builder/briefs/T0-smoke.md --profile qwen35-9b-q4km-vulkan
+# If this agent's skill directory is not ~/.claude/skills/local-build, run the copy that lives next to its SKILL.md.
 ```
 
 The skill follows the [Agent Skills](https://agentskills.io) open standard: a folder `skills/local-build/` holding

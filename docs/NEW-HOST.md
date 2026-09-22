@@ -7,8 +7,13 @@ machine-specific values (PCI BDF, group ids, image digest, keys) are gitignored 
 
 - **Linux** with a kernel new enough for the Intel Xe/i915 driver (6.8+). The A770 is a DG2 / Xe1 card.
 - **A container runtime**: `docker` (with the compose plugin) or `podman`. The SYCL image is linux/amd64.
-- **Host tools**: `git`, `curl`, `python3`, `bubblewrap` (`bwrap`), `socat`, and `uv` (the seat runs offline in a
-  bubblewrap sandbox and needs these on `PATH`).
+- **Host tools**: `git`, `curl`, `python3`, `bubblewrap` (`bwrap`), `socat`, `uv`, and **`opencode` on `PATH`**
+  (a private `~/.opencode/bin/opencode` is not on the default PATH until that directory is added; `doctor` is
+  the check). The seat runs offline in a bubblewrap sandbox and needs these on `PATH`.
+- **The account that runs the skill** must be in `docker` (or the equivalent for Podman) and `render` (usually
+  `video` as well), and must be able to open `/dev/dri/renderD*`. A second login on the same host does not inherit
+  those groups. The skill directory is that agent's own (`~/.claude/skills/local-build`, `~/.openclaw/skills/local-build`,
+  …); do not copy a `~/.claude/...` path from SKILL.md if the copy lives elsewhere.
 - **GPU drivers**: `mesa-vulkan-drivers` + `vulkan-loader` for the Vulkan path (the SYCL path's oneAPI / Level
   Zero runtime lives inside the image).
 - **The kit toolchain** inside the sandbox: `node`, `cmake`, `make`, `g++` — the profiling kit's graders build and

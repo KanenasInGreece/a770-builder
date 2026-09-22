@@ -42,6 +42,14 @@ unrestricted, 0 or a positive token count, `--reasoning-budget`), `budget_messag
 an unknown key or a wrong type is refused. The older top-level `reasoning` field ("on"/"off")
 stays for now and must not contradict `thinking.mode` when both are set (an "auto" mode never
 contradicts either value of `reasoning`).
+
+A row may also name the serving triple that a GGUF nickname hides: `engine` (`llama.cpp` or
+`vllm`), `checkpoint` (`format`, `weight_quant`, `activation_quant`), and `kernel` (`path`,
+`xmx`, `evidence`). All three are optional. Omitted means untested, not "the same as the
+quant label". A GGUF K-quant or I-quant is weights-only: `activation_quant` is `none` (activations
+stay in the engine's working precision). `none` is not 4-bit local math. `kernel` is filled only
+when the GPU vs CPU-like path (and whether XMX ran) was actually observed; do not invent it from
+the filename.
 """
 
 import argparse
@@ -105,7 +113,7 @@ STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
     "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
-    "task", "evidence",
+    "task", "evidence", "engine",
 )
 # The task classes a row competes in. The organizing axis of a registry is now the task,
 # not the window: a row is a (model, quant, KV, context, sampling) cell that wins one of these.
@@ -116,13 +124,23 @@ TASK_VALUES = {
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
-    "instrument", "thinking", "operator_override",
+    "instrument", "thinking", "operator_override", "checkpoint", "kernel",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
-OPTIONAL_KEYS = {"kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task", "evidence", "operator_override"}
+OPTIONAL_KEYS = {
+    "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
+    "evidence", "operator_override", "engine", "checkpoint", "kernel",
+}
+ENGINE_VALUES = {"llama.cpp", "vllm"}
+CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
+CHECKPOINT_KEYS = {"format", "weight_quant", "activation_quant"}
+ACTIVATION_QUANT_VALUES = {"none", "fp16", "bf16", "int8", "int4"}
+KERNEL_PATH_VALUES = {"gpu", "cpu-like", "untested"}
+KERNEL_XMX_VALUES = {"used", "unavailable", "untested"}
+KERNEL_KEYS = {"path", "xmx", "evidence"}
 
-SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |"
-SKILL_SEPARATOR = "|---|---|---|---|---|---|"
+SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k |"
+SKILL_SEPARATOR = "|---|---|---|---|---|"
 
 
 def _is_number(v) -> bool:
@@ -567,6 +585,71 @@ def validate(data) -> list[str]:
                 ):
                     errors.append(f"{name}: thinking.mode {mode!r} contradicts reasoning {reasoning!r}")
 
+        if "engine" in prof and isinstance(prof["engine"], str) and prof["engine"] not in ENGINE_VALUES:
+            errors.append(f"{name}: engine must be llama.cpp or vllm")
+
+        if "checkpoint" in prof:
+            checkpoint = prof["checkpoint"]
+            if not isinstance(checkpoint, dict):
+                errors.append(f"{name}: checkpoint must be an object")
+            else:
+                for kk in checkpoint.keys():
+                    if kk not in CHECKPOINT_KEYS:
+                        errors.append(f"{name}: checkpoint: unknown key {kk}")
+                for kk in CHECKPOINT_KEYS:
+                    if kk not in checkpoint:
+                        errors.append(f"{name}: checkpoint: missing key {kk}")
+
+                fmt = checkpoint.get("format")
+                if "format" in checkpoint and (not isinstance(fmt, str) or fmt not in CHECKPOINT_FORMATS):
+                    errors.append(f"{name}: checkpoint.format must be one of gguf, gptq, awq, safetensors")
+
+                wq = checkpoint.get("weight_quant")
+                if "weight_quant" in checkpoint and (not isinstance(wq, str) or not wq):
+                    errors.append(f"{name}: checkpoint.weight_quant must be a non-empty string")
+
+                aq = checkpoint.get("activation_quant")
+                if "activation_quant" in checkpoint and (
+                    not isinstance(aq, str) or aq not in ACTIVATION_QUANT_VALUES
+                ):
+                    errors.append(
+                        f"{name}: checkpoint.activation_quant must be one of none, fp16, bf16, int8, int4"
+                    )
+
+                if (
+                    fmt == "gguf"
+                    and isinstance(wq, str)
+                    and isinstance(prof.get("quant"), str)
+                    and wq != prof["quant"]
+                ):
+                    errors.append(
+                        f"{name}: checkpoint.weight_quant {wq!r} differs from quant {prof['quant']!r}"
+                    )
+
+        if "kernel" in prof:
+            kernel = prof["kernel"]
+            if not isinstance(kernel, dict):
+                errors.append(f"{name}: kernel must be an object")
+            else:
+                for kk in kernel.keys():
+                    if kk not in KERNEL_KEYS:
+                        errors.append(f"{name}: kernel: unknown key {kk}")
+                for kk in KERNEL_KEYS:
+                    if kk not in kernel:
+                        errors.append(f"{name}: kernel: missing key {kk}")
+
+                path = kernel.get("path")
+                if "path" in kernel and (not isinstance(path, str) or path not in KERNEL_PATH_VALUES):
+                    errors.append(f"{name}: kernel.path must be gpu, cpu-like or untested")
+
+                xmx = kernel.get("xmx")
+                if "xmx" in kernel and (not isinstance(xmx, str) or xmx not in KERNEL_XMX_VALUES):
+                    errors.append(f"{name}: kernel.xmx must be used, unavailable or untested")
+
+                evidence = kernel.get("evidence")
+                if "evidence" in kernel and (not isinstance(evidence, str) or not evidence.strip()):
+                    errors.append(f"{name}: kernel.evidence must be a non-empty string")
+
     # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time:
     # the project keeps one best row per (task, card, category, weight_class, backend) class, and a registry is
     # measurements from one instrument, never a mix.
@@ -914,7 +997,7 @@ def _short_model_name(model: str) -> str:
 
 
 def _table_rows(data: dict) -> list[str]:
-    """The skill table's header, separator, and one row per profile."""
+    """The skill table's header, separator, and one row per profile. No use_for — that lives on the row."""
     profiles = data["profiles"]
     default = data.get("default")
 
@@ -928,7 +1011,7 @@ def _table_rows(data: dict) -> list[str]:
         display_name = name
         lines.append(
             f"| {display_name} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof['use_for']} |"
+            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s |"
         )
     return lines
 

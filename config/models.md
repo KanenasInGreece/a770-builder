@@ -20,7 +20,7 @@ the read the 9B's window cannot hold. Pure-inference reads `config/profiles.infe
 card with nothing else on it: **qwen35-9b-q4km-vulkan** = the same 9B at its whole native window; **qwen38-27b-iq3s-vulkan** = the 27B's IQ3_S file
 at a larger window. Both registries carry each row's `category` (`dense` or `moe`) and weight class, so an equivalent file
 is ruled out rather than kept as a second row of the same class. The profile column below says which row holds which.
-New releases of a model family are new models; they enter the same way.
+New releases of a model family are new models; they enter the same way. A GGUF quant label (Q4_K_M, Q6_K, IQ3_S) is the **weight** encoding; activations stay in the engine's working precision (`checkpoint.activation_quant: none` on every shipped row). That is not 4-bit local math, and it is not W4A16. `engine` / `checkpoint` / `kernel` on a registry row name that split; omitted means untested. A different checkpoint of the same model can change which kernel exists on this card.
 
 ## The bar
 

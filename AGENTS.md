@@ -23,6 +23,13 @@ One row of `config/profiles.json` (display-safe) or `config/profiles.inference.j
 card identity (family-weight-quant-backend), never a window name. One best row per (task, card, category,
 weight_class, backend). Numbers are measured, never copied; `config/models.md` is the ledger.
 
+A quant label on a GGUF is the **weight** encoding. Activations stay in the engine's working precision unless
+the checkpoint itself quantises them (`checkpoint.activation_quant`; `none` on every shipped GGUF row). Looking
+at `Q4_K_M` and assuming 4-bit local math is a mistake — that needs a compatible kernel on this card, which
+`kernel` records only when observed. Omitted `engine` / `checkpoint` / `kernel` means untested, not "same as
+`quant`". A different checkpoint of the same model (another user's GPTQ/AWQ/GGUF) is a different row if it
+changes which kernel can run.
+
 ## The ladder
 
 `ladder.sh` runs six rungs in order and stops at the first failure:
@@ -43,13 +50,15 @@ When qualifying models on a card that has no rows in the registry, do not measur
 
 1. **Anchor**: Pick the closest known profile row (same `family` + `weight_class`, from any card). Its numbers are a baseline comparison, never copied.
 2. **Densify by VRAM delta**: Compare the new card's measured VRAM cap to the anchor card. Use the anchor's `vram_gib_after_load` to gauge headroom; if more VRAM is available, choose a denser quantization.
-3. **Prefer native dtypes**: Target the hardware's native tensor formats. On Xe2 (Battlemage), XMX runs native `int4`, `int8`, `fp16`, and `bf16`. Sub-4-bit formats like `int3` and `int2` require software dequantization that costs execution time — try native `int4` first.
-4. **Run ONE approximation test**: Run a single benchmark of the candidate quant using `serve_compose.sh bench`:
+3. **Prefer native dtypes**: Target the hardware's native tensor formats. On Xe2 (Battlemage), XMX runs native `int4`, `int8`, `fp16`, and `bf16`. Sub-4-bit formats like `int3` and `int2` require software dequantization that costs execution time — try native `int4` first. Native int4 math is not a GGUF `Q4_*` file: that file is typically weight-only, and activations stay at the engine's working precision. Confirm a kernel exists for that checkpoint on this card (or try another user's encoding of the same model) before spending a ladder; Intel Arc is not a regular NVIDIA-style optimisation target.
+4. **Read the logs before you drop the family** (`docs/OPERATING.md`, *Engine, checkpoint, kernel*). Confirm `Vulkan0`/`SYCL0` from `llama-cli --list-devices`; on Vulkan, llama-bench's `ggml_vulkan: … matrix cores:` line (capability, not the shader — Mesa on A770 and B70 reports `none` / `int dot: 1`); on SYCL, llama-bench JSON `backends` + `n_gpu_layers`. llama.cpp will not print `falling back to CPU` or a FlashInfer/Marlin kernel name. vLLM on Xe2/B70 will name `XPUwNa16LinearKernel` / `gptq_gemm`; `switch to gptq_marlin` is a CUDA warning, not a file to fetch. Same GGUF Vulkan vs SYCL far apart, or vLLM W4A16 vs GGUF K-quant, is the **file/backend**, not the model.
+5. **Run ONE approximation test**: Run a single benchmark of the candidate quant using `serve_compose.sh bench`:
    `bash harness/serve_compose.sh bench -- -m /models/<model> -ngl 99 -c <ctx> -n 128`
-5. **Classify**:
+6. **Classify**:
    - **Compute-bound**: If decode tok/s stays flat across quantizations (e.g. Q4 vs Q6), higher precision is essentially free — densify to the larger quant for quality.
    - **Bandwidth-bound**: If decode speed drops proportionally with larger weights, memory bandwidth is the bottleneck — stay at the faster quant and record the ceiling.
-6. **Suggest next tests**: Use the classification to pick the candidate for the full ladder (`harness/ladder.sh`). Only the full ladder measurement ships a profile row.
+   - **Kernel miss**: decode in a CPU-like band while VRAM is occupied (same Q6_K: Vulkan ~5 t/s vs SYCL ~21 t/s). Try the other backend or another user's checkpoint before a ladder.
+7. **Suggest next tests**: Use the classification to pick the candidate for the full ladder (`harness/ladder.sh`). Only the full ladder measurement ships a profile row.
 
 ## Submit a profile
 

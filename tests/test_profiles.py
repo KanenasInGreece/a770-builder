@@ -489,8 +489,28 @@ def test_render_table_has_separator_after_header(tmp_path):
     r = subprocess.run([sys.executable, str(PROFILES_PY), "render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     lines = skill.read_text().splitlines()
-    i = lines.index("| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |")
-    assert lines[i + 1] == "|---|---|---|---|---|---|"
+    i = lines.index("| profile | model | window (useful) | VRAM | decode / prefill at 8k |")
+    assert lines[i + 1] == "|---|---|---|---|---|"
+
+
+def test_skill_table_omits_use_for(tmp_path):
+    """The skill table is an index: use_for stays on the row (`profiles --name`), not in SKILL.md."""
+    skill = tmp_path / "SKILL.md"
+    snippet = tmp_path / "SNIP.md"
+    skill.write_text("<!-- profiles:begin -->\nold\n<!-- profiles:end -->\n")
+    snippet.write_text("<!-- profiles:begin -->\n<!-- profiles:end -->\n")
+    r = subprocess.run(
+        [sys.executable, str(PROFILES_PY), "render", "--file", str(PROFILES_JSON),
+         "--skill", str(skill), "--snippet", str(snippet)],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    body = skill.read_text()
+    full = load_base()["profiles"]["qwen35-9b-q4km-vulkan"]["use_for"]
+    assert "Reads exactly at 100k" in full
+    assert "Reads exactly at 100k" not in body
+    assert "| profile | model | window (useful) | VRAM | decode / prefill at 8k |" in body
+    assert "| use for |" not in body
 
 
 def test_check_refuses_unknown_top_level_key(tmp_path):
@@ -2166,3 +2186,210 @@ def test_check_fails_operator_override_non_bool(tmp_path):
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert "profiles: qwen35-9b-q4km-vulkan: operator_override must be true or false" in result.stderr
+
+
+# --- optional engine / checkpoint / kernel (omitted = untested) ---
+
+
+def _gguf_checkpoint(quant="Q4_K_M"):
+    return {"format": "gguf", "weight_quant": quant, "activation_quant": "none"}
+
+
+def _gpu_kernel():
+    return {"path": "gpu", "xmx": "unavailable", "evidence": "llama-bench tg@0 stayed GPU-class while VRAM occupied"}
+
+
+def test_check_passes_when_engine_checkpoint_kernel_are_omitted(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof.pop("engine", None)
+    prof.pop("checkpoint", None)
+    prof.pop("kernel", None)
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_bad_engine(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["engine"] = "ollama"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: engine must be llama.cpp or vllm" in result.stderr
+
+
+def test_check_fails_checkpoint_not_object(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = "gguf"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint must be an object" in result.stderr
+
+
+def test_check_fails_checkpoint_unknown_key(tmp_path):
+    data = load_base()
+    ck = _gguf_checkpoint()
+    ck["bits"] = 4
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = ck
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint: unknown key bits" in result.stderr
+
+
+def test_check_fails_checkpoint_missing_key(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = {"format": "gguf", "weight_quant": "Q4_K_M"}
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint: missing key activation_quant" in result.stderr
+
+
+def test_check_fails_bad_checkpoint_format(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = {
+        "format": "exl2", "weight_quant": "Q4_K_M", "activation_quant": "none",
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint.format must be one of gguf, gptq, awq, safetensors" in result.stderr
+
+
+def test_check_fails_empty_weight_quant(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = {
+        "format": "gguf", "weight_quant": "", "activation_quant": "none",
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint.weight_quant must be a non-empty string" in result.stderr
+
+
+def test_check_fails_bad_activation_quant(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = {
+        "format": "gguf", "weight_quant": "Q4_K_M", "activation_quant": "w4a16",
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint.activation_quant must be one of none, fp16, bf16, int8, int4" in result.stderr
+
+
+def test_check_fails_gguf_weight_quant_mismatching_quant(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = _gguf_checkpoint("Q6_K")
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "checkpoint.weight_quant 'Q6_K' differs from quant 'Q4_K_M'" in result.stderr
+
+
+def test_check_passes_weight_only_gguf_checkpoint(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["engine"] = "llama.cpp"
+    prof["checkpoint"] = _gguf_checkpoint(prof["quant"])
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_passes_w4a16_without_matching_quant(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["engine"] = "vllm"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = {
+        "format": "gptq", "weight_quant": "int4", "activation_quant": "fp16",
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_kernel_not_object(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = "gpu"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kernel must be an object" in result.stderr
+
+
+def test_check_fails_kernel_unknown_key(tmp_path):
+    data = load_base()
+    k = _gpu_kernel()
+    k["dtype"] = "int4"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = k
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kernel: unknown key dtype" in result.stderr
+
+
+def test_check_fails_kernel_missing_key(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = {"path": "gpu", "xmx": "unavailable"}
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kernel: missing key evidence" in result.stderr
+
+
+def test_check_fails_bad_kernel_path(tmp_path):
+    data = load_base()
+    k = _gpu_kernel()
+    k["path"] = "xmx"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = k
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kernel.path must be gpu, cpu-like or untested" in result.stderr
+
+
+def test_check_fails_bad_kernel_xmx(tmp_path):
+    data = load_base()
+    k = _gpu_kernel()
+    k["xmx"] = "maybe"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = k
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kernel.xmx must be used, unavailable or untested" in result.stderr
+
+
+def test_check_fails_empty_kernel_evidence(tmp_path):
+    data = load_base()
+    k = _gpu_kernel()
+    k["evidence"] = "   "
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = k
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kernel.evidence must be a non-empty string" in result.stderr
+
+
+def test_check_passes_kernel_when_fully_specified(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = _gpu_kernel()
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_shipped_rows_name_weight_only_gguf_and_omit_kernel():
+    """Measured rows record llama.cpp + GGUF weight-only; kernel stays omitted until measured."""
+    for f in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        for name, prof in data["profiles"].items():
+            assert prof.get("engine") == "llama.cpp", f"{f}: {name}: engine"
+            ck = prof.get("checkpoint")
+            assert isinstance(ck, dict), f"{f}: {name}: checkpoint"
+            assert ck["format"] == "gguf", f"{f}: {name}: checkpoint.format"
+            assert ck["weight_quant"] == prof["quant"], f"{f}: {name}: checkpoint.weight_quant"
+            assert ck["activation_quant"] == "none", f"{f}: {name}: checkpoint.activation_quant"
+            assert "kernel" not in prof, f"{f}: {name}: kernel must stay omitted until measured"

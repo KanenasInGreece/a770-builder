@@ -266,7 +266,10 @@ a row is trusted.
 
 **The models.** These are the exact files each row below was measured with; a different quantisation of the same
 model is a different row, and the registry's own `model` and `source` fields (`config/profiles.json`,
-`config/profiles.inference.json`) are the authority when this list and they differ. Every profiled row's file is a
+`config/profiles.inference.json`) are the authority when this list and they differ. A GGUF quant label is the
+weight encoding (`checkpoint.weight_quant`); activations stay in the engine's working precision unless the
+checkpoint itself quantises them. Another user's encoding of the same model (GPTQ, AWQ, a different GGUF) is a
+different checkpoint and may need a different kernel on this card. Every profiled row's file is a
 public GGUF on Hugging Face; the harness reads them from `A770B_MODELS`. Fetch them with the Hugging Face CLI (no
 account needed for these), straight into that directory, one line per row of the registry it belongs to, in
 registry order:
@@ -294,6 +297,114 @@ the card's `A770B_<CARD>_MODEL` (e.g. `A770B_QWEN35_9B_Q4KM_VULKAN_MODEL`) to th
    server over the bridge. So the weights can live anywhere the server can read, including a read-only share.
 4. Before trusting a new model, qualify it (next section). The ledger of every model measured on this card, with its
    numbers and its profile, is [`config/models.md`](../config/models.md).
+
+## Engine, checkpoint, kernel — what the logs say
+
+A slow run is often the **wrong file** or the **wrong backend**, not the wrong model. Read the engine log before
+you drop a family. Generic strings from NVIDIA write-ups (`FlashInfer`, `CUTLASS`, `Marlin`, `falling back to CPU`)
+are not what these containers print. The lines below are what llama.cpp and vLLM actually emit on Intel Arc
+(A770/Xe1 and B70/Xe2). `kit/PROFILE.md` §2 `kernel.evidence` is where a measured line is transcribed onto a row;
+omit the field until you have one.
+
+`capture_task.sh` currently keeps timings and `n_gen` only. The banners live on **llama-bench stderr** and in
+`docker logs` of the serve container. Grep those, not the capture.
+
+### llama.cpp — which backend, which card
+
+Cheap, no model load (one-shot in the same image as serve; `serve_compose.sh bench` is llama-bench, not this):
+
+```bash
+docker compose --env-file compose/a770-vulkan.env -f compose/a770-vulkan.yaml \
+  run --rm --no-deps --entrypoint /app/llama-cli llama --list-devices
+docker compose --env-file compose/a770-sycl.env -f compose/a770-sycl.yaml \
+  run --rm --no-deps --entrypoint /app/llama-cli llama --list-devices
+# llama-bench prints the capability banner even when it then fails to find a default GGUF:
+docker compose --env-file compose/a770-vulkan.env -f compose/a770-vulkan.yaml \
+  run --rm --no-deps --entrypoint /app/llama-bench llama
+```
+
+Measured on this workstation's B70 (2026-09-22, no weights loaded):
+
+```
+Available devices:
+  Vulkan0: Intel(R) Graphics (BMG G31) (32656 MiB, … free)
+  SYCL0:   Intel(R) Arc(TM) Pro B70 Graphics (32656 MiB, … free)
+```
+
+On the A770 the same flag named `Vulkan0` / the DG2 part. If this list is empty or names the desktop card, stop —
+the envelope's DRM nodes are wrong.
+
+llama-bench (not llama-server at verbosity 3) prints the **device capability** line. Vulkan, B70, same day:
+
+```
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = Intel(R) Graphics (BMG G31) (Intel open-source Mesa driver) | uma: 0 | fp16: 1 | bf16: 1 | fp4: 0 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: none
+load_backend: loaded Vulkan backend from /app/libggml-vulkan.so
+load_backend: loaded CPU backend from /app/libggml-cpu-haswell.so
+```
+
+A770 Vulkan is the same shape with `A770 Graphics (DG2)` and also `matrix cores: none` / `int dot: 1`. NVIDIA
+boxes log `matrix cores: NV_coopmat2` here; we never have. `int dot: 1` is DP4a **present**, not "this GGUF used
+DP4a". `fp4: 0` means the device does not expose native fp4 — a GGUF `Q4_*` is still weight-only.
+
+SYCL prints **no** `matrix cores:` line. What we get:
+
+```
+load_backend: loaded SYCL backend from /app/libggml-sycl.so
+load_backend: loaded CPU backend from /app/libggml-cpu-haswell.so
+```
+
+The CPU backend **always** loads. That is not CPU decode. llama-bench JSON is the SYCL proof the GPU ran:
+`backends: "SYCL"`, `gpu_info: "Intel(R) Arc(TM) Pro B70 Graphics"`, `n_gpu_layers: 99`,
+`model_type: "qwen35 27B Q6_K"` (the **weight** encoding of this file).
+
+llama-server at the harness default (`verbosity = 3`) does **not** repeat the `ggml_vulkan:` banner. It does print
+`model has unused tensor …` (this **file** has heads the engine is not using — Qwen `blk.64.nextn.*` is MTP sitting
+idle) and `eval time = … tokens per second`. Do not wait for `offloading all layers to GPU` or
+`Warning: falling back to CPU`: those strings are not in our logs. Partial offload shows up as `ram_gb_extra` on a
+dense row, `n_cpu_moe` on a MoE row, and VRAM that does not match the file size.
+
+`GGML_VK_DISABLE_COOPMAT=1` is still the harness default (A770 freeze). Mesa already reports `matrix cores: none`
+on both A770 and B70, so unsetting the flag is not a promised XMX path.
+
+### vLLM — kernel name is in the log (Xe2 / B70 only)
+
+vLLM's Intel XPU line does **not** run on the A770 (DG2 / Xe1). On the B70 it **does** name the kernel. Hunt:
+
+| Line | Meaning here |
+|---|---|
+| `Using XPUwNa16LinearKernel` / `int4_gemm_w4a16` | XPU W4A16 kernel for **this** checkpoint |
+| `Using gptq_gemm` / AutoRound W4A16 | the Intel recipe that actually ran (~24 t/s at 100k on the B70) |
+| `Please switch to gptq_marlin` | CUDA-centric warning. Marlin is NVIDIA-only. Do **not** chase that flag or a Marlin file |
+| `gptq_marlin_repack` / missing `vllm._C` | this checkpoint selected a CUDA kernel that is not on XPU — wrong file or wrong `--quantization` |
+| `Failed to import from vllm._C` | expected on the XPU image (no CUDA `_C`) |
+| GGUF | closed on XPU. A slow GGUF is not a vLLM candidate |
+
+vLLM will tell you W4A16 vs a missing kernel. llama.cpp GGUF will not. "Download W4A4 because of a native-support
+warning" is NVIDIA advice; on this card AutoRound **W4A16** is the working vLLM checkpoint, not a consolation prize.
+
+### The performance signal (both engines)
+
+llama.cpp does not log shader names (`mul_mat_vec_q6_k.comp`, …) at our verbosity. The honest kernel miss is
+**decode in a CPU-like band while VRAM is occupied**. Same Qwen3.8-27B UD-Q6_K GGUF on this B70: Vulkan ~5.45 t/s
+at 893 tokens with ~23 GiB used; SYCL 21.2 t/s after load. That is not `useful_ctx` (the
+four-tokens-a-second floor is a window rule).
+
+A CPU-only A/B (`llama-server -ngl 0`, or vLLM `--device cpu` if the image has it) is decisive on a **small**
+file. Do not `-ngl 0` a 21 GiB 27B on this host as a screening tool. Prefer: same file Vulkan vs SYCL, then
+another user's encoding of the same Hugging Face id (GPTQ/AWQ/AutoRound) on the engine that has a kernel.
+
+Prefill vs decode are already in `slot print_timing` / llama-bench `pp`/`tg`. Do not copy A770 9B numbers
+(~37–44 t/s) onto a 27B, or NVIDIA ms/token bands onto this card.
+
+### What to do when it is slow
+
+1. Confirm the device list and the banner (`Vulkan0`/`SYCL0`, `ggml_vulkan:` / `load_backend: loaded SYCL`).
+2. Confirm the weights are on the GPU (VRAM after load, `n_gpu_layers`, `ram_gb_extra`).
+3. Same GGUF, other llama.cpp backend — if they disagree, it is the **kernel/backend**, not the model.
+4. Other checkpoint of the same model on the engine that named a kernel (vLLM AutoRound W4A16 vs GGUF K-quant).
+5. Only then spend a ladder, or write the family off. IQ2 vs IQ3 LiveCodeBench is a real **file-quality** cliff;
+   Vulkan 5 t/s on Q6_K is not.
 
 ## Qualifying a new model
 
@@ -364,7 +475,9 @@ identity field).
    `quant`, `category`, `weight_class`, `params_b`, `sampling` and its source, `measured_on` (the card and build:
    e.g. `Arc A770 16 GB, llama.cpp b10805 Vulkan`), and, for a row reproducing the sibling-repository instrument,
    `task_t1` — transcribed once by hand from the GGUF's own metadata and the model's public card (`kit/PROFILE.md`
-   §2 is the field-by-field reference for what fills every field). `local-build.sh profiles` and `status` show what
+   §2 is the field-by-field reference for what fills every field). Optional beside those: `engine`, `checkpoint`
+   (format / weight_quant / activation_quant; a GGUF K-quant is weights-only, `activation_quant: none`) and
+   `kernel` (omit until the GPU vs CPU-like path is observed). Omitted means untested, not "the same as `quant`". `local-build.sh profiles` and `status` show what
    is configured; `builder.<mode>.env` may still override a served value per machine (a different quantisation, a
    larger cap) without touching the registry. If the new profile becomes its mode's default, change `default` in
    that registry, run `python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet
