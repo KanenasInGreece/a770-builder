@@ -64,8 +64,13 @@ from typing import Optional
 from live_backend import read
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REGISTRY_DIR = REPO_ROOT / "config" / "registry"
-CARDS_FILE = REPO_ROOT / "config" / "cards.json"
+# The project these commands read and render. --root points them at another tree (tests use a temp copy, so they
+# never write the tracked registry or documents).
+PROJECT_ROOT = REPO_ROOT
+REGISTRY_DIR = PROJECT_ROOT / "config" / "registry"
+CARDS_FILE = PROJECT_ROOT / "config" / "cards.json"
+# The shape of a card id: what env.sh accepts before it builds a registry path from one.
+CARD_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 DEFAULT_SUITE = REPO_ROOT / "kit" / "suite.json"
 
 
@@ -817,6 +822,14 @@ def cmd_empty_line(args) -> int:
     return 0
 
 
+def _file_errors(path: Path) -> tuple[dict | None, list[str]]:
+    """Load one registry file and return it with every error `check` would report for it."""
+    data, err = _load(path)
+    if err is not None:
+        return None, [err]
+    return data, validate(data) + _registry_identity_errors(data, path)
+
+
 def cmd_check(args) -> int:
     files = [Path(args.file)] if args.file else _registry_files()
     if not files:
@@ -824,12 +837,7 @@ def cmd_check(args) -> int:
         return 2
     ok = True
     for path in files:
-        data, err = _load(path)
-        if err is not None:
-            print(f"profiles: {err}", file=sys.stderr)
-            ok = False
-            continue
-        errors = validate(data) + _registry_identity_errors(data, path)
+        data, errors = _file_errors(path)
         if errors:
             for e in errors:
                 print(f"profiles: {e}", file=sys.stderr)
@@ -1046,10 +1054,15 @@ def _menu_row(name: str, prof: dict) -> dict:
 
 
 def cmd_menu(args) -> int:
-    """Print ready/also JSON when a sidecar is live, or the cold full slice."""
+    """Print ready/also JSON when a sidecar is live, or the cold full slice. With no --file (the installed card has
+    no registry) the same shape comes back empty, with the one line under "note"."""
     if args.file is None:
-        print("profiles: menu needs --file", file=sys.stderr)
-        return 2
+        if getattr(args, "card", None) is None:
+            print("profiles: menu needs --file, or --card/--mode for a card with no registry", file=sys.stderr)
+            return 2
+        out = {"state": "cold", "ready": [], "also": [], "slice": [], "note": empty_line(args.card, args.mode or "")}
+        print(json.dumps(out, indent=2))
+        return 0
     rc = cmd_check(args)
     if rc != 0:
         return rc
@@ -1126,12 +1139,15 @@ def _short_model_name(model: str) -> str:
     return model.replace("-it", "")
 
 
-def _catalogue_rows() -> list[dict]:
-    """Every row under config/registry/, with its card and mode, sorted card -> mode -> name."""
+def _catalogue_rows() -> tuple[list[dict], list[str]]:
+    """Every row under config/registry/, with its card and mode, sorted card -> mode -> name, and the
+    errors of any file that does not check: the catalogue is never rendered from a file `check` refuses."""
     rows = []
+    errors: list[str] = []
     for path in _registry_files():
-        data, err = _load(path)
-        if err is not None:
+        data, file_errors = _file_errors(path)
+        if file_errors:
+            errors.extend(f"{path.name}: {e}" for e in file_errors)
             continue
         card = data.get("card", "")
         mode = data.get("mode", "")
@@ -1142,7 +1158,7 @@ def _catalogue_rows() -> list[dict]:
             if isinstance(prof, dict):
                 rows.append({"card": card, "mode": mode, "name": name, "prof": prof})
     rows.sort(key=lambda r: (r["card"], r["mode"], r["name"]))
-    return rows
+    return rows, errors
 
 
 def _catalogue_table(rows: list[dict]) -> list[str]:
@@ -1221,8 +1237,13 @@ def cmd_render(args) -> int:
 
 def _render_catalogue() -> int:
     """Rewrite the catalogue table between the `catalogue` markers in README.md and config/models.md."""
-    lines = _catalogue_table(_catalogue_rows())
-    targets = [REPO_ROOT / "README.md", REPO_ROOT / "config" / "models.md"]
+    rows, errors = _catalogue_rows()
+    if errors:
+        for e in errors:
+            print(f"profiles: {e}", file=sys.stderr)
+        return 2
+    lines = _catalogue_table(rows)
+    targets = [PROJECT_ROOT / "README.md", PROJECT_ROOT / "config" / "models.md"]
     texts = {}
     for path in targets:
         try:
@@ -1248,13 +1269,18 @@ def _render_catalogue() -> int:
 def _render_installed(card: str, mode: str) -> int:
     """Print the installed card's block to stdout: the one line when the card has no registry or
     no rows, else the labelled sentence naming only that card's rows."""
+    if not CARD_ID_RE.fullmatch(card or "") or mode not in ("display", "inference"):
+        print(f"profiles: render --installed needs a card id and a mode of display or inference "
+              f"(got card {card!r}, mode {mode!r})", file=sys.stderr)
+        return 2
     path = REGISTRY_DIR / f"{card}.{mode}.json"
     if not path.is_file():
         print(empty_line(card, mode))
         return 0
-    data, err = _load(path)
-    if err is not None:
-        print(f"profiles: {err}", file=sys.stderr)
+    data, errors = _file_errors(path)
+    if errors:
+        for e in errors:
+            print(f"profiles: {e}", file=sys.stderr)
         return 2
     profiles = data.get("profiles")
     if not isinstance(profiles, dict) or not profiles:
@@ -1268,6 +1294,7 @@ def _render_installed(card: str, mode: str) -> int:
 def main() -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--file", default=None, help="Path to a config/registry/<card>.<mode>.json file")
+    common.add_argument("--root", default=None, help="Project root to read and render instead of this checkout")
 
     parser = argparse.ArgumentParser(description="Read and render the A770 builder profiles registry")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1286,6 +1313,8 @@ def main() -> int:
     )
     menu_parser.add_argument("--sidecar", help="Path to the live-backend sidecar JSON")
     menu_parser.add_argument("--pidfile", help="Path to the llama-server pidfile")
+    menu_parser.add_argument("--card", help="The installed card, for the empty menu when it has no registry")
+    menu_parser.add_argument("--mode", help="The card mode, for the empty menu when the card has no registry")
 
     empty_parser = subparsers.add_parser(
         "empty-line",
@@ -1302,8 +1331,14 @@ def main() -> int:
     render_parser.add_argument("--installed", action="store_true", help="Print the installed card's block to stdout")
     render_parser.add_argument("--card", default="", help="The card id (with --installed)")
     render_parser.add_argument("--mode", default="", help="The card mode (with --installed)")
+    render_parser.add_argument("--root", default=None, help="Project root to read and render instead of this checkout")
 
     args = parser.parse_args()
+    if getattr(args, "root", None):
+        global PROJECT_ROOT, REGISTRY_DIR, CARDS_FILE
+        PROJECT_ROOT = Path(args.root).resolve()
+        REGISTRY_DIR = PROJECT_ROOT / "config" / "registry"
+        CARDS_FILE = PROJECT_ROOT / "config" / "cards.json"
 
     if args.command == "check":
         return cmd_check(args)
