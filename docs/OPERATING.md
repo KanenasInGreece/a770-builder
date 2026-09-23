@@ -72,12 +72,14 @@ what the brief named.
 out, and what it can honestly be compared with outside this project.
 
 The seat runs in one of two card modes, chosen by `A770B_CARD_MODE`: display-safe (the default, the tested set, for a
-card that also draws the desktop) and pure-inference (for a card that draws nothing). Each mode reads its own
-registry, the single source of every profile's numbers — `config/profiles.json` for display,
-`config/profiles.inference.json` for inference — and `local-build.sh profiles` (or `--name <profile>` for one) shows
+card that also draws the desktop) and pure-inference (for a card that draws nothing). Each card and mode reads its
+own registry, the single source of every profile's numbers — `config/registry/<card>.<mode>.json`, resolved from
+`A770B_CARD` and `A770B_CARD_MODE` — and `local-build.sh profiles` (or `--name <profile>` for one) shows
 what is actually configured on this machine for the mode it is running in, `--served` layered over the environment.
-Numbers in the tables below are properties of this card, build and quantisation, not of the models in general,
-measured with llama.cpp b10805 and the Vulkan backend, on the qualification task.
+A card with no registry file is not an error: it shows one line ("no measured models for card … — climb one with
+ladder.sh") until its first row is pasted. Numbers in the tables below are properties of this card, build and
+quantisation, not of the models in general, measured with llama.cpp b10805 and the Vulkan backend, on the
+qualification task.
 
 A `builder.env` (or the environment) that names one card's `A770B_<CARD>_MODEL` as another card's file inverts the two
 cards silently — the environment wins over the registry. `local-build.sh doctor` reports it, and `local-build.sh
@@ -172,8 +174,9 @@ are the workstation the seat was qualified on (Arc A770 as `Vulkan0`, models in 
 The installed skill copy finds the project via `A770B_PROJECT`.
 
 **The card mode.** `A770B_CARD_MODE` selects which of the two configurations this machine serves: unset or `display`
-(the default) reads `config/profiles.json` under a 13.0 GiB cap, for a card that also draws the desktop; `inference`
-reads `config/profiles.inference.json` under a 15.3 GiB cap, for a card that draws nothing else. A per-mode file,
+(the default) reads `config/registry/<card>.display.json` under a 13.0 GiB cap, for a card that also draws the
+desktop; `inference` reads `config/registry/<card>.inference.json` under a 15.3 GiB cap, for a card that draws
+nothing else. A per-mode file,
 `builder.<mode>.env` beside each `builder.env`, lets one machine keep different overrides for each mode in the load
 order above — this workstation keeps `qwen38-27b-iq3xxs-vulkan` at IQ3_S under a 14.1 cap only in `builder.display.env`, and drops that
 override in inference mode. `status` prints the mode and the registry file on the builder-card line. `doctor` measures,
@@ -182,7 +185,7 @@ only while the seat's own server is down, what the builder card actually holds: 
 gets a hint that inference mode would serve the larger registry under the larger cap. Either mode's cap is raised only
 on a fresh measurement of what else the card holds, never by hand.
 
-**The builder card.** `A770B_CARD` (no default — `doctor` refuses while unset) names the ONE builder card on this host (e.g. `b70`, `a770`). Physical capabilities and selectors are described in `config/cards.json`: PCI IDs, total VRAM, GPU match patterns, architecture generation, XMX native precision formats, and device selectors. Setting `A770B_CARD` supplies default values for `A770B_VK_DEVICE_SELECT`, `A770B_GPU_MATCH`, and `A770B_CARD_VRAM_TOTAL` via `harness/env.sh`, while explicit environment or `builder.env` overrides still win. The VRAM cap (`A770B_VRAM_CAP_GIB`) remains an empirical runtime measurement in `builder.env`/`builder.<mode>.env` with no default.
+**The builder card.** `A770B_CARD` (no default — `doctor` refuses while unset) names the ONE builder card on this host (e.g. `b70`, `a770`). Physical capabilities and selectors are described in `config/cards.json`: PCI IDs, total VRAM, GPU match patterns, architecture generation, XMX native precision formats, and device selectors. Setting `A770B_CARD` supplies default values for `A770B_VK_DEVICE_SELECT`, `A770B_GPU_MATCH`, and `A770B_CARD_VRAM_TOTAL` via `harness/env.sh`, while explicit environment or `builder.env` overrides still win. `A770B_CARD_ROLE` (optional) overrides a card's role in `cards.json` — a community B580 builder sets `A770B_CARD_ROLE=builder` to use a card this project filed as an encoder. The VRAM cap (`A770B_VRAM_CAP_GIB`) remains an empirical runtime measurement in `builder.env`/`builder.<mode>.env` with no default.
 
 **The card.** `A770B_DEVICE` is the name from `llama-server --list-devices`; `A770B_GPU_MATCH` is the substring of that
 card in `nvtop -s`, which the VRAM readings and the cap depend on (supplied from `config/cards.json` by `A770B_CARD`). `A770B_UBATCH` (512) stays the same in both modes:
@@ -265,8 +268,8 @@ pre-fills whatever `pytest` needs). No package is installed at run time or at gr
 a row is trusted.
 
 **The models.** These are the exact files each row below was measured with; a different quantisation of the same
-model is a different row, and the registry's own `model` and `source` fields (`config/profiles.json`,
-`config/profiles.inference.json`) are the authority when this list and they differ. A GGUF quant label is the
+model is a different row, and the registry's own `model` and `source` fields (`config/registry/<card>.<mode>.json`)
+are the authority when this list and they differ. A GGUF quant label is the
 weight encoding (`checkpoint.weight_quant`); activations stay in the engine's working precision unless the
 checkpoint itself quantises them. Another user's encoding of the same model (GPTQ, AWQ, a different GGUF) is a
 different checkpoint and may need a different kernel on this card. Every profiled row's file is a
@@ -469,7 +472,8 @@ identity field).
 4. **Record it**: add the row to `config/models.md` with the measured numbers, the source repository and the caveats.
    A model that failed goes in the *kept out* paragraph with the reason, so nobody measures it twice.
 5. **Give it a profile** if it earns one: paste the ladder's printed REGISTRY ROW under `profiles.<name>` in the
-   mode's registry (`config/profiles.json` for display, `config/profiles.inference.json` for inference), then fill
+   card's own registry (`config/registry/<card>.<mode>.json` — a new card's first row creates that file, with its
+   top-level `card` and `mode` keys), then fill
    what the ladder leaves as `__TODO__` or omits entirely — `use_for` in words, `fit.write`, `capability` and
    `capability_source` — and the identity fields its own closing note lists: `source`, `family`, `architecture`,
    `quant`, `category`, `weight_class`, `params_b`, `sampling` and its source, `measured_on` (the card and build:
@@ -479,10 +483,8 @@ identity field).
    (format / weight_quant / activation_quant; a GGUF K-quant is weights-only, `activation_quant: none`) and
    `kernel` (omit until the GPU vs CPU-like path is observed). Omitted means untested, not "the same as `quant`". `local-build.sh profiles` and `status` show what
    is configured; `builder.<mode>.env` may still override a served value per machine (a different quantisation, a
-   larger cap) without touching the registry. If the new profile becomes its mode's default, change `default` in
-   that registry, run `python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet
-   skills/local-build/CONSTITUTION_SNIPPET.md --inference-file config/profiles.inference.json` so the skill's tables
-   and the snippet pick it up, update the numbers in this file, and bump the version.
+   larger cap) without touching the registry. Run `python3 harness/profiles.py render --catalogue` so README and
+   `config/models.md` pick the new row up, update the numbers in this file, and bump the version.
 
 The expectations in the skill's tables (window, speed, minutes per small task, what the model did with the
 repository's idioms) are read straight off the ledger row; when the row changes, so do they. The full guide for an
@@ -527,7 +529,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 | `config/` | the project's configuration: the registries listing every qualified model and its measured numbers, the example environment file a new install copies, and the template opencode reads inside the sandbox |
 | `config/cards.json` | physical capability registry for workstation cards (`b70`, `a770`, `b580`): PCI IDs, total VRAM, GPU match strings, generation, XMX native precision formats, and device selectors |
 | `harness/env.sh` · `config/builder.env.example` | every path and knob, one place; defaults = this workstation; the card mode, the key and profile helpers |
-| `config/profiles.json` · `config/profiles.inference.json` | the two registries, one per card mode, the single source of every profile's numbers; `harness/profiles.py` validates, exports, inspects and renders them |
+| `config/registry/<card>.<mode>.json` | one registry file per card and mode, the single source of every profile's numbers for that card; `harness/profiles.py` validates, exports, inspects and renders them |
 | `harness/render_profile.py` | renders the opencode profile from the template (`render`), checks a run specification against the seat (`check`) and prepares its context into the brief copy (`context`); the echo of what was rendered lands beside the profile; `tests/test_render_profile.py` proves it |
 | `harness/guard.sh` | canonical seat guard, verified pids, the run lock, `safe_git`, the seat reset, the built-in budget gate |
 | `harness/capture_task.sh` | diff + new files + the model's pytest line + server-side TTFT/TPOT distribution, the `.patch` for `verify`, then the seat reset |

@@ -4,14 +4,14 @@
 Usage: suite_report.py <results.json> [--json]
 
 Default: an "instrument:" header, a table (stage, outcome, conformance, lines/budget, maintainable, usable, wall,
-tokens), then the totals the registry's `suite` object takes (config/profiles.json SUITE_KEYS: briefs, runs, passed,
+tokens), then the totals the registry's `suite` object takes (the registry's SUITE_KEYS: briefs, runs, passed,
 timeouts, mean_wall_s, source), then the suite's own delivered speed (below). The outcome column reads PASS, FAIL,
 or TIMEOUT — a stage whose run_suite.sh "outcome" is "timeout" (its wall time reached the profile's own timeout
 budget) is never shown as a plain FAIL: a reader should be able to tell a slow model from a wrong one at a glance.
 A results file recorded before "outcome" existed falls back to the "working" boolean alone (PASS/FAIL/-).
 
 --json: prints ONLY those six totals, plus `delivered` when at least one stage's capture yields a reading, as a
-JSON object. The six totals paste straight into a profile's `suite` field in config/profiles.json; `delivered`
+JSON object. The six totals paste straight into a profile's `suite` field in the registry; `delivered`
 belongs under `speed.delivered` instead, the registry's only home for it (`suite` accepts SUITE_KEYS and rejects
 anything else), which is where harness/ladder.sh's printed row puts it. Nothing else goes to stdout (the instrument
 line, if wanted, goes to stderr so it never lands in the JSON a caller parses).
@@ -31,7 +31,7 @@ two correctness scores"). `verify` writes that stage's own `<label>.verify.md` b
 tests: <names or none>" line, the chain's own exit-code verdict, and the last pytest-shaped summary line reported —
 enough to tell public-passed-hidden-failed apart from a plain public failure, even though the two ran as one exit
 code. When that file is found for a reference stage, its language is printed beside the pair (never in --json: the
-registry's `suite` object has no field for it — see config/profiles.json SUITE_KEYS).
+registry's `suite` object has no field for it — see SUITE_KEYS).
 """
 
 import argparse

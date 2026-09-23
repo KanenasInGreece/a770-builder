@@ -625,7 +625,7 @@ def test_check_validates_context_paths(tmp_path):
 
 def test_profile_key_checks_against_registry_union_without_env(tmp_path):
     """With A770B_PROFILES unset, the specification's profile is checked against the union of the profile
-    names in config/profiles.json and config/profiles.inference.json -- fast (display-only) is accepted."""
+    names in every file under config/registry/ -- fast (display-only) is accepted."""
     seat = tmp_path / "seat"
     seat.mkdir()
 
