@@ -2,6 +2,8 @@
 """Tests for the profiles registry: config/registry/<card>.<mode>.json + harness/profiles.py."""
 
 import json
+import tempfile
+import shutil
 import os
 import re
 import subprocess
@@ -400,44 +402,130 @@ def test_render_installed_prints_the_one_line_when_the_card_has_no_rows():
     assert result.stdout.strip() == "no measured models for card b70 in display mode — climb one with ladder.sh <gguf> --ctx N"
 
 
+def _registry_names() -> set[str]:
+    names = set()
+    for f in (ROOT / "config" / "registry").glob("*.json"):
+        names |= set(json.loads(f.read_text(encoding="utf-8"))["profiles"])
+    return names
+
+
 def test_tracked_skill_and_snippet_present_no_model_list():
-    """I6 — the tracked SKILL.md and CONSTITUTION_SNIPPET.md present no model table or list: they
-    tell the caller to run local-build.sh menu instead."""
+    """I6 — the tracked SKILL.md and CONSTITUTION_SNIPPET.md name no model and no card: they are copied into
+    every agent, so they tell the caller to run local-build.sh menu instead. The snippet keeps an empty marker
+    pair where the local sync pastes `render --installed` for the host's card."""
     skill = (ROOT / "skills" / "local-build" / "SKILL.md").read_text(encoding="utf-8")
     snippet = (ROOT / "skills" / "local-build" / "CONSTITUTION_SNIPPET.md").read_text(encoding="utf-8")
-    assert "| profile | model |" not in skill
-    assert "**--profile " not in snippet
-    assert "local-build.sh menu" in skill
-    assert "local-build.sh menu" in snippet
+    card_name = re.compile(r"(?<![A-Za-z0-9_])(A770|B70|B580)(?![A-Za-z0-9_])", re.I)
+    for label, text in (("SKILL.md", skill), ("CONSTITUTION_SNIPPET.md", snippet)):
+        for name in _registry_names():
+            assert name not in text, f"{label} names the profile {name}"
+        assert not card_name.search(text), f"{label} names a card: {card_name.search(text).group(0)}"
+        assert "local-build.sh menu" in text
+    begin = "<!-- local-build:installed:begin -->"
+    end = "<!-- local-build:installed:end -->"
+    lines = snippet.splitlines()
+    assert begin in lines and end in lines
+    assert lines.index(end) == lines.index(begin) + 1, "the tracked installed block must stay empty"
 
 
-def test_render_catalogue_is_byte_stable_and_lists_every_card():
-    """I7 — render --catalogue rewrites README and config/models.md between markers, lists every
-    card's rows with a card and measured_on column, sorted card -> mode -> name, and is
-    byte-stable (a second render changes nothing)."""
-    readme = ROOT / "README.md"
-    models = ROOT / "config" / "models.md"
-    result = run("render", "--catalogue")
+def _temp_project(tmp_path: Path, registries: dict[str, dict] | None = None) -> Path:
+    """A temp project with a copy of cards.json, README.md, config/models.md and the given registry files
+    (default: copies of the tracked ones), so rendering never writes the tracked tree."""
+    root = tmp_path / "proj"
+    (root / "config" / "registry").mkdir(parents=True)
+    for rel in ("config/cards.json", "README.md", "config/models.md"):
+        shutil.copy(ROOT / rel, root / rel)
+    if registries is None:
+        for f in (ROOT / "config" / "registry").glob("*.json"):
+            shutil.copy(f, root / "config" / "registry" / f.name)
+    else:
+        for name, data in registries.items():
+            (root / "config" / "registry" / name).write_text(json.dumps(data), encoding="utf-8")
+    return root
+
+
+def test_render_catalogue_is_byte_stable_and_lists_every_card(tmp_path):
+    """I7 — render --catalogue writes the table between the markers in README and config/models.md, lists every
+    card's rows with card and measured_on, sorted card -> mode -> name, and is byte-stable: a render of the
+    tracked registries reproduces the tracked documents exactly, and a second render changes nothing."""
+    root = _temp_project(tmp_path)
+    result = run("render", "--catalogue", "--root", str(root))
     assert result.returncode == 0, result.stderr
-    readme_after = readme.read_bytes()
-    models_after = models.read_bytes()
-    result2 = run("render", "--catalogue")
-    assert result2.returncode == 0, result2.stderr
-    assert readme.read_bytes() == readme_after
-    assert models.read_bytes() == models_after
+    assert (root / "README.md").read_bytes() == (ROOT / "README.md").read_bytes(), "tracked README is stale"
+    assert (root / "config" / "models.md").read_bytes() == (ROOT / "config" / "models.md").read_bytes()
+    first = (root / "README.md").read_bytes()
+    assert run("render", "--catalogue", "--root", str(root)).returncode == 0
+    assert (root / "README.md").read_bytes() == first
 
-    text = readme.read_text(encoding="utf-8")
-    begin = text.index("<!-- catalogue:begin -->")
-    end = text.index("<!-- catalogue:end -->")
-    section = text[begin:end]
-    assert "| card | mode | profile | model |" in section
-    assert "| measured_on |" in section
-
-    # every shipped row appears, and the data rows are sorted by (card, mode, name)
+    text = first.decode("utf-8")
+    section = text[text.index("<!-- catalogue:begin -->"):text.index("<!-- catalogue:end -->")]
+    assert "| card | mode | profile | model |" in section and "| measured_on |" in section
     data_lines = [ln for ln in section.splitlines() if ln.startswith("| a770 |") or ln.startswith("| b70 |")]
     triples = [tuple(cell.strip() for cell in ln.strip("|").split("|")[:3]) for ln in data_lines]
     assert triples == sorted(triples)
-    assert len(data_lines) == 6
+    assert len(data_lines) == len(_registry_names_by_file())
+    # every row carries its own measured_on in the last cell (a blank cell is a failure)
+    for (card, mode, name), ln in zip(triples, data_lines):
+        measured = _registry_names_by_file()[(card, mode, name)]["measured_on"]
+        assert ln.rstrip().rstrip("|").rsplit("|", 1)[-1].strip() == measured, ln
+
+
+def _registry_names_by_file() -> dict[tuple, dict]:
+    rows = {}
+    for f in (ROOT / "config" / "registry").glob("*.json"):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        for name, prof in d["profiles"].items():
+            rows[(d["card"], d["mode"], name)] = prof
+    return rows
+
+
+def test_render_catalogue_refuses_an_invalid_registry(tmp_path):
+    """F8 — the catalogue is never rendered from a file check refuses, and the documents stay untouched."""
+    root = _temp_project(tmp_path)
+    (root / "config" / "registry" / "b70.inference.json").write_text("{ not json", encoding="utf-8")
+    before = (root / "README.md").read_bytes()
+    result = run("render", "--catalogue", "--root", str(root))
+    assert result.returncode == 2
+    assert "b70.inference.json" in result.stderr
+    assert (root / "README.md").read_bytes() == before
+
+
+def test_render_installed_refuses_an_invalid_registry(tmp_path):
+    """F8 — render --installed validates its file the way check does."""
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["card"] = "b70"   # a row of another card in the a770 file
+    root = _temp_project(tmp_path, {"a770.display.json": data})
+    result = run("render", "--installed", "--root", str(root), "--card", "a770", "--mode", "display")
+    assert result.returncode == 2
+    assert "card 'b70' differs from the file's 'a770'" in result.stderr, result.stderr
+
+
+def test_render_installed_never_prints_another_cards_rows(tmp_path):
+    """F9 — with two cards' files present, the installed block for one names none of the other's rows."""
+    a770 = load_base()
+    b70 = json.loads(json.dumps(a770))
+    b70["card"] = "b70"
+    first_name, first = next(iter(b70["profiles"].items()))
+    first = dict(first, card="b70", measured_on="Arc Pro B70, test build")
+    b70["profiles"] = {"beta-9b-q4km-vulkan": first}
+    if b70.get("default") is not None:
+        b70["default"] = "beta-9b-q4km-vulkan"
+    root = _temp_project(tmp_path, {"a770.display.json": a770, "b70.display.json": b70})
+    assert run("check", "--root", str(root)).returncode == 0, run("check", "--root", str(root)).stderr
+    result = run("render", "--installed", "--root", str(root), "--card", "b70", "--mode", "display")
+    assert result.returncode == 0, result.stderr
+    assert "beta-9b-q4km-vulkan" in result.stdout
+    for name in a770["profiles"]:
+        assert name not in result.stdout, f"the b70 block leaked the a770 row {name}"
+    result = run("render", "--installed", "--root", str(root), "--card", "a770", "--mode", "display")
+    assert "beta-9b-q4km-vulkan" not in result.stdout
+
+
+def test_render_installed_refuses_a_crafted_card_or_mode():
+    """F2 — the card and mode become a path, so they are refused unless they look like a card id and a mode."""
+    for card, mode in (("../x", "display"), ("a/b", "display"), ("", "display"), ("a 7", "display"), ("a770", "bogus")):
+        result = run("render", "--installed", "--card", card, "--mode", mode)
+        assert result.returncode == 2, (card, mode, result.stdout)
 
 
 def test_check_refuses_unknown_top_level_key(tmp_path):
@@ -2323,18 +2411,26 @@ def test_shipped_rows_name_weight_only_gguf_and_omit_kernel():
 
 
 def _write_registry_file(name: str, data) -> Path:
-    """Write `data` as a registry file under the real config/registry/ so the identity rules
-    (which only apply there) run. The caller is responsible for removing it."""
-    path = ROOT / "config" / "registry" / name
+    """Write `data` as a registry file under a temp project's config/registry/ (with a copy of the real
+    config/cards.json), so the identity rules run without writing the tracked tree. Check it with
+    `--root <temp project>`: `_root(path)`."""
+    root = Path(tempfile.mkdtemp(prefix="registry-identity-"))
+    (root / "config" / "registry").mkdir(parents=True)
+    shutil.copy(ROOT / "config" / "cards.json", root / "config" / "cards.json")
+    path = root / "config" / "registry" / name
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def _root(path: Path) -> str:
+    return str(path.parents[2])
 
 
 def test_check_refuses_registry_filename_card_mismatch():
     data = load_base()
     path = _write_registry_file("b70.display.json", data)
     try:
-        result = run("check", "--file", str(path))
+        result = run("check", "--root", _root(path), "--file", str(path))
         assert result.returncode == 2
         assert "card 'a770' disagrees with the file name 'b70'" in result.stderr
     finally:
@@ -2348,7 +2444,7 @@ def test_check_refuses_registry_filename_mode_mismatch():
         data["profiles"][name]["card"] = "b70"
     path = _write_registry_file("b70.inference.json", data)
     try:
-        result = run("check", "--file", str(path))
+        result = run("check", "--root", _root(path), "--file", str(path))
         assert result.returncode == 2
         assert "mode 'display' disagrees with the file name 'inference'" in result.stderr
     finally:
@@ -2360,7 +2456,7 @@ def test_check_refuses_a_card_not_in_cards_json():
     data["card"] = "zebra"
     path = _write_registry_file("zebra.display.json", data)
     try:
-        result = run("check", "--file", str(path))
+        result = run("check", "--root", _root(path), "--file", str(path))
         assert result.returncode == 2
         assert "card 'zebra' is not in config/cards.json" in result.stderr
     finally:
@@ -2372,7 +2468,7 @@ def test_check_refuses_a_row_card_differing_from_the_files():
     data["card"] = "b70"
     path = _write_registry_file("b70.display.json", data)
     try:
-        result = run("check", "--file", str(path))
+        result = run("check", "--root", _root(path), "--file", str(path))
         assert result.returncode == 2
         assert "card 'a770' differs from the file's 'b70'" in result.stderr
     finally:
@@ -2386,7 +2482,7 @@ def test_check_refuses_a_row_mode_differing_from_the_files():
     data["profiles"]["qwen35-9b-q4km-vulkan"]["mode"] = "inference"
     path = _write_registry_file("b70.display.json", data)
     try:
-        result = run("check", "--file", str(path))
+        result = run("check", "--root", _root(path), "--file", str(path))
         assert result.returncode == 2
         assert "mode 'inference' differs from the file's 'display'" in result.stderr
     finally:
@@ -2401,7 +2497,7 @@ def test_check_refuses_a_duplicate_profile_name(tmp_path):
         '{"schema":1,"card":"a770","mode":"display","profiles":{"x":{"card":"a770","mode":"display"},"x":{"card":"a770","mode":"display"}}}',
         encoding="utf-8",
     )
-    result = run("check", "--file", str(path))
+    result = run("check", "--root", _root(path), "--file", str(path))
     assert result.returncode == 2
     assert "duplicate key 'x'" in result.stderr
 
