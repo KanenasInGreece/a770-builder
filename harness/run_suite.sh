@@ -556,8 +556,10 @@ process_task(){
   gen_tokens=$(printf '%s' "$reqline" | grep -oE 'gen_tokens_total=[0-9]+' | cut -d= -f2)
   local lines=0 added hdrs
   if [ -f "$patchfile" ]; then
-    added=$(grep -c '^+' "$patchfile" 2>/dev/null || echo 0)
-    hdrs=$(grep -c '^+++' "$patchfile" 2>/dev/null || echo 0)
+    # grep -c prints 0 AND exits 1 on no match; `|| echo 0` then made "0\n0", a syntax error that
+    # aborted the whole stage loop on an empty patch and dropped the rest of the suite unrecorded.
+    added=$(grep -c '^+' "$patchfile" 2>/dev/null); added=${added:-0}
+    hdrs=$(grep -c '^+++' "$patchfile" 2>/dev/null); hdrs=${hdrs:-0}
     lines=$((added - hdrs))
   fi
   local budget_ok=""
