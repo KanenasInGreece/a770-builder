@@ -298,7 +298,7 @@ the card's `A770B_<CARD>_MODEL` (e.g. `A770B_QWEN35_9B_Q4KM_VULKAN_MODEL`) to th
 3. The llama-server process on the host reads the weights and answers on `A770B_HOST:A770B_PORT` under the alias
    `local-builder`. The model's own process runs inside the sandbox and never sees `A770B_MODELS`; it only talks to the
    server over the bridge. So the weights can live anywhere the server can read, including a read-only share.
-4. Before trusting a new model, qualify it (next section). The ledger of every model measured on this card, with its
+4. Before trusting a new model, qualify it (next section). The ledger of every model measured, on every card, with its
    numbers and its profile, is [`config/models.md`](../config/models.md).
 
 ## Engine, checkpoint, kernel — what the logs say

@@ -89,7 +89,7 @@ commands = [c for c in (run_cmd, verify_cmd, serve_cmd, suite_cmd) if c]
 where = [
     ("the kit", "<code>kit/</code> — the profiling suite's own seat, tasks and hidden graders"),
     ("the registries", "<code>config/registry/&lt;card&gt;.&lt;mode&gt;.json</code> — one file per card and mode, the single source of every profile's numbers"),
-    ("the ledger", "<code>config/models.md</code> — every model measured on this card, and why"),
+    ("the ledger", "<code>config/models.md</code> — every model measured, on every card, and why"),
     ("the guide", "<code>docs/OPERATING.md</code> — day-to-day running of the seat, every knob"),
     ("the results directory", "<code>$A770B_DATA/results</code> (default <code>~/local-ai/results</code>) — each run's capture"),
     ("the weights directory", "<code>$A770B_MODELS</code> (default <code>~/LLM/tested</code>) — the GGUF files the registries name"),
