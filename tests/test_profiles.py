@@ -1235,9 +1235,23 @@ def test_check_fails_duplicate_category_weight_class(tmp_path):
     assert result.returncode == 2
     assert (
         "profiles: gemma4-8b-e4b-q4km-vulkan: task 'code-edit' + category 'dense' + weight_class '9b' + backend 'vulkan' on card "
-        "'a770' duplicates qwen35-9b-q4km-vulkan's -- a registry keeps one best row per task per class per backend per card"
+        "'a770' + engine 'llama.cpp' + weight_quant 'Q4_K_M' + activation_quant 'none' duplicates qwen35-9b-q4km-vulkan's -- "
+        "a registry keeps one best row per task per class per backend per card, and per engine, weight quant and activation quant"
         in result.stderr
     )
+
+
+def test_check_passes_same_class_different_weight_quant(tmp_path):
+    """Q6_K and Q6_K-QKV8 of one 27B on one backend are two rows. The weight quant is the difference."""
+    data = load_base()
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["category"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["category"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["weight_class"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["quant"] = "Q6_K-QKV8"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["checkpoint"]["weight_quant"] = "Q6_K-QKV8"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
 
 
 def test_check_passes_same_class_different_backend(tmp_path):

@@ -649,10 +649,23 @@ def validate(data) -> list[str]:
                 evidence = kernel.get("evidence")
                 if "evidence" in kernel and (not isinstance(evidence, str) or not evidence.strip()):
                     errors.append(f"{name}: kernel.evidence must be a non-empty string")
+                # A speed number is not a kernel. path/xmx leave "untested" only with a log
+                # line from this card. vLLM names kernels in its log; llama.cpp often does not.
+                claimed = []
+                if isinstance(kernel.get("path"), str) and kernel.get("path") != "untested":
+                    claimed.append("path")
+                if isinstance(kernel.get("xmx"), str) and kernel.get("xmx") != "untested":
+                    claimed.append("xmx")
+                if claimed and not (isinstance(evidence, str) and evidence.strip()):
+                    errors.append(
+                        f"{name}: kernel.{' and '.join(claimed)} other than untested needs kernel.evidence, "
+                        "a log line from this card, not a speed number"
+                    )
 
-    # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time:
-    # the project keeps one best row per (task, card, category, weight_class, backend) class, and a registry is
-    # measurements from one instrument, never a mix.
+    # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time.
+    # One best row per task, card, class and backend, and also per engine and per the
+    # checkpoint's weight quant and activation quant. Two Q6_K files of one 27B are not
+    # the same row when the weight encoding differs. A registry is one instrument.
     category_class_seen: dict[tuple, str] = {}
     first_instrument = None
     first_instrument_owner = None
@@ -666,12 +679,21 @@ def validate(data) -> list[str]:
         weight_class = prof.get("weight_class")
         backend = prof.get("backend")
         if (isinstance(category, str) and isinstance(weight_class, str) and isinstance(backend, str)):
-            key = (task if isinstance(task, str) else None, card, category, weight_class, backend)
+            engine = prof.get("engine") if isinstance(prof.get("engine"), str) else ""
+            checkpoint = prof.get("checkpoint") if isinstance(prof.get("checkpoint"), dict) else {}
+            weight_quant = checkpoint.get("weight_quant") if isinstance(checkpoint.get("weight_quant"), str) else ""
+            activation_quant = checkpoint.get("activation_quant") if isinstance(checkpoint.get("activation_quant"), str) else ""
+            key = (
+                task if isinstance(task, str) else None, card, category, weight_class, backend,
+                engine, weight_quant, activation_quant,
+            )
             if key in category_class_seen:
                 errors.append(
                     f"{name}: task {task!r} + category {category!r} + weight_class {weight_class!r} + "
-                    f"backend {backend!r} on card {card!r} duplicates {category_class_seen[key]}'s -- a registry "
-                    f"keeps one best row per task per class per backend per card"
+                    f"backend {backend!r} on card {card!r} + engine {engine!r} + "
+                    f"weight_quant {weight_quant!r} + activation_quant {activation_quant!r} "
+                    f"duplicates {category_class_seen[key]}'s -- a registry keeps one best row per task "
+                    f"per class per backend per card, and per engine, weight quant and activation quant"
                 )
             else:
                 category_class_seen[key] = name
