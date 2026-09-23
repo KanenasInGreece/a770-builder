@@ -42,4 +42,7 @@ services:
       CCL_ZE_IPC_EXCHANGE: sockets
     ports:
       - "127.0.0.1:${A770B_PORT}:8000"
-    entrypoint: ["/bin/sh", "-c", "VLLM_API_KEY=\"$(cat /run/a770b/api.key)\" || exit 1; export VLLM_API_KEY; exec vllm serve \"$@\"", "vllm-serve"]
+    # The image entrypoint is `source /opt/intel/oneapi/setvars.sh && exec`. Replacing it
+    # without that source drops libccl.so.1 and torch fails at import. The key is still
+    # read first, and a missing key or a failed setvars exits before vllm serve.
+    entrypoint: ["/bin/bash", "-c", "VLLM_API_KEY=\"$(cat /run/a770b/api.key)\" || exit 1; export VLLM_API_KEY; source /opt/intel/oneapi/setvars.sh --force >/dev/null || exit 1; exec vllm serve \"$@\"", "vllm-serve"]

@@ -49,4 +49,7 @@ services:
       ONEAPI_DEVICE_SELECTOR: "${A770B_ONEAPI_DEVICE_SELECTOR}"
     ports:
       - "127.0.0.1:${A770B_PORT}:8080"
-    entrypoint: ["/app/llama-server"]
+    # Source oneAPI before the server. The full-intel image bakes LD_LIBRARY_PATH today;
+    # a bare /app/llama-server entrypoint drops that on an image that does not. Vulkan
+    # does not take this path.
+    entrypoint: ["/bin/bash", "-c", "source /opt/intel/oneapi/setvars.sh --force >/dev/null || exit 1; exec /app/llama-server \"$@\"", "llama-server"]
