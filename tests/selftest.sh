@@ -15,13 +15,13 @@ for v in $(compgen -A export A770B_); do
   case $v in A770B_PROJECT|A770B_REFUSE|A770B_DATA) ;; *) unset "$v";; esac
 done
 mkdir -p "$t/xdg"
-export A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="${TMPDIR:-/tmp}/a770b-selftest-$$" A770B_CARD_MODE=display XDG_CONFIG_HOME="$t/xdg"
+export A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="${TMPDIR:-/tmp}/a770b-selftest-$$" A770B_CARD=a770 A770B_CARD_MODE=display XDG_CONFIG_HOME="$t/xdg"
 . "$here/harness/env.sh"; . "$here/harness/guard.sh"
 # A770B_KEEP / _iso — every I1-I10 check below that switches the mode or the registry re-sources env.sh in its own
 # subshell; _iso clears whatever this process already has exported (this baseline's A770B_CARD_MODE included) except
 # the names in A770B_KEEP, so each subshell resolves fresh from the files and exports it sets itself — nothing here,
 # and nothing inherited from the calling shell, leaks into a check it was not given to.
-A770B_KEEP="A770B_PROJECT A770B_REFUSE A770B_DATA A770B_GPU_MATCH"
+A770B_KEEP="A770B_PROJECT A770B_REFUSE A770B_DATA A770B_GPU_MATCH A770B_CARD"
 # A770B_PROFILES_FILE and A770B_VRAM_CAP_GIB are no longer exported by env.sh (they must not cross a process
 # boundary, so a script that sources env.sh once in one mode and again in another, in a child process, resolves the
 # child's own registry and cap). Being plain shell variables now, they are not caught by `compgen -A export` and
@@ -285,7 +285,10 @@ fi
 u8="$t/u8"; mkdir -p "$u8/refused/live/deep" "$u8/good" "$u8/proj/harness" "$u8/proj/config" "$u8/proj/inside/deep"
 echo "witness" > "$u8/refused/live/deep/witness.txt"
 echo "witness" > "$u8/proj/inside/deep/witness.txt"
-cp "$here/harness/profiles.py" "$u8/proj/harness/profiles.py"; cp "$here/config/profiles.json" "$u8/proj/config/profiles.json"
+cp "$here/harness/profiles.py" "$u8/proj/harness/profiles.py"
+mkdir -p "$u8/proj/config/registry"
+cp "$here/config/registry/a770.display.json" "$u8/proj/config/registry/a770.display.json"
+cp "$here/config/cards.json" "$u8/proj/config/cards.json"
 # 1. a seat inside A770B_REFUSE, with --fresh
 u8a=$(A770B_REFUSE="$u8/refused" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
       bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/refused/live" --suite "$ku3/suite.json" --fresh 2>&1); u8a_rc=$?
@@ -509,23 +512,23 @@ out=$( ( _iso; export A770B_CARD_MODE=x XDG_CONFIG_HOME="$t/xdg"; . "$here/harne
 { [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "must be display or inference (it is 'x')"; } \
   && echo "ok   mode: I1 an invalid mode refuses (exit 2) and names it" || { echo "FAIL mode: I1 x -> rc=$rc: $out"; fail=1; }
 ( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
-  case "$A770B_PROFILES_FILE" in *config/profiles.json) : ;; *) exit 1;; esac
+  case "$A770B_PROFILES_FILE" in *config/registry/a770.display.json) : ;; *) exit 1;; esac
   [ -z "$A770B_VRAM_CAP_GIB" ] && [ "$A770B_PROFILES" = "qwen35-9b-q4km-vulkan gemma4-8b-e4b-q4km-vulkan qwen38-27b-iq3xxs-vulkan" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ]
 ) && echo "ok   mode: I2 the display registry holds and the cap has no default with the mode unset" || { echo "FAIL mode: I2 the display defaults did not all hold"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
-  case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
+  case "$A770B_PROFILES_FILE" in *config/registry/a770.inference.json) : ;; *) exit 1;; esac
   [ -z "$A770B_VRAM_CAP_GIB" ]
 ) && echo "ok   mode: I3 inference defaults to its own registry and no cap" || { echo "FAIL mode: I3 inference defaults did not hold"; fail=1; }
 ( _iso; export A770B_CARD_MODE=inference A770B_VRAM_CAP_GIB=14.9 XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_VRAM_CAP_GIB" = 14.9 ] ) \
   && echo "ok   mode: I3 the environment's cap wins over the inference default" || { echo "FAIL mode: I3 A770B_VRAM_CAP_GIB=14.9 did not win"; fail=1; }
-( _iso; export A770B_CARD_MODE=inference A770B_PROFILES_FILE="$here/config/profiles.json" XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_PROFILES_FILE" = "$here/config/profiles.json" ] ) \
+( _iso; export A770B_CARD_MODE=inference A770B_PROFILES_FILE="$here/config/registry/a770.display.json" XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1; [ "$A770B_PROFILES_FILE" = "$here/config/registry/a770.display.json" ] ) \
   && echo "ok   mode: I3 the environment's registry file wins over the inference default" || { echo "FAIL mode: I3 A770B_PROFILES_FILE override did not win"; fail=1; }
 # A770B_PROFILES_FILE and A770B_VRAM_CAP_GIB must not be exported: a process that sources env.sh once in display mode,
 # then a CHILD process that switches to inference mode and sources env.sh again, must resolve that child's own
 # registry and cap fresh, not inherit the parent's already-computed display values across the process boundary
 ( _iso; export XDG_CONFIG_HOME="$t/xdg"; . "$here/harness/env.sh" >/dev/null 2>&1
   bash -c 'export A770B_CARD_MODE=inference; . "$A770B_PROJECT/harness/env.sh" >/dev/null 2>&1
-    case "$A770B_PROFILES_FILE" in *config/profiles.inference.json) : ;; *) exit 1;; esac
+    case "$A770B_PROFILES_FILE" in *config/registry/a770.inference.json) : ;; *) exit 1;; esac
     [ -z "$A770B_VRAM_CAP_GIB" ]'
 ) && echo "ok   mode: a second source in another mode takes that mode's registry and cap" \
   || { echo "FAIL mode: a second source in another mode did not take that mode's registry/cap"; fail=1; }
@@ -670,7 +673,7 @@ printf '%s' "$out" | grep -q "MISSING card: no VRAM readings (nvtop absent or it
   || { echo "FAIL mode: I9g"; printf '%s\n' "$out" | tail -20; fail=1; }
 # I9h — the no-default card knobs: an unset selector, match or cap is a MISSING input, never a fallback to a card
 # this project once shipped, and never matched against '' (which is a substring of every device name).
-out=$( ( _iso; unset A770B_GPU_MATCH; export A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-1g.json" A770B_ALLOW_NO_NVTOP=0
+out=$( ( _iso; unset A770B_GPU_MATCH A770B_CARD; export A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-1g.json" A770B_ALLOW_NO_NVTOP=0
   bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
 { printf '%s' "$out" | grep -q "MISSING input A770B_GPU_MATCH is unset" \
   && printf '%s' "$out" | grep -q "MISSING input A770B_VK_DEVICE_SELECT is unset" \
@@ -714,7 +717,7 @@ if [ "$pid" = "$rp" ] && bash "$here/skills/local-build/scripts/local-build.sh" 
 else echo "FAIL gate: run_pid_alive refused the recorded run, or stop-run did not exit 0"; fail=1; kill "$rp" 2>/dev/null
 fi
 rm -f "$RUNPID"
-[ -z "$A770B_VK_DEVICE_SELECT" ] && echo "ok   device: A770B_VK_DEVICE_SELECT has no default (doctor refuses while unset)" || { echo "FAIL device: A770B_VK_DEVICE_SELECT default is '$A770B_VK_DEVICE_SELECT'"; fail=1; }
+( _iso; unset A770B_CARD; . "$here/harness/env.sh" >/dev/null 2>&1; [ -z "$A770B_VK_DEVICE_SELECT" ] ) && echo "ok   device: A770B_VK_DEVICE_SELECT has no default (doctor refuses while unset)" || { echo "FAIL device: A770B_VK_DEVICE_SELECT default is '$A770B_VK_DEVICE_SELECT'"; fail=1; }
 grep -q 'MESA_VK_DEVICE_SELECT: "${A770B_VK_DEVICE_SELECT}"' "$here/compose/a770-vulkan.yaml" && echo "ok   device: the container envelope pins the server to the selector" || { echo "FAIL device: the envelope does not pass the selector to the container"; fail=1; }
 out=$(A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_MODEL=Qwen3.5-9B-Q4_K_M.gguf A770B_QWEN35_9B_Q4KM_VULKAN_MODEL=gemma-4-E4B-it-Q4_K_M.gguf bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "MISSING profiles: profile gemma4-8b-e4b-q4km-vulkan serves qwen35-9b-q4km-vulkan's file" && echo "ok   doctor: an inverted builder.env is reported" || { echo "FAIL doctor: the inversion was not reported"; fail=1; }
 out=$(bash "$here/skills/local-build/scripts/local-build.sh" doctor 2>&1); printf '%s\n' "$out" | grep -q "^ok   profiles:" && echo "ok   doctor: a clean environment is not warned about" || { echo "FAIL doctor: warned on a clean environment"; fail=1; }
@@ -975,6 +978,18 @@ rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs
 if [ "$rs_combo_rc" = 2 ] && printf '%s\n' "$rs_combo_out" | grep -q 'mutually exclusive'
 then echo "ok   run_suite: a registry profile name together with --model is refused (mutually exclusive)"
 else echo "FAIL run_suite: the profile-name + --model combination was not refused (rc=$rs_combo_rc)"; printf '%s\n' "$rs_combo_out"; fail=1
+fi
+# I5 — a card with no registry (A770B_CARD=b70, no b70 file yet) is NOT an error: the two dry-run paths that need
+# no profile still run, so a card can still climb its first row.
+rs_noreg=$( ( _iso; unset A770B_CARD; export A770B_CARD=b70; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-noreg-data" bash "$here/harness/run_suite.sh" --model "$t/no-row-model.gguf" --ctx 8192 "$t/rs-noreg-seat" --dry-run ) 2>&1 )
+if printf '%s\n' "$rs_noreg" | grep -q "ephemeral profile 'candidate'"
+then echo "ok   I5: run_suite.sh --model --dry-run still runs for a card with no registry"
+else echo "FAIL I5: run_suite.sh --model --dry-run did not run with no registry"; printf '%s\n' "$rs_noreg" | tail -10; fail=1
+fi
+lad_noreg=$( ( _iso; unset A770B_CARD; export A770B_CARD=b70; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad-noreg-data" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run ) 2>&1 )
+if printf '%s\n' "$lad_noreg" | grep -q 'rung 1/6'
+then echo "ok   I5: ladder.sh <gguf> --dry-run still runs for a card with no registry"
+else echo "FAIL I5: ladder.sh --dry-run did not run with no registry"; printf '%s\n' "$lad_noreg" | tail -10; fail=1
 fi
 
 # ── kit/REVIEW-rubric.md (item 4): asks for exactly what run_suite.sh's own parser accepts

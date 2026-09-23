@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILES_JSON = ROOT / "config" / "profiles.json"
-PROFILES_INFERENCE_JSON = ROOT / "config" / "profiles.inference.json"
+PROFILES_JSON = ROOT / "config" / "registry" / "a770.display.json"
+PROFILES_INFERENCE_JSON = ROOT / "config" / "registry" / "a770.inference.json"
 PROFILES_PY = ROOT / "harness" / "profiles.py"
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
@@ -2407,3 +2407,107 @@ def test_shipped_rows_name_weight_only_gguf_and_omit_kernel():
             assert ck["weight_quant"] == prof["quant"], f"{f}: {name}: checkpoint.weight_quant"
             assert ck["activation_quant"] == "none", f"{f}: {name}: checkpoint.activation_quant"
             assert "kernel" not in prof, f"{f}: {name}: kernel must stay omitted until measured"
+
+
+# --- I4: a registry file under config/registry/ is checked on its identity, not only its keys ---
+
+
+def _write_registry_file(name: str, data) -> Path:
+    """Write `data` as a registry file under the real config/registry/ so the identity rules
+    (which only apply there) run. The caller is responsible for removing it."""
+    path = ROOT / "config" / "registry" / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_check_refuses_registry_filename_card_mismatch():
+    data = load_base()
+    path = _write_registry_file("b70.display.json", data)
+    try:
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2
+        assert "card 'a770' disagrees with the file name 'b70'" in result.stderr
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_check_refuses_registry_filename_mode_mismatch():
+    data = load_base()
+    data["card"] = "b70"
+    for name in data["profiles"]:
+        data["profiles"][name]["card"] = "b70"
+    path = _write_registry_file("b70.inference.json", data)
+    try:
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2
+        assert "mode 'display' disagrees with the file name 'inference'" in result.stderr
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_check_refuses_a_card_not_in_cards_json():
+    data = load_base()
+    data["card"] = "zebra"
+    path = _write_registry_file("zebra.display.json", data)
+    try:
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2
+        assert "card 'zebra' is not in config/cards.json" in result.stderr
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_check_refuses_a_row_card_differing_from_the_files():
+    data = load_base()
+    data["card"] = "b70"
+    path = _write_registry_file("b70.display.json", data)
+    try:
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2
+        assert "card 'a770' differs from the file's 'b70'" in result.stderr
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_check_refuses_a_row_mode_differing_from_the_files():
+    data = load_base()
+    data["card"] = "b70"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["card"] = "b70"
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["mode"] = "inference"
+    path = _write_registry_file("b70.display.json", data)
+    try:
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2
+        assert "mode 'inference' differs from the file's 'display'" in result.stderr
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_check_refuses_a_duplicate_profile_name(tmp_path):
+    """A duplicate key inside `profiles` is a duplicate name; json.loads keeps the last, so only a
+    raw parse can see the earlier one."""
+    path = tmp_path / "dup.json"
+    path.write_text(
+        '{"schema":1,"card":"a770","mode":"display","profiles":{"x":{"card":"a770","mode":"display"},"x":{"card":"a770","mode":"display"}}}',
+        encoding="utf-8",
+    )
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "duplicate key 'x'" in result.stderr
+
+
+def test_check_checks_every_registry_file_without_a_file_argument():
+    result = run("check")
+    assert result.returncode == 0, result.stderr
+
+
+def test_empty_line_names_the_card_and_mode():
+    result = run("empty-line", "--card", "b70", "--mode", "display")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "no measured models for card b70 in display mode — climb one with ladder.sh <gguf> --ctx N"
+
+
+def test_empty_line_names_the_missing_card():
+    result = run("empty-line")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "no builder card set (A770B_CARD) — climb one with ladder.sh <gguf> --ctx N"

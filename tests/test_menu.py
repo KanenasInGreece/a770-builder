@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILES_JSON = ROOT / "config" / "profiles.json"
+PROFILES_JSON = ROOT / "config" / "registry" / "a770.display.json"
 PROFILES_PY = ROOT / "harness" / "profiles.py"
 
 SYCL_CTX = 131072

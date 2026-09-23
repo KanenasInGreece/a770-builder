@@ -63,8 +63,15 @@ from typing import Optional
 from live_backend import read
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FILE = REPO_ROOT / "config" / "profiles.json"
+REGISTRY_DIR = REPO_ROOT / "config" / "registry"
+CARDS_FILE = REPO_ROOT / "config" / "cards.json"
 DEFAULT_SUITE = REPO_ROOT / "kit" / "suite.json"
+
+
+class _DuplicateKeyError(Exception):
+    def __init__(self, key):
+        self.key = key
+        super().__init__(key)
 
 
 def kit_instrument(suite_path: Optional[Path] = None) -> str:
@@ -173,7 +180,7 @@ def validate(data) -> list[str]:
         return ["not a JSON object"]
 
     for k in data.keys():
-        if k not in {"schema", "default", "notes", "profiles", "mode"}:
+        if k not in {"schema", "default", "notes", "profiles", "mode", "card"}:
             errors.append(f"unknown key {k}")
 
     if data.get("schema") != 1:
@@ -181,6 +188,9 @@ def validate(data) -> list[str]:
 
     if "mode" in data and data["mode"] not in MODE_VALUES:
         errors.append("mode: must be display or inference")
+
+    if "card" in data and (not isinstance(data["card"], str) or not NAME_RE.match(data["card"])):
+        errors.append("card: must match ^[a-z][a-z0-9-]*$")
 
     profiles = data.get("profiles")
     if not isinstance(profiles, dict) or not profiles:
@@ -718,27 +728,114 @@ def _load(path: Path):
         text = path.read_text(encoding="utf-8")
     except OSError as e:
         return None, f"cannot read {path}: {e}"
+
+    def _pairs_hook(pairs):
+        out = {}
+        for k, v in pairs:
+            if k in out:
+                raise _DuplicateKeyError(k)
+            out[k] = v
+        return out
+
     try:
-        return json.loads(text), None
+        return json.loads(text, object_pairs_hook=_pairs_hook), None
+    except _DuplicateKeyError as e:
+        return None, f"{path}: duplicate key {e.key!r}"
     except json.JSONDecodeError as e:
         return None, f"{path}: not valid JSON: {e}"
 
 
-def cmd_check(args) -> int:
-    path = Path(args.file)
-    data, err = _load(path)
-    if err is not None:
-        print(f"profiles: {err}", file=sys.stderr)
-        return 2
-    errors = validate(data)
-    if errors:
-        for e in errors:
-            print(f"profiles: {e}", file=sys.stderr)
-        return 2
+def _known_cards() -> set[str]:
+    """The card ids in config/cards.json, or empty when it cannot be read."""
+    try:
+        data = json.loads(CARDS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    cards = data.get("cards", {})
+    return set(cards) if isinstance(cards, dict) else set()
+
+
+def _registry_files() -> list[Path]:
+    """Every registry file under config/registry/, sorted by name."""
+    return sorted(REGISTRY_DIR.glob("*.json"))
+
+
+def _registry_identity_errors(data: dict, path: Path) -> list[str]:
+    """The per-file identity rules that apply only to a registry file under config/registry/.
+    A file passed by --file from anywhere else (tests use temp files) is checked on its keys
+    alone, never on its name: its name names a <card>.<mode>.json, its top-level `card` and
+    `mode` equal that name, the card exists in config/cards.json, and every row's `card` and
+    `mode` equal the file's."""
+    try:
+        path.resolve().relative_to(REGISTRY_DIR.resolve())
+    except ValueError:
+        return []
+
+    m = re.fullmatch(r"([a-z][a-z0-9-]*)\.(display|inference)\.json", path.name)
+    if not m:
+        return [f"file name {path.name!r} must be <card>.<mode>.json"]
+    name_card, name_mode = m.group(1), m.group(2)
+
+    errors: list[str] = []
+    file_card = data.get("card")
+    file_mode = data.get("mode")
+    if file_card != name_card:
+        errors.append(f"card {file_card!r} disagrees with the file name {name_card!r}")
+    if file_mode != name_mode:
+        errors.append(f"mode {file_mode!r} disagrees with the file name {name_mode!r}")
+    if isinstance(file_card, str) and NAME_RE.match(file_card) and file_card not in _known_cards():
+        errors.append(f"card {file_card!r} is not in config/cards.json")
+
+    profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
+    for name, prof in profiles.items():
+        if not isinstance(prof, dict):
+            continue
+        if prof.get("card") != file_card:
+            errors.append(f"{name}: card {prof.get('card')!r} differs from the file's {file_card!r}")
+        if prof.get("mode") != file_mode:
+            errors.append(f"{name}: mode {prof.get('mode')!r} differs from the file's {file_mode!r}")
+    return errors
+
+
+def empty_line(card: str, mode: str) -> str:
+    """The one line every consumer quotes when the installed card has no registry (or no card is
+    set): produced in one place so status, menu, doctor, run --profile and serve all refuse with
+    the same words."""
+    tail = "climb one with ladder.sh <gguf> --ctx N"
+    if card:
+        return f"no measured models for card {card} in {mode} mode — {tail}"
+    return f"no builder card set (A770B_CARD) — {tail}"
+
+
+def cmd_empty_line(args) -> int:
+    print(empty_line(args.card, args.mode))
     return 0
 
 
+def cmd_check(args) -> int:
+    files = [Path(args.file)] if args.file else _registry_files()
+    if not files:
+        print(f"profiles: no registry files under {REGISTRY_DIR}", file=sys.stderr)
+        return 2
+    ok = True
+    for path in files:
+        data, err = _load(path)
+        if err is not None:
+            print(f"profiles: {err}", file=sys.stderr)
+            ok = False
+            continue
+        errors = validate(data) + _registry_identity_errors(data, path)
+        if errors:
+            for e in errors:
+                print(f"profiles: {e}", file=sys.stderr)
+            ok = False
+    return 0 if ok else 2
+
+
 def cmd_env(args) -> int:
+    if args.file is None:
+        print("profiles: env needs --file", file=sys.stderr)
+        return 2
     rc = cmd_check(args)
     if rc != 0:
         return rc
@@ -859,6 +956,9 @@ def _builder_class(prof: dict) -> bool:
 
 
 def cmd_card(args) -> int:
+    if args.file is None:
+        print("profiles: card needs --file", file=sys.stderr)
+        return 2
     path = Path(args.file)
     data, err = _load(path)
     if err is not None:
@@ -942,6 +1042,9 @@ def _menu_row(name: str, prof: dict) -> dict:
 
 def cmd_menu(args) -> int:
     """Print ready/also JSON when a sidecar is live, or the cold full slice."""
+    if args.file is None:
+        print("profiles: menu needs --file", file=sys.stderr)
+        return 2
     rc = cmd_check(args)
     if rc != 0:
         return rc
@@ -1155,12 +1258,12 @@ def cmd_render(args) -> int:
 
 def main() -> int:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--file", default=str(DEFAULT_FILE), help="Path to config/profiles.json")
+    common.add_argument("--file", default=None, help="Path to a config/registry/<card>.<mode>.json file")
 
     parser = argparse.ArgumentParser(description="Read and render the A770 builder profiles registry")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("check", parents=[common], help="Validate the profiles file")
+    subparsers.add_parser("check", parents=[common], help="Validate the profiles file (every file under config/registry/ when --file is omitted)")
 
     subparsers.add_parser("env", parents=[common], help="Print the shell defaults the harness evals")
 
@@ -1174,6 +1277,13 @@ def main() -> int:
     )
     menu_parser.add_argument("--sidecar", help="Path to the live-backend sidecar JSON")
     menu_parser.add_argument("--pidfile", help="Path to the llama-server pidfile")
+
+    empty_parser = subparsers.add_parser(
+        "empty-line",
+        help="Print the one line a consumer shows when a card has no measured models",
+    )
+    empty_parser.add_argument("--card", default="", help="The card id (A770B_CARD)")
+    empty_parser.add_argument("--mode", default="", help="The card mode (A770B_CARD_MODE)")
 
     render_parser = subparsers.add_parser("render", parents=[common], help="Regenerate the skill table and snippet")
     render_parser.add_argument("--skill", required=True, help="Path to the skill file to update")
@@ -1190,6 +1300,8 @@ def main() -> int:
         return cmd_card(args)
     elif args.command == "menu":
         return cmd_menu(args)
+    elif args.command == "empty-line":
+        return cmd_empty_line(args)
     elif args.command == "render":
         return cmd_render(args)
 
