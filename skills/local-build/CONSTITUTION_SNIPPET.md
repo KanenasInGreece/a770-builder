@@ -1,8 +1,10 @@
 <!-- local-build:begin -->
 ## Local builder seat — `/local-build` (ruled 2026-09-07)
-A LOCAL model on the Arc A770 executes bounded, well-specified work you choose to delegate (a small change to named
+A LOCAL model on this machine's Intel Arc card executes bounded, well-specified work you choose to delegate (a small change to named
 files, tests from a specification, the read of a file your window cannot hold) and stands in when the online seats are
 down or rate-limited. Skill: the `local-build` folder in YOUR OWN skill directory (script `scripts/local-build.sh`). Run `local-build.sh menu` (or `profiles`) to see this machine's measured models — the tables live there, not in this file.
+<!-- local-build:installed:begin -->
+<!-- local-build:installed:end -->
 Call:
 `bash <your-skill-dir>/local-build/scripts/local-build.sh run [<seat>] <brief.md> [--spec <spec.json>] [--profile <name>]` — it starts or
 switches the server, dispatches the brief through opencode inside the sandbox, captures diff + tests + timings, resets the seat;

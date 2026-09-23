@@ -30,7 +30,7 @@ Copy the command. The line under it is what that command does.
 **A — Dispatch.**
 
 ```
-bash <skill-dir>/scripts/local-build.sh run <brief.md> --profile qwen35-9b-q4km-vulkan
+bash <skill-dir>/scripts/local-build.sh run <brief.md> --profile <profile>
 ```
 
 → `~/local-ai/results/<label>.task.md` and `<label>.patch`. Judge by `verify`, never the exit code. Default seat is `A770B_SEAT`. Smoke that seat with the brief only.
@@ -49,7 +49,7 @@ profiles | menu | status
 
 ## Pick a card
 
-No learned router. Read the brief (edit scope, file size, time you can spend). **9B** for ordinary edits, tests, and reads under the useful window. **Gemma** for a large cold read. **27B** when the deliverable is larger than the brief or several files. `profiles --name` is the full `use_for` (a card that fails a dimension says so there). A GGUF Q4/Q6/IQ3 label is the **weight** encoding — a slow run is often the wrong file or backend, not the wrong family.
+No learned router. Read the brief (edit scope, file size, time you can spend), then choose from `local-build.sh menu`, which lists only the models measured on this machine's card: each row's `use_for`, useful window and speed say what it is for. A smaller, faster model for ordinary edits, tests and reads under its window; a larger one when the deliverable is larger than the brief or spans several files. `profiles --name` is the full `use_for` (a card that fails a dimension says so there). A GGUF Q4/Q6/IQ3 label is the **weight** encoding — a slow run is often the wrong file or backend, not the wrong family.
 
 Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=inference`). Run `local-build.sh menu` for this machine's measured models — the tables live there, not in this file.
 
