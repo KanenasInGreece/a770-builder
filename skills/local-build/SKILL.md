@@ -51,23 +51,7 @@ profiles | menu | status
 
 No learned router. Read the brief (edit scope, file size, time you can spend). **9B** for ordinary edits, tests, and reads under the useful window. **Gemma** for a large cold read. **27B** when the deliverable is larger than the brief or several files. `profiles --name` is the full `use_for` (a card that fails a dimension says so there). A GGUF Q4/Q6/IQ3 label is the **weight** encoding — a slow run is often the wrong file or backend, not the wrong family.
 
-Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=inference`). Tables are rendered — do not edit them.
-
-<!-- profiles:begin -->
-| profile | model | window (useful) | VRAM | decode / prefill at 8k |
-|---|---|---|---|---|
-| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s |
-| gemma4-8b-e4b-q4km-vulkan | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s |
-| qwen38-27b-iq3xxs-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s |
-<!-- profiles:end -->
-
-<!-- profiles-inference:begin -->
-| profile | model | window (useful) | VRAM | decode / prefill at 8k |
-|---|---|---|---|---|
-| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 29.3 / 385.9 tok/s |
-| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s |
-| qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358.35 tok/s |
-<!-- profiles-inference:end -->
+Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=inference`). Run `local-build.sh menu` for this machine's measured models — the tables live there, not in this file.
 
 ## Spec (optional)
 

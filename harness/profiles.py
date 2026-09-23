@@ -146,8 +146,12 @@ KERNEL_PATH_VALUES = {"gpu", "cpu-like", "untested"}
 KERNEL_XMX_VALUES = {"used", "unavailable", "untested"}
 KERNEL_KEYS = {"path", "xmx", "evidence"}
 
-SKILL_HEADER = "| profile | model | window (useful) | VRAM | decode / prefill at 8k |"
-SKILL_SEPARATOR = "|---|---|---|---|---|"
+CATALOGUE_HEADER = "| card | mode | profile | model | window (useful) | VRAM | decode / prefill at 8k | measured_on |"
+CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|"
+MODE_LABEL = {
+    "display": "Display-safe (`A770B_CARD_MODE=display`, the default)",
+    "inference": "Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop)",
+}
 
 
 def _is_number(v) -> bool:
@@ -1121,22 +1125,37 @@ def _short_model_name(model: str) -> str:
     return model.replace("-it", "")
 
 
-def _table_rows(data: dict) -> list[str]:
-    """The skill table's header, separator, and one row per profile. No use_for — that lives on the row."""
-    profiles = data["profiles"]
-    default = data.get("default")
+def _catalogue_rows() -> list[dict]:
+    """Every row under config/registry/, with its card and mode, sorted card -> mode -> name."""
+    rows = []
+    for path in _registry_files():
+        data, err = _load(path)
+        if err is not None:
+            continue
+        card = data.get("card", "")
+        mode = data.get("mode", "")
+        profiles = data.get("profiles")
+        if not isinstance(profiles, dict):
+            continue
+        for name, prof in profiles.items():
+            if isinstance(prof, dict):
+                rows.append({"card": card, "mode": mode, "name": name, "prof": prof})
+    rows.sort(key=lambda r: (r["card"], r["mode"], r["name"]))
+    return rows
 
-    lines = [SKILL_HEADER, SKILL_SEPARATOR]
-    for name, prof in profiles.items():
+
+def _catalogue_table(rows: list[dict]) -> list[str]:
+    """The catalogue table: every card's rows, each carrying its card, mode and measured_on."""
+    lines = [CATALOGUE_HEADER, CATALOGUE_SEPARATOR]
+    for r in rows:
+        prof = r["prof"]
         ctx_fmt = f"{prof['ctx']:,}"
         useful_k = prof["useful_ctx"] // 1000
         decode8k = prof["speed"]["decode_tps"]["8k"]
         prefill8k = prof["speed"]["prefill_tps"]["8k"]
-
-        display_name = name
         lines.append(
-            f"| {display_name} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s |"
+            f"| {r['card']} | {r['mode']} | {r['name']} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
+            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof.get('measured_on', '')} |"
         )
     return lines
 
@@ -1191,68 +1210,57 @@ def _apply_between_markers(text: str, begin_idx: int, end_idx: int, generated_li
 
 
 def cmd_render(args) -> int:
-    data, err = _load(Path(args.file))
+    if args.catalogue:
+        return _render_catalogue()
+    if args.installed:
+        return _render_installed(args.card, args.mode)
+    print("profiles: render needs --catalogue or --installed", file=sys.stderr)
+    return 2
+
+
+def _render_catalogue() -> int:
+    """Rewrite the catalogue table between the `catalogue` markers in README.md and config/models.md."""
+    lines = _catalogue_table(_catalogue_rows())
+    targets = [REPO_ROOT / "README.md", REPO_ROOT / "config" / "models.md"]
+    texts = {}
+    for path in targets:
+        try:
+            texts[path] = path.read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"profiles: cannot read {path}: {e}", file=sys.stderr)
+            return 2
+
+    for path in targets:
+        if _find_markers(texts[path].splitlines(), "catalogue") is None:
+            print(f"profiles: no catalogue markers in {path}", file=sys.stderr)
+            return 2
+
+    for path in targets:
+        begin_idx, end_idx = _find_markers(texts[path].splitlines(), "catalogue")
+        texts[path] = _apply_between_markers(texts[path], begin_idx, end_idx, lines)
+
+    for path, text in texts.items():
+        path.write_text(text, encoding="utf-8")
+    return 0
+
+
+def _render_installed(card: str, mode: str) -> int:
+    """Print the installed card's block to stdout: the one line when the card has no registry or
+    no rows, else the labelled sentence naming only that card's rows."""
+    path = REGISTRY_DIR / f"{card}.{mode}.json"
+    if not path.is_file():
+        print(empty_line(card, mode))
+        return 0
+    data, err = _load(path)
     if err is not None:
         print(f"profiles: {err}", file=sys.stderr)
         return 2
-
-    table_lines = _table_rows(data)
-    sentence = _snippet_sentence(data)
-
-    inf_data = None
-    if args.inference_file:
-        inf_data, err = _load(Path(args.inference_file))
-        if err is not None:
-            print(f"profiles: {err}", file=sys.stderr)
-            return 2
-
-    if inf_data is None:
-        snippet_lines = [sentence]
-    else:
-        inf_sentence = _snippet_sentence(inf_data)
-        snippet_lines = [
-            f"Display-safe (`A770B_CARD_MODE=display`, the default): {sentence}",
-            f"Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): {inf_sentence}",
-        ]
-
-    # Every (path, marker) pair this render needs to touch, in write order. The skill file
-    # can appear twice (the "profiles" table and, with an inference file, "profiles-inference").
-    targets: list[tuple[Path, str, list[str]]] = [(Path(args.skill), "profiles", table_lines)]
-    if inf_data is not None:
-        targets.append((Path(args.skill), "profiles-inference", _table_rows(inf_data)))
-    targets.append((Path(args.snippet), "profiles", snippet_lines))
-
-    texts: dict[Path, str] = {}
-    for path, _marker, _lines in targets:
-        if path not in texts:
-            try:
-                texts[path] = path.read_text(encoding="utf-8")
-            except OSError as e:
-                print(f"profiles: cannot read {path}: {e}", file=sys.stderr)
-                return 2
-
-    # Check every marker pair before writing anything: a missing pair in any target file
-    # must leave every target file untouched, not just the ones after it.
-    ok = True
-    for path, marker, _lines in targets:
-        if _find_markers(texts[path].splitlines(), marker) is None:
-            print(f"profiles: no {marker} markers in {path}", file=sys.stderr)
-            ok = False
-    if not ok:
-        return 2
-
-    # All pairs confirmed present: apply the replacements in memory, then write once per
-    # path. Re-find each marker's position on the current in-memory text, since an earlier
-    # replacement on the same path (e.g. "profiles" before "profiles-inference") can shift
-    # the line numbers a later marker sits at.
-    new_texts = dict(texts)
-    for path, marker, lines in targets:
-        begin_idx, end_idx = _find_markers(new_texts[path].splitlines(), marker)
-        new_texts[path] = _apply_between_markers(new_texts[path], begin_idx, end_idx, lines)
-
-    for path, text in new_texts.items():
-        path.write_text(text, encoding="utf-8")
-
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        print(empty_line(card, mode))
+        return 0
+    label = MODE_LABEL.get(mode, f"`A770B_CARD_MODE={mode}`")
+    print(f"{label}: {_snippet_sentence(data)}")
     return 0
 
 
@@ -1285,10 +1293,14 @@ def main() -> int:
     empty_parser.add_argument("--card", default="", help="The card id (A770B_CARD)")
     empty_parser.add_argument("--mode", default="", help="The card mode (A770B_CARD_MODE)")
 
-    render_parser = subparsers.add_parser("render", parents=[common], help="Regenerate the skill table and snippet")
-    render_parser.add_argument("--skill", required=True, help="Path to the skill file to update")
-    render_parser.add_argument("--snippet", required=True, help="Path to the snippet file to update")
-    render_parser.add_argument("--inference-file", help="Path to config/profiles.inference.json, to also render")
+    render_parser = subparsers.add_parser(
+        "render",
+        help="Render the catalogue (README, config/models.md) or the installed card's block (stdout)",
+    )
+    render_parser.add_argument("--catalogue", action="store_true", help="Update README and config/models.md with every card's rows")
+    render_parser.add_argument("--installed", action="store_true", help="Print the installed card's block to stdout")
+    render_parser.add_argument("--card", default="", help="The card id (with --installed)")
+    render_parser.add_argument("--mode", default="", help="The card mode (with --installed)")
 
     args = parser.parse_args()
 

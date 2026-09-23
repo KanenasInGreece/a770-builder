@@ -383,134 +383,61 @@ def test_card_without_served_leaves_defaults():
     assert long_prof["served_ctx"] == long_prof["ctx"]
 
 
-def test_render_updates_skill_table_and_snippet(tmp_path):
-    skill = tmp_path / "SKILL.md"
-    skill.write_text(
-        "before\n<!-- profiles:begin -->\nold table\n<!-- profiles:end -->\nafter\n",
-        encoding="utf-8",
-    )
-    snippet = tmp_path / "snippet.md"
-    snippet.write_text(
-        "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n",
-        encoding="utf-8",
-    )
-
-    result = run("render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet))
+def test_render_installed_names_only_that_cards_rows():
+    result = run("render", "--installed", "--card", "a770", "--mode", "display")
     assert result.returncode == 0, result.stderr
-
-    skill_text = skill.read_text(encoding="utf-8")
-    assert "before" in skill_text and "after" in skill_text
-    assert "old table" not in skill_text
-    assert "262,144 (~65k)" in skill_text
-    assert "10.35 GiB" in skill_text
-
-    expected_snippet_line = (
-        "**--profile qwen35-9b-q4km-vulkan** = Qwen3.5-9B-Q4_K_M, 262,144-token window (useful to ~65k), ~37 tok/s; "
-        "**--profile gemma4-8b-e4b-q4km-vulkan** = gemma-4-E4B-Q4_K_M, 131,072-token window (useful to ~100k), ~60 tok/s; "
-        "**--profile qwen38-27b-iq3xxs-vulkan** = Qwen3.8-27B-GSQ-RCO-IQ3_XXS, 131,072-token window (useful to ~32k), ~8 tok/s."
-    )
-    snippet_text = snippet.read_text(encoding="utf-8")
-    assert expected_snippet_line in snippet_text
-    assert "old snippet" not in snippet_text
+    assert "qwen35-9b-q4km-vulkan" in result.stdout
+    assert "gemma4-8b-e4b-q4km-vulkan" in result.stdout
+    assert "qwen38-27b-iq3xxs-vulkan" in result.stdout
+    # the inference-only rows must not leak into the display card's block
+    assert "qwen38-27b-iq3s-sycl" not in result.stdout
+    assert "qwen38-27b-iq3s-vulkan" not in result.stdout
 
 
-def test_render_with_inference_file(tmp_path):
-    skill = tmp_path / "SKILL.md"
-    skill.write_text(
-        "before\n<!-- profiles:begin -->\nold\n<!-- profiles:end -->\n"
-        "<!-- profiles-inference:begin -->\nold inf\n<!-- profiles-inference:end -->\nafter\n",
-        encoding="utf-8",
-    )
-    snippet = tmp_path / "snippet.md"
-    snippet.write_text(
-        "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n",
-        encoding="utf-8",
-    )
-
-    result = run(
-        "render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet),
-        "--inference-file", str(PROFILES_INFERENCE_JSON),
-    )
+def test_render_installed_prints_the_one_line_when_the_card_has_no_rows():
+    result = run("render", "--installed", "--card", "b70", "--mode", "display")
     assert result.returncode == 0, result.stderr
-
-    skill_text = skill.read_text(encoding="utf-8")
-    assert "before" in skill_text and "after" in skill_text
-    assert "old\n" not in skill_text and "old inf" not in skill_text
-    assert "262,144 (~65k)" in skill_text and "10.35 GiB" in skill_text  # display long row
-    assert "9.49 GiB" in skill_text  # inference long row
-    assert "196,608" in skill_text  # inference serious row's window
-
-    snippet_text = snippet.read_text(encoding="utf-8")
-    lines = [l for l in snippet_text.splitlines() if l.strip() and not l.strip().startswith("<!--")]
-    assert lines[0].startswith("Display-safe (`A770B_CARD_MODE=display`, the default): ")
-    assert lines[1].startswith("Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop): ")
+    assert result.stdout.strip() == "no measured models for card b70 in display mode — climb one with ladder.sh <gguf> --ctx N"
 
 
-def test_render_missing_inference_markers_exits_2(tmp_path):
-    """A skill file with the profiles pair but not the profiles-inference pair, plus a snippet
-    with its pair: exit 2, and NOTHING written -- not even the skill file's own valid pair."""
-    skill = tmp_path / "SKILL.md"
-    skill_original = "before\n<!-- profiles:begin -->\nold\n<!-- profiles:end -->\nafter\n"
-    skill.write_text(skill_original, encoding="utf-8")
-    snippet = tmp_path / "snippet.md"
-    snippet_original = "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n"
-    snippet.write_text(snippet_original, encoding="utf-8")
-
-    result = run(
-        "render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet),
-        "--inference-file", str(PROFILES_INFERENCE_JSON),
-    )
-    assert result.returncode == 2
-    assert f"profiles: no profiles-inference markers in {skill}" in result.stderr
-    assert skill.read_text(encoding="utf-8") == skill_original
-    assert snippet.read_text(encoding="utf-8") == snippet_original
+def test_tracked_skill_and_snippet_present_no_model_list():
+    """I6 — the tracked SKILL.md and CONSTITUTION_SNIPPET.md present no model table or list: they
+    tell the caller to run local-build.sh menu instead."""
+    skill = (ROOT / "skills" / "local-build" / "SKILL.md").read_text(encoding="utf-8")
+    snippet = (ROOT / "skills" / "local-build" / "CONSTITUTION_SNIPPET.md").read_text(encoding="utf-8")
+    assert "| profile | model |" not in skill
+    assert "**--profile " not in snippet
+    assert "local-build.sh menu" in skill
+    assert "local-build.sh menu" in snippet
 
 
-def test_render_leaves_file_without_markers_unchanged(tmp_path):
-    no_markers = tmp_path / "nomarkers.md"
-    original = "just some text\nno markers here\n"
-    no_markers.write_text(original, encoding="utf-8")
-    snippet = tmp_path / "snippet.md"
-    snippet.write_text(
-        "<!-- profiles:begin -->\nold snippet\n<!-- profiles:end -->\n",
-        encoding="utf-8",
-    )
+def test_render_catalogue_is_byte_stable_and_lists_every_card():
+    """I7 — render --catalogue rewrites README and config/models.md between markers, lists every
+    card's rows with a card and measured_on column, sorted card -> mode -> name, and is
+    byte-stable (a second render changes nothing)."""
+    readme = ROOT / "README.md"
+    models = ROOT / "config" / "models.md"
+    result = run("render", "--catalogue")
+    assert result.returncode == 0, result.stderr
+    readme_after = readme.read_bytes()
+    models_after = models.read_bytes()
+    result2 = run("render", "--catalogue")
+    assert result2.returncode == 0, result2.stderr
+    assert readme.read_bytes() == readme_after
+    assert models.read_bytes() == models_after
 
-    result = run("render", "--file", str(PROFILES_JSON), "--skill", str(no_markers), "--snippet", str(snippet))
-    assert result.returncode == 2
-    assert no_markers.read_text(encoding="utf-8") == original
-    assert f"profiles: no profiles markers in {no_markers}" in result.stderr
+    text = readme.read_text(encoding="utf-8")
+    begin = text.index("<!-- catalogue:begin -->")
+    end = text.index("<!-- catalogue:end -->")
+    section = text[begin:end]
+    assert "| card | mode | profile | model |" in section
+    assert "| measured_on |" in section
 
-
-def test_render_table_has_separator_after_header(tmp_path):
-    """A Markdown table renders only with a separator row under its header."""
-    skill = tmp_path / "SKILL.md"; snippet = tmp_path / "SNIP.md"
-    skill.write_text("x\n<!-- profiles:begin -->\nold\n<!-- profiles:end -->\ny\n"); snippet.write_text("<!-- profiles:begin -->\n<!-- profiles:end -->\n")
-    r = subprocess.run([sys.executable, str(PROFILES_PY), "render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet)], capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    lines = skill.read_text().splitlines()
-    i = lines.index("| profile | model | window (useful) | VRAM | decode / prefill at 8k |")
-    assert lines[i + 1] == "|---|---|---|---|---|"
-
-
-def test_skill_table_omits_use_for(tmp_path):
-    """The skill table is an index: use_for stays on the row (`profiles --name`), not in SKILL.md."""
-    skill = tmp_path / "SKILL.md"
-    snippet = tmp_path / "SNIP.md"
-    skill.write_text("<!-- profiles:begin -->\nold\n<!-- profiles:end -->\n")
-    snippet.write_text("<!-- profiles:begin -->\n<!-- profiles:end -->\n")
-    r = subprocess.run(
-        [sys.executable, str(PROFILES_PY), "render", "--file", str(PROFILES_JSON),
-         "--skill", str(skill), "--snippet", str(snippet)],
-        capture_output=True, text=True,
-    )
-    assert r.returncode == 0, r.stderr
-    body = skill.read_text()
-    full = load_base()["profiles"]["qwen35-9b-q4km-vulkan"]["use_for"]
-    assert "Reads exactly at 100k" in full
-    assert "Reads exactly at 100k" not in body
-    assert "| profile | model | window (useful) | VRAM | decode / prefill at 8k |" in body
-    assert "| use for |" not in body
+    # every shipped row appears, and the data rows are sorted by (card, mode, name)
+    data_lines = [ln for ln in section.splitlines() if ln.startswith("| a770 |") or ln.startswith("| b70 |")]
+    triples = [tuple(cell.strip() for cell in ln.strip("|").split("|")[:3]) for ln in data_lines]
+    assert triples == sorted(triples)
+    assert len(data_lines) == 6
 
 
 def test_check_refuses_unknown_top_level_key(tmp_path):
@@ -1802,22 +1729,6 @@ def test_card_prints_instrument():
     result = run("card", "--file", str(PROFILES_JSON), "--name", "qwen35-9b-q4km-vulkan")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["instrument"] == "seat: Shared_Memory@3c8e2bb"
-
-
-def test_snippet_labels_use_profile_flag(tmp_path):
-    """--profile <name>; there is no default to mark."""
-    skill = tmp_path / "SKILL.md"
-    skill.write_text("<!-- profiles:begin -->\nold\n<!-- profiles:end -->\n", encoding="utf-8")
-    snippet = tmp_path / "snippet.md"
-    snippet.write_text("<!-- profiles:begin -->\nold\n<!-- profiles:end -->\n", encoding="utf-8")
-
-    result = run("render", "--file", str(PROFILES_JSON), "--skill", str(skill), "--snippet", str(snippet))
-    assert result.returncode == 0, result.stderr
-
-    text = snippet.read_text(encoding="utf-8")
-    assert "**--profile qwen35-9b-q4km-vulkan** = " in text
-    assert "**--profile gemma4-8b-e4b-q4km-vulkan** = " in text
-    assert "**--profile qwen38-27b-iq3xxs-vulkan** = " in text
 
 
 # --- thinking: the server's five thinking controls (--reasoning, --reasoning-effort,

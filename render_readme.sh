@@ -34,14 +34,14 @@ first_para = " ".join(line.strip() for line in first_para.splitlines())
 sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", first_para)
 intro = " ".join(sentences[:3])
 
-# ---------- 2. the two card modes and the profiles each serves ----------
+# ---------- 2. every card's profiles, from config/registry/ ----------
 def load_profiles(path):
     data = json.loads(pathlib.Path(path).read_text())
-    return data["mode"], data["profiles"]
+    return data.get("card", "—"), data.get("mode", "—"), data.get("profiles", {})
 
 rows = []
-for cfg in ("config/profiles.json", "config/profiles.inference.json"):
-    mode, profiles = load_profiles(cfg)
+for cfg in sorted(pathlib.Path("config/registry").glob("*.json")):
+    card, mode, profiles = load_profiles(cfg)
     for name, p in profiles.items():
         ctx = p.get("ctx")
         useful = p.get("useful_ctx")
@@ -52,14 +52,14 @@ for cfg in ("config/profiles.json", "config/profiles.inference.json"):
         pre = p.get("speed", {}).get("prefill_tps", {}).get("8k")
         speed = f"{dec} / {pre} tok/s" if dec is not None and pre is not None else "—"
         instrument = p.get("instrument", "—")
-        rows.append((mode, name, p.get("model", "—"), window, vram_s, speed, instrument))
+        rows.append((card, mode, name, p.get("model", "—"), window, vram_s, speed, instrument))
 
-table_html = ['<table>', '<thead><tr><th>mode</th><th>profile</th><th>model</th>'
+table_html = ['<table>', '<thead><tr><th>card</th><th>mode</th><th>profile</th><th>model</th>'
               '<th>window (useful)</th><th>VRAM</th><th>decode / prefill @8k</th><th>instrument</th></tr></thead>',
               '<tbody>']
-for mode, name, model, window, vram_s, speed, instrument in rows:
+for card, mode, name, model, window, vram_s, speed, instrument in rows:
     table_html.append(
-        f"<tr><td>{esc(mode)}</td><td>{esc(name)}</td><td>{esc(model)}</td>"
+        f"<tr><td>{esc(card)}</td><td>{esc(mode)}</td><td>{esc(name)}</td><td>{esc(model)}</td>"
         f"<td>{esc(window)}</td><td>{esc(vram_s)}</td><td>{esc(speed)}</td><td>{esc(instrument)}</td></tr>"
     )
 table_html.append("</tbody></table>")
@@ -88,7 +88,7 @@ commands = [c for c in (run_cmd, verify_cmd, serve_cmd, suite_cmd) if c]
 # ---------- 4. where things live (six lines, one clause each) ----------
 where = [
     ("the kit", "<code>kit/</code> — the profiling suite's own seat, tasks and hidden graders"),
-    ("the registries", "<code>config/profiles.json</code>, <code>config/profiles.inference.json</code> — the two card-mode profile tables"),
+    ("the registries", "<code>config/registry/&lt;card&gt;.&lt;mode&gt;.json</code> — one file per card and mode, the single source of every profile's numbers"),
     ("the ledger", "<code>config/models.md</code> — every model measured on this card, and why"),
     ("the guide", "<code>docs/OPERATING.md</code> — day-to-day running of the seat, every knob"),
     ("the results directory", "<code>$A770B_DATA/results</code> (default <code>~/local-ai/results</code>) — each run's capture"),
