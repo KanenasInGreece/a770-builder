@@ -21,14 +21,17 @@ opencode inside a bubblewrap sandbox.
 
 One row of `config/profiles.json` (display-safe) or `config/profiles.inference.json` (pure-inference). The key is a
 card identity (family-weight-quant-backend), never a window name. One best row per (task, card, category,
-weight_class, backend). Numbers are measured, never copied; `config/models.md` is the ledger.
+weight_class, backend, engine, checkpoint weight quant, checkpoint activation quant). Numbers are measured,
+never copied; `config/models.md` is the ledger.
 
 A quant label on a GGUF is the **weight** encoding. Activations stay in the engine's working precision unless
 the checkpoint itself quantises them (`checkpoint.activation_quant`; `none` on every shipped GGUF row). Looking
 at `Q4_K_M` and assuming 4-bit local math is a mistake — that needs a compatible kernel on this card, which
-`kernel` records only when observed. Omitted `engine` / `checkpoint` / `kernel` means untested, not "same as
-`quant`". A different checkpoint of the same model (another user's GPTQ/AWQ/GGUF) is a different row if it
-changes which kernel can run.
+`kernel` records only when observed. `kernel.path` and `kernel.xmx` stay `untested` until `kernel.evidence`
+is a log line from this card. A speed number does not name the kernel. vLLM prints that line more often than
+llama.cpp. Omitted `engine` / `checkpoint` / `kernel` means untested, not "same as `quant`". A different
+checkpoint of the same model is a different row when the engine, the weight quant, or the activation quant
+differs, even when the kernel is the same.
 
 ## The ladder
 
