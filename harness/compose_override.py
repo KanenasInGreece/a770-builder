@@ -2,7 +2,7 @@
 """compose_override.py — write the runtime compose override that carries one profile's llama-server argv.
 
 The tracked compose file is the ENVELOPE only (image, devices, groups, mounts, port, entrypoint); it never bakes a
-model or a context, because a model written into YAML would be a second registry beside config/profiles*.json.
+model or a context, because a model written into YAML would be a second registry beside config/registry/.
 harness/serve_compose.sh builds the argv from the registry (the same fields the host server reads) and this helper
 writes it into a small override file that is merged over the envelope with a second `-f`.
 

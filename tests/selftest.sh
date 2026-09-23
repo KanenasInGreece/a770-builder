@@ -489,7 +489,7 @@ assert d["delivered"] == {"prefill_tps": 612.0, "decode_tps": 45.5, "source": "r
 then echo "ok   selftest: suite_report.py reads a capture (fallen back to <label>.task.md) and reports delivered speed, in the table and --json alike"
 else echo "FAIL selftest: suite_report.py delivered speed did not parse — stdout: $sout"; fail=1
 fi
-# the profiles registry: config/profiles.json is the single source now that env.sh evals `harness/profiles.py env`
+# the profiles registry: config/registry/<card>.<mode>.json is the single source now that env.sh evals `harness/profiles.py env`
 python3 "$here/harness/profiles.py" check >/dev/null 2>&1 && echo "ok   profiles: the registry checks" || { echo "FAIL profiles: profiles.py check failed"; fail=1; }
 [ "$A770B_PROFILES" = "qwen35-9b-q4km-vulkan gemma4-8b-e4b-q4km-vulkan qwen38-27b-iq3xxs-vulkan" ] && [ -z "${A770B_DEFAULT_PROFILE:-}" ] && echo "ok   profiles: the names come from the registry and there is no default" || { echo "FAIL profiles: A770B_PROFILES='$A770B_PROFILES' A770B_DEFAULT_PROFILE='${A770B_DEFAULT_PROFILE:-}'"; fail=1; }
 # the helper reads a numeric field (long's CTX), a string field that can only come from `extra` (--top-k has no

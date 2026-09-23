@@ -5,7 +5,7 @@
 #   run_suite.sh <profile> [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]
 #   run_suite.sh --model <gguf> --ctx <n> [--kv <type>] [--kv-v <type>] [--extra "<flags>"] [--timeout <s>] [<seat>] [...]
 # The second form is how a new GGUF climbs the task rung before it has a registry row: instead of a name already in
-# config/profiles.json, --model/--ctx build an EPHEMERAL profile named "candidate" for this run alone (the
+# config/registry/<card>.<mode>.json, --model/--ctx build an EPHEMERAL profile named "candidate" for this run alone (the
 # A770B_CANDIDATE_* variables the harness reads, exported here, never written to any file), so a model can be
 # task-graded the same way a registered one is before a human has measured and pasted its row (harness/ladder.sh
 # drives exactly this path). A registry profile name and --model are mutually exclusive — passing both is refused.
@@ -102,7 +102,7 @@ fi
 SEAT="${SEAT:-$A770B_DATA/kit-seat}"
 
 a770b_is_profile "$PROFILE" || die "profile must be one of: $A770B_PROFILES (got '$PROFILE')"
-# the profile's own timeout window (config/profiles.json timeout_s — the same budget build_local.sh's `timeout`
+# the profile's own timeout window (the registry's timeout_s — the same budget build_local.sh's `timeout`
 # wraps the model's run in): a captured timeout still exits 0 all the way back up through local-build.sh run (the
 # capture itself succeeded), so this wall-clock budget is the only signal process_task has for telling a stage
 # that ran out of time from one that plainly failed — see stage_outcome below.
@@ -407,7 +407,7 @@ PY
 }
 
 # stage_outcome <working "true"|"false"|""> <wall_s> — "timeout" when the measured wall time reached the
-# profile's own configured budget (TIMEOUT_S, set once above from config/profiles.json's timeout_s — the same
+# profile's own configured budget (TIMEOUT_S, set once above from the registry's timeout_s — the same
 # window build_local.sh's `timeout` wraps the model's run in); a captured timeout still exits 0 all the way back
 # through local-build.sh run (the capture itself succeeded), so this wall-clock comparison is the only signal
 # available here for telling a slow model (still working when the clock ran out) from a plainly wrong one.

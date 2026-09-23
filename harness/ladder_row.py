@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ladder_row.py — the last step of harness/ladder.sh, which the ladder runs after its six rungs: it reads every
 # rung's own output, computes the fields no single rung produces (useful_ctx, ram_gb_extra, the speed table), writes
-# the ladder's ONE results JSON, and prints the REGISTRY ROW an operator pastes into config/profiles.json. It is a
+# the ladder's ONE results JSON, and prints the REGISTRY ROW an operator pastes into config/registry/<card>.<mode>.json. It is a
 # file rather than a heredoc so it can be called — by a test with a real run's rung outputs, and by hand to recover
 # the numbers of a run that was terminated before the ladder reached this step.
 #
@@ -247,7 +247,7 @@ if row_suite is not None:
 if far_end >= 90000 and depth_score is not None:
     row["depth_probe_100k"] = f"{'pass' if depth_pass else 'fail'} ({depth_score}/3)"
 
-print("\n── REGISTRY ROW — paste under profiles.<name> in config/profiles.json (or .inference.json) ──")
+print("\n── REGISTRY ROW — paste under profiles.<name> in config/registry/<card>.<mode>.json ──")
 print(json.dumps(row, indent=2))
 print(
     "\nNot filled above — transcribe once by hand from the GGUF's own metadata and the model's public card "

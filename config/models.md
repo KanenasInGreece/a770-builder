@@ -27,11 +27,11 @@ release a new candidate is qualified on the kit inside this repository instead (
 from `kit/suite.json`), a different instrument again — the inference registry moved onto it on 2026-09-15, so its three rows below carry
 `instrument: SUITE-1@1` and a `suite` object in place of the seat instrument and `task_t1`
 be; the free-card table below (*On the same card with nothing else on it*) already carries two measurements taken on
-it, each plainly marked as such and neither a registry row: measurements, not rulings. The seat runs in one of two
-card modes, and each reads its own registry. Display-safe reads
-`config/profiles.json`: **qwen35-9b-q4km-vulkan** = Qwen3.5-9B Q4_K_M, for every ordinary change; **qwen38-27b-iq3xxs-vulkan** = Qwen3.8-27B
+it, each plainly marked as such and neither a registry row: measurements, not rulings. The seat runs one card per
+host, chosen by `A770B_CARD` and `A770B_CARD_MODE`, and reads that card's own file `config/registry/<card>.<mode>.json`.
+The A770 display file holds **qwen35-9b-q4km-vulkan** = Qwen3.5-9B Q4_K_M, for every ordinary change; **qwen38-27b-iq3xxs-vulkan** = Qwen3.8-27B
 GSQ-RCO IQ3_XXS, for a deliverable larger than its brief; **gemma4-8b-e4b-q4km-vulkan** = Gemma 4 E4B Q4_K_M with flash attention off, for
-the read the 9B's window cannot hold. Pure-inference reads `config/profiles.inference.json`, measured on the same
+the read the 9B's window cannot hold. The A770 inference file, measured on the same
 card with nothing else on it: **qwen35-9b-q4km-vulkan** = the same 9B at its whole native window; **qwen38-27b-iq3s-vulkan** = the 27B's IQ3_S file
 at a larger window. Both registries carry each row's `category` (`dense` or `moe`) and weight class, so an equivalent file
 is ruled out rather than kept as a second row of the same class. The profile column below says which row holds which.
@@ -89,8 +89,8 @@ Every row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770
 | `gpt-oss-20b-UD-Q4_K_XL.gguf` | `unsloth/gpt-oss-20b-GGUF` | 81,920 / K q8_0 + V q4_0, `--chat-template-kwargs '{"reasoning_effort":"low"}'` | 11.7 GiB | 42.1 / 27 tok/s | 585 tok/s, 28 s | PARTIAL (green), 5 tests, 79 s | qualified alternative | fastest prefill and fastest task; improvised an import scaffold instead of the repository's idiom, which a reviewer catches; always reasons, keep the output limit generous |
 | `gemma-4-E4B-it-Q4_K_M.gguf` | `lmstudio-community/gemma-4-E4B-it-GGUF` | 131,072 / f16, **`-fa off`** (its condition, see below) | 6.8 GiB at 80k, 8.1 GiB at 131k | 60 / 38 tok/s | 796 tok/s, 29 s | PASS ×2 and PARTIAL ×1 (17, 6, 6 tests; the PARTIAL one `isinstance` assertion), 74–82 s; green at 131k after one fix | **gemma4-8b-e4b-q4km-vulkan** | the largest window at speed on this card: cold read of 107k tokens in 273 s, exact on a planted detail at 85% depth of a 100k prompt, approximate on broad recall (asked for three other functions it blended real names into ones that do not exist), a wrong number at 120k; decode 44 → 16 tok/s from 8k to 100k; VRAM flat at 8.4 GiB (sliding window); five client-cancel rounds clean, zero resets across nine rows. Not for multi-file shell edits: on the harness's own brief it made one of three edits and reported all three done. On the reading task (T2: index every top-level definition of a 6,300-line, 100k-token file): E4B paged through 60% of it in 9 min and listed 40 names, 34 of them real definitions, 19 with the right line; the 9B paged through all of it in 15.5 min and listed 57 module-level constants instead of definitions, none right. Neither seat indexes a large file; the E4B's value is a precise question about a passage, which the 9B cannot reach at all. |
 
-The rows below were measured with nothing else on the card, for the registry that mode reads
-(`config/profiles.inference.json`); the profile column says which of them that registry ships. Every
+The rows below were measured with nothing else on the card, for the inference registry
+(`config/registry/a770.inference.json`); the profile column says which of them that registry ships. Every
 row below: instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan` —
 except the `qwen38-27b-iq3s-sycl` row, measured on `Arc A770 16 GB, llama.cpp full-intel SYCL container`, a different
 `measured_on` it is compared only with rows sharing.
@@ -192,8 +192,8 @@ The full guide for an agent that has a GGUF and this harness and wants a model o
 rung from this release on — no second repository needed; `AGENTS.md`, *The ladder*, is what each rung decides and
 what still needs a human), pick up the printed registry row and fill in what it marks `__TODO__` by hand, add the
 row here with its numbers and its instrument (`instrument: SUITE-1@<kit_version>`) AND its
-`measured_on`, then give it a profile in the mode's registry (`config/profiles.json` or
-`config/profiles.inference.json`) with its measured card and its `suite` object, render the skill's tables from it,
+`measured_on`, then give it a profile in the card's own registry (`config/registry/<card>.<mode>.json`) with its
+measured card and its `suite` object, render the catalogue from it (`python3 harness/profiles.py render --catalogue`),
 and move the version. A row reproducing one of the rows above instead runs `harness/run_one.sh` against the pinned
 Shared Memory seat and carries `seat: Shared_Memory@3c8e2bb`, comparable only with the rows already in this ledger,
 never with a kit row.

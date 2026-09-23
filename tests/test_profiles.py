@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the profiles registry: config/profiles.json + harness/profiles.py."""
+"""Tests for the profiles registry: config/registry/<card>.<mode>.json + harness/profiles.py."""
 
 import json
 import os
@@ -840,7 +840,7 @@ def test_check_passes_bench_and_delivered_together(tmp_path):
 # carries them under `suite` — the shape harness/suite_report.py --json publishes, since its `delivered` object
 # rides inside the totals — is refused, and the same row with them under `speed` checks out. That is why
 # harness/ladder.sh moves the object out of the totals it assigns to the printed row's `suite` and into the row's
-# `speed`: a freshly measured row is meant to be pasted into config/profiles.json unedited.
+# `speed`: a freshly measured row is meant to be pasted into the registry unedited.
 
 
 def _suite_totals(**overrides) -> dict:
@@ -2033,8 +2033,7 @@ def test_check_passes_both_shipped_registries_thinking():
 def test_no_row_asks_for_host_ram():
     """This is a tripwire and not a gate: the harness's only host-memory check is a page-cache floor
     before the load, it cannot refuse a start whose weights will not fit in RAM, so until it can,
-    nothing shipped may ask for that. Every row in both config/profiles.json and
-    config/profiles.inference.json must have ram_gb_extra == 0 and no extra string containing
+    nothing shipped may ask for that. Every row in every registry file must have ram_gb_extra == 0 and no extra string containing
     --n-cpu-moe or -ncmoe."""
     for fpath in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
         data = json.loads(fpath.read_text(encoding="utf-8"))

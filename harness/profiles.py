@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""The profiles registry: validate, export, inspect and render `config/profiles.json`.
+"""The profiles registry: validate, export, inspect and render `config/registry/<card>.<mode>.json`.
 
-`config/profiles.json` is the single source of truth for the seat's display-mode profiles
-(one row per card identity). This tool: validates the file (`check`); prints the shell defaults the
+A registry is one file per card and mode, under `config/registry/` (e.g. `config/registry/a770.display.json`), the
+single source of truth for that card's rows (one row per card identity). This tool: validates the file
+(`check`, or every file under `config/registry/` when no `--file` is given); prints the shell defaults the
 harness `eval`s (`env`); prints the file as JSON, optionally with what is actually served
 (`card`); prints ready / also / the cold full slice a caller can pick a row from (`menu`);
-and regenerates the profile table in the skill and the one-line snippet from the
-data (`render`).
+prints the one line a card with no measured rows shows (`empty-line`); and renders the catalogue into
+README/config/models.md (`render --catalogue`) or the installed card's block (`render --installed`).
 
 A row's `speed` object may carry two more, both optional and neither computed by this
 tool. `speed.bench` is copied from a measurement by hand; `speed.delivered` is written

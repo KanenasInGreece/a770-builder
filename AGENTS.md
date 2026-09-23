@@ -13,13 +13,13 @@ opencode inside a bubblewrap sandbox.
 | Status | `bash skills/local-build/scripts/local-build.sh status` |
 | Pick a card | `bash skills/local-build/scripts/local-build.sh profiles` / `menu` |
 | Profile a model | `bash harness/ladder.sh <gguf> --ctx N [--kv f16|q8_0|q4_0] [--reasoning on|off] [--reasoning-budget N] [--dry-run]` |
-| Validate the registry | `python3 harness/profiles.py check --file config/profiles.inference.json` |
+| Validate the registry | `python3 harness/profiles.py check` |
 | Test | `uv run --with pytest python -m pytest -q tests/` |
 | Self-test | `env -u A770B_CARD_MODE -u A770B_PROFILES_FILE -u A770B_CORPUS_FILE A770B_PROJECT=$PWD bash tests/selftest.sh` |
 
 ## A profile
 
-One row of `config/profiles.json` (display-safe) or `config/profiles.inference.json` (pure-inference). The key is a
+One row of `config/registry/<card>.<mode>.json` (e.g. `a770.display.json`) — one file per card and mode. The key is a
 card identity (family-weight-quant-backend), never a window name. One best row per (task, card, category,
 weight_class, backend, engine, checkpoint weight quant, checkpoint activation quant). Numbers are measured,
 never copied; `config/models.md` is the ledger.
@@ -67,8 +67,9 @@ When qualifying models on a card that has no rows in the registry, do not measur
 
 1. Put the GGUF in `A770B_MODELS`; `doctor` must report all ok.
 2. Run the ladder; fill the printed row's `__TODO__` fields by hand.
-3. `python3 harness/profiles.py check`, then render the skill tables:
-   `python3 harness/profiles.py render --skill skills/local-build/SKILL.md --snippet skills/local-build/CONSTITUTION_SNIPPET.md --inference-file config/profiles.inference.json`
+3. Paste the row under `profiles.<name>` in the card's own file, `config/registry/<card>.<mode>.json` — a new card's
+   first row creates that file, with its top-level `card` and `mode` keys — then `python3 harness/profiles.py check`
+   and `python3 harness/profiles.py render --catalogue`.
 4. Open a pull request whose description carries the numbers and the rows compared.
 
 ## Boundaries

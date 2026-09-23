@@ -15,7 +15,7 @@
 #   ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q8_0|q4_0] [--extra "<flags>"]
 #             [--timeout S] [--seat <path>] [--suite <suite.json>] [--reviewer <profile>] [--fresh] [--dry-run]
 #
-# <profile-or-gguf> is either a name already in the registry (config/profiles.json / .inference.json — every knob
+# <profile-or-gguf> is either a name already in the installed card's registry (config/registry/<card>.<mode>.json — every knob
 # comes from the row) or a bare GGUF (in A770B_MODELS) or an absolute path — a model with NO row yet, the case the
 # ladder exists for ("no script computes useful_ctx, grades the depth probe, fills speed.bench, or writes a
 # registry row" — an adversarial review). For a GGUF, --ctx is required; --kv/--kv-v/--extra/--timeout default the

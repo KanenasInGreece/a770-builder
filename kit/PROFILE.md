@@ -2,7 +2,7 @@
 
 This document explains how a finished run of the kit's tests becomes one row in the model registry, field by field.
 
-A row in the registry (`config/profiles.json`, `config/profiles.inference.json`) is not a claim; it is a
+A row in the registry (`config/registry/<card>.<mode>.json`) is not a claim; it is a
 transcription of what a rung of the ladder in `AGENTS.md` actually measured. This document says, field by field,
 which rung fills a field, how the number in it is derived, and what a reader can honestly set it beside outside
 this project — so a row here is directly comparable with an online test wherever one exists, and plainly marked
