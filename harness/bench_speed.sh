@@ -15,7 +15,7 @@ set -euo pipefail
 usage(){ echo "usage: bench_speed.sh <profile> [--depths d0,d1,...] [--prompt N] [--gen N] [--reps N] [--dry-run]" >&2; exit 2; }
 
 PROFILE="${1:-}"; [ -n "$PROFILE" ] || usage; shift
-a770b_is_profile "$PROFILE" || { echo "⛔ no such profile: $PROFILE (A770B_PROFILES=$A770B_PROFILES)" >&2; exit 2; }
+a770b_is_profile "$PROFILE" || { echo "⛔ $(profile_refusal "$PROFILE")" >&2; exit 2; }
 
 DEPTHS="0,8192,32768"; PROMPT=8192; GEN=128; REPS=3; DRY_RUN=0
 while [ $# -gt 0 ]; do

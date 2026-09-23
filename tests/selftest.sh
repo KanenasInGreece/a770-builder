@@ -562,10 +562,10 @@ out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent
 { [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "worktree does not exist: /nonexistent-seat"; } \
   && echo "ok   mode: I7b --profile gemma4-8b-e4b-q4km-vulkan is accepted, the run fails at the guard, naming the seat" || { echo "FAIL mode: I7b fast rc=$rc: $out"; fail=1; }
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile nosuch ) 2>&1 )
-printf '%s' "$out" | grep -q "profile must be one of:" \
+printf '%s' "$out" | grep -q "profile nosuch is not measured on card a770 in display mode" \
   && echo "ok   mode: I7b --profile nosuch is refused before the guard" || { echo "FAIL mode: I7b nosuch: $out"; fail=1; }
 out=$( ( _iso; export A770B_CARD_MODE=inference; bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile moe ) 2>&1 )
-printf '%s' "$out" | grep -q "profile must be one of: qwen35-9b-q4km-vulkan qwen38-27b-iq3s-vulkan qwen38-27b-iq3s-sycl (got 'moe')" \
+printf '%s' "$out" | grep -q "profile moe is not measured on card a770 in inference mode — this card's profiles: qwen35-9b-q4km-vulkan qwen38-27b-iq3s-vulkan qwen38-27b-iq3s-sycl" \
   && echo "ok   mode: I7b --profile moe is refused and the refusal names the profiles the inference registry serves" || { echo "FAIL mode: I7b moe: $out"; fail=1; }
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --fast ) 2>&1 )
 printf '%s' "$out" | grep -q "unknown arg --fast" \
@@ -578,6 +578,26 @@ printf '%s' "$out" | grep -q "no measured models for card b70 in display mode" \
 out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display; bash "$here/skills/local-build/scripts/local-build.sh" serve qwen35-9b-q4km-vulkan ) 2>&1 )
 printf '%s' "$out" | grep -q "no measured models for card b70 in display mode" \
   && echo "ok   I2: serve of another card's profile is refused, naming this card" || { echo "FAIL I2: serve refusal did not name the card"; printf '%s\n' "$out" | tail -3; fail=1; }
+# I2 with rows — the installed card HAS a registry (a temp b70 file with one row of its own): another card's profile
+# is still refused, naming this card, its mode and its own profiles, never listing the a770 rows. No server starts.
+python3 - "$here/config/registry/a770.display.json" "$t/b70.display.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+name, row = next(iter(d["profiles"].items()))
+row = dict(row, card="b70")
+d = dict(d, card="b70", profiles={"beta-9b-q4km-vulkan": row})
+if d.get("default") is not None:
+    d["default"] = "beta-9b-q4km-vulkan"
+json.dump(d, open(sys.argv[2], "w"))
+PY
+for verb in run serve; do
+  if [ "$verb" = run ]; then args=(run /nonexistent-seat /nonexistent-brief.md --profile qwen35-9b-q4km-vulkan); else args=(serve qwen35-9b-q4km-vulkan); fi
+  out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display A770B_PROFILES_FILE="$t/b70.display.json"; bash "$here/skills/local-build/scripts/local-build.sh" "${args[@]}" ) 2>&1 )
+  if printf '%s' "$out" | grep -q "profile qwen35-9b-q4km-vulkan is not measured on card b70 in display mode — this card's profiles: beta-9b-q4km-vulkan" \
+     && ! printf '%s' "$out" | grep -q "gemma4-8b-e4b-q4km-vulkan"; then
+    echo "ok   I2: $verb of another card's profile is refused naming this card, when this card has rows"
+  else echo "FAIL I2: $verb refusal with rows did not name the card"; printf '%s\n' "$out" | tail -3; fail=1; fi
+done
 # I5 — a card with no registry: status/menu print the one line, and doctor reports it as MISSING, all quoting the
 # same `profiles.py empty-line` words.
 out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display; bash "$here/skills/local-build/scripts/local-build.sh" status ) 2>&1 )
