@@ -63,8 +63,13 @@ fi
 BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
+# the one line for a card with no measured rows, produced in ONE place (profiles.py empty-line) and quoted verbatim
+empty_registry_line(){ python3 "$A770B_PROJECT/harness/profiles.py" empty-line --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; }
+# refuse a profile name that is not in this card's registry: names the card's own profiles, or the one line when
+# this card has none — so a name that exists for another card is refused naming this card, never the other card's rows.
+a770b_require_profile(){ local p="$1"; a770b_is_profile "$p" && return 0; if [ -n "$A770B_PROFILES" ]; then die "profile must be one of: $A770B_PROFILES (got '$p')"; else die "$(empty_registry_line)"; fi; }
 profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fields for a profile named in A770B_PROFILES
-  a770b_is_profile "$1" || die "profile must be one of: $A770B_PROFILES"
+  a770b_require_profile "$1"
   local m; m=$(a770b_profile_var "$1" MODEL); [ -n "$m" ] || die "profile $1 has no MODEL set (A770B_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')_MODEL is empty)"
   gguf=$(a770b_model_path "$m"); ctx=$(a770b_profile_var "$1" CTX); kv=$(a770b_profile_var "$1" KV)
   kv_v=$(a770b_profile_var "$1" KV_V)
@@ -205,7 +210,7 @@ status(){ local c; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo
   echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · mode $A770B_CARD_MODE · registry $A770B_PROFILES_FILE · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
-  printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s = %s ctx %s ·' "$p" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"
+  if [ -n "$A770B_PROFILES" ]; then printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s = %s ctx %s ·' "$p" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"; else empty_registry_line; fi
   echo "project $A770B_PROJECT · data $A770B_DATA · seat $A770B_SEAT"
   if ! : 9>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then echo "run lock: unknown (cannot open $A770B_DATA/logs/local-build.lock)"; elif ( flock -n 9 ) 9>>"$A770B_DATA/logs/local-build.lock"; then echo "run lock: free"; else echo "run lock: HELD — a run, verify, serve or reset is in progress; wait for it"; fi
   if pid=$(run_pid_alive "$A770B_DATA/logs/run.pid"); then echo "run: pid $pid in progress since $(date -r "$A770B_DATA/logs/run.pid" +%H:%M:%S 2>/dev/null || echo "a moment ago") — local-build.sh stop-run ends exactly it"; else echo "run: none"; fi
@@ -302,7 +307,13 @@ doctor(){
         echo "ok   mode: display; the builder card holds $u GiB with the seat's server down$hint" ;;
     esac
   fi
-  if python3 "$A770B_PROJECT/harness/profiles.py" check --file "$A770B_PROFILES_FILE" >/dev/null 2>&1; then echo "ok   registry: $(basename "$A770B_PROFILES_FILE") checks"; else echo "MISSING registry: $(basename "$A770B_PROFILES_FILE") does not check (python3 harness/profiles.py check says why)"; missing=$((missing+1)); fi
+  if [ -z "$A770B_PROFILES_FILE" ] || [ ! -f "$A770B_PROFILES_FILE" ]; then
+    echo "MISSING registry: $(empty_registry_line)"; missing=$((missing+1))
+  elif python3 "$A770B_PROJECT/harness/profiles.py" check --file "$A770B_PROFILES_FILE" >/dev/null 2>&1; then
+    echo "ok   registry: $(basename "$A770B_PROFILES_FILE") checks"
+  else
+    echo "MISSING registry: $(basename "$A770B_PROFILES_FILE") does not check (python3 harness/profiles.py check says why)"; missing=$((missing+1))
+  fi
   for p in $A770B_PROFILES; do
     m=$(a770b_profile_var "$p" MODEL); mp=$(a770b_model_path "$m")
     if [ -r "$mp" ]; then echo "ok   model for $p: $mp"; else echo "MISSING model for $p: $mp not found; download it (docs/OPERATING.md) or set A770B_$(printf '%s' "$p" | tr 'a-z-' 'A-Z_')_MODEL"; missing=$((missing+1)); fi
@@ -336,7 +347,7 @@ doctor(){
   if [ -z "${A770B_CARD:-}" ]; then
     echo "MISSING input A770B_CARD is unset — the builder card identity; set it in builder.env to one of: ${_known_cards:-b70, a770}"
     missing=$((missing+1))
-  elif [ -n "$_known_cards" ] && ! python3 -c 'import json,sys; cards=json.load(open(sys.argv[1])).get("cards",{}); sys.exit(0 if sys.argv[2] in cards and cards[sys.argv[2]].get("role", "builder") == "builder" else 1)' "$_cards_file" "$A770B_CARD" 2>/dev/null; then
+  elif [ -n "$_known_cards" ] && ! python3 -c 'import json,sys; cards=json.load(open(sys.argv[1])).get("cards",{}); role=sys.argv[3] or cards.get(sys.argv[2],{}).get("role","builder"); sys.exit(0 if sys.argv[2] in cards and role == "builder" else 1)' "$_cards_file" "$A770B_CARD" "${A770B_CARD_ROLE:-}" 2>/dev/null; then
     echo "MISSING input A770B_CARD=$A770B_CARD is unknown — set it in builder.env to one of: $_known_cards"
     missing=$((missing+1))
   else
@@ -351,11 +362,11 @@ doctor(){
   if [ "$missing" = 0 ]; then echo "ok   doctor: all checks passed"; return 0; else echo "MISSING doctor: $missing missing"; return 1; fi
 }
 case "${1:-}" in
-  serve)  run_lock; [ -n "${2:-}" ] || die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; serve "$2" ;;
+  serve)  run_lock; [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; serve "$2" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
-  profiles) shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@" ;;
-  menu) python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid" ;;
+  profiles) if [ -n "$A770B_PROFILES" ]; then shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@"; else empty_registry_line; fi ;;
+  menu) if [ -n "$A770B_PROFILES" ]; then python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid"; else empty_registry_line; fi ;;
   doctor) doctor ;;
   stop)   _envelope_from_sidecar; bash "$SERVE" stop ;;
   stop-run)
@@ -373,7 +384,7 @@ case "${1:-}" in
     shift; profile=""; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; a770b_is_profile "$profile" || die "profile must be one of: $A770B_PROFILES (got '$profile')"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; a770b_require_profile "$profile"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
