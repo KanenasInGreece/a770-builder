@@ -511,6 +511,13 @@ def test_doctor_reports_missing_for_encoder_card(tmp_path):
     assert "checkout predates A770B_SERVE" not in r.stdout
 
 
+def test_doctor_accepts_an_encoder_card_with_role_override(tmp_path):
+    # A770B_CARD_ROLE=builder overrides the file's encoder role, so doctor accepts the card as the builder.
+    env = _doctor_env(tmp_path, A770B_CARD="b580", A770B_CARD_ROLE="builder")
+    r = _run_doctor(env)
+    assert any(ln.startswith("ok   input A770B_CARD=b580") for ln in r.stdout.splitlines()), r.stdout
+
+
 def test_doctor_in_vllm_named_directory_does_not_misfire_as_vllm(tmp_path):
     # If the project clone or compose file is inside a directory whose path contains 'vllm'
     vllm_dir = tmp_path / "my-vllm-workspace" / "a770-builder"

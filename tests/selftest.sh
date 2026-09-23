@@ -570,6 +570,25 @@ printf '%s' "$out" | grep -q "profile must be one of: qwen35-9b-q4km-vulkan qwen
 out=$( ( bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --fast ) 2>&1 )
 printf '%s' "$out" | grep -q "unknown arg --fast" \
   && echo "ok   mode: I7b the removed --fast arm is an unknown argument" || { echo "FAIL mode: I7b --fast: $out"; fail=1; }
+# I2 — a profile that exists for another card is refused naming THIS card (b70 has no registry yet), for run and
+# serve alike, quoting the one line rather than the other card's rows. No server starts.
+out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display; bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile qwen35-9b-q4km-vulkan ) 2>&1 )
+printf '%s' "$out" | grep -q "no measured models for card b70 in display mode" \
+  && echo "ok   I2: --profile of another card is refused, naming this card" || { echo "FAIL I2: run refusal did not name the card"; printf '%s\n' "$out" | tail -3; fail=1; }
+out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display; bash "$here/skills/local-build/scripts/local-build.sh" serve qwen35-9b-q4km-vulkan ) 2>&1 )
+printf '%s' "$out" | grep -q "no measured models for card b70 in display mode" \
+  && echo "ok   I2: serve of another card's profile is refused, naming this card" || { echo "FAIL I2: serve refusal did not name the card"; printf '%s\n' "$out" | tail -3; fail=1; }
+# I5 — a card with no registry: status/menu print the one line, and doctor reports it as MISSING, all quoting the
+# same `profiles.py empty-line` words.
+out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display; bash "$here/skills/local-build/scripts/local-build.sh" status ) 2>&1 )
+printf '%s' "$out" | grep -q "no measured models for card b70 in display mode" \
+  && echo "ok   I5: status prints the one line for a card with no registry" || { echo "FAIL I5: status did not print the one line"; printf '%s\n' "$out" | tail -3; fail=1; }
+out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display; bash "$here/skills/local-build/scripts/local-build.sh" menu ) 2>&1 )
+printf '%s' "$out" | grep -q "no measured models for card b70 in display mode" \
+  && echo "ok   I5: menu prints the one line for a card with no registry" || { echo "FAIL I5: menu did not print the one line"; printf '%s\n' "$out" | tail -3; fail=1; }
+out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display PATH="$t/bin:$PATH" NVTOP_FAKE="$t/nvtop-1g.json" A770B_ALLOW_NO_NVTOP=1; bash "$here/skills/local-build/scripts/local-build.sh" doctor ) 2>&1 )
+printf '%s' "$out" | grep -q "MISSING registry: no measured models for card b70 in display mode" \
+  && echo "ok   I5: doctor reports the missing registry as MISSING, quoting the one line" || { echo "FAIL I5: doctor did not report the missing registry as MISSING"; printf '%s\n' "$out" | tail -6; fail=1; }
 grep -q 'mode \$A770B_CARD_MODE · cap \$A770B_VRAM_CAP_GIB GiB' "$here/harness/serve_compose.sh" \
   && grep -q 'A770B_CARD_MODE=inference' "$here/harness/serve_compose.sh" \
   && echo "ok   mode: I10 the container's start and refusal lines name the mode and cap" \
