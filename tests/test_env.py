@@ -405,6 +405,93 @@ def test_card_injection_refuses_non_builder_role(tmp_path):
     assert "must be a card with role 'builder'" in r.stderr
 
 
+def test_card_role_override_accepts_an_encoder_card(tmp_path):
+    """A770B_CARD_ROLE overrides the file's role: a community B580 builder sets it to builder and
+    the encoder card is accepted, its selectors supplied from its cards.json row."""
+    cards_file = tmp_path / "cards.json"
+    cards_file.write_text(
+        _cards_json({
+            "b580": {
+                "pci": "8086:e20b",
+                "vram_gib": 12,
+                "gpu_match": "G21",
+                "generation": "xe2",
+                "role": "encoder",
+                "vk_device_select": "8086:e20b!",
+                "oneapi_selector": "level_zero:gpu",
+            },
+        }),
+        encoding="utf-8",
+    )
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_CARDS_FILE=str(cards_file),
+               A770B_CARD="b580", A770B_CARD_ROLE="builder")
+    for k in ("A770B_VK_DEVICE_SELECT", "A770B_GPU_MATCH", "A770B_CARD_VRAM_TOTAL"):
+        env.pop(k, None)
+    r = run_bash(
+        f'. "{ENV_SH}"; bash -c \'printf "%s|%s" "$A770B_VK_DEVICE_SELECT" "$A770B_GPU_MATCH"\'',
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "8086:e20b!|G21"
+
+
+def test_env_resolves_only_the_installed_cards_registry(tmp_path):
+    """I1 — a temp registry with files for two cards: env.sh under each lists only its own card's
+    rows, so a B70 host never sees the A770's measured rows."""
+    proj = tmp_path / "proj"
+    (proj / "config" / "registry").mkdir(parents=True)
+    (proj / "harness").mkdir(parents=True)
+    for rel in ("harness/profiles.py", "harness/live_backend.py"):
+        (proj / rel).write_bytes((ROOT / rel).read_bytes())
+    display = json.loads((ROOT / "config" / "registry" / "a770.display.json").read_text(encoding="utf-8"))
+
+    (proj / "config" / "registry" / "a770.display.json").write_text(json.dumps(display), encoding="utf-8")
+
+    b70 = dict(display)
+    b70["card"] = "b70"
+    row = b70["profiles"].pop("qwen35-9b-q4km-vulkan")
+    row["card"] = "b70"
+    b70["profiles"] = {"beta-9b-vulkan": row}
+    (proj / "config" / "registry" / "b70.display.json").write_text(json.dumps(b70), encoding="utf-8")
+
+    (proj / "config" / "cards.json").write_text(
+        json.dumps({"schema": 1, "cards": {"a770": {"role": "builder"}, "b70": {"role": "builder"}}}),
+        encoding="utf-8",
+    )
+
+    base = dict(os.environ, A770B_PROJECT=str(proj), A770B_DATA=str(tmp_path / "data"),
+                A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+
+    r_a770 = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_PROFILES"', env=dict(base, A770B_CARD="a770"))
+    assert r_a770.returncode == 0, r_a770.stderr
+    assert "qwen35-9b-q4km-vulkan" in r_a770.stdout
+    assert "beta-9b-vulkan" not in r_a770.stdout
+
+    r_b70 = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_PROFILES"', env=dict(base, A770B_CARD="b70"))
+    assert r_b70.returncode == 0, r_b70.stderr
+    assert "beta-9b-vulkan" in r_b70.stdout
+    assert "qwen35-9b-q4km-vulkan" not in r_b70.stdout
+
+
+def test_env_missing_registry_is_not_an_error(tmp_path):
+    """I5 — a card with no registry file sources cleanly: an empty A770B_PROFILES, no refusal."""
+    env = dict(os.environ, A770B_PROJECT=str(ROOT), A770B_DATA=str(tmp_path / "data"),
+               A770B_CARD="b70", A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+    r = run_bash(f'. "{ENV_SH}"; printf "[%s]" "$A770B_PROFILES"', env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "[]"
+
+
+def test_env_unset_card_is_not_an_error(tmp_path):
+    """I5 — no A770B_CARD sources cleanly: an empty A770B_PROFILES, no refusal."""
+    env = dict(os.environ, A770B_PROJECT=str(ROOT), A770B_DATA=str(tmp_path / "data"),
+               A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+    env.pop("A770B_CARD", None)
+    r = run_bash(f'. "{ENV_SH}"; printf "[%s]" "$A770B_PROFILES"', env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "[]"
+
+
 def test_doctor_reports_missing_for_unknown_card(tmp_path):
     env = _doctor_env(tmp_path, A770B_CARD="nonexistent_card")
     r = _run_doctor(env)

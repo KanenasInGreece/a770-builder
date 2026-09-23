@@ -24,7 +24,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_BACKEND_PY = ROOT / "harness" / "live_backend.py"
 LOCAL_BUILD_SH = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
-PROFILES_JSON = ROOT / "config" / "profiles.json"
+PROFILES_JSON = ROOT / "config" / "registry" / "a770.display.json"
 
 BUSY = "reload refused: the server is busy"
 REMOTE = "reload refused: remote URL cannot switch backend"

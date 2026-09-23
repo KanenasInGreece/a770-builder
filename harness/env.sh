@@ -24,14 +24,19 @@ eval "$_a770b_snapshot"; unset _a770b_snapshot _a770b_selected_mode
 export A770B_SERVE_SCRIPT
 
 # ── the builder card: config/cards.json is the source of device selectors and identity ──────────
+# A770B_CARD_ROLE overrides the card's own role in config/cards.json: a community B580 builder sets
+# A770B_CARD_ROLE=builder to use a card this project filed as an encoder. Without it the file's role
+# is the authority.
 : "${A770B_CARD:=}"
+: "${A770B_CARD_ROLE:=}"
 : "${A770B_CARD_VRAM_TOTAL:=}"
 if [ -n "$A770B_CARD" ]; then
   _a770b_cards_file="${A770B_CARDS_FILE:-$A770B_PROJECT/config/cards.json}"
-  _a770b_card_lines=$(python3 - "$_a770b_cards_file" "$A770B_CARD" "${1:-}" <<'PY'
+  _a770b_card_lines=$(python3 - "$_a770b_cards_file" "$A770B_CARD" "${1:-}" "$A770B_CARD_ROLE" <<'PY'
 import json, sys
 
 path, card, mode_cmd = sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ""
+role_override = sys.argv[4] if len(sys.argv) > 4 else ""
 try:
     with open(path, "r", encoding="utf-8") as fh:
         doc = json.load(fh)
@@ -50,7 +55,7 @@ if card not in cards:
     sys.exit(2)
 
 row = cards[card]
-role = row.get("role", "builder")
+role = role_override or row.get("role", "builder")
 if role != "builder":
     if mode_cmd != "doctor":
         print(f"⛔ A770B_CARD '{card}' has role '{role}' (must be a card with role 'builder': {known})", file=sys.stderr)
@@ -85,9 +90,10 @@ export A770B_CARD A770B_CARD_VRAM_TOTAL
 : "${A770B_REFUSE:=}"                                   # REQUIRED: colon-separated live checkouts the seat must never touch (guard refuses to run while empty)
 # flash attention off is the Gemma 4 condition on this card (with it on, prefill collapses with position and the GPU
 # watchdog fires); without it the V cache must be f16, which the sliding window keeps small
-# ── the profiles: config/profiles.json is the single source (harness/profiles.py env prints ${VAR:=…} defaults, so
-#    builder.env and the environment still win per variable); A770B_PROFILES lists the names, and there is no
-#    default profile — a card is chosen explicitly. Among what it prints per profile: A770B_<P>_THINKING_MODE/_EFFORT/_BUDGET/_BUDGET_MESSAGE/_PRESERVE
+# ── the installed card's registry: config/registry/<card>.<mode>.json, one file per card and mode
+#    (harness/profiles.py env prints ${VAR:=…} defaults, so builder.env and the environment still win per variable);
+#    A770B_PROFILES lists the names, and there is no default profile — a card is chosen explicitly. Among what it
+#    prints per profile: A770B_<P>_THINKING_MODE/_EFFORT/_BUDGET/_BUDGET_MESSAGE/_PRESERVE
 #    from the registry row's optional `thinking` object (harness/profiles.py's docstring) — empty when the row sets
 #    none. `a770b_profile_var <profile> THINKING_MODE` (etc., below) reads them like any other profile field; the
 #    caller that starts the server (skills/local-build/scripts/local-build.sh's `serve`) is what maps them onto the
@@ -96,11 +102,17 @@ export A770B_CARD A770B_CARD_VRAM_TOTAL
 # the mode's registry, and the VRAM cap. The cap is a per-card measurement (absolute GiB on the card, not a fraction of
 # VRAM), and there is no default: doctor refuses while A770B_VRAM_CAP_GIB is unset and serve refuses a non-numeric cap.
 # Set it in builder.env (or builder.<mode>.env) after measuring what else the card holds (`nvtop -s` per process); raise
-# it only after a measurement.
-case "$A770B_CARD_MODE" in inference) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.inference.json}";; *) : "${A770B_PROFILES_FILE:=$A770B_PROJECT/config/profiles.json}";; esac
+# it only after a measurement. An explicit A770B_PROFILES_FILE still wins. No registry is NOT an error: a card with no
+# file (or no A770B_CARD) gets an empty A770B_PROFILES, and every consumer quotes the one line
+# `profiles.py empty-line` prints instead of a profile list; an existing but invalid file still fails hard.
+: "${A770B_PROFILES_FILE:=${A770B_CARD:+$A770B_PROJECT/config/registry/$A770B_CARD.$A770B_CARD_MODE.json}}"
 : "${A770B_VRAM_CAP_GIB:=}"
-_a770b_profile_lines=$(python3 "$A770B_PROJECT/harness/profiles.py" env --file "$A770B_PROFILES_FILE") || { echo "⛔ the registry $A770B_PROFILES_FILE is invalid (python3 harness/profiles.py check says why)" >&2; return 2 2>/dev/null || exit 2; }
-eval "$_a770b_profile_lines"; unset _a770b_profile_lines
+if [ -n "$A770B_PROFILES_FILE" ] && [ -f "$A770B_PROFILES_FILE" ]; then
+  _a770b_profile_lines=$(python3 "$A770B_PROJECT/harness/profiles.py" env --file "$A770B_PROFILES_FILE") || { echo "⛔ the registry $A770B_PROFILES_FILE is invalid (python3 harness/profiles.py check says why)" >&2; return 2 2>/dev/null || exit 2; }
+  eval "$_a770b_profile_lines"; unset _a770b_profile_lines
+else
+  A770B_PROFILES=""
+fi
 : "${A770B_OUTPUT_TOKENS:=16384}"                            # opencode's per-reply output limit: a whole file goes out in one tool call, and at 4,096 a test file of two hundred lines was cut mid-JSON, so every write failed (measured 2026-09-08)
 : "${A770B_HIDDEN_ROOT:=$A770B_DATA/hidden}"                  # hidden acceptance tests a run specification may name: files the model never sees, copied into the seat by verify after the patch applies
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────

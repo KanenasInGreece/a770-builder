@@ -24,14 +24,7 @@ DEFAULT_PROMPT = (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_TOP_KEYS = {"profile", "timeout", "card", "scope", "bash_allow", "context", "verify"}
-DEFAULT_ALLOWED_PROFILES = [
-    "gemma4-8b-e4b-q4km-vulkan",
-    "qwen35-9b-q4km-vulkan",
-    "qwen38-27b-iq3xxs-vulkan",
-    "qwen38-27b-iq3s-vulkan",
-    "qwen38-27b-iq3s-sycl",
-]
-REGISTRY_FILES = ("config/profiles.json", "config/profiles.inference.json")
+REGISTRY_DIR = REPO_ROOT / "config" / "registry"
 SCOPE_EDIT_RE = re.compile(r"^[A-Za-z0-9._/*-]+$")
 BASH_ALLOW_RE = re.compile(r"^[A-Za-z0-9 ._/*:-]+$")
 BASH_ALLOW_FORBIDDEN_FIRST = {
@@ -45,14 +38,13 @@ VERIFY_HIDDEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _registry_profile_names() -> list[str] | None:
-    """Profile names from config/profiles.json union config/profiles.inference.json under the
-    project root (this module knows its own path), or None if neither file can be read and
-    parsed with a `profiles` object."""
+    """Profile names from every file under config/registry/ (the union of every card's rows),
+    or None if no file can be read and parsed with a `profiles` object."""
     names: set[str] = set()
     found = False
-    for rel in REGISTRY_FILES:
+    for path in sorted(REGISTRY_DIR.glob("*.json")):
         try:
-            data = json.loads((REPO_ROOT / rel).read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         profiles = data.get("profiles")
@@ -65,17 +57,16 @@ def _registry_profile_names() -> list[str] | None:
 def _allowed_profiles() -> list[str]:
     """The profile names a specification's `profile` key is checked against.
 
-    `A770B_PROFILES` (space-separated), when set and non-empty, names the running machine's
-    registry; when it is unset, the union of the profile names in config/profiles.json and
-    config/profiles.inference.json under the project root; the old trio is the fallback only
-    when neither registry file can be read (so tests run without env.sh keep passing).
+    `A770B_PROFILES`, when present in the environment (env.sh sets it from the INSTALLED card's
+    own file, even to an empty string), is authoritative: a card with no registry accepts no
+    profile name. Only when it is genuinely unset (tests run without env.sh) does the check fall
+    back to the union of every profile name under config/registry/, or to nothing when no
+    registry file can be read.
     """
-    env = os.environ.get("A770B_PROFILES", "")
-    names = env.split()
-    if names:
-        return names
+    if "A770B_PROFILES" in os.environ:
+        return os.environ["A770B_PROFILES"].split()
     registry_names = _registry_profile_names()
-    return registry_names if registry_names else list(DEFAULT_ALLOWED_PROFILES)
+    return registry_names if registry_names else []
 
 
 class SpecError(Exception):
