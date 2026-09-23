@@ -50,12 +50,13 @@ _build_argv_vllm(){
   local model="$1" ctx="$2"; shift 2
   local quant="${QUANT:-${A770B_QUANT:-}}"
   [ -n "$quant" ] || { echo "⛔ quantization must be set for the vllm backend (e.g. awq, gptq, auto-round) — set QUANT or the profile row's quant field" >&2; exit 2; }
-  [ -n "${A770B_VRAM_CAP_GIB:-}" ] || { echo "⛔ A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" >&2; exit 2; }
-  [ -n "${A770B_CARD_VRAM_TOTAL:-}" ] || { echo "⛔ A770B_CARD_VRAM_TOTAL must be set to calculate vLLM GPU memory utilization (set A770B_CARD)" >&2; exit 2; }
+  [ -n "${A770B_VRAM_CAP_GIB:-}" ] || { echo "⛔ A770B_VRAM_CAP_GIB must be set before a vLLM start" >&2; exit 2; }
+  [ -n "${A770B_CARD_VRAM_TOTAL:-}" ] || { echo "⛔ A770B_CARD_VRAM_TOTAL must be set before a vLLM start (set A770B_CARD)" >&2; exit 2; }
   python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= float(sys.argv[2]) else 1)" "$A770B_VRAM_CAP_GIB" "$A770B_CARD_VRAM_TOTAL" 2>/dev/null \
-    || { echo "⛔ A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" >&2; exit 2; }
-  local frac
-  frac=$(python3 -c "import math,sys; cap=float(sys.argv[1]); tot=float(sys.argv[2]); print(f'{math.floor(cap/tot*1000)/1000:.3f}')" "$A770B_VRAM_CAP_GIB" "$A770B_CARD_VRAM_TOTAL")
+    || { echo "⛔ A770B_VRAM_CAP_GIB must be a number no larger than A770B_CARD_VRAM_TOTAL" >&2; exit 2; }
+  # 0.9 is the engine target. Do not derive it from the llama.cpp cap: that cap is a
+  # reserve for the GGUF serve, and shrinking this flag (0.875, 0.84) is a different run.
+  local frac=0.9
   ARGV=(
     "$model"
     --served-model-name "$A770B_ALIAS"
@@ -128,8 +129,14 @@ fi
 
 ENTRYPOINT=""
 case "${A770B_SERVED_BACKEND:-}" in
-  vulkan|sycl)
+  vulkan)
     ENTRYPOINT="/app/llama-server"
+    _build_argv_llama "$MODEL_IN_CONTAINER" "$CTX" "$@"
+    ;;
+  sycl)
+    # Leave the envelope entrypoint in place. It sources oneAPI, then execs llama-server.
+    # Overriding it with the bare binary drops that runtime on an image that does not bake it.
+    ENTRYPOINT=""
     _build_argv_llama "$MODEL_IN_CONTAINER" "$CTX" "$@"
     ;;
   vllm)
@@ -203,13 +210,21 @@ fi
 printf '%s\n' "$CPID" > "$PIDFILE"
 printf '%s\n' "$MODEL" > "$MARK"
 used=$(gpu_used_gib)
-if python3 -c "import sys; sys.exit(0 if float('$used') > float('$A770B_VRAM_CAP_GIB') else 1)"; then
+# llama.cpp stays inside the measured cap. vLLM's target is 0.9 of the card, which on this
+# B70 is above that cap; stopping it at the cap would cancel the target.
+limit="$A770B_VRAM_CAP_GIB"
+limit_why="cap"
+if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
+  limit=$(python3 -c "import sys; print(f'{0.9 * float(sys.argv[1]):.3f}')" "$A770B_CARD_VRAM_TOTAL")
+  limit_why="0.9 of the card"
+fi
+if python3 -c "import sys; sys.exit(0 if float('$used') > float('$limit') else 1)"; then
   _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"
-  echo "⛔ VRAM after load ${used} GiB > cap $A770B_VRAM_CAP_GIB GiB — container STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"
+  echo "⛔ VRAM after load ${used} GiB > ${limit_why} ${limit} GiB — container STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"
   exit 3
 fi
 if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ] && [ -n "$CPID" ]; then
   python3 "$(dirname "$0")/live_backend.py" write --path "$SIDECAR" --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" --model "$(basename "$MODEL")" --profile "$A770B_LIVE_PROFILE" --pid "$CPID"
 fi
-echo "▶ started server container ($A770B_COMPOSE_PROJECT) on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB — host pid $CPID"
-echo "✓ VRAM after load: ${used} GiB ≤ cap $A770B_VRAM_CAP_GIB GiB"
+echo "▶ started server container ($A770B_COMPOSE_PROJECT) on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB · ${limit_why} ${limit} GiB — host pid $CPID"
+echo "✓ VRAM after load: ${used} GiB ≤ ${limit_why} ${limit} GiB"

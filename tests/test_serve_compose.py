@@ -345,7 +345,8 @@ def test_compose_env_example_documents_the_pinned_digest_form():
 
 def test_sycl_envelope_sets_the_server_entrypoint_and_bakes_no_model():
     text = SYCL_ENVELOPE.read_text(encoding="utf-8")
-    assert 'entrypoint: ["/app/llama-server"]' in text
+    assert 'source /opt/intel/oneapi/setvars.sh --force' in text
+    assert 'exec /app/llama-server' in text
     assert "127.0.0.1:${A770B_PORT}:8080" in text
     assert "${A770B_LLAMA_IMAGE}" in text
     assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
@@ -388,7 +389,7 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
     assert f"/models/{GGUF}" in argv
     assert argv[argv.index("--quantization") + 1] == "gptq"
     assert argv[argv.index("--max-model-len") + 1] == "8192"
-    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.500"
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.9"
     assert "--api-key" not in argv, "vLLM API key must not sit in the container argv"
     assert not any("a770b-" in a for a in argv)
     assert argv[argv.index("--host") + 1] == "0.0.0.0"
@@ -396,7 +397,7 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
     assert not log.exists(), "plan must not invoke docker"
     # the envelope carries the shim entrypoint that sources the key from /run/a770b/api.key
     envelope_text = VLLM_ENVELOPE.read_text(encoding="utf-8")
-    assert 'entrypoint: ["/bin/sh", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; exec vllm serve \\"$@\\"", "vllm-serve"]' in envelope_text
+    assert 'entrypoint: ["/bin/bash", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; source /opt/intel/oneapi/setvars.sh --force >/dev/null || exit 1; exec vllm serve \\"$@\\"", "vllm-serve"]' in envelope_text
     assert "2>/dev/null" not in envelope_text
     # and the override document generated for vllm omits the entrypoint key so the shim stands
     out_ov = tmp_path / "ov.json"
@@ -423,8 +424,9 @@ def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_three_decimals(tm
     r = _run(env, "plan", GGUF, "4096")
     assert r.returncode == 0, r.stderr
     argv = _argv_lines(r.stdout)
-    # 15.3 / 16.0 = 0.95625; .1f would round UP to 1.0 (bypassing the cap), floor yields 0.956
-    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.956"
+    # The engine target stays 0.9. It is not cap/total: flooring 15.3/16 used to yield 0.956,
+    # and a tighter cap must not shrink this flag.
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.9"
     assert argv[argv.index("--gpu-memory-utilization") + 1] != "1.0"
     assert argv[argv.index("--max-model-len") + 1] == "4096"
 
@@ -448,7 +450,7 @@ def test_dispatch_refuses_an_empty_served_backend(tmp_path):
 
 def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
     text = VLLM_ENVELOPE.read_text(encoding="utf-8")
-    assert 'entrypoint: ["/bin/sh", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; exec vllm serve \\"$@\\"", "vllm-serve"]' in text
+    assert 'entrypoint: ["/bin/bash", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; source /opt/intel/oneapi/setvars.sh --force >/dev/null || exit 1; exec vllm serve \\"$@\\"", "vllm-serve"]' in text
     assert "2>/dev/null" not in text
     assert "127.0.0.1:${A770B_PORT}:8000" in text
     assert "${A770B_VLLM_IMAGE:-intel/vllm:0.21.0-xpu}" in text
@@ -535,7 +537,7 @@ def test_plan_vllm_refuses_vram_cap_exceeding_card_total(tmp_path):
     )
     r = _run(env, "plan", GGUF, "8192")
     assert r.returncode == 2
-    assert "A770B_VRAM_CAP_GIB must be set to calculate vLLM GPU memory utilization" in r.stderr
+    assert "A770B_VRAM_CAP_GIB must be a number no larger than A770B_CARD_VRAM_TOTAL" in r.stderr
 
 
 def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_path):
