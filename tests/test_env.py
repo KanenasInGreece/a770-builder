@@ -462,15 +462,15 @@ def test_env_resolves_only_the_installed_cards_registry(tmp_path):
     base = dict(os.environ, A770B_PROJECT=str(proj), A770B_DATA=str(tmp_path / "data"),
                 A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
 
-    r_a770 = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_PROFILES"', env=dict(base, A770B_CARD="a770"))
-    assert r_a770.returncode == 0, r_a770.stderr
-    assert "qwen35-9b-q4km-vulkan" in r_a770.stdout
-    assert "beta-9b-vulkan" not in r_a770.stdout
+    r_first = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_PROFILES"', env=dict(base, A770B_CARD="a770"))
+    assert r_first.returncode == 0, r_first.stderr
+    assert "qwen35-9b-q4km-vulkan" in r_first.stdout
+    assert "beta-9b-vulkan" not in r_first.stdout
 
-    r_b70 = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_PROFILES"', env=dict(base, A770B_CARD="b70"))
-    assert r_b70.returncode == 0, r_b70.stderr
-    assert "beta-9b-vulkan" in r_b70.stdout
-    assert "qwen35-9b-q4km-vulkan" not in r_b70.stdout
+    r_second = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_PROFILES"', env=dict(base, A770B_CARD="b70"))
+    assert r_second.returncode == 0, r_second.stderr
+    assert "beta-9b-vulkan" in r_second.stdout
+    assert "qwen35-9b-q4km-vulkan" not in r_second.stdout
 
 
 def test_env_missing_registry_is_not_an_error(tmp_path):
@@ -490,6 +490,65 @@ def test_env_unset_card_is_not_an_error(tmp_path):
     r = run_bash(f'. "{ENV_SH}"; printf "[%s]" "$A770B_PROFILES"', env=env)
     assert r.returncode == 0, r.stderr
     assert r.stdout == "[]"
+
+
+def _one_card_project(tmp_path, registry_text: str) -> Path:
+    """A temp project whose a770.display.json holds `registry_text` verbatim."""
+    proj = tmp_path / "proj"
+    (proj / "config" / "registry").mkdir(parents=True)
+    (proj / "harness").mkdir(parents=True)
+    for rel in ("harness/profiles.py", "harness/live_backend.py"):
+        (proj / rel).write_bytes((ROOT / rel).read_bytes())
+    (proj / "config" / "cards.json").write_text(
+        json.dumps({"schema": 1, "cards": {"a770": {"role": "builder"}}}), encoding="utf-8")
+    (proj / "config" / "registry" / "a770.display.json").write_text(registry_text, encoding="utf-8")
+    return proj
+
+
+def test_env_invalid_registry_still_fails_hard(tmp_path):
+    """I5 / F4 — only a MISSING registry is empty; an existing file that does not check stops env.sh."""
+    proj = _one_card_project(tmp_path, "{ not json")
+    env = dict(os.environ, A770B_PROJECT=str(proj), A770B_DATA=str(tmp_path / "data"), A770B_CARD="a770",
+               A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+    r = run_bash(f'. "{ENV_SH}" || exit $?; echo sourced', env=env)
+    assert r.returncode != 0
+    assert "sourced" not in r.stdout
+    assert "is invalid" in r.stderr
+
+
+def test_env_explicit_registry_file_must_exist(tmp_path):
+    """F5 — an A770B_PROFILES_FILE the caller named must exist; only the path resolved from the card may be missing."""
+    env = dict(os.environ, A770B_PROJECT=str(ROOT), A770B_DATA=str(tmp_path / "data"), A770B_CARD="a770",
+               A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"),
+               A770B_PROFILES_FILE=str(ROOT / "config" / "profiles.json"))
+    r = run_bash(f'. "{ENV_SH}" || exit $?; echo sourced', env=env)
+    assert r.returncode != 0
+    assert "sourced" not in r.stdout
+    assert "does not exist" in r.stderr
+
+
+def test_env_refuses_a_card_that_is_not_a_card_id(tmp_path):
+    """F2 — the card becomes part of a path, so a value with a separator, a dot-dot, a space or a leading hyphen is
+    refused before any path is built."""
+    for card in ("../../tmp/evil", "a/b", "a 7", "-x", "A770"):
+        env = dict(os.environ, A770B_PROJECT=str(ROOT), A770B_DATA=str(tmp_path / "data"), A770B_CARD=card,
+                   A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+        env.pop("A770B_PROFILES_FILE", None)
+        r = run_bash(f'. "{ENV_SH}" || exit $?; echo sourced', env=env)
+        assert r.returncode != 0, card
+        assert "not a card id" in r.stderr, (card, r.stderr)
+
+
+def test_env_doctor_builds_no_registry_path_from_a_bad_card(tmp_path):
+    """F2 — doctor carries on past a bad or unknown card, but resolves no registry path from it."""
+    for card in ("../../tmp/evil", "zebra"):
+        env = dict(os.environ, A770B_PROJECT=str(ROOT), A770B_DATA=str(tmp_path / "data"), A770B_CARD=card,
+                   A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+        env.pop("A770B_PROFILES_FILE", None)
+        r = run_bash(f'set -- doctor; . "{ENV_SH}"; printf "[%s][%s]" "${{A770B_PROFILES_FILE:-}}" "$A770B_PROFILES"',
+                     env=env)
+        assert r.returncode == 0, (card, r.stderr)
+        assert r.stdout == "[][]", (card, r.stdout)
 
 
 def test_doctor_reports_missing_for_unknown_card(tmp_path):
@@ -533,3 +592,24 @@ def test_doctor_in_vllm_named_directory_does_not_misfire_as_vllm(tmp_path):
     out = r.stdout + r.stderr
     assert "A770B_VLLM_IMAGE" not in out
     assert "A770B_BY_PATH_DIR" not in out
+
+
+def test_menu_with_no_registry_keeps_the_json_shape():
+    """F10 — a card with no registry gets the same menu JSON, empty, with the one line under "note"."""
+    r = subprocess.run([sys.executable, str(ROOT / "harness" / "profiles.py"), "menu", "--card", "b70", "--mode", "inference"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["ready"] == [] and out["also"] == [] and out["slice"] == []
+    assert out["note"] == "no measured models for card b70 in inference mode — climb one with ladder.sh <gguf> --ctx N"
+
+
+def test_bench_speed_refuses_with_the_one_line(tmp_path):
+    """F10 — bench_speed.sh refuses a profile this card does not have with the shared refusal, not its own words."""
+    env = dict(os.environ, A770B_PROJECT=str(ROOT), A770B_DATA=str(tmp_path / "data"), A770B_REFUSE="/nonexistent",
+               A770B_CARD="b70", A770B_CARD_MODE="display", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+    env.pop("A770B_PROFILES_FILE", None)
+    r = subprocess.run(["bash", str(ROOT / "harness" / "bench_speed.sh"), "qwen35-9b-q4km-vulkan", "--dry-run"],
+                       capture_output=True, text=True, env=env, cwd=ROOT)
+    assert r.returncode == 2
+    assert "no measured models for card b70 in display mode" in r.stderr

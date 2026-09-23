@@ -101,14 +101,14 @@ else
 fi
 SEAT="${SEAT:-$A770B_DATA/kit-seat}"
 
-a770b_is_profile "$PROFILE" || die "profile must be one of: $A770B_PROFILES (got '$PROFILE')"
+a770b_is_profile "$PROFILE" || die "$(profile_refusal "$PROFILE")"
 # the profile's own timeout window (the registry's timeout_s — the same budget build_local.sh's `timeout`
 # wraps the model's run in): a captured timeout still exits 0 all the way back up through local-build.sh run (the
 # capture itself succeeded), so this wall-clock budget is the only signal process_task has for telling a stage
 # that ran out of time from one that plainly failed — see stage_outcome below.
 TIMEOUT_S=$(a770b_profile_var "$PROFILE" TIMEOUT)
 if [ -n "$REVIEWER" ]; then
-  a770b_is_profile "$REVIEWER" || die "reviewer profile must be one of: $A770B_PROFILES (got '$REVIEWER')"
+  a770b_is_profile "$REVIEWER" || die "reviewer $(profile_refusal "$REVIEWER")"
   builder_model=$(a770b_profile_var "$PROFILE" MODEL); reviewer_model=$(a770b_profile_var "$REVIEWER" MODEL)
   [ "$builder_model" != "$reviewer_model" ] || die "reviewer profile $REVIEWER resolves to the builder's own model ($builder_model) — a reviewer must not be the builder"
 fi

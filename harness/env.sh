@@ -29,8 +29,19 @@ export A770B_SERVE_SCRIPT
 # is the authority.
 : "${A770B_CARD:=}"
 : "${A770B_CARD_ROLE:=}"
+# The card id becomes part of a path below, so it must look like a card id before anything is resolved from it:
+# lower-case letters, digits, hyphens and underscores, not starting with a hyphen. Doctor reports and carries on, but no registry
+# path is built from a value that failed this or the cards.json lookup.
+_builder_card_ok=1
+case "$A770B_CARD" in
+  "") ;;
+  -*|*[!a-z0-9_-]*)
+    _builder_card_ok=0
+    echo "⛔ A770B_CARD '$A770B_CARD' is not a card id (lower-case letters, digits, hyphens and underscores)" >&2
+    [ "${1:-}" = "doctor" ] || { unset _builder_card_ok; return 2 2>/dev/null || exit 2; } ;;
+esac
 : "${A770B_CARD_VRAM_TOTAL:=}"
-if [ -n "$A770B_CARD" ]; then
+if [ -n "$A770B_CARD" ] && [ "$_builder_card_ok" = 1 ]; then
   _a770b_cards_file="${A770B_CARDS_FILE:-$A770B_PROJECT/config/cards.json}"
   _a770b_card_lines=$(python3 - "$_a770b_cards_file" "$A770B_CARD" "${1:-}" "$A770B_CARD_ROLE" <<'PY'
 import json, sys
@@ -71,7 +82,7 @@ print(f'_a770b_row_gpu={json.dumps(str(gpu))}')
 print(f'_a770b_row_vram={json.dumps(str(vram))}')
 print(f'_a770b_row_oneapi={json.dumps(str(oneapi))}')
 PY
-  ) || { [ "${1:-}" = "doctor" ] || { return 2 2>/dev/null || exit 2; }; }
+  ) || { _builder_card_ok=0; [ "${1:-}" = "doctor" ] || { return 2 2>/dev/null || exit 2; }; }
   if [ -n "$_a770b_card_lines" ]; then
     eval "$_a770b_card_lines"
     [ -n "$_a770b_row_vk" ] && : "${A770B_VK_DEVICE_SELECT:=$_a770b_row_vk}"
@@ -105,9 +116,17 @@ export A770B_CARD A770B_CARD_VRAM_TOTAL
 # it only after a measurement. An explicit A770B_PROFILES_FILE still wins. No registry is NOT an error: a card with no
 # file (or no A770B_CARD) gets an empty A770B_PROFILES, and every consumer quotes the one line
 # `profiles.py empty-line` prints instead of a profile list; an existing but invalid file still fails hard.
-: "${A770B_PROFILES_FILE:=${A770B_CARD:+$A770B_PROJECT/config/registry/$A770B_CARD.$A770B_CARD_MODE.json}}"
+# An explicit A770B_PROFILES_FILE must exist; only the path resolved from the card may be missing.
+if [ -n "${A770B_PROFILES_FILE:-}" ] && [ ! -f "$A770B_PROFILES_FILE" ]; then
+  echo "⛔ A770B_PROFILES_FILE=$A770B_PROFILES_FILE does not exist" >&2; unset _builder_card_ok; return 2 2>/dev/null || exit 2
+fi
+if [ "$_builder_card_ok" = 1 ]; then
+  : "${A770B_PROFILES_FILE:=${A770B_CARD:+$A770B_PROJECT/config/registry/$A770B_CARD.$A770B_CARD_MODE.json}}"
+fi
+unset _builder_card_ok
+: "${A770B_PROFILES_FILE:=}"   # empty when no card, or a bad one under doctor: no registry resolved
 : "${A770B_VRAM_CAP_GIB:=}"
-if [ -n "$A770B_PROFILES_FILE" ] && [ -f "$A770B_PROFILES_FILE" ]; then
+if [ -n "${A770B_PROFILES_FILE:-}" ] && [ -f "$A770B_PROFILES_FILE" ]; then
   _a770b_profile_lines=$(python3 "$A770B_PROJECT/harness/profiles.py" env --file "$A770B_PROFILES_FILE") || { echo "⛔ the registry $A770B_PROFILES_FILE is invalid (python3 harness/profiles.py check says why)" >&2; return 2 2>/dev/null || exit 2; }
   eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 else
@@ -175,6 +194,15 @@ a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A77
 a770b_profile_var(){ local n; n=$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'); local v="A770B_${n}_$2"; printf '%s\n' "${!v:-}"; }
 # a770b_is_profile <name> — true when the name is in A770B_PROFILES
 a770b_is_profile(){ case " $A770B_PROFILES " in *" $1 "*) return 0;; *) return 1;; esac; }
+# profile_refusal <name> — the one refusal for a profile this card does not have: it names the card, the mode and this
+# card's own profiles, or quotes profiles.py's empty line when the card has none. Never another card's rows.
+profile_refusal(){
+  if [ -n "$A770B_PROFILES" ]; then
+    printf "profile %s is not measured on card %s in %s mode — this card's profiles: %s\n" "$1" "${A770B_CARD:-(unset)}" "$A770B_CARD_MODE" "$A770B_PROFILES"
+  else
+    python3 "$A770B_PROJECT/harness/profiles.py" empty-line --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"
+  fi
+}
 # a770b_api_key — the key the server requires and the rendered profile carries. Created once, readable only by the operator.
 a770b_api_key(){
   if [ ! -s "$A770B_API_KEY_FILE" ]; then

@@ -65,11 +65,11 @@ PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
 # the one line for a card with no measured rows, produced in ONE place (profiles.py empty-line) and quoted verbatim
 empty_registry_line(){ python3 "$A770B_PROJECT/harness/profiles.py" empty-line --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; }
-# refuse a profile name that is not in this card's registry: names the card's own profiles, or the one line when
-# this card has none — so a name that exists for another card is refused naming this card, never the other card's rows.
-a770b_require_profile(){ local p="$1"; a770b_is_profile "$p" && return 0; if [ -n "$A770B_PROFILES" ]; then die "profile must be one of: $A770B_PROFILES (got '$p')"; else die "$(empty_registry_line)"; fi; }
+# refuse a profile name that is not in this card's registry with env.sh's profile_refusal: it names this card and its
+# own profiles, or quotes the one line when this card has none — never another card's rows.
+require_profile(){ a770b_is_profile "$1" && return 0; die "$(profile_refusal "$1")"; }
 profile_vars(){ # sets gguf ctx kv kv_v reasoning extra t and the thinking_* fields for a profile named in A770B_PROFILES
-  a770b_require_profile "$1"
+  require_profile "$1"
   local m; m=$(a770b_profile_var "$1" MODEL); [ -n "$m" ] || die "profile $1 has no MODEL set (A770B_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')_MODEL is empty)"
   gguf=$(a770b_model_path "$m"); ctx=$(a770b_profile_var "$1" CTX); kv=$(a770b_profile_var "$1" KV)
   kv_v=$(a770b_profile_var "$1" KV_V)
@@ -366,7 +366,7 @@ case "${1:-}" in
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   profiles) if [ -n "$A770B_PROFILES" ]; then shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@"; else empty_registry_line; fi ;;
-  menu) if [ -n "$A770B_PROFILES" ]; then python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid"; else empty_registry_line; fi ;;
+  menu) if [ -n "$A770B_PROFILES" ]; then python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid"; else python3 "$A770B_PROJECT/harness/profiles.py" menu --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; fi ;;
   doctor) doctor ;;
   stop)   _envelope_from_sidecar; bash "$SERVE" stop ;;
   stop-run)
@@ -384,7 +384,7 @@ case "${1:-}" in
     shift; profile=""; timeout=""; spec=""; profile_set=0
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; a770b_require_profile "$profile"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; require_profile "$profile"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
@@ -399,7 +399,7 @@ case "${1:-}" in
       [ "$profile_set" = 1 ] || [ "$spec_profile" = "-" ] || profile="$spec_profile"
       [ -n "$timeout" ] || [ "$spec_timeout" = "-" ] || timeout="$spec_timeout"
     fi
-    [ -n "$profile" ] || die "no profile: pass --profile <name> (there is no default profile) or set \"profile\" in the specification — one of: $A770B_PROFILES"
+    [ -n "$profile" ] || { if [ -n "$A770B_PROFILES" ]; then die "no profile: pass --profile <name> (there is no default profile) or set \"profile\" in the specification — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }
     run_lock                                                       # one run at a time on this card
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
     profile_vars "$profile"; t=${timeout:-$t}
