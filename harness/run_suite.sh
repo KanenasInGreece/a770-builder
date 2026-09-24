@@ -413,12 +413,12 @@ if (req_val is None or req_val == 0) and counters:
     c_req = counters.get("finished_requests") if counters.get("finished_requests") is not None else counters.get("requests")
     c_ptok = counters.get("request_prompt_tokens") if counters.get("request_prompt_tokens") is not None else counters.get("prompt_tokens")
     c_gtok = counters.get("request_generation_tokens") if counters.get("request_generation_tokens") is not None else counters.get("generation_tokens")
-    if c_req is not None:
-        req_val = int(c_req) if isinstance(c_req, (int, float)) and c_req == int(c_req) else c_req
-    if c_ptok is not None:
-        ptok_val = int(c_ptok) if isinstance(c_ptok, (int, float)) and c_ptok == int(c_ptok) else c_ptok
-    if c_gtok is not None:
-        gtok_val = int(c_gtok) if isinstance(c_gtok, (int, float)) and c_gtok == int(c_gtok) else c_gtok
+    # counts_source "metrics" means every count comes from the counters: a key the counters lack is unknown (null),
+    # never the log parse's 0 (E1: a zero is not written for a stage whose counts could not be read)
+    as_int = lambda v: int(v) if isinstance(v, (int, float)) and v == int(v) else v
+    req_val = as_int(c_req) if c_req is not None else None
+    ptok_val = as_int(c_ptok) if c_ptok is not None else None
+    gtok_val = as_int(c_gtok) if c_gtok is not None else None
 else:
     counts_source = "log"
 

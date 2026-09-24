@@ -91,3 +91,11 @@ def test_emit_stage_without_counters_defaults_log():
     assert data["counts_source"] == "log"
     assert data["counters"] is None
     assert data["serve_evidence"] is None
+
+
+def test_emit_stage_counters_missing_keys_give_null_not_zero():
+    """E1 — with counts from metrics, a key the counters lack is null, never the log parse's 0."""
+    rec = run_emit_stage(requests="0", prompt_tokens="0", gen_tokens="0",
+                         counters_json=json.dumps({"engine": "vllm", "restarted": False}))
+    assert rec["counts_source"] == "metrics"
+    assert rec["requests"] is None and rec["prompt_tokens"] is None and rec["gen_tokens"] is None
