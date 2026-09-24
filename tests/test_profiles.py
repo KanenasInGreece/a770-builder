@@ -2118,6 +2118,35 @@ def test_check_passes_both_shipped_registries_thinking():
         assert result.returncode == 0, result.stderr
 
 
+# Placement flags refused in a row's `extra`: nothing shipped may put a layer or an expert in host RAM. Matched
+# at a word boundary followed by whitespace, "=" or the end of the string, so "-ngl=50" and "-ot=blk.*=CPU" are
+# caught exactly like their space-separated forms ("-ngl 50", "-ot blk.*=CPU") — llama.cpp accepts both.
+_HOST_RAM_FLAG_RE = re.compile(r"(?:^|\s)(?:-ot|--override-tensor|--cpu-moe|--n-cpu-moe|-ncmoe)(?=\s|=|$)")
+_HOST_RAM_NGL_RE = re.compile(r"(?:^|\s)(?:-ngl|--n-gpu-layers)(?:\s+|=)(\d+)")
+
+
+def _extra_asks_for_host_ram(extra: str) -> str | None:
+    """None when `extra` places every layer and expert on the GPU; else a reason naming what it asked for."""
+    m = _HOST_RAM_FLAG_RE.search(extra)
+    if m:
+        return f"a placement flag ({m.group(0).strip()!r})"
+    m = _HOST_RAM_NGL_RE.search(extra)
+    if m and int(m.group(1)) < 99:
+        return f"-ngl/--n-gpu-layers below 99 ({m.group(1)})"
+    return None
+
+
+def test_extra_asks_for_host_ram_matcher():
+    """The matcher `test_no_row_asks_for_host_ram` uses must catch the '=' forms llama.cpp accepts alongside the
+    space-separated ones, and must leave an unrelated flag or a full-offload -ngl alone."""
+    bad = ["-ngl=50", "-ngl 50", "--n-gpu-layers=10", "-ot=blk.*=CPU", "--cpu-moe", "--n-cpu-moe=4"]
+    for extra in bad:
+        assert _extra_asks_for_host_ram(extra) is not None, f"{extra!r} should be refused"
+    good = ["--temp 1.0", "-ngl 99", "--no-mmap"]
+    for extra in good:
+        assert _extra_asks_for_host_ram(extra) is None, f"{extra!r} should be accepted"
+
+
 def test_no_row_asks_for_host_ram():
     """This is a tripwire and not a gate: the harness's only host-memory check is a page-cache floor
     before the load, it cannot refuse a start whose weights will not fit in RAM, so until it can,
@@ -2125,21 +2154,16 @@ def test_no_row_asks_for_host_ram():
     host buffers by design (the server log's *_Host ... buffer size lines, at -lv 4, are the measure
     of that, not a sign of CPU-resident layers or experts), so every row in every registry file must
     have a non-negative ram_gb_extra and no extra string that places any layer or expert in host RAM
-    (--override-tensor, -ot, --cpu-moe, --n-cpu-moe, -ncmoe, or an -ngl/--n-gpu-layers value below 99)."""
-    ngl_re = re.compile(r"(?:-ngl|--n-gpu-layers)\s+(\d+)")
+    (--override-tensor, -ot, --cpu-moe, --n-cpu-moe, -ncmoe, or an -ngl/--n-gpu-layers value below 99;
+    see _extra_asks_for_host_ram for the matcher, which also catches the '=' forms of these flags)."""
     for fpath in (ROOT / "config" / "registry").glob("*.json"):
         data = json.loads(fpath.read_text(encoding="utf-8"))
         for name, prof in data["profiles"].items():
             ram = prof.get("ram_gb_extra")
             assert isinstance(ram, (int, float)) and not isinstance(ram, bool) and ram >= 0, \
                 f"{fpath}: {name}: ram_gb_extra must be a number >= 0"
-            extra = prof.get("extra", "")
-            for flag in ("--override-tensor", "-ot ", "--cpu-moe", "--n-cpu-moe", "-ncmoe"):
-                assert flag not in extra, f"{fpath}: {name}: extra must not contain {flag!r}"
-            m = ngl_re.search(extra)
-            if m:
-                assert int(m.group(1)) >= 99, \
-                    f"{fpath}: {name}: extra's -ngl/--n-gpu-layers must be >= 99"
+            reason = _extra_asks_for_host_ram(prof.get("extra", ""))
+            assert reason is None, f"{fpath}: {name}: extra asks for host RAM: {reason}"
 
 
 def test_kit_instrument_uses_kit_version_not_product_version(tmp_path):
