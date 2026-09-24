@@ -80,7 +80,7 @@
               "tg": 8.91
             }
           },
-          "source": "Qwen3.8-27B-UD-Q6_K-sycl-bench-20260920-154124.json (build 10920, SYCL); the 100k column is depth 98,976"
+          "source": "Qwen3.8-27B-UD-Q6_K-sycl-bench-20260920-154124.json (build 10920, SYCL); the 100k column is depth 98,976 — far_end is the server's own average over the prompt it processed (674 tok/s over 135.6 s, about 91,400 of the 98,855 tokens; the rest were reused from the 8k request's cached prefix), while this 100k column is an 8,192-token prompt on top of 98,976 tokens of context (530 tok/s): two different measures."
         }
       },
       "depth_probe_100k": "pass (3/3)",
