@@ -543,6 +543,7 @@
   "computed": {
     "useful_ctx": 262144,
     "ram_gb_extra": null,
+    "memavailable_drop_gb": null,
     "vram_gib_after_load": 9.485649108886719,
     "speed": {
       "decode_tps": {

@@ -46,10 +46,15 @@ def read_text(path):
 bench_model = load_json(bench_model_path)
 bench_speed = load_json(bench_speed_path) if bench_speed_path else None
 
-# ram_gb_extra: the host MemAvailable drop across the load (rung 1), in GB
+# ram_gb_extra is not computed here: it is the engine's own host buffers (llama.cpp's *_Host ... buffer
+# size lines, at -lv 4), which this rung's own output does not carry, so it is always printed null and
+# transcribed by hand (see the printed hand-fill note below). memavailable_drop_gb is still the host
+# MemAvailable drop across the load (rung 1), in GB — a real measurement, just not this field: page cache
+# makes it vary run to run for the same model, so it is kept as a separate recorded value.
 ram_gb_extra = None
+memavailable_drop_gb = None
 try:
-    ram_gb_extra = round((int(avail_before_s) - int(avail_after_s)) / 1024.0, 2)
+    memavailable_drop_gb = round((int(avail_before_s) - int(avail_after_s)) / 1024.0, 2)
 except (ValueError, TypeError):
     pass
 
@@ -193,8 +198,8 @@ ladder_doc = {
         "task_suite": suite,
     },
     "computed": {
-        "useful_ctx": useful_ctx, "ram_gb_extra": ram_gb_extra, "vram_gib_after_load": vram_gib_after_load,
-        "speed": speed,
+        "useful_ctx": useful_ctx, "ram_gb_extra": ram_gb_extra, "memavailable_drop_gb": memavailable_drop_gb,
+        "vram_gib_after_load": vram_gib_after_load, "speed": speed,
     },
     "stopped_at_rung": fail_rung or None,
     "failure": fail_msg or None,
@@ -255,7 +260,9 @@ print(
     "weight_class, params_b, capability_source, and sampling. task and measured_on are printed above as "
     "placeholders (__TODO__) rather than omitted, so a row pasted straight from this output still has the keys "
     "check requires on a kit instrument — set task to the class this row wins and measured_on to the card and "
-    "the serving build; evidence carries the suite's pass result when the task rung ran, else set it by hand."
+    "the serving build; evidence carries the suite's pass result when the task rung ran, else set it by hand. "
+    "ram_gb_extra: the sum of the *_Host buffer sizes (MiB / 1024) in the server's log at -lv 4 — not the "
+    "MemAvailable drop."
 )
 if not (far_end >= 90000 and depth_score is not None):
     if depth_not_measured:

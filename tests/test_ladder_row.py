@@ -189,6 +189,19 @@ def test_the_same_rungs_with_an_answered_probe_do_compute_a_useful_ctx(tmp_path)
     assert printed_row(result.stdout)["useful_ctx"] == useful, result.stdout
 
 
+def test_ram_gb_extra_is_never_computed_and_memavailable_drop_is_kept_separately(tmp_path):
+    """ram_gb_extra is the engine's own host buffers (llama.cpp's *_Host ... buffer size lines), which no rung
+    here produces, so the computation must never fill it from the MemAvailable drop; it is always null, both
+    in the results document and in the printed row, and left for the operator to transcribe by hand. The
+    MemAvailable drop that run_row's avail_before/avail_after arguments (64000, 52000 MiB) carry is still a
+    real measurement, so it must survive under its own name, memavailable_drop_gb, in the results document."""
+    result, doc = run_row(tmp_path, SWEEP_TABLE, DEPTH_PASSED)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert doc["computed"]["ram_gb_extra"] is None, doc["computed"]
+    assert doc["computed"]["memavailable_drop_gb"] == round((64000 - 52000) / 1024.0, 2), doc["computed"]
+    assert printed_row(result.stdout)["ram_gb_extra"] is None, result.stdout
+
+
 def test_a_window_rung_that_reported_no_far_point_leaves_useful_ctx_unset(tmp_path):
     """A point the sweep refuses as not measured prints no row, and there is no curve to extend."""
     result, doc = run_row(tmp_path, SWEEP_SHALLOW_ONLY, DEPTH_PASSED)
