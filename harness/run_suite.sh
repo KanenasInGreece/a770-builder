@@ -377,7 +377,7 @@ with open(outfile, "w") as f:
 PY
 }
 
-emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome
+emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome [counters_json] [serve_evidence]
   python3 - "$@" >> "$RESULTS_NDJSON" <<'PY'
 import json, sys
 def num(s):
@@ -389,18 +389,52 @@ def num(s):
         return None
 def boolean(s):
     return True if s == "true" else False if s == "false" else None
+args = sys.argv[1:]
 (id_, language, label, working, conf, lines, budget, budget_ok,
- score_json, wall, requests, ptok, gtok, axes_json, counts, seat_state_json, outcome) = sys.argv[1:]
+ score_json, wall, requests, ptok, gtok, axes_json, counts, seat_state_json, outcome) = args[:17]
+counters_json = args[17] if len(args) > 17 else "null"
+serve_evidence = args[18] if len(args) > 18 else ""
+
+counters = None
+if counters_json and counters_json != "null":
+    try:
+        counters = json.loads(counters_json)
+    except Exception:
+        counters = None
+
+serve_evidence_val = serve_evidence if serve_evidence and serve_evidence != "null" else None
+
+req_val = num(requests)
+ptok_val = num(ptok)
+gtok_val = num(gtok)
+
+if (req_val is None or req_val == 0) and counters:
+    counts_source = "metrics"
+    c_req = counters.get("finished_requests") if counters.get("finished_requests") is not None else counters.get("requests")
+    c_ptok = counters.get("request_prompt_tokens") if counters.get("request_prompt_tokens") is not None else counters.get("prompt_tokens")
+    c_gtok = counters.get("request_generation_tokens") if counters.get("request_generation_tokens") is not None else counters.get("generation_tokens")
+    if c_req is not None:
+        req_val = int(c_req) if isinstance(c_req, (int, float)) and c_req == int(c_req) else c_req
+    if c_ptok is not None:
+        ptok_val = int(c_ptok) if isinstance(c_ptok, (int, float)) and c_ptok == int(c_ptok) else c_ptok
+    if c_gtok is not None:
+        gtok_val = int(c_gtok) if isinstance(c_gtok, (int, float)) and c_gtok == int(c_gtok) else c_gtok
+else:
+    counts_source = "log"
+
 rec = {
     "id": id_, "language": language or None, "label": label or None,
     "working": boolean(working), "conformance_exit": num(conf),
     "lines": num(lines), "budget_lines": num(budget), "budget_ok": boolean(budget_ok),
     "score": json.loads(score_json) if score_json and score_json != "null" else None,
-    "wall_s": num(wall), "requests": num(requests), "prompt_tokens": num(ptok), "gen_tokens": num(gtok),
+    "wall_s": num(wall), "requests": req_val, "prompt_tokens": ptok_val, "gen_tokens": gtok_val,
     "axes": json.loads(axes_json) if axes_json else None,
     "counts_toward_pass": boolean(counts) if counts else True,
     "seat_state": json.loads(seat_state_json) if seat_state_json else [],
     "outcome": outcome or None,
+    "counters": counters,
+    "serve_evidence": serve_evidence_val,
+    "counts_source": counts_source,
 }
 print(json.dumps(rec))
 PY
@@ -539,7 +573,11 @@ process_task(){
   if [ -z "$label" ]; then
     local no_cap_outcome; no_cap_outcome=$(stage_outcome false "$wall_s")
     echo "⚠ stage $id: run exited $rrc with no capture — recording as ${no_cap_outcome:-failed}" >&2
-    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$no_cap_outcome"
+    local serve_ev_path=""
+    if [ -f "$A770B_DATA/logs/serve-evidence.path" ]; then
+      serve_ev_path=$(head -n 1 "$A770B_DATA/logs/serve-evidence.path" 2>/dev/null || true)
+    fi
+    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$no_cap_outcome" "null" "${serve_ev_path:-}"
     write_results
     echo "stage $id: ${no_cap_outcome:-FAILED} (no capture, run exit $rrc)"
     return 0
@@ -592,7 +630,15 @@ process_task(){
     if [ -f "$rubricpath" ]; then score_json=$(review_stage "$rubricpath" "$patchfile")
     else echo "⚠ stage $id: rubric file not found: $rubricpath — no score" >&2; fi
   fi
-  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome"
+  local counters_json="null"
+  if [ -n "$label" ] && [ -f "$A770B_DATA/results/$label.counters.json" ]; then
+    counters_json=$(cat "$A770B_DATA/results/$label.counters.json" 2>/dev/null || echo "null")
+  fi
+  local serve_ev_path=""
+  if [ -f "$A770B_DATA/logs/serve-evidence.path" ]; then
+    serve_ev_path=$(head -n 1 "$A770B_DATA/logs/serve-evidence.path" 2>/dev/null || true)
+  fi
+  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome" "$counters_json" "${serve_ev_path:-}"
   write_results
   echo "stage $id: working=$working outcome=${outcome:-n/a} conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-n/a} tokens=${prompt_tokens:-n/a}+${gen_tokens:-n/a}"
 }

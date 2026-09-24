@@ -332,6 +332,24 @@ sampler chain: logits -> top-k -> top-p -> min-p -> temp -> softmax -> dist
     }
 
 
+def test_cli_log_reads_the_fixture_from_stdin_with_dash(tmp_path, monkeypatch, capsys):
+    """--log - (C11-W2, for piping `docker logs` straight in) reads stdin instead of a file path."""
+    import io
+    out_file = tmp_path / "evidence.json"
+    monkeypatch.setattr("sys.stdin", io.StringIO(LLAMACPP_SYCL_LV4_FIXTURE.read_text(encoding="utf-8")))
+    rc = main_cli([
+        "log",
+        "--engine", "llama.cpp",
+        "--log", "-",
+        "--out", str(out_file),
+    ])
+    assert rc == 0
+    data = json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["source"] == "-"
+    assert data["build"] == "10920 (eafe15a5e)"
+    assert "notes" not in data
+
+
 def test_cli_log_vllm_fixture(tmp_path):
     """Verify CLI log command outputs valid JSON with source."""
     out_file = tmp_path / "evidence.json"

@@ -1074,11 +1074,27 @@ case " $* " in
   *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
   *" ps -q "*) printf '%s\n' cid; exit 0;;
   *" inspect "*) printf '%s\n' 4242; exit 0;;
+  *" logs "*)
+    [ -z "${FAKE_DOCKER_LOGS_FAIL:-}" ] || exit 1
+    cat "${FAKE_DOCKER_CONTAINER_LOG:-/dev/null}" 2>/dev/null; exit 0;;
   *) exit 0;;
 esac
 EOF
 chmod +x "$cb/bin/docker"
-printf '#!/usr/bin/env bash\necho \x27{"ok": true}\x27; exit 0\n' > "$cb/bin/curl"; chmod +x "$cb/bin/curl"
+# C11-W2: logs every call (never the header VALUE, only curl's own argv — the key rides a process-substitution fd,
+# so it is never a curl argument) and, for /metrics, prints a canned body (or fails, for the E4 check) instead of
+# the default {"ok": true} every other endpoint this stub answers still gets
+cat > "$cb/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FAKE_CURL_LOG:-}" ] || printf '%s\n' "$*" >> "$FAKE_CURL_LOG"
+case "${!#}" in
+  *"/metrics")
+    [ -z "${FAKE_CURL_METRICS_FAIL:-}" ] || exit 1
+    cat "${FAKE_CURL_METRICS_BODY:-/dev/null}"; exit 0;;
+  *) echo '{"ok": true}'; exit 0;;
+esac
+EOF
+chmod +x "$cb/bin/curl"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$cb/bin/pgrep"; chmod +x "$cb/bin/pgrep"
 printf '#!/usr/bin/env bash\necho \x27[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\x27\n' > "$cb/bin/nvtop"; chmod +x "$cb/bin/nvtop"
 cb_env(){ A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
@@ -1182,6 +1198,87 @@ if grep -q -- '-fa on --load-mode none' "$here/harness/serve_compose.sh" \
   && ! grep -qE -- '^[^#]*--no-mmap' "$here/harness/serve_compose.sh"
 then echo "ok   serve: the container serve passes -fa on --load-mode none and has dropped --no-mmap"
 else echo "FAIL serve: the container serve does not pass -fa on --load-mode none or still contains --no-mmap"; fail=1
+fi
+# ── C11-W2: engine evidence on a successful serve, and the stage-counter snapshot/diff around a run's dispatch ──
+LOCAL_BUILD_SCRIPT="$here/skills/local-build/scripts/local-build.sh"
+# a successful serve writes engine evidence from the container's own log and records its path
+cp "$here/tests/fixtures/engine/llamacpp-sycl-lv4.log" "$cb/container.log"
+: > "$cb/docker.log"
+rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid" "$cb/data/logs/serve-evidence.path"
+cb_ev=$( _iso; FAKE_DOCKER_CONTAINER_LOG="$cb/container.log" cb_env bash "$LOCAL_BUILD_SCRIPT" serve qwen35-9b-q4km-vulkan 2>&1 )
+evpath=$(cat "$cb/data/logs/serve-evidence.path" 2>/dev/null || true)
+if [ -n "$evpath" ] && [ -f "$evpath" ] \
+  && grep -q '"engine": "llama.cpp"' "$evpath" && grep -q '"host_buffers_mib": 1113.61' "$evpath"
+then echo "ok   compose: a successful serve writes engine evidence from the container log and records its path"
+else echo "FAIL compose: serve did not write evidence as expected"; printf '%s\n' "$cb_ev" | tail -10; echo "evpath=$evpath"; fail=1
+fi
+# a docker-logs failure must warn, never fail the serve (E4): still up, no evidence file, no path file
+: > "$cb/docker.log"
+rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid" "$cb/data/logs/serve-evidence.path"
+before_n=$(find "$cb/data/results" -name 'serve-*.evidence.json' 2>/dev/null | wc -l)
+cb_ev_fail=$( _iso; FAKE_DOCKER_LOGS_FAIL=1 cb_env bash "$LOCAL_BUILD_SCRIPT" serve qwen35-9b-q4km-vulkan 2>&1 )
+after_n=$(find "$cb/data/results" -name 'serve-*.evidence.json' 2>/dev/null | wc -l)
+if printf '%s\n' "$cb_ev_fail" | grep -q 'serving' && printf '%s\n' "$cb_ev_fail" | grep -q 'could not write serve evidence' \
+  && [ "$after_n" = "$before_n" ] && [ ! -f "$cb/data/logs/serve-evidence.path" ]
+then echo "ok   compose: a serve still succeeds and only warns when the container log cannot be read for evidence (E4)"
+else echo "FAIL compose: a serve did not tolerate a failed evidence write"; printf '%s\n' "$cb_ev_fail" | tail -10; fail=1
+fi
+# the stage-counter snapshot (harness/local-build.sh run, around the dispatch): /metrics before and after, diffed
+evd="$cb/data"; mkdir -p "$evd/results"
+printf 'llamacpp:prompt_tokens_total 100\nllamacpp:tokens_predicted_total 50\nllamacpp:prompt_seconds_total 2.0\nllamacpp:tokens_predicted_seconds_total 5.0\nllamacpp:n_decode_total 1\n' > "$cb/metrics-before-body.prom"
+printf 'llamacpp:prompt_tokens_total 300\nllamacpp:tokens_predicted_total 150\nllamacpp:prompt_seconds_total 4.0\nllamacpp:tokens_predicted_seconds_total 10.0\nllamacpp:n_decode_total 3\n' > "$cb/metrics-after-body.prom"
+: > "$cb/curl.log"
+# source local-build.sh's function definitions directly (safe to source: CLI dispatch is guarded)
+( _iso; FAKE_CURL_LOG="$cb/curl.log" FAKE_CURL_METRICS_BODY="$cb/metrics-before-body.prom" cb_env bash -c \
+  '. "$1"; _metrics_snapshot "$2"' \
+  _ "$LOCAL_BUILD_SCRIPT" "$evd/results/ev-label.metrics-before.prom" ) >/dev/null 2>&1
+( _iso; FAKE_CURL_LOG="$cb/curl.log" FAKE_CURL_METRICS_BODY="$cb/metrics-after-body.prom" cb_env bash -c \
+  '. "$1"; _metrics_snapshot "$2"' \
+  _ "$LOCAL_BUILD_SCRIPT" "$evd/results/ev-label.metrics-after.prom" ) >/dev/null 2>&1
+( _iso; cb_env bash -c '. "$1"; _stage_counters "$2"' \
+  _ "$LOCAL_BUILD_SCRIPT" "ev-label" ) >/dev/null 2>&1
+apikey=$(cat "$cb/api.key" 2>/dev/null || true)
+if [ -f "$evd/results/ev-label.metrics-before.prom" ] && [ -f "$evd/results/ev-label.metrics-after.prom" ] \
+  && [ -f "$evd/results/ev-label.counters.json" ] \
+  && grep -q '"requests": 2' "$evd/results/ev-label.counters.json" \
+  && grep -q '"prompt_tokens": 200' "$evd/results/ev-label.counters.json" \
+  && { [ -z "$apikey" ] || { ! grep -qF "$apikey" "$cb/curl.log" \
+       && ! grep -qF "$apikey" "$evd/results/ev-label.metrics-before.prom" \
+       && ! grep -qF "$apikey" "$evd/results/ev-label.metrics-after.prom" \
+       && ! grep -qF "$apikey" "$evd/results/ev-label.counters.json"; }; }
+then echo "ok   compose: a run's /metrics before/after snapshot diffs into <label>.counters.json, the api key never in a written file or curl's own argv"
+else echo "FAIL compose: the stage-counter snapshot/diff did not behave as expected"; cat "$evd/results/ev-label.counters.json" 2>/dev/null; fail=1
+fi
+# a failed /metrics snapshot writes nothing and warns (E4); the run is not the one that fails here
+rm -f "$evd/results/ev-label2.metrics-before.prom"
+snap_fail=$( _iso; FAKE_CURL_METRICS_FAIL=1 cb_env bash -c \
+  '. "$1"; _metrics_snapshot "$2"' \
+  _ "$LOCAL_BUILD_SCRIPT" "$evd/results/ev-label2.metrics-before.prom" 2>&1 )
+if [ ! -f "$evd/results/ev-label2.metrics-before.prom" ] && printf '%s\n' "$snap_fail" | grep -q 'could not snapshot /metrics'
+then echo "ok   compose: a failed /metrics snapshot writes nothing and warns (E4)"
+else echo "FAIL compose: a failed /metrics snapshot did not warn cleanly"; printf '%s\n' "$snap_fail"; fail=1
+fi
+# step 5: emit_stage with a counters file and an empty log parse yields requests from counters and counts_source "metrics"
+stg_out="$cb/stage-step5.ndjson"
+(
+  export RESULTS_NDJSON="$stg_out"
+  counters_sample='{"engine":"llama.cpp","restarted":false,"prompt_tokens":200,"generation_tokens":100,"requests":2,"finished_requests":2}'
+  eval "$(awk '/^emit_stage\(\)\{/{p=1} p{print} p && /^PY$/{py=1} py && /^}$/{exit}' "$here/harness/run_suite.sh")"
+  emit_stage "s-test" "python" "lbl" "true" "0" "10" "100" "true" "null" "5" "" "" "" "[]" "true" "[]" "pass" "$counters_sample" "$cb/serve.evidence.json"
+)
+stg_rec=$(cat "$stg_out" 2>/dev/null || true); rm -f "$stg_out"
+if [ -n "$stg_rec" ] && python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["requests"] == 2, d
+assert d["prompt_tokens"] == 200, d
+assert d["gen_tokens"] == 100, d
+assert d["counts_source"] == "metrics", d
+assert d["counters"]["engine"] == "llama.cpp", d
+assert d["serve_evidence"].endswith("serve.evidence.json"), d
+' "$stg_rec" 2>/dev/null
+then echo "ok   suite: emit_stage with counters and an empty log parse yields requests from counters and counts_source 'metrics'"
+else echo "FAIL suite: emit_stage with counters and empty log parse did not behave as expected: $stg_rec"; fail=1
 fi
 if ! grep -q 'budget gate or VRAM cap refused' "$here/skills/local-build/scripts/local-build.sh" \
   && grep -q 'see the error above' "$here/skills/local-build/scripts/local-build.sh"

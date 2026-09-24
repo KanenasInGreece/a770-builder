@@ -796,7 +796,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     log_parser = subparsers.add_parser("log", help="Parse engine log and optional model metadata into evidence JSON.")
     log_parser.add_argument("--engine", choices=["vllm", "llama.cpp"], default="vllm", help="Inference engine name")
-    log_parser.add_argument("--log", required=True, help="Path to server log file")
+    log_parser.add_argument("--log", required=True, help="Path to server log file, or - for stdin")
     log_parser.add_argument("--model", default=None, help="Path to model file (.gguf) or directory")
     log_parser.add_argument("--out", default=None, help="Output file path (default stdout)")
 
@@ -810,11 +810,20 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.command == "log":
         notes = []
-        log_path = Path(args.log)
-        if not log_path.is_file():
+        if args.log == "-":
+            try:
+                log_text = sys.stdin.read()
+                data = parse_vllm_log(log_text) if args.engine == "vllm" else parse_llamacpp_log(log_text)
+            except Exception as e:
+                notes.append(f"cannot read log from stdin: {e}")
+                data = _empty_log_result(args.engine)
+            log_path = None
+        else:
+            log_path = Path(args.log)
+        if log_path is not None and not log_path.is_file():
             notes.append(f"log file not found: {args.log}")
             data = _empty_log_result(args.engine)
-        else:
+        elif log_path is not None:
             try:
                 log_text = log_path.read_text(encoding="utf-8", errors="replace")
                 data = parse_vllm_log(log_text) if args.engine == "vllm" else parse_llamacpp_log(log_text)
