@@ -20,6 +20,7 @@ import json, os, re, sys
  instrument, far_end_s, avail_before_s, avail_after_s,
  bench_model_path, bench_speed_path, ctx_sweep_log, depth_log,
  suite_json_s, suite_results_path, fail_rung, fail_msg, generated) = sys.argv[1:24]
+evidence_path = sys.argv[24] if len(sys.argv) > 24 and sys.argv[24] else None
 
 ctx = int(ctx_s)
 far_end = int(far_end_s)
@@ -46,12 +47,33 @@ def read_text(path):
 bench_model = load_json(bench_model_path)
 bench_speed = load_json(bench_speed_path) if bench_speed_path else None
 
-# ram_gb_extra is not computed here: it is the engine's own host buffers (llama.cpp's *_Host ... buffer
-# size lines, at -lv 4), which this rung's own output does not carry, so it is always printed null and
-# transcribed by hand (see the printed hand-fill note below). memavailable_drop_gb is still the host
-# MemAvailable drop across the load (rung 1), in GB — a real measurement, just not this field: page cache
-# makes it vary run to run for the same model, so it is kept as a separate recorded value.
+# ram_gb_extra is derived from the server evidence file when available (the engine's own host buffers,
+# llama.cpp's *_Host ... buffer size lines, at -lv 4): host_buffers_mib / 1024 rounded to 2.
+# When no evidence file is provided, it is printed null and transcribed by hand.
+# memavailable_drop_gb is still the host MemAvailable drop across the load (rung 1), in GB.
 ram_gb_extra = None
+if evidence_path:
+    ev_data = load_json(evidence_path)
+    row_model = os.path.basename(gguf)
+    ev_model = None
+    if isinstance(ev_data, dict):
+        if isinstance(ev_data.get("gguf"), dict) and ev_data["gguf"].get("source"):
+            ev_model = ev_data["gguf"]["source"]
+        elif ev_data.get("model"):
+            ev_model = ev_data["model"]
+        elif isinstance(ev_data.get("checkpoint_config"), dict) and ev_data["checkpoint_config"].get("source"):
+            ev_model = ev_data["checkpoint_config"]["source"]
+    ev_model_base = os.path.basename(ev_model) if ev_model else None
+    if ev_model_base and ev_model_base == row_model:
+        hb = ev_data.get("host_buffers_mib")
+        if hb is not None:
+            try:
+                ram_gb_extra = round(float(hb) / 1024.0, 2)
+            except (ValueError, TypeError):
+                pass
+    else:
+        print(f"note: evidence file {evidence_path} is for {ev_model_base or 'unknown'}, not {row_model} — ignoring")
+        evidence_path = None
 memavailable_drop_gb = None
 try:
     memavailable_drop_gb = round((int(avail_before_s) - int(avail_after_s)) / 1024.0, 2)
@@ -251,6 +273,10 @@ if row_suite is not None:
     row["suite"] = row_suite
 if far_end >= 90000 and depth_score is not None:
     row["depth_probe_100k"] = f"{'pass' if depth_pass else 'fail'} ({depth_score}/3)"
+if evidence_path:
+    if "checkpoint" not in row or not isinstance(row["checkpoint"], dict):
+        row["checkpoint"] = {}
+    row["checkpoint"]["evidence"] = evidence_path
 
 print("\n── REGISTRY ROW — paste under profiles.<name> in config/registry/<card>.<mode>.json ──")
 print(json.dumps(row, indent=2))
