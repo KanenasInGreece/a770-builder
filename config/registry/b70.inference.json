@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "card": "b70",
+  "mode": "inference",
+  "notes": "Every number is a measurement on the Arc Pro B70 (32 GB, Xe2) with nothing else on the card, llama.cpp in the full-intel SYCL container, -ub 512, K/V q8_0; each row's measured_on names its build. The ledger config/models.md holds every B70 checkpoint measured, adopted or not. builder.env and the environment override any A770B_<NAME>_* value.",
+  "profiles": {
+    "qwen38-27b-udq6k-sycl": {
+      "task": "code-edit",
+      "evidence": "SUITE-1@1: 3 of 3 counted stages passed, all three reference exercises passed, depth probe 3/3 at 98,976 tokens (full ladder 2026-09-20)",
+      "model": "Qwen3.8-27B-UD-Q6_K.gguf",
+      "source": "unsloth/Qwen3.8-27B-GGUF",
+      "family": "qwen3.8",
+      "architecture": "dense, hybrid attention (Gated DeltaNet + gated attention; 64 blocks, an unused prediction-head layer)",
+      "quant": "UD-Q6_K",
+      "category": "dense",
+      "weight_class": "27b",
+      "params_b": {
+        "total": 27,
+        "active": 27
+      },
+      "ctx": 100000,
+      "useful_ctx": 100000,
+      "kv": "q8_0",
+      "flash_attention": "on",
+      "reasoning": "on",
+      "extra": "",
+      "thinking": {
+        "mode": "on",
+        "budget": 2048,
+        "preserve": true,
+        "source": "the task budget the full ladder ran with (2026-09-20); the kit queue of 2026-09-24 without a budget timed out on the dense 27B files"
+      },
+      "timeout_s": 2100,
+      "vram_gib_after_load": 23.35,
+      "ram_gb_extra": 1.09,
+      "speed": {
+        "decode_tps": {
+          "8k": 19.11,
+          "32k": 14.63,
+          "64k": null,
+          "100k": 8.91
+        },
+        "prefill_tps": {
+          "8k": 806.44,
+          "32k": 702.96,
+          "64k": null,
+          "100k": 530.49
+        },
+        "far_end": {
+          "tokens": 98855,
+          "decode_tps": 8.9,
+          "prefill_tps": 674.0,
+          "ttft_s": 135.6
+        },
+        "delivered": {
+          "prefill_tps": 615.0,
+          "decode_tps": 17.6,
+          "source": "candidate-suite-20260920-155350-847015.json"
+        },
+        "bench": {
+          "tool": "llama-bench",
+          "prompt": 8192,
+          "gen": 128,
+          "flags": "-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -b 2048 -ub 512 -d 0,8192,32768,98976",
+          "at_depth": {
+            "0": {
+              "pp": 1008.53,
+              "tg": 21.38
+            },
+            "8192": {
+              "pp": 806.44,
+              "tg": 19.11
+            },
+            "32768": {
+              "pp": 702.96,
+              "tg": 14.63
+            },
+            "98976": {
+              "pp": 530.49,
+              "tg": 8.91
+            }
+          },
+          "source": "Qwen3.8-27B-UD-Q6_K-sycl-bench-20260920-154124.json (build 10920, SYCL); the 100k column is depth 98,976"
+        }
+      },
+      "depth_probe_100k": "pass (3/3)",
+      "instrument": "SUITE-1@1",
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "source": "candidate-suite-20260920-155350-847015.json",
+        "mean_wall_s": 871.7,
+        "instrument": "SUITE-1@1"
+      },
+      "measured_on": "Arc Pro B70 32 GB, llama.cpp full-intel SYCL container, build 10920",
+      "card": "b70",
+      "backend": "sycl",
+      "placement": "container",
+      "mode": "inference",
+      "engine": "llama.cpp",
+      "checkpoint": {
+        "format": "gguf",
+        "weight_quant": "UD-Q6_K",
+        "activation_quant": "none"
+      },
+      "capability": {},
+      "capability_source": "not published for this quant by its maker (Unsloth); the base model's card scores are not this file's",
+      "fit": {
+        "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 871.7 s, all three reference exercises passed (full ladder 2026-09-20)",
+        "write": "not measured"
+      },
+      "use_for": "The B70's first measured builder: Qwen3.8-27B in Unsloth's dynamic Q6_K (by bytes 63% Q6_K, 22% Q5_K, 13% Q8_0) on SYCL, 100,000-token window, 23.4 GiB of the 28.0 GiB cap. Decodes 21.4 tok/s at depth 0, 19.1 at 8k, 14.6 at 32k and 8.9 at 99k; prefills 806 tok/s at 8k. Cleared the kit 3/3 with all references and the depth probe 3/3 at 99k, with a 2,048-token task budget. Served at the harness's default sampling (the ladder carried no sampling line). llama.cpp keeps about 1.1 GiB of host buffers by design; every layer is on the card."
+    }
+  }
+}
