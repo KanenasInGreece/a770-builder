@@ -364,8 +364,10 @@ The CPU backend **always** loads. That is not CPU decode. llama-bench JSON is th
 llama-server at the harness default (`verbosity = 3`) does **not** repeat the `ggml_vulkan:` banner. It does print
 `model has unused tensor …` (this **file** has heads the engine is not using — Qwen `blk.64.nextn.*` is MTP sitting
 idle) and `eval time = … tokens per second`. Do not wait for `offloading all layers to GPU` or
-`Warning: falling back to CPU`: those strings are not in our logs. Partial offload shows up as `ram_gb_extra` on a
-dense row, `n_cpu_moe` on a MoE row, and VRAM that does not match the file size.
+`Warning: falling back to CPU`: those strings are not in our logs. Partial offload shows up as `offloaded N/M
+layers to GPU` with N < M in the server log, as `n_cpu_moe` on a MoE row, and as VRAM that does not match the
+file size — not as `ram_gb_extra`, which is the engine's own host buffers (the log's `*_Host … buffer size` lines,
+at `-lv 4`) and stays small even at full offload.
 
 `GGML_VK_DISABLE_COOPMAT=1` is still the harness default (A770 freeze). Mesa already reports `matrix cores: none`
 on both A770 and B70, so unsetting the flag is not a promised XMX path.
@@ -403,7 +405,8 @@ Prefill vs decode are already in `slot print_timing` / llama-bench `pp`/`tg`. Do
 ### What to do when it is slow
 
 1. Confirm the device list and the banner (`Vulkan0`/`SYCL0`, `ggml_vulkan:` / `load_backend: loaded SYCL`).
-2. Confirm the weights are on the GPU (VRAM after load, `n_gpu_layers`, `ram_gb_extra`).
+2. Confirm the weights are on the GPU (VRAM after load, `n_gpu_layers`, `offloaded N/M layers to GPU` in the log
+   — N < M is partial offload; `ram_gb_extra` is the engine's own host buffers, not a placement signal).
 3. Same GGUF, other llama.cpp backend — if they disagree, it is the **kernel/backend**, not the model.
 4. Other checkpoint of the same model on the engine that named a kernel (vLLM AutoRound W4A16 vs GGUF K-quant).
 5. Only then spend a ladder, or write the family off. IQ2 vs IQ3 LiveCodeBench is a real **file-quality** cliff;
@@ -443,8 +446,10 @@ identity field).
    `--seat ~/local-ai/seat` to the ladder.
 2. **Run the ladder**: `bash harness/ladder.sh <profile-or-gguf> [--ctx <n>] [--kv …] [--kv-v …] [--extra …]`, with
    the model's own card's sampling flags folded into `--extra`. Rung by rung it runs what used to be six commands
-   run by hand: **1-2** — `harness/bench_model.sh`, the load and its VRAM (`vram_gib_after_load`, and for a MoE row
-   the host RAM the load costs beyond it, `ram_gb_extra`), the sanity probes and the 17k summary; **3** —
+   run by hand: **1-2** — `harness/bench_model.sh`, the load and its VRAM (`vram_gib_after_load`; `ram_gb_extra` —
+   the engine's own host buffers, transcribed by hand from the server log's `*_Host … buffer size` lines at `-lv
+   4`, not computed here — shows as `offloaded N/M layers to GPU` with N < M when offload is partial), the sanity
+   probes and the 17k summary; **3** —
    `harness/bench_speed.sh <profile>`, llama-bench at the row's own served flags at depths 0, 8192, 32768 and the
    far end (skipped for a bare GGUF); **4** — `harness/ctx_sweep.sh 8000 <far end>`, prefill, decode and VRAM
    against position, the source `useful_ctx`'s linear extension is drawn from; **5** — `harness/depth_probe.sh <far
