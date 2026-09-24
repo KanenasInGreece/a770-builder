@@ -226,24 +226,46 @@ def parse_vllm_log(text: str) -> dict:
     return result
 
 
+LLAMACPP_LINE_PREFIX_RE = re.compile(r"^[0-9][0-9.]*[ \t]+[A-Za-z][ \t]+", re.MULTILINE)
+
+
 def parse_llamacpp_log(text: str) -> dict:
     """Parse llama.cpp server log output into an evidence dictionary."""
     result = {
         "engine": "llama.cpp",
         "build": None,
+        "compiler": None,
         "backend": None,
+        "device": None,
         "offload": None,
         "file_type": None,
+        "tensor_type_counts": {},
+        "model_buffer_mib": None,
+        "host_buffers_mib": None,
+        "host_buffers": [],
         "kv_cache": None,
         "flash_attn": None,
+        "unused_tensors": None,
+        "unused_bytes": None,
+        "sampler": None,
         "kernel_lines": [],
     }
     if not text:
         return result
 
+    # llama.cpp's -lv 4 (and higher) log lines carry a "0.00.186.536 I " elapsed-time/level prefix before the
+    # module name; strip it so every regex below (and kernel_lines) reads the message, not the timestamp
+    text = LLAMACPP_LINE_PREFIX_RE.sub("", text)
+
     m_build = re.search(r"\bbuild(?:\s*[:=]|\s+)\s*([0-9]+(?:\s*\([0-9a-fA-F]+\))?)", text)
     if m_build:
         result["build"] = m_build.group(1).strip()
+
+    # "build 10920 (eafe15a5e) with IntelLLVM 2025.3.3 for Linux x86_64" — the compiler name+version between
+    # "with" and "for"
+    m_compiler = re.search(r"\bwith\s+(\S+\s+[0-9][0-9.]*)\s+for\b", text)
+    if m_compiler:
+        result["compiler"] = m_compiler.group(1).strip()
 
     loaded = re.findall(r"load_backend:\s*loaded\s+(\w+)\s+backend", text, re.IGNORECASE)
     gpu_names = {"sycl", "vulkan", "cuda", "rocm", "metal", "opencl", "kompute"}
@@ -256,6 +278,14 @@ def parse_llamacpp_log(text: str) -> dict:
         chosen = loaded[0]
     result["backend"] = chosen
 
+    # the device_info line: "  - SYCL0   : Intel(R) Arc(TM) Pro B70 Graphics (32656 MiB, 32581 MiB free)" —
+    # device name and total MiB (the CPU line on the row above/below it never matches, having no SYCL/Vulkan id)
+    m_dev = re.search(
+        r"(?:SYCL|Vulkan|CUDA)\d*\s*:\s*(.+?)\s*\((\d+(?:\.\d+)?)\s*MiB,\s*\d+(?:\.\d+)?\s*MiB free\)", text
+    )
+    if m_dev:
+        result["device"] = {"name": m_dev.group(1).strip(), "total_mib": float(m_dev.group(2))}
+
     m_off = re.search(r"offloaded\s+(\d+)/(\d+)\s+layers", text)
     if m_off:
         result["offload"] = {"layers": int(m_off.group(1)), "of": int(m_off.group(2))}
@@ -263,6 +293,27 @@ def parse_llamacpp_log(text: str) -> dict:
     m_ft = re.search(r"file type\s*=\s*([A-Za-z0-9_]+)", text)
     if m_ft:
         result["file_type"] = m_ft.group(1).strip()
+
+    # the model-loader tensor listing: "llama_model_loader: - type q6_K:  241 tensors" — one line per type
+    tensor_counts = {}
+    for tname, tcount in re.findall(r"-\s*type\s+(\S+):\s*(\d+)\s+tensors", text):
+        tensor_counts[tname] = int(tcount)
+    result["tensor_type_counts"] = tensor_counts
+
+    # the device-side model buffer: "load_tensors: SYCL0 model buffer size = 19625.41 MiB" — the first match
+    # whose device name is not a *_Host entry (those are host_buffers, below)
+    for dname, dval in re.findall(r"(\S+)\s+model buffer size\s*=\s*([\d.]+)\s*MiB", text):
+        if not dname.endswith("_Host"):
+            result["model_buffer_mib"] = float(dval)
+            break
+
+    # every "<name>_Host <kind> buffer size = N MiB" line (model/output/compute…) — summed into host_buffers_mib
+    # (this project's ram_gb_extra) and kept individually as host_buffers
+    host_matches = re.findall(r"(\S+_Host)\s+([a-z]+)\s+buffer size\s*=\s*([\d.]+)\s*MiB", text)
+    if host_matches:
+        host_buffers = [(f"{hname} {hkind}", float(hval)) for hname, hkind, hval in host_matches]
+        result["host_buffers"] = [{"name": n, "mib": v} for n, v in host_buffers]
+        result["host_buffers_mib"] = round(sum(v for _, v in host_buffers), 2)
 
     m_kv = re.search(r"K\s*\(([^)]+)\):\s*([0-9.]+)\s*MiB.*?V\s*\(([^)]+)\):\s*([0-9.]+)\s*MiB", text)
     if m_kv:
@@ -279,6 +330,33 @@ def parse_llamacpp_log(text: str) -> dict:
     m_fa = re.search(r"\bflash_attn\s*=\s*(\S+)", text)
     if m_fa:
         result["flash_attn"] = m_fa.group(1).strip()
+
+    # "model has unused tensor blk.64.attn_norm.weight (size = 20480 bytes) -- ignoring" — one warning per
+    # tensor a shorter run (fewer nextn layers, MTP disabled, …) leaves unloaded
+    unused_sizes = [int(b) for b in re.findall(r"model has unused tensor \S+ \(size = (\d+) bytes\)", text)]
+    if unused_sizes:
+        result["unused_tensors"] = len(unused_sizes)
+        result["unused_bytes"] = sum(unused_sizes)
+
+    # "sampler params: \n\ttop_k = 40, top_p = 0.950, min_p = 0.050, temp = 0.800\n\trepeat_penalty = 1.000, …"
+    # — llama.cpp prints this once per request (never at server startup with no request served), as an indented
+    # block; the five sampling numbers this project tracks, wherever they land in that block
+    m_samp = re.search(r"sampler params:\s*\n((?:[ \t]+\S.*\n?)+)", text)
+    if m_samp:
+        block = m_samp.group(1)
+
+        def _sampler_num(key: str):
+            mm = re.search(r"\b" + re.escape(key) + r"\s*=\s*(-?[0-9.]+)", block)
+            return float(mm.group(1)) if mm else None
+
+        top_k = _sampler_num("top_k")
+        result["sampler"] = {
+            "top_k": int(top_k) if top_k is not None else None,
+            "top_p": _sampler_num("top_p"),
+            "min_p": _sampler_num("min_p"),
+            "temp": _sampler_num("temp"),
+            "repeat_penalty": _sampler_num("repeat_penalty"),
+        }
 
     compiled_patterns = [re.compile(p, re.IGNORECASE) for p in LLAMACPP_KERNEL_PATTERNS]
     seen_messages = set()
@@ -674,11 +752,20 @@ def _empty_log_result(engine: str) -> dict:
     return {
         "engine": "llama.cpp",
         "build": None,
+        "compiler": None,
         "backend": None,
+        "device": None,
         "offload": None,
         "file_type": None,
+        "tensor_type_counts": {},
+        "model_buffer_mib": None,
+        "host_buffers_mib": None,
+        "host_buffers": [],
         "kv_cache": None,
         "flash_attn": None,
+        "unused_tensors": None,
+        "unused_bytes": None,
+        "sampler": None,
         "kernel_lines": [],
     }
 

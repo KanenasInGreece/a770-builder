@@ -18,6 +18,7 @@ from harness.engine_evidence import (
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "engine"
 VLLM_LOG_FIXTURE = FIXTURES_DIR / "vllm-xpu-gptq.log"
 VLLM_PROM_FIXTURE = FIXTURES_DIR / "vllm-metrics.prom"
+LLAMACPP_SYCL_LV4_FIXTURE = FIXTURES_DIR / "llamacpp-sycl-lv4.log"
 
 
 def test_vllm_log_fixture():
@@ -264,6 +265,71 @@ ggml_sycl: using device Intel GPU
     assert parsed["flash_attn"] == "1"
     assert any("offloaded" in l for l in parsed["kernel_lines"])
     assert any("SYCL" in l for l in parsed["kernel_lines"])
+
+
+def test_llamacpp_sycl_lv4_fixture():
+    """Verify parse_llamacpp_log on the real llama.cpp b10920 SYCL log captured at -lv 4 (C11-W2 fixture): every
+    field the new -lv 4 lines carry, asserted against what this real capture actually has — including the fields
+    it does NOT have (backend, sampler), because the capture is a cold start with no request served."""
+    text = LLAMACPP_SYCL_LV4_FIXTURE.read_text(encoding="utf-8")
+    parsed = parse_llamacpp_log(text)
+
+    assert parsed["engine"] == "llama.cpp"
+    # "common_params_print_info: build 10920 (eafe15a5e) with IntelLLVM 2025.3.3 for Linux x86_64"
+    assert parsed["build"] == "10920 (eafe15a5e)"
+    assert parsed["compiler"] == "IntelLLVM 2025.3.3"
+    # this fixture never prints "load_backend: loaded <X> backend" at -lv 4 — a cold start with no request has no
+    # such line, so backend stays None; asserting that is the point, not an oversight
+    assert parsed["backend"] is None
+    # "  - SYCL0   : Intel(R) Arc(TM) Pro B70 Graphics (32656 MiB, 32581 MiB free)"
+    assert parsed["device"] == {"name": "Intel(R) Arc(TM) Pro B70 Graphics", "total_mib": 32656.0}
+    # "load_tensors: offloaded 66/66 layers to GPU"
+    assert parsed["offload"] == {"layers": 66, "of": 66}
+    # "print_info: file type   = Q6_K"
+    assert parsed["file_type"] == "Q6_K"
+    # "llama_model_loader: - type <x>:  N tensors", one line per type; 866 tensors total (the loader's own count)
+    assert parsed["tensor_type_counts"] == {
+        "f32": 360, "q8_0": 154, "q4_K": 2, "q5_K": 104, "q6_K": 241, "iq4_nl": 2, "iq4_xs": 3,
+    }
+    assert sum(parsed["tensor_type_counts"].values()) == 866
+    # "load_tensors: SYCL0 model buffer size = 19625.41 MiB" — the device-side buffer, not a host one
+    assert parsed["model_buffer_mib"] == 19625.41
+    # every "<name>_Host <kind> buffer size = N MiB" line: model 994.63, output 0.95, compute 118.03
+    assert parsed["host_buffers"] == [
+        {"name": "SYCL_Host model", "mib": 994.63},
+        {"name": "SYCL_Host output", "mib": 0.95},
+        {"name": "SYCL_Host compute", "mib": 118.03},
+    ]
+    assert parsed["host_buffers_mib"] == round(994.63 + 118.03 + 0.95, 2)
+    # "llama_kv_cache: size = 3323.50 MiB (100096 cells, ...), K (q8_0): 1661.75 MiB, V (q8_0): 1661.75 MiB"
+    assert parsed["kv_cache"] == {"k_type": "q8_0", "v_type": "q8_0", "k_mib": 1661.75, "v_mib": 1661.75}
+    # "llama_context: flash_attn            = enabled"
+    assert parsed["flash_attn"] == "enabled"
+    # 15 "model has unused tensor ... (size = N bytes) -- ignoring" lines (the unused blk.64.* nextn tensors)
+    assert parsed["unused_tensors"] == 15
+    assert parsed["unused_bytes"] == 351008768
+    # this fixture never serves a request, so llama.cpp never prints "sampler params:" — sampler stays None
+    assert parsed["sampler"] is None
+    assert any("offloaded" in line for line in parsed["kernel_lines"])
+    # kernel_lines must carry the message, not the "0.00.949.864 I " elapsed-time/level prefix glued in front
+    assert not any(line.split(" ", 1)[0][0].isdigit() for line in parsed["kernel_lines"])
+
+
+def test_llamacpp_sampler_params_block_when_a_request_was_served():
+    """The real fixture above never serves a request, so it has no "sampler params:" block to assert against —
+    this drives that block synthetically (llama.cpp's own multi-line indented format) to prove the five sampling
+    numbers this project tracks are read out of it correctly."""
+    sample = """
+main: build: 10920 (eafe15a5e)
+sampler params:
+\trepeat_last_n = 64, repeat_penalty = 1.100, frequency_penalty = 0.000, presence_penalty = 0.000
+\ttop_k = 20, top_p = 0.950, min_p = 0.050, temp = 1.000
+sampler chain: logits -> top-k -> top-p -> min-p -> temp -> softmax -> dist
+"""
+    parsed = parse_llamacpp_log(sample)
+    assert parsed["sampler"] == {
+        "top_k": 20, "top_p": 0.95, "min_p": 0.05, "temp": 1.0, "repeat_penalty": 1.1,
+    }
 
 
 def test_cli_log_vllm_fixture(tmp_path):
