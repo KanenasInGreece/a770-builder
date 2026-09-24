@@ -190,7 +190,7 @@ def test_the_same_rungs_with_an_answered_probe_do_compute_a_useful_ctx(tmp_path)
 
 
 def test_ram_gb_extra_is_never_computed_and_memavailable_drop_is_kept_separately(tmp_path):
-    """ram_gb_extra is the engine's own host buffers (llama.cpp's *_Host ... buffer size lines), which no rung
+    """ram_gb_extra is the engine's own host buffers (llama.cpp's *_Host … buffer size lines), which no rung
     here produces, so the computation must never fill it from the MemAvailable drop; it is always null, both
     in the results document and in the printed row, and left for the operator to transcribe by hand. The
     MemAvailable drop that run_row's avail_before/avail_after arguments (64000, 52000 MiB) carry is still a
