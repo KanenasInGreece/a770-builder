@@ -2231,6 +2231,69 @@ def test_check_fails_bad_engine(tmp_path):
     assert "profiles: qwen35-9b-q4km-vulkan: engine must be llama.cpp or vllm" in result.stderr
 
 
+# --- optional tool_parser (only meaningful on a vllm-backend row) ---
+
+
+def test_check_passes_tool_parser_on_a_vllm_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["tool_parser"] = "qwen3_coder"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_tool_parser_on_a_non_vllm_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["backend"] == "vulkan"
+    prof["tool_parser"] = "qwen3_coder"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert (
+        "profiles: qwen35-9b-q4km-vulkan: tool_parser is only meaningful when backend is vllm "
+        "(this row's backend is 'vulkan')" in result.stderr
+    )
+
+
+def test_check_fails_malformed_tool_parser(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["tool_parser"] = "bad;value"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: tool_parser must match ^[a-z0-9_]+$" in result.stderr
+
+
+def test_check_passes_when_tool_parser_is_omitted(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"].pop("tool_parser", None)
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_env_exports_tool_parser(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["tool_parser"] = "qwen3_coder"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("env", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_TOOL_PARSER:=qwen3_coder" in result.stdout
+
+
+def test_env_exports_empty_tool_parser_when_absent():
+    result = run("env", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_TOOL_PARSER:=}" in result.stdout
+
+
 def test_check_fails_checkpoint_not_object(tmp_path):
     data = load_base()
     data["profiles"]["qwen35-9b-q4km-vulkan"]["checkpoint"] = "gguf"
