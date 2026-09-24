@@ -52,7 +52,9 @@ check_update(){ local url latest pv
   echo "  update: git -C ${A770B_PROJECT} pull  (the project), then  npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy  (this copy; or copy skills/local-build by hand)"
   return 1
 }
-case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
+fi
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh" || { [ "${1:-}" = "doctor" ] || exit 2; }; . "$A770B_PROJECT/harness/guard.sh"
 if [ "${1:-}" = "doctor" ]; then
@@ -117,6 +119,56 @@ _reload_lock_held(){ # true when another process holds the run lock; this shell'
   if ( flock -n 8 ) 8>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then return 1; fi
   return 0
 }
+_write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4): pipe the compose service's own
+  # container log into engine_evidence.py log, so every successful serve leaves evidence beside the run's other
+  # results, and record its path for a caller (the stage-counter diff, the ladder) to pick up. docker, python or
+  # an unreadable log failing here must never fail the serve that already succeeded — warn once and carry on.
+  local profile="$1" backend="$2" model="$3" engine container out logtext
+  case "$backend" in vllm) engine=vllm ;; *) engine="llama.cpp" ;; esac
+  container="${A770B_COMPOSE_PROJECT}-llama-1"           # the one compose service name every envelope uses
+  mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
+  out="$A770B_DATA/results/serve-$profile-$(date +%Y%m%d-%H%M%S).evidence.json"
+  # docker's own exit status is checked BEFORE python3 ever runs (rather than piping straight into it): python3
+  # reads only its stdin and cannot see a failed upstream, so a straight pipe would still write a near-empty
+  # evidence file — and its own success would make the pipeline look like it worked without pipefail's help.
+  if logtext=$("$A770B_DOCKER" logs "$container" 2>&1) \
+      && printf '%s\n' "$logtext" | python3 "$A770B_PROJECT/harness/engine_evidence.py" \
+           log --engine "$engine" --log - --model "$model" --out "$out"
+  then
+    printf '%s\n' "$out" > "$A770B_DATA/logs/serve-evidence.path"
+  else
+    echo "⚠ could not write serve evidence for $profile (the container log or engine_evidence.py failed) — continuing" >&2
+  fi
+}
+_metrics_snapshot(){ # <out-file> — best-effort (E4) GET of /metrics; a failure writes nothing and warns, never
+  # fails the run. llama.cpp guards /metrics with the API key, vLLM does not; either way the key must never sit
+  # in argv (visible in a process listing) or in a file left on disk. Passing it to curl through process
+  # substitution (curl -H @<(…)) is a header FILE curl reads once — chosen over a temp file because there is then
+  # nothing to remove: the fd exists only for this one curl call and is gone the moment it returns.
+  local out="$1" url="http://$A770B_HOST:$A770B_PORT/metrics" body rc=1
+  if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
+    body=$(curl -sf --max-time 5 "$url" 2>/dev/null) && rc=0
+  else
+    body=$(curl -sf --max-time 5 -H @<(printf 'Authorization: Bearer %s' "$(a770b_api_key)") "$url" 2>/dev/null) && rc=0
+  fi
+  if [ "$rc" = 0 ] && [ -n "$body" ]; then
+    printf '%s\n' "$body" > "$out"
+  else
+    echo "⚠ could not snapshot /metrics to $(basename "$out") — continuing" >&2
+  fi
+}
+_stage_counters(){ # <label> — engine_evidence.py diff over <label>.metrics-before.prom/.metrics-after.prom, into
+  # <label>.counters.json; best-effort like the snapshot it reads (E4) — a failure here warns and leaves no
+  # counters.json (engine_evidence.py diff itself already tolerates a missing before/after file with a note).
+  local label="$1" engine
+  case "${A770B_SERVED_BACKEND:-}" in vllm) engine=vllm ;; *) engine="llama.cpp" ;; esac
+  if ! python3 "$A770B_PROJECT/harness/engine_evidence.py" diff --engine "$engine" \
+      "$A770B_DATA/results/$label.metrics-before.prom" "$A770B_DATA/results/$label.metrics-after.prom" \
+      --out "$A770B_DATA/results/$label.counters.json"
+  then
+    echo "⚠ could not compute stage counters for $label — continuing" >&2
+  fi
+}
 _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
   # shellcheck disable=SC2086
@@ -132,6 +184,7 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
     for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
   fi
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || return 2
+  _write_serve_evidence "$p" "${A770B_SERVED_BACKEND:-}" "$gguf"
   local thinking_desc="mode ${thinking_mode:-$reasoning}"
   [ -n "$thinking_effort" ] && thinking_desc="$thinking_desc · effort $thinking_effort"
   [ -n "$thinking_budget" ] && thinking_desc="$thinking_desc · budget $thinking_budget"
@@ -362,6 +415,7 @@ doctor(){
   [ -d "$A770B_UV_CACHE" ] && echo "ok   uv cache at $A770B_UV_CACHE" || { echo "MISSING uv cache at $A770B_UV_CACHE: run bash harness/warm_cache.sh once (the sandbox has no network)"; missing=$((missing+1)); }
   if [ "$missing" = 0 ]; then echo "ok   doctor: all checks passed"; return 0; else echo "MISSING doctor: $missing missing"; return 1; fi
 }
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 case "${1:-}" in
   serve)  run_lock; [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; serve "$2" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
@@ -407,6 +461,8 @@ case "${1:-}" in
     serve "$profile" || exit $?
     label="$profile-$(date +%Y%m%d-%H%M%S)"
     echo "▶ profile=$profile timeout=${t}s worktree=$WT brief=$BRIEF label=$label"
+    mkdir -p "$A770B_DATA/results"
+    _metrics_snapshot "$A770B_DATA/results/$label.metrics-before.prom"
     aside=0
     restore(){ if [ "$aside" = 1 ] && [ -f "$WT/AGENTS.md.local-off" ]; then mv -f "$WT/AGENTS.md.local-off" "$WT/AGENTS.md"; aside=0; fi; }
     trap restore EXIT INT TERM                                    # restored even on crash or timeout
@@ -417,6 +473,8 @@ case "${1:-}" in
     case "$brc" in 2|3) echo "⛔ build refused (exit $brc) — no capture, no reset" >&2; exit "$brc";; esac
     BL=$(cat "$A770B_DATA/logs/last-build.log.path" 2>/dev/null || true)
     [ -f "$BL" ] || die "build log path missing — capture skipped"
+    _metrics_snapshot "$A770B_DATA/results/$label.metrics-after.prom"
+    _stage_counters "$label"
     A770B_SPEC="$SPEC_SNAP" bash "$CAPTURE" "$label" "$WT" "$BL" | tail -2; crc=${PIPESTATUS[0]}
     [ "$crc" = 0 ] || { echo "⛔ the capture failed (exit $crc) and the seat was NOT reset: read $A770B_DATA/results/$label.task.md, then run: local-build.sh reset $WT" >&2; exit "$crc"; }
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean." ;;
@@ -489,3 +547,4 @@ case "${1:-}" in
     exit "$vrc" ;;
   *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
+fi
