@@ -381,6 +381,7 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
         A770B_CARD_VRAM_TOTAL="32",
         A770B_VRAM_CAP_GIB="16.0",
         A770B_QUANT="gptq",
+        TOOL_PARSER="qwen3_coder",
     )
     r = _run(env, "plan", GGUF, "8192")
     assert r.returncode == 0, r.stderr
@@ -390,6 +391,8 @@ def test_plan_vllm_builds_argv_with_quantization_model_len_gpu_utilization_and_k
     assert argv[argv.index("--quantization") + 1] == "gptq"
     assert argv[argv.index("--max-model-len") + 1] == "8192"
     assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.9"
+    assert "--enable-auto-tool-choice" in argv
+    assert argv[argv.index("--tool-call-parser") + 1] == "qwen3_coder"
     assert "--api-key" not in argv, "vLLM API key must not sit in the container argv"
     assert not any("a770b-" in a for a in argv)
     assert argv[argv.index("--host") + 1] == "0.0.0.0"
@@ -420,6 +423,7 @@ def test_plan_vllm_computes_gpu_memory_utilization_fraction_to_three_decimals(tm
         A770B_CARD_VRAM_TOTAL="16.0",
         A770B_VRAM_CAP_GIB="15.3",
         A770B_QUANT="gptq",
+        TOOL_PARSER="qwen3_coder",
     )
     r = _run(env, "plan", GGUF, "4096")
     assert r.returncode == 0, r.stderr
@@ -479,6 +483,70 @@ def test_vllm_key_shim_fails_closed_when_key_unreadable():
     assert "STARTED_UNAUTHENTICATED" not in r.stdout
 
 
+def test_plan_vllm_carries_the_tool_choice_flags_when_tool_parser_is_set(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="gptq",
+        TOOL_PARSER="qwen3_coder",
+    )
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert "--enable-auto-tool-choice" in argv
+    assert argv[argv.index("--tool-call-parser") + 1] == "qwen3_coder"
+
+
+def test_plan_vllm_refuses_when_tool_parser_is_unset(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="gptq",
+    )
+    env.pop("TOOL_PARSER", None)
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert (
+        "⛔ the vllm backend needs a tool-call parser for the coding agent "
+        "(set the row's tool_parser, or A770B_CANDIDATE_TOOL_PARSER for a candidate) "
+        "— read the model's chat template" in r.stderr
+    )
+
+
+def test_plan_vllm_refuses_a_malformed_tool_parser(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="gptq",
+        TOOL_PARSER="bad;value",
+    )
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert "needs a tool-call parser" in r.stderr
+
+
+def test_plan_llama_cpp_argv_never_carries_the_tool_choice_flags(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, A770B_SERVED_BACKEND="vulkan", TOOL_PARSER="qwen3_coder")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert "--enable-auto-tool-choice" not in argv
+    assert "--tool-call-parser" not in argv
+
+
 def test_plan_vllm_refuses_empty_quantization(tmp_path):
     bin_, _ = _fake_runtime(tmp_path)
     env = _env(
@@ -506,6 +574,7 @@ def test_plan_vllm_preserves_nested_model_path_relative_to_models_dir(tmp_path):
         A770B_CARD_VRAM_TOTAL="32",
         A770B_VRAM_CAP_GIB="16.0",
         A770B_QUANT="gptq",
+        TOOL_PARSER="qwen3_coder",
     )
     r_vllm = _run(env_vllm, "plan", "Qwen/Qwen3-32B", "8192")
     assert r_vllm.returncode == 0, r_vllm.stderr
@@ -558,6 +627,7 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
         A770B_QUANT="gptq",
         A770B_CARD_VRAM_TOTAL="32",
         A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
     )
     r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
     assert r.returncode == 0, r.stdout + r.stderr

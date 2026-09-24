@@ -54,6 +54,17 @@ _build_argv_vllm(){
   [ -n "${A770B_CARD_VRAM_TOTAL:-}" ] || { echo "⛔ A770B_CARD_VRAM_TOTAL must be set before a vLLM start (set A770B_CARD)" >&2; exit 2; }
   python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= float(sys.argv[2]) else 1)" "$A770B_VRAM_CAP_GIB" "$A770B_CARD_VRAM_TOTAL" 2>/dev/null \
     || { echo "⛔ A770B_VRAM_CAP_GIB must be a number no larger than A770B_CARD_VRAM_TOTAL" >&2; exit 2; }
+  # the parser is a property of the model's chat template (qwen3_coder for the XML tool format this
+  # image's Qwen3.8 checkpoints emit, qwen3_xml, hermes for JSON, …) — never a constant here. opencode
+  # sends tool_choice: "auto", which vLLM refuses without both flags, so an unset or malformed parser
+  # refuses the start rather than land a bad value in a container argv.
+  local tool_parser="${TOOL_PARSER:-}"
+  case "$tool_parser" in
+    ''|*[!a-z0-9_]*)
+      echo "⛔ the vllm backend needs a tool-call parser for the coding agent (set the row's tool_parser, or A770B_CANDIDATE_TOOL_PARSER for a candidate) — read the model's chat template" >&2
+      exit 2
+      ;;
+  esac
   # 0.9 is the engine target. Do not derive it from the llama.cpp cap: that cap is a
   # reserve for the GGUF serve, and shrinking this flag (0.875, 0.84) is a different run.
   local frac=0.9
@@ -65,6 +76,8 @@ _build_argv_vllm(){
     --gpu-memory-utilization "$frac"
     --host 0.0.0.0
     --port 8000
+    --enable-auto-tool-choice
+    --tool-call-parser "$tool_parser"
     "$@"
   )
 }
