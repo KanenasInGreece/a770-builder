@@ -30,8 +30,10 @@
 # including a rung that failed or was skipped), then prints a REGISTRY ROW: useful_ctx computed from the ctx_sweep
 # 8k/far-end decode readings by extending time-per-token linearly between them and capping by the depth probe's
 # last passing depth (AGENTS.md's "four-tokens-a-second rule"); speed.decode_tps/prefill_tps filled from
-# speed.bench.at_depth by depth (kit/PROFILE.md §2); vram_gib_after_load, ram_gb_extra (the host MemAvailable drop
-# across the load), suite (harness/suite_report.py --json on the task rung's results file) and instrument
+# speed.bench.at_depth by depth (kit/PROFILE.md §2); vram_gib_after_load, memavailable_drop_gb (the host
+# MemAvailable drop across the load — recorded in the results JSON's computed block, not printed in the row;
+# ram_gb_extra itself is never computed here, it is transcribed by hand from the server log's *_Host … buffer size
+# lines at -lv 4, and printed null), suite (harness/suite_report.py --json on the task rung's results file) and instrument
 # (SUITE-1@<kit_version>) filled in; use_for, fit.write, capability and measured_on left as clearly marked placeholders
 # IN THE ROW ITSELF (measured_on is a required field of the schema, so it is printed as __TODO__ rather than
 # omitted, unlike the identity fields below) — none of these are ever derived from a measurement, they are written
@@ -122,7 +124,7 @@ case ",$DEPTHS," in *",$FAR_END,"*) ;; *) DEPTHS="$DEPTHS,$FAR_END" ;; esac
 if [ "$DRYRUN" = 1 ]; then
   FRESH_FLAG=""; { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && FRESH_FLAG=" --fresh"
   echo "[dry-run] ladder for ${PROFILE_NAME:-$GGUF} — ctx=$CTX kv=$KV/$KV_V extra='$EXTRA' reasoning=$REAS timeout=${TIMEOUT}s far_end=$FAR_END"
-  echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (ram_gb_extra)"
+  echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
   echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 3/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; bash harness/bench_speed.sh $PROFILE_NAME --depths $DEPTHS"
@@ -138,7 +140,7 @@ if [ "$DRYRUN" = 1 ]; then
     EXTRA_DRY=""; [ -n "$EXTRA" ] && EXTRA_DRY=" --extra '$EXTRA'"
     echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V$EXTRA_DRY --reasoning $REAS${BUDGET:+ --reasoning-budget $BUDGET} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   fi
-  echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, ram_gb_extra, suite, instrument computed; use_for/fit.write/capability left as placeholders)"
+  echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, suite, instrument computed; ram_gb_extra printed null — transcribe it by hand from the server log's *_Host … buffer size lines at -lv 4; use_for/fit.write/capability left as placeholders)"
   echo "[dry-run] nothing written"
   exit 0
 fi
@@ -244,7 +246,9 @@ print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "${SUITE:-$A770B_P
 [ -n "$INSTRUMENT" ] || { echo "⛔ kit_version missing from suite.json" >&2; exit 1; }
 
 # ── the last step: read every rung's own output, compute what no single rung produces (useful_ctx by the
-# four-tokens-a-second rule, ram_gb_extra, the speed table), write the ONE ladder results JSON to $OUT, and print
+# four-tokens-a-second rule, memavailable_drop_gb from rung 1's MemAvailable sampling, the speed table — ram_gb_extra
+# is never computed here, it is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4),
+# write the ONE ladder results JSON to $OUT, and print
 # the REGISTRY ROW to paste. It lives in harness/ladder_row.py, not in a heredoc here, so it can be called: a test
 # drives it with a real run's rung outputs, and an operator can re-run it by hand over the artefacts a terminated
 # run left behind. Every argument below is this script's own, in this order; the last is the generation timestamp
