@@ -121,7 +121,8 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
   # shellcheck disable=SC2086
   local quant; quant=$(a770b_profile_var "$p" QUANT)
-  QUANT=$quant KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
+  local tool_parser; tool_parser=$(a770b_profile_var "$p" TOOL_PARSER)
+  QUANT=$quant TOOL_PARSER=$tool_parser KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
     THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
     THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
     bash "$SERVE" start "$gguf" "$ctx" $extra || return 1
