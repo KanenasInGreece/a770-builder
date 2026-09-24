@@ -2127,7 +2127,7 @@ def test_no_row_asks_for_host_ram():
     have a non-negative ram_gb_extra and no extra string that places any layer or expert in host RAM
     (--override-tensor, -ot, --cpu-moe, --n-cpu-moe, -ncmoe, or an -ngl/--n-gpu-layers value below 99)."""
     ngl_re = re.compile(r"(?:-ngl|--n-gpu-layers)\s+(\d+)")
-    for fpath in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
+    for fpath in (ROOT / "config" / "registry").glob("*.json"):
         data = json.loads(fpath.read_text(encoding="utf-8"))
         for name, prof in data["profiles"].items():
             ram = prof.get("ram_gb_extra")
