@@ -613,3 +613,14 @@ def test_bench_speed_refuses_with_the_one_line(tmp_path):
                        capture_output=True, text=True, env=env, cwd=ROOT)
     assert r.returncode == 2
     assert "no measured models for card b70 in display mode" in r.stderr
+
+
+def test_env_missing_registry_keeps_an_inherited_profile_list(tmp_path):
+    """A card with no registry must not wipe a list the caller exported: run_suite.sh --model exports
+    A770B_PROFILES with the ephemeral `candidate`, and local-build.sh sources env.sh again under it."""
+    env = dict(os.environ, A770B_PROJECT=str(ROOT), A770B_DATA=str(tmp_path / "data"), A770B_CARD="b70",
+               A770B_CARD_MODE="inference", XDG_CONFIG_HOME=str(tmp_path / "xdg"), A770B_PROFILES=" candidate")
+    env.pop("A770B_PROFILES_FILE", None)
+    r = run_bash(f'. "{ENV_SH}" || exit $?; printf "[%s]" "$A770B_PROFILES"', env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "[ candidate]"

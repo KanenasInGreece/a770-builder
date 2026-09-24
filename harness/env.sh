@@ -130,7 +130,9 @@ if [ -n "${A770B_PROFILES_FILE:-}" ] && [ -f "$A770B_PROFILES_FILE" ]; then
   _a770b_profile_lines=$(python3 "$A770B_PROJECT/harness/profiles.py" env --file "$A770B_PROFILES_FILE") || { echo "⛔ the registry $A770B_PROFILES_FILE is invalid (python3 harness/profiles.py check says why)" >&2; return 2 2>/dev/null || exit 2; }
   eval "$_a770b_profile_lines"; unset _a770b_profile_lines
 else
-  A770B_PROFILES=""
+  # keep a list the caller exported (run_suite.sh --model adds the ephemeral `candidate` before local-build.sh
+  # sources this file again); only an unset list becomes empty
+  : "${A770B_PROFILES:=}"
 fi
 : "${A770B_OUTPUT_TOKENS:=16384}"                            # opencode's per-reply output limit: a whole file goes out in one tool call, and at 4,096 a test file of two hundred lines was cut mid-JSON, so every write failed (measured 2026-09-08)
 : "${A770B_HIDDEN_ROOT:=$A770B_DATA/hidden}"                  # hidden acceptance tests a run specification may name: files the model never sees, copied into the seat by verify after the patch applies

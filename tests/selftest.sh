@@ -598,6 +598,11 @@ for verb in run serve; do
     echo "ok   I2: $verb of another card's profile is refused naming this card, when this card has rows"
   else echo "FAIL I2: $verb refusal with rows did not name the card"; printf '%s\n' "$out" | tail -3; fail=1; fi
 done
+# A candidate on a card with no registry is not refused: run_suite.sh --model exports A770B_PROFILES with `candidate`
+# and local-build.sh must accept it (the run then stops at the guard on the missing seat, not at the profile refusal).
+out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=inference A770B_PROFILES=" candidate" A770B_CANDIDATE_MODEL="$t/cand.gguf" A770B_CANDIDATE_CTX=4096; bash "$here/skills/local-build/scripts/local-build.sh" run /nonexistent-seat /nonexistent-brief.md --profile candidate ) 2>&1 )
+if printf '%s' "$out" | grep -q "no measured models for card b70"; then echo "FAIL candidate: refused on a card with no registry"; printf '%s\n' "$out" | tail -3; fail=1
+else echo "ok   candidate: a --model candidate runs on a card with no registry"; fi
 # I5 — a card with no registry: status/menu print the one line, and doctor reports it as MISSING, all quoting the
 # same `profiles.py empty-line` words.
 out=$( ( _iso; export A770B_CARD=b70 A770B_CARD_MODE=display; bash "$here/skills/local-build/scripts/local-build.sh" status ) 2>&1 )
