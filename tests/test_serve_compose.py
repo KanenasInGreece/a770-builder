@@ -129,6 +129,37 @@ def test_plan_builds_the_container_argv_and_touches_no_docker(tmp_path):
     assert not log.exists(), "plan must not invoke docker"
 
 
+def test_plan_carries_metrics_and_verbosity_4_on_vulkan_and_sycl_never_on_vllm(tmp_path):
+    # C11-W2: --metrics -lv 4 feeds the stage-counter diff and the engine-evidence log parse; both llama.cpp
+    # backends this harness serves carry it, and it must never leak into the vLLM argv (a different function,
+    # _build_argv_vllm, builds that one)
+    bin_, _ = _fake_runtime(tmp_path)
+    r_vk = _run(_env(tmp_path, bin_, A770B_SERVED_BACKEND="vulkan"), "plan", GGUF, "8192")
+    assert r_vk.returncode == 0, r_vk.stderr
+    argv_vk = _argv_lines(r_vk.stdout)
+    assert "--metrics" in argv_vk
+    assert argv_vk[argv_vk.index("-lv") + 1] == "4"
+
+    d2 = tmp_path / "sycl"; d2.mkdir()
+    bin2, _ = _fake_runtime(d2)
+    r_sycl = _run(_env(d2, bin2, A770B_SERVED_BACKEND="sycl"), "plan", GGUF, "8192")
+    assert r_sycl.returncode == 0, r_sycl.stderr
+    argv_sycl = _argv_lines(r_sycl.stdout)
+    assert "--metrics" in argv_sycl
+    assert argv_sycl[argv_sycl.index("-lv") + 1] == "4"
+
+    d3 = tmp_path / "vllm"; d3.mkdir()
+    bin3, _ = _fake_runtime(d3)
+    env_vllm = _env(
+        d3, bin3, A770B_SERVED_BACKEND="vllm", A770B_CARD_VRAM_TOTAL="32", A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="gptq", TOOL_PARSER="qwen3_coder",
+    )
+    r_vllm = _run(env_vllm, "plan", GGUF, "8192")
+    assert r_vllm.returncode == 0, r_vllm.stderr
+    argv_vllm = _argv_lines(r_vllm.stdout)
+    assert "--metrics" not in argv_vllm and "-lv" not in argv_vllm
+
+
 def test_plan_carries_the_thinking_controls_and_the_extra_words(tmp_path):
     bin_, _ = _fake_runtime(tmp_path)
     env = _env(tmp_path, bin_, THINKING_MODE="on", THINKING_EFFORT="low")

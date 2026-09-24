@@ -40,9 +40,12 @@ _build_argv_llama(){
   # truncation marker llama-server injects is deterministic and bench_model.sh / depth_probe.sh can grep for it
   [ -n "${THINKING_BUDGET:-}" ] && [ -n "${THINKING_BUDGET_MESSAGE:-$A770B_BUDGET_MESSAGE}" ] && thinking+=(--reasoning-budget-message "${THINKING_BUDGET_MESSAGE:-$A770B_BUDGET_MESSAGE}")
   [ "${THINKING_PRESERVE:-}" = "false" ] && thinking+=(--no-reasoning-preserve)
+  # --metrics -lv 4: /metrics for the stage-counter diff (C11), and verbosity 4 for the engine-evidence log lines
+  # (host buffer sizes, tensor counts, the sampler block, …) — both llama.cpp backends this harness serves
+  # (vulkan, sycl), never the vLLM argv (_build_argv_vllm, above, is a separate function)
   ARGV=(-m "$model" --alias "$A770B_ALIAS" --host 0.0.0.0 --port 8080 --api-key-file "$KCONTAINER" \
     -ngl 99 -c "$ctx" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --load-mode none -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
-    --jinja "${thinking[@]}" --reasoning-format deepseek "$@")
+    --metrics -lv 4 --jinja "${thinking[@]}" --reasoning-format deepseek "$@")
 }
 
 # _build_argv_vllm <model-in-container> <ctx> [extra…] — the vLLM flag set.
