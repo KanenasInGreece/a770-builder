@@ -105,6 +105,7 @@ THINKING_MODE_VALUES = {"on", "off", "auto"}
 THINKING_EFFORT_VALUES = {"low", "medium", "high", "xhigh", "default"}
 CATEGORY_VALUES = {"dense", "moe"}
 WEIGHT_CLASS_RE = re.compile(r"^[0-9]+b(-[ae][0-9]+b)?$")
+TOOL_PARSER_RE = re.compile(r"^[a-z0-9_]+$")
 FAR_END_KEYS = {"tokens", "decode_tps", "prefill_tps", "ttft_s"}
 BENCH_KEYS = {"tool", "prompt", "gen", "flags", "at_depth", "source"}
 BENCH_AT_DEPTH_VALUE_KEYS = {"pp", "tg"}
@@ -126,7 +127,7 @@ STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
     "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
-    "task", "evidence", "engine",
+    "task", "evidence", "engine", "tool_parser",
 )
 # The task classes a row competes in. The organizing axis of a registry is now the task,
 # not the window: a row is a (model, quant, KV, context, sampling) cell that wins one of these.
@@ -142,7 +143,7 @@ OTHER_KEYS = (
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {
     "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
-    "evidence", "operator_override", "engine", "checkpoint", "kernel",
+    "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
 }
 ENGINE_VALUES = {"llama.cpp", "vllm"}
 CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
@@ -608,6 +609,17 @@ def validate(data) -> list[str]:
         if "engine" in prof and isinstance(prof["engine"], str) and prof["engine"] not in ENGINE_VALUES:
             errors.append(f"{name}: engine must be llama.cpp or vllm")
 
+        if "tool_parser" in prof:
+            tp = prof["tool_parser"]
+            if not isinstance(tp, str) or not TOOL_PARSER_RE.match(tp):
+                errors.append(f"{name}: tool_parser must match ^[a-z0-9_]+$")
+            elif prof.get("backend") != "vllm":
+                errors.append(
+                    f"{name}: tool_parser is only meaningful when backend is vllm "
+                    f"(this row's backend is {prof.get('backend')!r}) -- llama.cpp parses "
+                    "tools from its own chat template"
+                )
+
         if "checkpoint" in prof:
             checkpoint = prof["checkpoint"]
             if not isinstance(checkpoint, dict):
@@ -905,6 +917,9 @@ def cmd_env(args) -> int:
         )
         print(': "${A770B_%s_CARD:=%s}"' % (upper, prof["card"]))
         print(': "${A770B_%s_BACKEND:=%s}"' % (upper, prof["backend"]))
+        tool_parser = prof.get("tool_parser")
+        tool_parser_str = tool_parser if isinstance(tool_parser, str) else ""
+        print(': "${A770B_%s_TOOL_PARSER:=%s}"' % (upper, tool_parser_str))
         print(': "${A770B_%s_MODE:=%s}"' % (upper, prof["mode"]))
         if prof.get("operator_override") is True:
             print(': "${A770B_%s_OPERATOR_OVERRIDE:=true}"' % upper)
