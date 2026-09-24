@@ -2121,15 +2121,25 @@ def test_check_passes_both_shipped_registries_thinking():
 def test_no_row_asks_for_host_ram():
     """This is a tripwire and not a gate: the harness's only host-memory check is a page-cache floor
     before the load, it cannot refuse a start whose weights will not fit in RAM, so until it can,
-    nothing shipped may ask for that. Every row in every registry file must have ram_gb_extra == 0 and no extra string containing
-    --n-cpu-moe or -ncmoe."""
+    nothing shipped may ask for that. It must test placement, not ram_gb_extra == 0: llama.cpp keeps
+    host buffers by design (the server log's *_Host ... buffer size lines, at -lv 4, are the measure
+    of that, not a sign of CPU-resident layers or experts), so every row in every registry file must
+    have a non-negative ram_gb_extra and no extra string that places any layer or expert in host RAM
+    (--override-tensor, -ot, --cpu-moe, --n-cpu-moe, -ncmoe, or an -ngl/--n-gpu-layers value below 99)."""
+    ngl_re = re.compile(r"(?:-ngl|--n-gpu-layers)\s+(\d+)")
     for fpath in (PROFILES_JSON, PROFILES_INFERENCE_JSON):
         data = json.loads(fpath.read_text(encoding="utf-8"))
         for name, prof in data["profiles"].items():
-            assert prof.get("ram_gb_extra") == 0, f"{fpath}: {name}: ram_gb_extra must be 0"
+            ram = prof.get("ram_gb_extra")
+            assert isinstance(ram, (int, float)) and not isinstance(ram, bool) and ram >= 0, \
+                f"{fpath}: {name}: ram_gb_extra must be a number >= 0"
             extra = prof.get("extra", "")
-            assert "--n-cpu-moe" not in extra and "-ncmoe" not in extra, \
-                f"{fpath}: {name}: extra must not contain --n-cpu-moe or -ncmoe"
+            for flag in ("--override-tensor", "-ot ", "--cpu-moe", "--n-cpu-moe", "-ncmoe"):
+                assert flag not in extra, f"{fpath}: {name}: extra must not contain {flag!r}"
+            m = ngl_re.search(extra)
+            if m:
+                assert int(m.group(1)) >= 99, \
+                    f"{fpath}: {name}: extra's -ngl/--n-gpu-layers must be >= 99"
 
 
 def test_kit_instrument_uses_kit_version_not_product_version(tmp_path):
