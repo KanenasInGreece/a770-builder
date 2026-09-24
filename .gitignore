@@ -6,6 +6,8 @@ logs/
 !kit/seat/python/data/sample.log
 # the rung logs tests/test_ladder_row.py drives harness/ladder_row.py with are fixtures, not run output
 !tests/data/*.log
+# the engine logs tests/test_engine_evidence.py parses are recorded fixtures, not run output
+!tests/fixtures/engine/*.log
 __pycache__/
 .pytest_cache/
 config/builder.env
