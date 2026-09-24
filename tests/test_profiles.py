@@ -2420,6 +2420,38 @@ def test_check_passes_w4a16_without_matching_quant(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_check_passes_checkpoint_with_optional_evidence(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["checkpoint"] = _gguf_checkpoint(prof["quant"])
+    prof["checkpoint"]["evidence"] = "/path/to/serve.evidence.json"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_checkpoint_evidence_not_string(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["checkpoint"] = _gguf_checkpoint(prof["quant"])
+    prof["checkpoint"]["evidence"] = 123
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint.evidence must be a non-empty string" in result.stderr
+
+
+def test_check_fails_checkpoint_evidence_empty(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["checkpoint"] = _gguf_checkpoint(prof["quant"])
+    prof["checkpoint"]["evidence"] = ""
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: checkpoint.evidence must be a non-empty string" in result.stderr
+
+
 def test_check_fails_kernel_not_object(tmp_path):
     data = load_base()
     data["profiles"]["qwen35-9b-q4km-vulkan"]["kernel"] = "gpu"

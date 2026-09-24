@@ -45,6 +45,7 @@ inputs the ladder would hand the step, and the ladder JSON and printed row it wr
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -232,3 +233,91 @@ def test_a_failed_probe_over_a_measured_window_still_caps_at_the_shallow_point(t
     assert doc["rungs"]["depth_probe"]["pass"] is False, doc["rungs"]["depth_probe"]
     assert doc["computed"]["useful_ctx"] == 8000, doc["computed"]
     assert printed_row(result.stdout)["useful_ctx"] == 8000, result.stdout
+
+
+def test_ladder_row_with_evidence_path_computes_ram_gb_extra_and_checkpoint_evidence(tmp_path):
+    """When an evidence path is passed as the optional 24th argument, ladder_row computes
+    ram_gb_extra = host_buffers_mib / 1024 rounded to 2, and adds checkpoint.evidence."""
+    evidence_file = tmp_path / "serve.evidence.json"
+    evidence_file.write_text(json.dumps({
+        "engine": "llama.cpp",
+        "host_buffers_mib": 1113.61,
+        "gguf": {"source": "/models/a-model.gguf"},
+    }), encoding="utf-8")
+
+    sweep_path = tmp_path / "ctx-sweep.log"
+    sweep_path.write_text(SWEEP_TABLE, encoding="utf-8")
+    depth_path = tmp_path / "depth-probe.log"
+    depth_path.write_text(DEPTH_PASSED, encoding="utf-8")
+    out_path = tmp_path / "ladder.json"
+    argv = [
+        str(out_path), "long", "/models/a-model.gguf", str(CTX), "q8_0", "q8_0", "0", "-fa on", "1800",
+        "long", "SUITE-1@test", str(FAR_END), "64000", "52000",
+        str(tmp_path / "no-bench-model.json"), "", str(sweep_path), str(depth_path),
+        "", "", "", "", GENERATED,
+        str(evidence_file),
+    ]
+    result = subprocess.run(
+        [sys.executable, str(LADDER_ROW)] + argv,
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    assert doc["computed"]["ram_gb_extra"] == 1.09
+    row = printed_row(result.stdout)
+    assert row["ram_gb_extra"] == 1.09
+    assert row["checkpoint"] == {"evidence": str(evidence_file)}
+
+
+def test_ladder_row_with_different_model_evidence_leaves_ram_extra_null_and_prints_note(tmp_path):
+    """ladder_row with an evidence file for a different model leaves ram_gb_extra null and prints the note."""
+    evidence_file = tmp_path / "other.evidence.json"
+    evidence_file.write_text(json.dumps({
+        "engine": "llama.cpp",
+        "host_buffers_mib": 1113.61,
+        "gguf": {"source": "/models/other-model.gguf"},
+    }), encoding="utf-8")
+
+    sweep_path = tmp_path / "ctx-sweep.log"
+    sweep_path.write_text(SWEEP_TABLE, encoding="utf-8")
+    depth_path = tmp_path / "depth-probe.log"
+    depth_path.write_text(DEPTH_PASSED, encoding="utf-8")
+    out_path = tmp_path / "ladder.json"
+    argv = [
+        str(out_path), "long", "/models/a-model.gguf", str(CTX), "q8_0", "q8_0", "0", "-fa on", "1800",
+        "long", "SUITE-1@test", str(FAR_END), "64000", "52000",
+        str(tmp_path / "no-bench-model.json"), "", str(sweep_path), str(depth_path),
+        "", "", "", "", GENERATED,
+        str(evidence_file),
+    ]
+    result = subprocess.run(
+        [sys.executable, str(LADDER_ROW)] + argv,
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    assert doc["computed"]["ram_gb_extra"] is None
+    row = printed_row(result.stdout)
+    assert row["ram_gb_extra"] is None
+    assert "checkpoint" not in row or "evidence" not in row.get("checkpoint", {})
+    assert "note: evidence file" in result.stdout
+
+
+def test_ladder_dry_run_mentions_evidence_step(tmp_path):
+    """ladder.sh --dry-run prints the engine evidence step after rung 2."""
+    res = subprocess.run(
+        ["bash", str(ROOT / "harness" / "ladder.sh"), "qwen35-9b-q4km-vulkan", "--dry-run"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        # isolated from the operator's own builder.env (XDG_CONFIG_HOME) and pinned to the card whose registry holds the
+        # profile, so the test means the same on any host
+        env={**{k: v for k, v in os.environ.items() if not k.startswith("A770B_")}, "A770B_PROJECT": str(ROOT),
+             "A770B_DATA": str(tmp_path), "A770B_REFUSE": "/nonexistent", "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+             "A770B_CARD": "a770", "A770B_CARD_MODE": "display"},
+    )
+    stdout = res.stdout
+    assert "[dry-run] evidence:" in stdout
+    assert "engine_evidence.py log" in stdout
+    assert "qwen35-9b-q4km-vulkan.evidence.json" in stdout

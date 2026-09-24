@@ -81,14 +81,18 @@ if a770b_is_profile "$SPEC"; then
   REAS=$(a770b_profile_var "$PROFILE_NAME" REASONING); REAS="${REAS:-off}"
   BUDGET=$(a770b_profile_var "$PROFILE_NAME" THINKING_BUDGET); BUDGET="${BUDGET:-}"
   TIMEOUT="${TIMEOUT_ARG:-$(a770b_profile_var "$PROFILE_NAME" TIMEOUT)}"
+  BACKEND=$(a770b_profile_var "$PROFILE_NAME" BACKEND)
+  BACKEND="${BACKEND:-${A770B_SERVED_BACKEND:-vulkan}}"
   NAME="$PROFILE_NAME"
 else
   GGUF=$(a770b_model_path "$SPEC")
   [ -n "$CTX_ARG" ] || die "--ctx N is required for a GGUF with no registry row ('$SPEC' is not one of: $A770B_PROFILES)"
   CTX="$CTX_ARG"; KV="${KV_ARG:-q8_0}"; KV_V="${KV_V_ARG:-$KV}"; EXTRA="${EXTRA_ARG:-}"; REAS="${REASONING_ARG:-off}"; BUDGET="${BUDGET_ARG:-}"
   TIMEOUT="${TIMEOUT_ARG:-1500}"
+  BACKEND="${A770B_SERVED_BACKEND:-vulkan}"
   NAME=$(basename "$GGUF"); NAME="${NAME%.gguf}"
 fi
+case "$BACKEND" in vllm) ENGINE=vllm ;; *) ENGINE="llama.cpp" ;; esac
 # the depth probe must leave room for the reasoning budget plus the answer: a fixed answer-only budget (320) starves
 # a thinking card of its answer — the class of defect that made the serious-sycl probe come back empty. The budget
 # is never hard-coded here: it is the row's own thinking budget (or the caller's, for a bare GGUF), or off.
@@ -110,6 +114,7 @@ case "$SEAT" in -*) die "the seat path looks like an option ('$SEAT') — pass -
 { [ -n "$A770B_DATA" ] && [ "$A770B_DATA" != "/" ]; } || die "A770B_DATA is not a directory a seat may be replaced under: '$A770B_DATA'"
 DATE=$(date +%Y%m%d-%H%M%S)
 OUT="$A770B_DATA/results/${NAME}-ladder-${DATE}.json"
+LOGDIR="$A770B_DATA/logs"
 
 # the far end: 100000 unless the served window itself ends sooner (never sweep or probe past what the row can hold).
 # The window has to hold the reply and the chat template as well as the prompt, so leave room for them: a probe sized
@@ -126,6 +131,7 @@ if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] ladder for ${PROFILE_NAME:-$GGUF} — ctx=$CTX kv=$KV/$KV_V extra='$EXTRA' reasoning=$REAS timeout=${TIMEOUT}s far_end=$FAR_END"
   echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
   echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
+  echo "[dry-run] evidence: $A770B_DOCKER logs ${A770B_COMPOSE_PROJECT}-llama-1 2>&1 | python3 harness/engine_evidence.py log --engine $ENGINE --log - --model $GGUF --out $LOGDIR/$NAME.evidence.json"
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 3/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; bash harness/bench_speed.sh $PROFILE_NAME --depths $DEPTHS"
   else
@@ -159,6 +165,19 @@ if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BU
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 BENCH_MODEL_JSON="$A770B_DATA/results/$NAME.json"
+
+EVIDENCE_PATH=""
+if [ -z "$FAIL_RUNG" ]; then
+  ev_out="$LOGDIR/$NAME.evidence.json"
+  ev_container="${A770B_COMPOSE_PROJECT}-llama-1"
+  if ev_logtext=$("$A770B_DOCKER" logs "$ev_container" 2>&1) \
+      && printf '%s\n' "$ev_logtext" | python3 "$here/engine_evidence.py" \
+           log --engine "$ENGINE" --log - --model "$GGUF" --out "$ev_out"; then
+    EVIDENCE_PATH="$ev_out"
+  else
+    echo "⚠ could not write serve evidence for $NAME (the container log or engine_evidence.py failed) — continuing" >&2
+  fi
+fi
 
 # ── rung 3: the standard speed rung (llama-bench, the row's own flags) — needs the server DOWN ─────────────────
 BENCH_SPEED_JSON=""
@@ -256,7 +275,8 @@ print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "${SUITE:-$A770B_P
 python3 "$here/ladder_row.py" "$OUT" "$NAME" "$GGUF" "$CTX" "$KV" "$KV_V" "$REAS" "$EXTRA" "$TIMEOUT" "${PROFILE_NAME:-}" \
   "$INSTRUMENT" "$FAR_END" "${avail_before:-}" "${avail_after:-}" \
   "$BENCH_MODEL_JSON" "${BENCH_SPEED_JSON:-}" "${CTX_SWEEP_LOG:-}" "${DEPTH_LOG:-}" \
-  "${SUITE_JSON:-}" "${SUITE_RESULTS_JSON:-}" "${FAIL_RUNG:-}" "${FAIL_MSG:-}" "$(date +%Y-%m-%dT%H:%M:%S)"
+  "${SUITE_JSON:-}" "${SUITE_RESULTS_JSON:-}" "${FAIL_RUNG:-}" "${FAIL_MSG:-}" "$(date +%Y-%m-%dT%H:%M:%S)" \
+  "${EVIDENCE_PATH:-}"
 grc=$?
 [ "$grc" = 0 ] && echo "✓ ladder complete" || echo "⛔ ladder incomplete — read the note above" >&2
 exit "$grc"

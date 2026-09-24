@@ -147,7 +147,8 @@ OPTIONAL_KEYS = {
 }
 ENGINE_VALUES = {"llama.cpp", "vllm"}
 CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
-CHECKPOINT_KEYS = {"format", "weight_quant", "activation_quant"}
+CHECKPOINT_REQUIRED_KEYS = {"format", "weight_quant", "activation_quant"}
+CHECKPOINT_KEYS = CHECKPOINT_REQUIRED_KEYS | {"evidence"}
 ACTIVATION_QUANT_VALUES = {"none", "fp16", "bf16", "int8", "int4"}
 KERNEL_PATH_VALUES = {"gpu", "cpu-like", "untested"}
 KERNEL_XMX_VALUES = {"used", "unavailable", "untested"}
@@ -628,7 +629,7 @@ def validate(data) -> list[str]:
                 for kk in checkpoint.keys():
                     if kk not in CHECKPOINT_KEYS:
                         errors.append(f"{name}: checkpoint: unknown key {kk}")
-                for kk in CHECKPOINT_KEYS:
+                for kk in CHECKPOINT_REQUIRED_KEYS:
                     if kk not in checkpoint:
                         errors.append(f"{name}: checkpoint: missing key {kk}")
 
@@ -657,6 +658,11 @@ def validate(data) -> list[str]:
                     errors.append(
                         f"{name}: checkpoint.weight_quant {wq!r} differs from quant {prof['quant']!r}"
                     )
+
+                if "evidence" in checkpoint:
+                    ev = checkpoint["evidence"]
+                    if not isinstance(ev, str) or not ev.strip():
+                        errors.append(f"{name}: checkpoint.evidence must be a non-empty string")
 
         if "kernel" in prof:
             kernel = prof["kernel"]
