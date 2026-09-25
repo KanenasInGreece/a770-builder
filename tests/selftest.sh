@@ -1240,7 +1240,7 @@ printf 'llamacpp:prompt_tokens_total 300\nllamacpp:tokens_predicted_total 150\nl
 apikey=$(cat "$cb/api.key" 2>/dev/null || true)
 if [ -f "$evd/results/ev-label.metrics-before.prom" ] && [ -f "$evd/results/ev-label.metrics-after.prom" ] \
   && [ -f "$evd/results/ev-label.counters.json" ] \
-  && grep -q '"requests": 2' "$evd/results/ev-label.counters.json" \
+  && grep -q '"decode_calls": 2' "$evd/results/ev-label.counters.json" && grep -q '"requests": null' "$evd/results/ev-label.counters.json" \
   && grep -q '"prompt_tokens": 200' "$evd/results/ev-label.counters.json" \
   && { [ -z "$apikey" ] || { ! grep -qF "$apikey" "$cb/curl.log" \
        && ! grep -qF "$apikey" "$evd/results/ev-label.metrics-before.prom" \

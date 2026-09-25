@@ -278,9 +278,9 @@ def test_llamacpp_sycl_lv4_fixture():
     # "common_params_print_info: build 10920 (eafe15a5e) with IntelLLVM 2025.3.3 for Linux x86_64"
     assert parsed["build"] == "10920 (eafe15a5e)"
     assert parsed["compiler"] == "IntelLLVM 2025.3.3"
-    # this fixture never prints "load_backend: loaded <X> backend" at -lv 4 — a cold start with no request has no
-    # such line, so backend stays None; asserting that is the point, not an oversight
-    assert parsed["backend"] is None
+    # this fixture never prints "load_backend: loaded <X> backend" at -lv 4, so the backend is read from the device
+    # line's id ("SYCL0") instead
+    assert parsed["backend"] == "SYCL"
     # "  - SYCL0   : Intel(R) Arc(TM) Pro B70 Graphics (32656 MiB, 32581 MiB free)"
     assert parsed["device"] == {"name": "Intel(R) Arc(TM) Pro B70 Graphics", "total_mib": 32656.0}
     # "load_tensors: offloaded 66/66 layers to GPU"
@@ -408,3 +408,18 @@ def test_cli_missing_files_give_exit_0_and_notes(tmp_path, capsys):
     diff_data = json.loads(captured)
     assert "notes" in diff_data
     assert len(diff_data["notes"]) > 0
+
+
+def test_llamacpp_counters_do_not_count_decode_calls_as_requests():
+    """n_decode_total counts decode calls, not requests: requests stay unknown, decode_calls carries it."""
+    before = parse_prometheus("llamacpp:n_decode_total 100\nllamacpp:prompt_tokens_total 10\nllamacpp:tokens_predicted_total 5\n")
+    after = parse_prometheus("llamacpp:n_decode_total 3898\nllamacpp:prompt_tokens_total 7271\nllamacpp:tokens_predicted_total 3786\n")
+    c = stage_counters(before, after, "llama.cpp")
+    assert c["requests"] is None and c["finished_requests"] is None
+    assert c["decode_calls"] == 3798
+
+
+def test_llamacpp_backend_from_the_device_line_when_no_load_backend_line():
+    text = (FIXTURES_DIR / "llamacpp-sycl-lv4.log").read_text()
+    assert "load_backend" not in text
+    assert parse_llamacpp_log(text)["backend"] == "SYCL"

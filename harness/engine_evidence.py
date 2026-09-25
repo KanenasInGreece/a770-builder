@@ -281,10 +281,13 @@ def parse_llamacpp_log(text: str) -> dict:
     # the device_info line: "  - SYCL0   : Intel(R) Arc(TM) Pro B70 Graphics (32656 MiB, 32581 MiB free)" —
     # device name and total MiB (the CPU line on the row above/below it never matches, having no SYCL/Vulkan id)
     m_dev = re.search(
-        r"(?:SYCL|Vulkan|CUDA)\d*\s*:\s*(.+?)\s*\((\d+(?:\.\d+)?)\s*MiB,\s*\d+(?:\.\d+)?\s*MiB free\)", text
+        r"(SYCL|Vulkan|CUDA)\d*\s*:\s*(.+?)\s*\((\d+(?:\.\d+)?)\s*MiB,\s*\d+(?:\.\d+)?\s*MiB free\)", text
     )
     if m_dev:
-        result["device"] = {"name": m_dev.group(1).strip(), "total_mib": float(m_dev.group(2))}
+        result["device"] = {"name": m_dev.group(2).strip(), "total_mib": float(m_dev.group(3))}
+        # at -lv 4 this build prints no load_backend line; the device id (SYCL0, Vulkan0) names the backend
+        if result["backend"] is None:
+            result["backend"] = m_dev.group(1)
 
     m_off = re.search(r"offloaded\s+(\d+)/(\d+)\s+layers", text)
     if m_off:
@@ -713,8 +716,11 @@ def stage_counters(before: dict, after: dict, engine: str) -> dict:
         res["generation_tokens"] = _diff_metric("llamacpp:tokens_predicted_total")
         res["prefill_s"] = _diff_metric("llamacpp:prompt_seconds_total")
         res["decode_s"] = _diff_metric("llamacpp:tokens_predicted_seconds_total")
-        res["requests"] = _diff_metric("llamacpp:n_decode_total")
-        res["finished_requests"] = res["requests"]
+        # llama.cpp's counters have no request count: n_decode_total counts decode calls (about one per generated
+        # token), so it is kept under its own name and requests stay unknown here (the log parse counts requests)
+        res["decode_calls"] = _diff_metric("llamacpp:n_decode_total")
+        res["requests"] = None
+        res["finished_requests"] = None
 
         if res["prompt_tokens"] is not None and res["prefill_s"] is not None and res["prefill_s"] > 0:
             res["prefill_tps"] = res["prompt_tokens"] / res["prefill_s"]
