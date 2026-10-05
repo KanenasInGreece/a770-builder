@@ -112,6 +112,122 @@
         "write": "not measured"
       },
       "use_for": "The B70's first measured builder: Qwen3.8-27B in Unsloth's dynamic Q6_K (by bytes 63% Q6_K, 22% Q5_K, 13% Q8_0) on SYCL, 100,000-token window, 23.4 GiB of the 28.0 GiB cap. Decodes 21.4 tok/s at depth 0, 19.1 at 8k, 14.6 at 32k and 8.9 at 99k; prefills 806 tok/s at 8k. Cleared the kit 3/3 with all references and the depth probe 3/3 at 99k, with a 2,048-token task budget. Served at the harness's default sampling (the ladder carried no sampling line). llama.cpp keeps about 1.1 GiB of host buffers by design; every layer is on the card."
+    },
+    "qwen38-27b-q6k-oq8-sycl": {
+      "task": "code-edit",
+      "evidence": "SUITE-1@1: 3 of 3 counted stages passed, all three reference exercises passed, depth probe 3/3 at 98,976 tokens (full ladder 2026-10-05)",
+      "model": "Qwen3.8-27B-Q6_K-OQ8.gguf",
+      "source": "Frosty40/Qwen3.8-27B-GGUF",
+      "family": "qwen3.8",
+      "architecture": "dense, hybrid attention (Gated DeltaNet + gated attention; 64 blocks, no prediction-head tensors in this file)",
+      "quant": "Q6_K-OQ8",
+      "category": "dense",
+      "weight_class": "27b",
+      "params_b": {
+        "total": 27,
+        "active": 27
+      },
+      "ctx": 100000,
+      "useful_ctx": 100000,
+      "kv": "q8_0",
+      "flash_attention": "on",
+      "reasoning": "on",
+      "extra": "",
+      "thinking": {
+        "mode": "on",
+        "budget": 2048,
+        "preserve": true,
+        "source": "the task budget the full ladder ran with (2026-10-05)"
+      },
+      "timeout_s": 2100,
+      "vram_gib_after_load": 24.46,
+      "ram_gb_extra": 1.09,
+      "speed": {
+        "decode_tps": {
+          "8k": 19.5,
+          "32k": 14.8,
+          "64k": null,
+          "100k": 9.0
+        },
+        "prefill_tps": {
+          "8k": 805.04,
+          "32k": 702.13,
+          "64k": null,
+          "100k": 530.64
+        },
+        "far_end": {
+          "tokens": 98855,
+          "decode_tps": 9.0,
+          "prefill_tps": 665.0,
+          "ttft_s": 137.5
+        },
+        "delivered": {
+          "prefill_tps": 610.0,
+          "decode_tps": 18.5,
+          "source": "qwen38-27b-q6k-oq8-sycl-suite-20261005-205802-139840.json"
+        },
+        "bench": {
+          "tool": "llama-bench",
+          "prompt": 8192,
+          "gen": 128,
+          "flags": "-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -b 2048 -ub 512 -d 0,8192,32768,98976",
+          "at_depth": {
+            "0": {
+              "pp": 1012.14,
+              "tg": 21.96
+            },
+            "8192": {
+              "pp": 805.04,
+              "tg": 19.5
+            },
+            "32768": {
+              "pp": 702.13,
+              "tg": 14.8
+            },
+            "98976": {
+              "pp": 530.64,
+              "tg": 9.0
+            }
+          },
+          "source": "qwen38-27b-q6k-oq8-sycl-bench-20261005-175153.json (build 10920, SYCL); the 100k column is depth 98,976 — far_end is the server's own average over the prompt it processed (665 tok/s over 137.5 s, about 91,400 of the 98,855 tokens), while this 100k column is an 8,192-token prompt on top of 98,976 tokens of context (530.64 tok/s): two different measures."
+        }
+      },
+      "depth_probe_100k": "pass (3/3)",
+      "instrument": "SUITE-1@1",
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "source": "qwen38-27b-q6k-oq8-sycl-suite-20261005-205802-139840.json",
+        "mean_wall_s": 765.3,
+        "instrument": "SUITE-1@1"
+      },
+      "measured_on": "Arc Pro B70 32 GB, llama.cpp full-intel SYCL container, build 10920",
+      "card": "b70",
+      "backend": "sycl",
+      "placement": "container",
+      "mode": "inference",
+      "engine": "llama.cpp",
+      "checkpoint": {
+        "format": "gguf",
+        "weight_quant": "Q6_K-OQ8",
+        "activation_quant": "none"
+      },
+      "capability": {
+        "kld_prose_mean": 0.0017,
+        "kld_code_mean": 0.00117,
+        "kld_agentic_mean": 0.00137,
+        "same_top_prose": 97.79,
+        "same_top_code": 99.46,
+        "same_top_agentic": 99.36
+      },
+      "capability_source": "Frosty40/Qwen3.8-27B-GGUF model card: KL-divergence versus bf16 over 512-token windows times 8, on prose, code and agentic text; same_top is greedy-token agreement in percent. The maker's numbers for this file, not re-measured here.",
+      "fit": {
+        "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 765.3 s, all three reference exercises passed (full ladder 2026-10-05)",
+        "write": "not measured"
+      },
+      "use_for": "A second B70 builder beside the Unsloth UD-Q6_K row: Frosty40's Q6_K with the output tensors at Q8_0 (by bytes 93.9% Q6_K, 6.0% Q8_0) on SYCL, 100,000-token window, 24.5 GiB of the 28.0 GiB cap. Decodes 22.0 tok/s at depth 0, 19.5 at 8k, 14.8 at 32k and 9.0 at 99k; prefills 805 tok/s at 8k. Cleared the kit 3/3 with all references and the depth probe 3/3 at 99k, with a 2,048-token task budget. This file has no prediction-head tensors. Served at the harness's default sampling (the ladder carried no sampling line). llama.cpp keeps about 1.1 GiB of host buffers by design; every layer is on the card."
     }
   }
 }
