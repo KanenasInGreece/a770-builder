@@ -180,9 +180,12 @@ five in 664 s, so the display row carries the line too.
 
 ## Measured on the Intel Arc Pro B70 32 GB (llama.cpp b10920 SYCL; vLLM 0.21 XPU; 2026-09-20 to 2026-10-05)
 
-The registry rows are `qwen38-27b-udq6k-sycl` and `qwen38-27b-q6k-oq8-sycl`. Both cleared a full ladder with a
-2,048-token task budget. The other checkpoints below have a kit run and a llama-bench speed card from
-2026-09-24, run without a task budget, so those kit numbers are not comparable with the two rows.
+The registry rows are `qwen38-27b-udq6k-sycl` and `qwen38-27b-q6k-oq8-sycl`. The UD-Q6_K row is a full ladder
+with a 2,048-token task budget. The OQ8 row takes speed, window, VRAM and the depth probe from the ladder of
+2026-10-05, and the kit 3/3 from a same-day re-run of the task rung after that ladder's own suite failed to
+grade. Both serves used ctx 100,000, K/V q8_0 and a 2,048-token task budget. The other checkpoints below have
+a kit run and a llama-bench speed card from 2026-09-24, run without a task budget, so those kit numbers are
+not comparable with the two rows.
 
 | checkpoint | engine | decode / prefill (llama-bench, depth 0 / 8k prompt) | peak VRAM | kit, counted · refs | kit wall | status |
 |---|---|---|---|---|---|---|
@@ -190,7 +193,7 @@ The registry rows are `qwen38-27b-udq6k-sycl` and `qwen38-27b-q6k-oq8-sycl`. Bot
 | Qwen3.8-27B-UD-Q4_K_XL (Unsloth) | llama.cpp SYCL | 22.1 / 866 | 17.33 GiB | 2/3 · 2/3 | 2.0 h | measured, not adopted (below the bar) |
 | Qwen3.8-27B-Q6_K-QKV8 (Frosty40) | llama.cpp SYCL | 21.5 / 1015 | 22.17 GiB | 1/3 · 2/3 | 2.1 h | measured, not adopted |
 | Qwen3.8-27B-Q6_K-QKV8-MTP (Frosty40), head off | llama.cpp SYCL | 21.5 / 1016 | 21.01 GiB | 1/3 · 1/3 | 2.3 h | measured, not adopted |
-| Qwen3.8-27B-Q6_K-OQ8 (Frosty40) | llama.cpp SYCL | 22.0 / 1012 tok/s | 24.46 GiB | 3/3 · 3/3 (task budget 2048, full ladder 2026-10-05) | 1.2 h | **adopted: qwen38-27b-q6k-oq8-sycl** |
+| Qwen3.8-27B-Q6_K-OQ8 (Frosty40) | llama.cpp SYCL | 22.0 / 1012 tok/s | 24.46 GiB | 3/3 · 3/3 (task budget 2048, suite re-run 2026-10-05; speed and depth from the ladder the same day) | 1.2 h | **adopted: qwen38-27b-q6k-oq8-sycl** |
 | Qwen3.8-27B-Q6_K-OQ8-MTP (Frosty40), head off | llama.cpp SYCL | 22.0 / 1017 | 22.13 GiB | 1/3 · 2/3 | 2.1 h | measured, not adopted |
 | Qwen3.8-27B-W4A16-AutoRound (GPTQ, group 64) | vLLM 0.21 XPU | 26.5 / 932 (one completion, 8.4k prompt) | 28.58 GiB | 1/3 · 2/3 | 1.9 h | measured, not adopted |
 | Qwen3.8-27B-GPTQ-Int4-sym-G128-MTP-BF16 (SergiioB), head off | vLLM 0.21 XPU | 27.0 / 854 (one completion, 7k prompt) | 28.75 GiB | 0/3 · 0/3 | 2.1 h | measured, not adopted |
@@ -202,8 +205,11 @@ The registry rows are `qwen38-27b-udq6k-sycl` and `qwen38-27b-q6k-oq8-sycl`. Bot
 
 Kit runs of 2026-09-24: ctx 32,768, K/V q8_0, reasoning on without a task budget, a stage past 25 minutes counted
 as a timeout; vLLM stages record no token counts yet (the capture reads llama.cpp's log lines only).
-Q6_K-OQ8's result in that run was 1/3 counted and 1/3 references, 22.0 / 1017 tok/s and 22.13 GiB; the adopted profile is the full ladder of
-2026-10-05 (ctx 100,000, task budget 2,048, K/V q8_0, 22.0 / 1012 tok/s, 24.46 GiB).
+Q6_K-OQ8's result in that run was 1/3 counted and 1/3 references, 22.0 / 1017 tok/s and 22.13 GiB. The adopted
+profile takes speed, window, VRAM and depth from the ladder of 2026-10-05
+(`qwen38-27b-q6k-oq8-sycl-ladder-20261005-173832.json`: ctx 100,000, task budget 2,048, K/V q8_0, 22.0 / 1012
+tok/s, 24.46 GiB) and the kit 3/3 from the same-day suite re-run
+(`qwen38-27b-q6k-oq8-sycl-suite-20261005-205802-139840.json`), after that ladder's own suite failed to grade.
 
 ## How a model earns the gemma4-8b-e4b-q4km-vulkan card
 
