@@ -95,6 +95,47 @@ _container_host_pid(){
   if [ -n "$p" ] && [ "$p" != 0 ]; then printf '%s\n' "$p"; fi   # a dead container reports pid 0, not a live server
   return 0
 }
+# _keep_serve_log — compose down deletes the container log, so copy it to a
+# temp file in this directory and move that file onto the durable log only
+# after docker logs succeeds. ps --all includes an exited container. A
+# symlink is removed first; mv -T refuses a directory at the destination.
+_keep_serve_log(){
+  local dest="$A770B_DATA/logs/llamacpp-a770.log" cid tmp
+  # A failed mkdir must not abort the caller: teardown still has to run.
+  mkdir -p "$A770B_DATA/logs" || {
+    echo "⚠ the serve log could not be kept (could not create the log directory)" >&2
+    return 0
+  }
+  cid=$(_compose ps --all -q "$CONTAINER" 2>/dev/null || true)
+  if [ -n "$cid" ]; then
+    # mktemp creates the file itself. A fallback name would let `>` follow a
+    # symlink planted at that predictable path.
+    tmp=$(mktemp "$dest.tmp.XXXXXX") || {
+      echo "⚠ the serve log could not be kept (could not create a temporary file)" >&2
+      return 0
+    }
+    if "$A770B_DOCKER" logs "$cid" >"$tmp" 2>&1; then
+      if [ -L "$dest" ]; then rm -f "$dest"; fi
+      if mv -fT "$tmp" "$dest"; then
+        echo "serve log kept: $dest" >&2
+        return 0
+      fi
+    fi
+    rm -f "$tmp"
+  fi
+  echo "⚠ the serve log could not be kept (no container, or docker logs failed)" >&2
+  return 0
+}
+# _fail_started <exit> <message> — a container that came up and then failed.
+# Keep its log, then tear it down.
+_fail_started(){
+  local code="$1"; shift
+  _keep_serve_log
+  _compose down >/dev/null 2>&1 || true
+  rm -f "$PIDFILE" "$MARK" "$SIDECAR"
+  printf '%s\n' "$*" >&2
+  exit "$code"
+}
 
 case "${1:-}" in
   stop)
@@ -207,21 +248,22 @@ if ! _compose -f "$OVERRIDE" up -d --force-recreate; then
   rm -f "$PIDFILE" "$MARK" "$SIDECAR"
   exit 1
 fi
+# 150 tries, 2s apart, is the wait a load is given. A test may shorten it; an unset value does not.
+_health_tries="${A770B_HEALTH_TRIES:-150}"
+_health_pause="${A770B_HEALTH_PAUSE:-2}"
 if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
-  for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
+  for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep "$_health_pause"; done
 else
-  for _ in $(seq 1 150); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+  for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep "$_health_pause"; done
 fi
 if ! curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1; then
-  echo "⛔ the container did not answer /health — read: $A770B_DOCKER compose -p $A770B_COMPOSE_PROJECT logs $CONTAINER" >&2
-  _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3
+  _fail_started 3 "⛔ the container did not answer /health"
 fi
 CPID=$(_container_host_pid)
 # a healthy container must report a LIVE host pid (not empty, not the 0 a dead container reports): without it the
 # sidecar, the menu and the cap would all be blind, so either is a failed start, not a silent success
 if [ -z "$CPID" ] || [ "$CPID" = 0 ]; then
-  echo "⛔ the container answers /health but reports no live host pid — tearing it down" >&2
-  _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"; exit 3
+  _fail_started 3 "⛔ the container answers /health but reports no live host pid — tearing it down"
 fi
 printf '%s\n' "$CPID" > "$PIDFILE"
 printf '%s\n' "$MODEL" > "$MARK"
@@ -235,9 +277,7 @@ if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
   limit_why="0.9 of the card"
 fi
 if python3 -c "import sys; sys.exit(0 if float('$used') > float('$limit') else 1)"; then
-  _compose down >/dev/null 2>&1 || true; rm -f "$PIDFILE" "$MARK" "$SIDECAR"
-  echo "⛔ VRAM after load ${used} GiB > ${limit_why} ${limit} GiB — container STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"
-  exit 3
+  _fail_started 3 "⛔ VRAM after load ${used} GiB > ${limit_why} ${limit} GiB — container STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"
 fi
 if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ] && [ -n "$CPID" ]; then
   python3 "$(dirname "$0")/live_backend.py" write --path "$SIDECAR" --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" --model "$(basename "$MODEL")" --profile "$A770B_LIVE_PROFILE" --pid "$CPID"

@@ -35,7 +35,7 @@ def _make_bin(dir_: Path, name: str, body: str) -> Path:
 
 
 def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "4242", running: bool = True,
-                  down_clears: bool = True, up_fails: bool = False):
+                  down_clears: bool = True, up_fails: bool = False, exited: bool = False):
     """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path).
 
     The fake docker is stateful: `up` marks a container up, `down` clears it (unless down_clears is False), and
@@ -49,13 +49,24 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
         state.write_text("up", encoding="utf-8")
     down_body = f': > "{state}"; exit 0;;' if down_clears else 'exit 0;;'
     up_body = 'echo "docker compose up failed" >&2; exit 1;;' if up_fails else f'printf up > "{state}"; exit 0;;'
+    ps_body = 'exit 0;;' if exited else f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
+    ps_all_body = f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
+    # logs succeeds only while the container state file is present, and only for
+    # the id ps --all would have printed. A copy after down must not stay green.
+    logs_arm = (
+        f'[ -s "{state}" ] || exit 1; '
+        f'case " $* " in *" logs {ps_id} "*) printf \'%s\\n\' "engine refused the model"; exit 0;; '
+        f'*) exit 1;; esac;;'
+    )
     _make_bin(bin_, "docker", f'''printf '%s\\n' "$*" >> "{log}"
 case " $* " in
   *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
   *" down"*) {down_body}
   *" up "*) {up_body}
-  *" ps -q "*) [ -s "{state}" ] && printf '%s\\n' "{ps_id}"; exit 0;;
+  *" ps --all -q "*|*" ps -q --all "*|*" ps "*" --all "*) {ps_all_body}
+  *" ps -q "*) {ps_body}
   *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{host_pid}"; exit 0;;
+  *" logs "*) {logs_arm}
   *) exit 0;;
 esac''')
     _make_bin(bin_, "curl", 'echo \'{"ok": true}\'; exit 0')
@@ -668,3 +679,136 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
     assert ov["services"]["llama"]["command"][0] == "/models/Qwen/Qwen3-32B"
     pidf = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid"
     assert pidf.read_text(encoding="utf-8").strip() == "4242"
+
+
+def _assert_logs_before_a_later_down(log: Path, ps_id: str = "cid123"):
+    calls = log.read_text(encoding="utf-8").splitlines()
+    logs_at = [i for i, c in enumerate(calls) if f" logs {ps_id} " in f" {c} "]
+    assert logs_at, calls
+    assert any(" down" in f" {c} " and i > logs_at[0] for i, c in enumerate(calls)), calls
+
+
+def _assert_log_kept_before_down(log: Path, stderr: str, data: Path, ps_id: str = "cid123"):
+    kept = data / "logs" / "llamacpp-a770.log"
+    assert kept.is_file(), stderr
+    assert "engine refused the model" in kept.read_text(encoding="utf-8")
+    assert "serve log kept:" in stderr
+    assert str(kept) in stderr
+    _assert_logs_before_a_later_down(log, ps_id)
+
+
+def test_health_failure_keeps_the_container_log_before_down(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "exit 1")
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="1", A770B_HEALTH_PAUSE="0")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "did not answer /health" in r.stderr
+    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+    assert not (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid").exists()
+
+
+def test_exited_container_log_is_kept_before_down(tmp_path):
+    bin_, log = _fake_runtime(tmp_path, exited=True)
+    _make_bin(bin_, "curl", "exit 1")
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="1", A770B_HEALTH_PAUSE="0")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "did not answer /health" in r.stderr
+    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+    assert not (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid").exists()
+
+
+def test_symlink_at_the_log_path_is_replaced(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "exit 1")
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="1", A770B_HEALTH_PAUSE="0")
+    target = tmp_path / "secret"
+    target.write_text("keep me\n", encoding="utf-8")
+    dest = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.log"
+    dest.parent.mkdir(parents=True)
+    dest.symlink_to(target)
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert target.read_text(encoding="utf-8") == "keep me\n"
+    assert dest.is_file() and not dest.is_symlink()
+    assert "engine refused the model" in dest.read_text(encoding="utf-8")
+    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+
+
+def test_directory_at_the_log_path_is_not_a_kept_log(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "exit 1")
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="1", A770B_HEALTH_PAUSE="0")
+    dest = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.log"
+    dest.parent.mkdir(parents=True)
+    dest.mkdir()
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "could not be kept" in r.stderr
+    assert "serve log kept:" not in r.stderr
+    assert dest.is_dir()
+    assert list(dest.iterdir()) == []
+    assert list(dest.parent.glob("llamacpp-a770.log.tmp.*")) == []
+    _assert_logs_before_a_later_down(log)
+
+
+def test_vram_stop_keeps_the_container_log_before_down(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    # 16 GiB used, above the 15.3 GiB cap this env sets. The container is healthy, then stopped.
+    _make_bin(
+        bin_,
+        "nvtop",
+        "echo '[{\"device_name\": \"Intel Arc A770 DG2\", \"mem_total\": 17179869184, "
+        "\"mem_used\": 17179869184, \"mem_free\": 0}]'",
+    )
+    env = _env(tmp_path, bin_, A770B_MIN_VRAM_MB="0")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "VRAM after load" in r.stderr
+    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+
+
+def _assert_status_filters(log: Path):
+    text = log.read_text(encoding="utf-8")
+    assert "label=com.docker.compose.project=" in text
+    assert "label=com.docker.compose.service=llama" in text
+
+
+def test_status_names_a_running_container_when_the_pidfile_is_absent(tmp_path):
+    bin_, log = _fake_runtime(tmp_path, running=True)
+    _make_bin(bin_, "curl", "echo '{}'; exit 0")
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    env = _env(tmp_path, bin_, A770B_SEAT=str(seat))
+    script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    r = subprocess.run([str(script), "status"], capture_output=True, text=True, cwd=ROOT, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "server: UP · container cid123 · pidfile does not name a live llama-server" in r.stdout
+    assert "server: down" not in r.stdout
+    _assert_status_filters(log)
+
+
+def test_doctor_names_a_running_container_when_the_pidfile_is_absent(tmp_path):
+    bin_, log = _fake_runtime(tmp_path, running=True)
+    _make_bin(bin_, "curl", "echo '{}'; exit 0")
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    env = _env(tmp_path, bin_, A770B_SEAT=str(seat))
+    script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    r = subprocess.run([str(script), "doctor"], capture_output=True, text=True, cwd=ROOT, env=env)
+    assert "ok   mode: inference, not measured (the seat's server is up)" in r.stdout
+    _assert_status_filters(log)
+
+
+def test_status_says_down_when_no_pidfile_and_no_container(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path, running=False)
+    _make_bin(bin_, "curl", "echo '{}'; exit 0")
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    env = _env(tmp_path, bin_, A770B_SEAT=str(seat))
+    script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    r = subprocess.run([str(script), "status"], capture_output=True, text=True, cwd=ROOT, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "server: down" in r.stdout
+    assert "server: UP" not in r.stdout
