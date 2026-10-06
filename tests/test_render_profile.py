@@ -645,7 +645,7 @@ def test_profile_key_checks_against_registry_union_without_env(tmp_path):
         capture_output=True, text=True, env=env,
     )
     assert result_bad.returncode == 2
-    assert "must be one of gemma4-8b-e4b-q4km-vulkan, qwen35-9b-q4km-vulkan, qwen38-27b-iq3s-sycl, qwen38-27b-iq3s-vulkan, qwen38-27b-iq3xxs-vulkan" in result_bad.stderr
+    assert "must be one of gemma4-8b-e4b-q4km-vulkan, qwen35-9b-q4km-vulkan, qwen38-27b-exl3-4bpw-vllm, qwen38-27b-iq3s-sycl, qwen38-27b-iq3s-vulkan, qwen38-27b-iq3xxs-vulkan, qwen38-27b-q6k-oq8-sycl, qwen38-27b-q6k-qkv8-mtp-sycl, qwen38-27b-udq6k-sycl" in result_bad.stderr
 
 
 def test_profile_key_checks_against_a770b_profiles_env(tmp_path):

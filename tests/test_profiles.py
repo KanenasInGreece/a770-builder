@@ -86,7 +86,7 @@ def test_check_fails_bad_kv_v(tmp_path):
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: qwen35-9b-q4km-vulkan: kv_v must be one of f16, q8_0, q4_0" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: kv_v must be one of f16, bf16, q8_0, q4_0" in result.stderr
 
 
 def test_check_fails_bad_mode(tmp_path):
@@ -2326,6 +2326,73 @@ def test_env_exports_empty_tool_parser_when_absent():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
     assert "A770B_QWEN35_9B_Q4KM_VULKAN_TOOL_PARSER:=}" in result.stdout
+
+
+def test_check_passes_bf16_kv_on_a_vllm_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["kv"] = "bf16"
+    prof["kv_v"] = "bf16"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_bf16_kv_on_a_non_vllm_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["backend"] == "vulkan"
+    prof["kv"] = "bf16"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kv bf16 is only recorded when backend is vllm" in result.stderr
+
+
+def test_check_fails_vllm_image_on_a_non_vllm_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["vllm_image"] = "exl3xpu:b70-15ded2f"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "vllm_image is only meaningful when backend is vllm" in result.stderr
+
+
+def test_env_exports_quant_and_image_for_a_vllm_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["quant"] = "exl3"
+    prof["checkpoint"]["weight_quant"] = "exl3"
+    prof["vllm_image"] = "exl3xpu:b70-15ded2f"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("env", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_QUANT:=exl3" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_VLLM_IMAGE:=exl3xpu:b70-15ded2f" in result.stdout
+
+
+def test_env_omits_quant_unless_backend_is_vllm():
+    result = run("env", "--file", str(PROFILES_JSON))
+    assert result.returncode == 0, result.stderr
+    assert "_QUANT:=" not in result.stdout
+
+
+def test_render_prints_em_dash_when_8k_decode_is_null(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["speed"]["decode_tps"]["8k"] = None
+    root = _temp_project(tmp_path, {"a770.display.json": data})
+    result = run("render", "--catalogue", "--root", str(root))
+    assert result.returncode == 0, result.stderr
+    text = (root / "README.md").read_text(encoding="utf-8")
+    section = text[text.index("<!-- catalogue:begin -->"):text.index("<!-- catalogue:end -->")]
+    assert "— / " in section
+    installed = run("render", "--installed", "--root", str(root), "--card", "a770", "--mode", "display")
+    assert installed.returncode == 0, installed.stderr
+    assert "8k decode not measured" in installed.stdout
 
 
 def test_check_fails_checkpoint_not_object(tmp_path):

@@ -93,7 +93,12 @@ def kit_instrument(suite_path: Optional[Path] = None) -> str:
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SPEED_KEYS = {"8k", "32k", "64k", "100k"}
-KV_VALUES = {"f16", "q8_0", "q4_0"}
+# bf16 records a vLLM log that says kv_cache_dtype=auto on dtype bfloat16.
+# llama.cpp rows stay on f16, q8_0, q4_0: that serve sends kv through as -ctk/-ctv.
+KV_ORDER = ("f16", "bf16", "q8_0", "q4_0")
+KV_VALUES = set(KV_ORDER)
+KV_LIST = ", ".join(KV_ORDER)
+VLLM_IMAGE_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
 ON_OFF_VALUES = {"on", "off"}
 MODE_VALUES = {"display", "inference"}
 PLACEMENT_VALUES = {"host", "container", "remote"}
@@ -127,7 +132,7 @@ STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
     "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
-    "task", "evidence", "engine", "tool_parser",
+    "task", "evidence", "engine", "tool_parser", "vllm_image",
 )
 # The task classes a row competes in. The organizing axis of a registry is now the task,
 # not the window: a row is a (model, quant, KV, context, sampling) cell that wins one of these.
@@ -144,6 +149,7 @@ PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {
     "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
     "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
+    "vllm_image",
 }
 ENGINE_VALUES = {"llama.cpp", "vllm"}
 CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
@@ -310,11 +316,13 @@ def validate(data) -> list[str]:
         if "operator_override" in prof and not isinstance(prof["operator_override"], bool):
             errors.append(f"{name}: operator_override must be true or false")
 
-        if "kv" in prof and isinstance(prof["kv"], str) and prof["kv"] not in KV_VALUES:
-            errors.append(f"{name}: kv must be one of f16, q8_0, q4_0")
-
-        if "kv_v" in prof and isinstance(prof["kv_v"], str) and prof["kv_v"] not in KV_VALUES:
-            errors.append(f"{name}: kv_v must be one of f16, q8_0, q4_0")
+        for field in ("kv", "kv_v"):
+            if field not in prof or not isinstance(prof[field], str):
+                continue
+            if prof[field] not in KV_VALUES:
+                errors.append(f"{name}: {field} must be one of {KV_LIST}")
+            elif prof[field] == "bf16" and prof.get("backend") != "vllm":
+                errors.append(f"{name}: {field} bf16 is only recorded when backend is vllm")
 
         for k in ("flash_attention", "reasoning"):
             if k in prof and isinstance(prof[k], str) and prof[k] not in ON_OFF_VALUES:
@@ -619,6 +627,18 @@ def validate(data) -> list[str]:
                     f"{name}: tool_parser is only meaningful when backend is vllm "
                     f"(this row's backend is {prof.get('backend')!r}) -- llama.cpp parses "
                     "tools from its own chat template"
+                )
+
+        if "vllm_image" in prof:
+            image = prof["vllm_image"]
+            if not isinstance(image, str) or not VLLM_IMAGE_RE.fullmatch(image):
+                errors.append(
+                    f"{name}: vllm_image must be a docker tag of letters, digits, and . _ : / -"
+                )
+            elif prof.get("backend") != "vllm":
+                errors.append(
+                    f"{name}: vllm_image is only meaningful when backend is vllm "
+                    f"(this row's backend is {prof.get('backend')!r})"
                 )
 
         if "checkpoint" in prof:
@@ -926,6 +946,11 @@ def cmd_env(args) -> int:
         tool_parser = prof.get("tool_parser")
         tool_parser_str = tool_parser if isinstance(tool_parser, str) else ""
         print(': "${A770B_%s_TOOL_PARSER:=%s}"' % (upper, tool_parser_str))
+        vllm_image = prof.get("vllm_image")
+        vllm_image_str = vllm_image if isinstance(vllm_image, str) else ""
+        print(': "${A770B_%s_VLLM_IMAGE:=%s}"' % (upper, vllm_image_str))
+        if prof.get("backend") == "vllm":
+            print(': "${A770B_%s_QUANT:=%s}"' % (upper, prof["quant"]))
         print(': "${A770B_%s_MODE:=%s}"' % (upper, prof["mode"]))
         if prof.get("operator_override") is True:
             print(': "${A770B_%s_OPERATOR_OVERRIDE:=true}"' % upper)
@@ -1182,6 +1207,11 @@ def _catalogue_rows() -> tuple[list[dict], list[str]]:
     return rows, errors
 
 
+def _speed_cell(value) -> str:
+    """A catalogue speed cell. A missing 8k sample stays blank rather than becoming another depth's number."""
+    return "—" if value is None else str(value)
+
+
 def _catalogue_table(rows: list[dict]) -> list[str]:
     """The catalogue table: every card's rows, each carrying its card, mode and measured_on."""
     lines = [CATALOGUE_HEADER, CATALOGUE_SEPARATOR]
@@ -1193,7 +1223,8 @@ def _catalogue_table(rows: list[dict]) -> list[str]:
         prefill8k = prof["speed"]["prefill_tps"]["8k"]
         lines.append(
             f"| {r['card']} | {r['mode']} | {r['name']} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{prof['vram_gib_after_load']} GiB | {decode8k} / {prefill8k} tok/s | {prof.get('measured_on', '')} |"
+            f"{prof['vram_gib_after_load']} GiB | {_speed_cell(decode8k)} / {_speed_cell(prefill8k)} tok/s | "
+            f"{prof.get('measured_on', '')} |"
         )
     return lines
 
@@ -1210,10 +1241,10 @@ def _snippet_sentence(data: dict) -> str:
         decode8k = prof["speed"]["decode_tps"]["8k"]
 
         label = f"**--profile {name}**"
-        decode_round = round(decode8k)
+        rate = "8k decode not measured" if decode8k is None else f"~{round(decode8k)} tok/s"
         segments.append(
             f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
-            f"(useful to ~{useful_k}k), ~{decode_round} tok/s"
+            f"(useful to ~{useful_k}k), {rate}"
         )
 
     return "; ".join(segments) + "."
