@@ -65,6 +65,14 @@ fi
 BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
 current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
+# The pidfile is a live llama-server. A vLLM container's host pid is not that name, and a failed start
+# removes the pidfile while the container can still be running. The project label is this seat's container.
+_compose_container_id(){
+  [ "${A770B_SERVE:-}" = compose ] || return 0
+  "$A770B_DOCKER" ps -q \
+    --filter "label=com.docker.compose.project=${A770B_COMPOSE_PROJECT}" \
+    --filter "label=com.docker.compose.service=llama" 2>/dev/null | head -1 || true
+}
 # the one line for a card with no measured rows, produced in ONE place (profiles.py empty-line) and quoted verbatim
 empty_registry_line(){ python3 "$A770B_PROJECT/harness/profiles.py" empty-line --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; }
 # refuse a profile name that is not in this card's registry with env.sh's profile_refusal: it names this card and its
@@ -265,8 +273,13 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   bash "$SERVE" stop >/dev/null 2>&1
   _serve_start_or_die
 }
-status(){ local c; c=$(current); version 2>&1
-  if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"; else echo "server: down"; fi
+status(){ local c cid; c=$(current); version 2>&1
+  if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"
+  else
+    cid=$(_compose_container_id)
+    if [ -n "$cid" ]; then echo "server: UP · container ${cid} · pidfile does not name a live llama-server"
+    else echo "server: down"; fi
+  fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo
   echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · mode $A770B_CARD_MODE · registry $A770B_PROFILES_FILE · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
   if [ -n "$A770B_PROFILES" ]; then printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s = %s ctx %s ·' "$p" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"; else empty_registry_line; fi
@@ -347,7 +360,7 @@ doctor(){
       *) echo "MISSING card: $n nvtop devices match A770B_GPU_MATCH=$A770B_GPU_MATCH, not 1; set it to a substring naming the builder card alone in 'nvtop -s'"; missing=$((missing+1)) ;;
     esac
   fi
-  if llama_pid_alive "$PIDF" >/dev/null; then
+  if llama_pid_alive "$PIDF" >/dev/null || [ -n "$(_compose_container_id)" ]; then
     echo "ok   mode: $A770B_CARD_MODE, not measured (the seat's server is up)"
   elif [ "$n" != 1 ]; then
     echo "ok   mode: $A770B_CARD_MODE, not measured (no VRAM readings or more than one matching card)"
