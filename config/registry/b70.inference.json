@@ -2,7 +2,7 @@
   "schema": 1,
   "card": "b70",
   "mode": "inference",
-  "notes": "Every number is a measurement on the Arc Pro B70 (32 GB, Xe2) with nothing else on the card, llama.cpp in the full-intel SYCL container, -ub 512, K/V q8_0; each row's measured_on names its build. The ledger config/models.md holds every B70 checkpoint measured, adopted or not. builder.env and the environment override any A770B_<NAME>_* value.",
+  "notes": "The llama.cpp rows are measurements on the Arc Pro B70 (32 GB, Xe2) with nothing else on the card, in the full-intel SYCL container, -ub 512, K/V q8_0. The vLLM row names its own image, quant flag and cache dtype in vllm_image, quant and kv; its measured_on names the engine. The ledger config/models.md holds every B70 checkpoint measured, adopted or not. builder.env and the environment override any A770B_<NAME>_* value.",
   "profiles": {
     "qwen38-27b-udq6k-sycl": {
       "task": "code-edit",
@@ -344,6 +344,112 @@
         "write": "not measured"
       },
       "use_for": "A third B70 builder beside the Unsloth UD-Q6_K and Frosty Q6_K-OQ8 rows: Frosty40's Q6_K with the attention projections at Q8_0 and the output tensor left at Q6_K (by bytes 85.7% Q6_K, 14.3% Q8_0) on SYCL, 100,000-token window, 24.7 GiB of the 28.0 GiB cap. Decodes 21.5 tok/s at depth 0, 19.1 at 8k, 14.6 at 32k and 8.9 at 99k; prefills 763 tok/s at 8k. Cleared the kit 3/3 with all references on a same-day re-run of the task rung, and the depth probe 3/3 at 99k on the ladder, with a 2,048-token task budget. The file has a prediction head; this serve left 15 tensors unused and ran with speculation off. Served at the harness's default sampling (the ladder carried no sampling line). llama.cpp keeps about 1.1 GiB of host buffers by design; 66 of 66 layers were on the card."
+    },
+    "qwen38-27b-exl3-4bpw-vllm": {
+      "task": "code-edit",
+      "evidence": "SUITE-1@1: 3 of 3 counted stages passed. The counted JavaScript stage is the retest (candidate-suite-20261006-151627-136903.json, 87 lines). Backend, optimise, design and the three references are the first run (candidate-suite-20261006-132921-52788.json). The first JavaScript stage applied an empty patch. Depth probe not run.",
+      "model": "Qwen3.8-27B-exl3-4.00bpw",
+      "source": "turboderp/Qwen3.8-27B-exl3",
+      "family": "qwen3.8",
+      "architecture": "dense, hybrid attention (Gated DeltaNet + gated attention; 64 blocks, with a prediction head in this file)",
+      "quant": "exl3",
+      "category": "dense",
+      "weight_class": "27b",
+      "params_b": {
+        "total": 27,
+        "active": 27
+      },
+      "ctx": 100000,
+      "useful_ctx": 100000,
+      "kv": "bf16",
+      "flash_attention": "on",
+      "reasoning": "off",
+      "extra": "--language-model-only --max-num-seqs 16 --kv-cache-memory 6858356839",
+      "vllm_image": "exl3xpu:b70-15ded2f",
+      "thinking": {
+        "mode": "off",
+        "source": "engine log: reasoning parser empty and in-reasoning disabled. The chat template still emitted a think tag, and those tokens were not capped"
+      },
+      "timeout_s": 2100,
+      "vram_gib_after_load": 28.15,
+      "ram_gb_extra": 0,
+      "speed": {
+        "decode_tps": {
+          "8k": null,
+          "32k": null,
+          "64k": null,
+          "100k": null
+        },
+        "prefill_tps": {
+          "8k": 1893.1,
+          "32k": null,
+          "64k": null,
+          "100k": 1320.6
+        },
+        "far_end": {
+          "tokens": 98729,
+          "decode_tps": 27.58,
+          "prefill_tps": 1320.6,
+          "ttft_s": 74.761
+        },
+        "bench": {
+          "tool": "vllm-completions",
+          "prompt": 8184,
+          "gen": 128,
+          "flags": "--quantization exl3 --max-model-len 100000 --gpu-memory-utilization 0.9 --language-model-only --max-num-seqs 16 --kv-cache-memory 6858356839",
+          "at_depth": {
+            "0": {
+              "pp": 175.6,
+              "tg": 33.87
+            },
+            "8184": {
+              "pp": 1893.1,
+              "tg": null
+            },
+            "98729": {
+              "pp": 1320.6,
+              "tg": 27.58
+            }
+          },
+          "source": "exl3-4.00bpw-20261006/bench.json (vLLM completions, not llama-bench). The 8184-token row generated 16 tokens and that decode is discarded. The 98729-token row requested 128 tokens and stopped after 12, so its 27.58 tok/s is not a 128-token sample. Depth 0 is the only 128-token decode. Warmup and the 1-token calibrate are omitted."
+        }
+      },
+      "depth_probe_100k": "not run",
+      "instrument": "SUITE-1@1",
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "mean_wall_s": 1250.0,
+        "source": "JavaScript: candidate-suite-20261006-151627-136903.json. Backend, optimise, design and references: candidate-suite-20261006-132921-52788.json. The first JavaScript stage in the earlier file was an empty patch and is not the counted stage.",
+        "instrument": "SUITE-1@1"
+      },
+      "measured_on": "Arc Pro B70 32 GB, vLLM 0.26.1.dev0+g568afb3a1 XPU, exl3xpu 15ded2f",
+      "card": "b70",
+      "backend": "vllm",
+      "placement": "container",
+      "mode": "inference",
+      "engine": "vllm",
+      "tool_parser": "qwen3_coder",
+      "checkpoint": {
+        "format": "safetensors",
+        "weight_quant": "EXL3-4.00bpw",
+        "activation_quant": "bf16",
+        "evidence": "safetensors, codebook mul1, bits 4.0, head_bits 6, quantiser version 1.4.2, weight revision 113cf7ab958054860e43fb7f3063b1af19171095"
+      },
+      "kernel": {
+        "path": "gpu",
+        "xmx": "untested",
+        "evidence": "engine log: Using Flash Attention backend; Using FlashAttention version 2; Using Triton/FLA GDN prefill kernel. No XMX line."
+      },
+      "capability": {},
+      "capability_source": "The maker did not publish a task benchmark for this quant. Speed numbers from a speculative MTP serve are a different run and are not this row.",
+      "fit": {
+        "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 1250.0 s. The counted JavaScript stage is the retest; backend and optimise are the first run. The first JavaScript stage applied an empty patch and is not counted. All three reference exercises passed on the first run.",
+        "write": "not measured"
+      },
+      "use_for": "A B70 builder on vLLM for the EXL3 4.00bpw safetensors. Served language-model only, prediction head present and unused, speculation off, ctx 100,000, host VRAM 28.15 GiB after the bench. The pinned intel vLLM image will not load this quant; serve uses this row's image. The engine log says kv_cache_dtype auto on dtype bfloat16, recorded here as kv bf16; the vLLM argv does not take a K/V quant flag. No llama.cpp host-buffer lines, so ram_gb_extra is 0. Prefill 1893.1 tok/s at 8184 tokens and 1320.6 tok/s at 98729 tokens. The only 128-token decode is 33.87 tok/s at depth 0. The 98729-token completion stopped after 12 tokens at 27.58 tok/s, so decode at 8k, 32k, 64k and 100k was not measured. useful_ctx is the served window, not the four-tokens-a-second figure, and the depth probe was not run. Reasoning was off in the engine. The chat template still emitted a think tag, and those tokens counted as output and were not capped. Kit 3/3: the counted JavaScript stage is a retest after the first JavaScript stage applied an empty patch; backend and optimise are the first run. A tool call parsed."
     }
   }
 }

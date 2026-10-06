@@ -174,10 +174,15 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   # shellcheck disable=SC2086
   local quant; quant=$(a770b_profile_var "$p" QUANT)
   local tool_parser; tool_parser=$(a770b_profile_var "$p" TOOL_PARSER)
-  QUANT=$quant TOOL_PARSER=$tool_parser KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
-    THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
-    THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
-    bash "$SERVE" start "$gguf" "$ctx" $extra || return 1
+  # This start only. A vLLM row may name an image the pinned compose file does not hold.
+  local vllm_image; vllm_image=$(a770b_profile_var "$p" VLLM_IMAGE)
+  (
+    if [ -n "$vllm_image" ]; then export A770B_VLLM_IMAGE="$vllm_image"; fi
+    QUANT=$quant TOOL_PARSER=$tool_parser KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
+      THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
+      THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
+      bash "$SERVE" start "$gguf" "$ctx" $extra
+  ) || return 1
   if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
     for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
   else
