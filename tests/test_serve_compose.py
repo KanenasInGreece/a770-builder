@@ -499,7 +499,7 @@ def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
     assert 'entrypoint: ["/bin/bash", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; source /opt/intel/oneapi/setvars.sh --force >/dev/null || exit 1; exec vllm serve \\"$@\\"", "vllm-serve"]' in text
     assert "2>/dev/null" not in text
     assert "127.0.0.1:${A770B_PORT}:8000" in text
-    assert "${A770B_VLLM_IMAGE:-intel/vllm:0.21.0-xpu}" in text
+    assert "${A770B_VLLM_IMAGE:-intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b}" in text
     assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
     assert "${A770B_MODELS}:/models:ro,z" in text
     assert "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro,z" in text
@@ -509,7 +509,9 @@ def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
 def test_vllm_env_example_documents_filtered_by_path_dir_and_trap():
     text = VLLM_ENV_EXAMPLE.read_text(encoding="utf-8")
     assert "A770B_MODEL=" not in text and "A770B_CTX=" not in text
-    assert "0.21.0-xpu" in text and "getent" in text
+    assert "A770B_VLLM_IMAGE=intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b" in text
+    assert "A770B_VLLM_IMAGE=intel/vllm" not in text
+    assert "getent" in text
     assert "TRAP" in text
     assert "A770B_BY_PATH_DIR=" in text
     assert "A770B_BY_PATH_DIR=/dev/dri/by-path\n" not in text
@@ -664,7 +666,7 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
         bin_,
         A770B_SERVED_BACKEND="vllm",
         A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
-        A770B_VLLM_IMAGE="intel/vllm:0.21.0-xpu",
+        A770B_VLLM_IMAGE="intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b",
         A770B_BY_PATH_DIR=str(by_path),
         A770B_QUANT="gptq",
         A770B_CARD_VRAM_TOTAL="32",
