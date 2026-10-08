@@ -39,7 +39,7 @@ differs, even when the kernel is the same.
 
 1. Load + VRAM (`bench_model.sh`) under the mode's cap (13.0 display / 15.3 inference).
 2. Probes + 17k summary.
-3. Speed (`bench_speed.sh`) at depths 0, 8k, 32k, far end.
+3. Speed (`bench_speed.sh`) at depths 0, 8k, 32k, far end. A llama.cpp row stays on that tool; a vLLM row leaves the server up and calls `bench_http.sh` at prompt sizes 8192, 32768, 65536 and 100000.
 4. Window (`ctx_sweep.sh 8000 <far end>`).
 5. Depth probe (`depth_probe.sh`) — caps `useful_ctx` when it fails.
 6. Task (`run_suite.sh`) — the standard suite.

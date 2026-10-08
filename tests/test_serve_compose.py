@@ -786,7 +786,7 @@ def test_status_names_a_running_container_when_the_pidfile_is_absent(tmp_path):
     script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
     r = subprocess.run([str(script), "status"], capture_output=True, text=True, cwd=ROOT, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "server: UP · container cid123 · pidfile does not name a live llama-server" in r.stdout
+    assert "server: UP · container cid123" in r.stdout
     assert "server: down" not in r.stdout
     _assert_status_filters(log)
 

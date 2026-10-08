@@ -2,7 +2,7 @@
 # ctx_sweep.sh — prefill and decode against prompt position on the running server, with VRAM sampled during each
 # prompt and the kernel log watched. Answers "does the large window come at a spillover cost".
 #
-#   ctx_sweep.sh [--bench <llama-bench results.json>] [sizes…]
+#   ctx_sweep.sh [--bench <llama-bench results.json>] [--tokenize llama|openai] [--model NAME] [sizes…]
 #
 # Each size is a number of REAL TOKENS, measured with the server's own tokeniser (harness/prompt_budget.py fit),
 # not a character count guessed at four characters a token. That guess asked for 100,000 tokens and built a prompt
@@ -31,13 +31,24 @@ set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 here=$(cd "$(dirname "$0")" && pwd)
 BENCH=""
+TOKENIZE="llama"
+MODEL_NAME="local-builder"
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --bench) BENCH="${2:?path to a llama-bench results file}"; shift 2 ;;
+    --tokenize) TOKENIZE="${2:?llama or openai}"; shift 2 ;;
+    --model) MODEL_NAME="${2:?served model name}"; shift 2 ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
+case "$TOKENIZE" in
+  llama|openai) ;;
+  *) echo "⛔ --tokenize must be llama or openai (got '$TOKENIZE')" >&2; exit 2 ;;
+esac
+if [ "$TOKENIZE" = "openai" ] && [ -z "$MODEL_NAME" ]; then
+  echo "⛔ --tokenize openai needs --model" >&2; exit 2
+fi
 URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("${ARGS[@]}")
 # default: two points, 8k and the far end (the operator's rule: extrapolate the curve between them, not sweep every window)
 [ "${#SIZES[@]}" -gt 0 ] || SIZES=(8000 100000)
@@ -70,7 +81,8 @@ tolerance_for(){ local tol=$(( $1 * 5 / 100 )); [ "$tol" -ge 256 ] || tol=256; p
 declare -A PROMPT_FOR EXPECTED_FOR
 for want in "${SIZES[@]}"; do
   if ! toks_expected=$(python3 "$here/prompt_budget.py" fit --corpus "$A770B_CORPUS_FILE" --target "$want" \
-        --out "$T/prompt.$want" --overhead 64 --url "$URL" --key "$KEY"); then
+        --out "$T/prompt.$want" --overhead 64 --url "$URL" --key "$KEY" \
+        --tokenize "$TOKENIZE" --model "$MODEL_NAME"); then
     echo "⛔ could not size a $want-token prompt from the corpus: refusing the sweep before any point is served" >&2
     rm -rf "$T"; exit 1
   fi
@@ -84,7 +96,7 @@ for want in "${SIZES[@]}"; do
   if [ ! -s "${PROMPT_FOR[$want]}" ]; then
     echo "⛔ the $want-token prompt proved before the sweep is gone: stopping the sweep" >&2; failed=1; break
   fi
-  python3 -c 'import json,sys; t=open(sys.argv[1],encoding="utf-8").read(); print(json.dumps({"model":"local-builder","max_tokens":96,"temperature":0,"messages":[{"role":"user","content":"Read this code and answer in one sentence: what does it do?\n\n"+t}]}))' "${PROMPT_FOR[$want]}" > "$T/body"
+  python3 -c 'import json,sys; t=open(sys.argv[1],encoding="utf-8").read(); print(json.dumps({"model":sys.argv[2],"max_tokens":96,"temperature":0,"messages":[{"role":"user","content":"Read this code and answer in one sentence: what does it do?\n\n"+t}]}))' "${PROMPT_FOR[$want]}" "$MODEL_NAME" > "$T/body"
 
   # the deadline: from the measured curve when we have one, else whatever the operator set, else generous. The
   # sub-process that reads the curve can fail or print something that is not a number, and a deadline that was

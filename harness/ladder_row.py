@@ -164,7 +164,12 @@ speed = {
     "decode_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
     "prefill_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
 }
-at_depth = bench_at_depth(bench_speed)
+http_speed = isinstance(bench_speed, dict) and bench_speed.get("instrument") == "llama-benchy"
+if http_speed:
+    raw_at = bench_speed.get("at_depth")
+    at_depth = raw_at if isinstance(raw_at, dict) else {}
+else:
+    at_depth = bench_at_depth(bench_speed)
 if at_depth:
     def pick(field_key, depth):
         v = at_depth.get(str(depth))
@@ -177,17 +182,30 @@ if at_depth:
         hundred_k_depth = far_end if far_end not in (8192, 32768, 65536) else 100000
         speed[reg_key]["100k"] = pick(bench_field, hundred_k_depth)
 
-    m_flags = re.search(r'-p\s+(\d+)', bench_speed.get("flags") or "")
-    n_flags = re.search(r'-n\s+(\d+)', bench_speed.get("flags") or "")
-    bench_out = {
-        "tool": bench_speed.get("build") or "unknown",
-        "prompt": int(m_flags.group(1)) if m_flags else 0,
-        "gen": int(n_flags.group(1)) if n_flags else 0,
-        "flags": bench_speed.get("flags") or "",
-        "at_depth": at_depth,
-        "source": os.path.basename(bench_speed_path),
-    }
-    if bench_out["prompt"] > 0 and bench_out["gen"] > 0 and bench_out["at_depth"]:
+    if http_speed:
+        bench_out = {
+            "tool": "llama-benchy",
+            "prompt": 8192,
+            "gen": 128,
+            "flags": bench_speed.get("flags") or "",
+            "at_depth": at_depth,
+            "source": bench_speed.get("source") or os.path.basename(bench_speed_path),
+        }
+    else:
+        m_flags = re.search(r'-p\s+(\d+)', bench_speed.get("flags") or "")
+        n_flags = re.search(r'-n\s+(\d+)', bench_speed.get("flags") or "")
+        bench_out = {
+            "tool": bench_speed.get("build") or "unknown",
+            "prompt": int(m_flags.group(1)) if m_flags else 0,
+            "gen": int(n_flags.group(1)) if n_flags else 0,
+            "flags": bench_speed.get("flags") or "",
+            "at_depth": at_depth,
+            "source": os.path.basename(bench_speed_path),
+        }
+    publish = bench_out["prompt"] > 0 and bench_out["gen"] > 0 and bench_out["at_depth"]
+    if http_speed and not bench_out["flags"]:
+        publish = False
+    if publish:
         speed["bench"] = bench_out
 
 if pfar:

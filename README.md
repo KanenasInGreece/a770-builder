@@ -1,5 +1,9 @@
 # A770_Builder
 
+<!-- benchy-attribution:begin -->
+We use [llama-benchy](https://github.com/eugr/llama-benchy) for benchmarking models, with thanks to Eugene Rakhmatulin (MIT, Copyright (c) 2026 Eugene Rakhmatulin). This project does not copy or redistribute that program.
+<!-- benchy-attribution:end -->
+
 a770-builder is a harness around a local GPU: it runs a coding model in a sandbox, measures models into profiles
 with the packaged tests anyone can run on their own model, and presents the result to an LLM orchestrator as a
 skill it calls instead of an online seat. The models in the registry are this project's own picks, measured so far

@@ -139,6 +139,7 @@ _fail_started(){
 
 case "${1:-}" in
   stop)
+    _keep_serve_log
     _compose down >/dev/null 2>&1 || true
     # a live llama-server named by the pidfile that is not this project's container is a host server from
     # before container-only serving; removing the pidfile would orphan it, so keep it and say so
@@ -236,6 +237,7 @@ python3 -c "import sys,math; v=float('$A770B_VRAM_CAP_GIB'); sys.exit(0 if (v>0 
 # a start is a recreate: take any existing container of this project down first, so the budget gate reads the card
 # free (a running container's VRAM is this project's, not a foreign server) and `up --force-recreate` starts from
 # the profile just built — a profile switch must not silently keep the old model.
+_keep_serve_log
 _compose down >/dev/null 2>&1 || true
 budget_gate || exit 1
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }

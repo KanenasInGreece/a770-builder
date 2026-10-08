@@ -9,6 +9,7 @@
 # own generated file — see a770b_ensure_corpus_file below), never against a fixed list.
 #
 #   depth_probe.sh <target_tokens> [--bench <llama-bench results.json>] [--gen <N>]
+#                  [--base-url URL] [--model NAME] [--tokenize llama|openai]
 #
 # The target is REAL TOKENS, measured with the server's own tokeniser, and the deadline is read off the card's own
 # measured curve — see harness/prompt_budget.py for why both used to be guesses and what the guesses cost.
@@ -23,15 +24,26 @@ set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 here=$(cd "$(dirname "$0")" && pwd)
 URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key)
-want=""; BENCH=""; GEN=320
+want=""; BENCH=""; GEN=320; BASE_URL=""; MODEL_NAME="local-builder"; TOKENIZE="llama"
 while [ $# -gt 0 ]; do
   case "$1" in
     --bench) BENCH="${2:?path to a llama-bench results file}"; shift 2 ;;
     --gen) GEN="${2:?reasoning+answer token budget}"; shift 2 ;;
+    --base-url) BASE_URL="${2:?base url}"; shift 2 ;;
+    --model) MODEL_NAME="${2:?served model name}"; shift 2 ;;
+    --tokenize) TOKENIZE="${2:?llama or openai}"; shift 2 ;;
     *) want="$1"; shift ;;
   esac
 done
 want=${want:-100000}
+case "$TOKENIZE" in
+  llama|openai) ;;
+  *) echo "⛔ --tokenize must be llama or openai (got '$TOKENIZE')" >&2; exit 2 ;;
+esac
+if [ "$TOKENIZE" = "openai" ] && [ -z "$MODEL_NAME" ]; then
+  echo "⛔ --tokenize openai needs --model" >&2; exit 2
+fi
+if [ -n "$BASE_URL" ]; then URL="${BASE_URL%/}"; fi
 T=$(mktemp -d)
 # the corpus is part of the instrument (kit/corpus.py's own docstring): never fall back to a different corpus when
 # A770B_CORPUS_FILE is missing — generate it, or refuse. a770b_ensure_corpus_file (harness/guard.sh) is the one
@@ -51,17 +63,18 @@ PLANT
 # the prompt, planted and cut to `want` real tokens by the server's own tokeniser (256 of them left for the
 # questions and the chat template wrapped around it below)
 if ! toks_expected=$(python3 "$here/prompt_budget.py" fit --corpus "$A770B_CORPUS_FILE" --target "$want" \
-      --out "$T/prompt" --plant-file "$T/plant" --plant-at 0.85 --overhead 256 --url "$URL" --key "$KEY"); then
+      --out "$T/prompt" --plant-file "$T/plant" --plant-at 0.85 --overhead 256 --url "$URL" --key "$KEY" \
+      --tokenize "$TOKENIZE" --model "$MODEL_NAME"); then
   echo "⛔ could not size a $want-token prompt for the depth probe" >&2; rm -rf "$T"; exit 2
 fi
 Q='You have just read a large body of Python source. Answer three questions, each in one or two sentences, precisely and only from the code you read:
 1. What does the function orbital_checksum_v7 compute, step by step, and what is the default salt?
 2. Which modulus does it reduce by, and what comment does it give for that number?
 3. Name three distinct functions or classes defined in the source you read that are NOT orbital_checksum_v7, with one clause each on what they do.'
-python3 - "$T/prompt" "$Q" "$GEN" > "$T/body" <<'PY'
+python3 - "$T/prompt" "$Q" "$GEN" "$MODEL_NAME" > "$T/body" <<'PY'
 import json,sys
 t=open(sys.argv[1], encoding="utf-8", errors="ignore").read(); q=sys.argv[2]; gen=int(sys.argv[3])
-print(json.dumps({"model":"local-builder","max_tokens":gen,"temperature":0,"messages":[{"role":"user","content":"SOURCE:\n\n"+t+"\n\nQUESTIONS:\n"+q}]}))
+print(json.dumps({"model":sys.argv[4],"max_tokens":gen,"temperature":0,"messages":[{"role":"user","content":"SOURCE:\n\n"+t+"\n\nQUESTIONS:\n"+q}]}))
 PY
 # the deadline: from the measured curve when we have one, else whatever the operator set, else generous
 if [ -n "${A770B_PROBE_MAX_TIME:-}" ]; then
@@ -102,9 +115,12 @@ try:
     content = msg.get("content")
     answered = isinstance(content, str)
     answer = (content or "").strip()
-    # the truncation signal: when --reasoning-budget cuts thinking off, llama-server injects the budget message into
-    # reasoning_content; the probe records the marker so a cut-off (and possibly wasted) think is visible
-    rc = msg.get("reasoning_content") or ""
+    # llama.cpp puts the budget marker in reasoning_content. A server that splits the trace uses reasoning.
+    reasoning = msg.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        rc = reasoning
+    else:
+        rc = msg.get("reasoning_content") or ""
     bmsg = os.environ.get("A770B_BUDGET_MESSAGE") or ""
     trunc = bool(bmsg) and (bmsg in rc)
     print(f"prompt_tokens={u.get('prompt_tokens')} wall={wall}s prefill_tps={t.get('prompt_per_second', 0):.0f} "

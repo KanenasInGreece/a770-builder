@@ -29,6 +29,14 @@ title_match = re.search(r"^#\s+(.+)$", readme, re.M)
 project = title_match.group(1).strip() if title_match else "this project"
 
 body_after_title = readme[title_match.end():] if title_match else readme
+# The marked block under the title is the llama-benchy notice. The recap opens on the project description.
+body_after_title = re.sub(
+    r"<!--\s*benchy-attribution:begin\s*-->.*?<!--\s*benchy-attribution:end\s*-->",
+    "",
+    body_after_title,
+    count=1,
+    flags=re.S,
+)
 first_para = body_after_title.strip().split("\n\n", 1)[0]
 first_para = " ".join(line.strip() for line in first_para.splitlines())
 sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", first_para)
