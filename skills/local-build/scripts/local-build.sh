@@ -295,7 +295,7 @@ status(){ local c cid; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"
   else
     cid=$(_compose_container_id)
-    if [ -n "$cid" ]; then echo "server: UP · container ${cid} · pidfile does not name a live llama-server"
+    if [ -n "$cid" ]; then echo "server: UP · container ${cid}"
     else echo "server: down"; fi
   fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo

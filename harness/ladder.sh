@@ -4,7 +4,8 @@
 # an earlier one):
 #   1. load and VRAM at the target window  — harness/serve_compose.sh, wrapped inside harness/bench_model.sh
 #   2. the probes and the 17k summary       — harness/bench_model.sh <label> <gguf> <ctx> [flags]
-#   3. the standard speed rung              — harness/bench_speed.sh <profile>  (llama-bench, the row's own flags)
+#   3. the standard speed rung              — llama.cpp: harness/bench_speed.sh, server down.
+#                                         vLLM: harness/bench_http.sh, server left up.
 #   4. the window rung                      — harness/ctx_sweep.sh 8000 <far end>  (VRAM/kernel-log safety read;
 #                                              still the source useful_ctx's linear extension is drawn from)
 #   5. the depth probe, now graded          — harness/depth_probe.sh <far end>  (caps useful_ctx where it fails)
@@ -46,6 +47,22 @@ here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
+# tokenizer_dir <model> — directory containing tokenizer.json or tokenizer_config.json.
+# Prints that directory. Returns 1 when neither file is there.
+tokenizer_dir() {
+  local model dir
+  model="$1"
+  if [ -d "$model" ]; then
+    dir="$model"
+  else
+    dir=$(dirname -- "$model")
+  fi
+  if [ -f "$dir/tokenizer.json" ] || [ -f "$dir/tokenizer_config.json" ]; then
+    printf '%s\n' "$dir"
+    return 0
+  fi
+  return 1
+}
 
 [ $# -ge 1 ] || die "usage: ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q8_0|q4_0] [--extra \"<flags>\"] [--reasoning on|off] [--reasoning-budget N] [--timeout S] [--seat <path>] [--suite <suite.json>] [--reviewer <profile>] [--fresh] [--dry-run]"
 SPEC="$1"; shift
@@ -132,14 +149,27 @@ if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
   echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
   echo "[dry-run] evidence: $A770B_DOCKER logs ${A770B_COMPOSE_PROJECT}-llama-1 2>&1 | python3 harness/engine_evidence.py log --engine $ENGINE --log - --model $GGUF --out $LOGDIR/$NAME.evidence.json"
-  if [ -n "$PROFILE_NAME" ]; then
+  if [ -n "$PROFILE_NAME" ] && [ "$ENGINE" = "vllm" ]; then
+    if tok=$(tokenizer_dir "$GGUF"); then
+      echo "[dry-run] rung 3/6: leave the server up"
+      bash "$here/bench_http.sh" --dry-run --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok"
+    else
+      echo "[dry-run] rung 3/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
+    fi
+  elif [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 3/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; bash harness/bench_speed.sh $PROFILE_NAME --depths $DEPTHS"
   else
     echo "[dry-run] rung 3/6: SKIPPED — harness/bench_speed.sh needs a registry profile ('harness/profiles.py card --name <profile>' has no ephemeral form); $GGUF has no row yet"
   fi
-  echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
-  echo "[dry-run]           both are sized in real tokens by the server's tokeniser, and their deadlines come from rung 3's measured curve (harness/prompt_budget.py)"
-  echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --bench <rung 3's file> --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+  if [ "$ENGINE" = "vllm" ]; then
+    echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS 8000 $FAR_END"
+    echo "[dry-run]           both are sized in real tokens by the server's tokeniser; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
+    echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --tokenize openai --model $A770B_ALIAS --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+  else
+    echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
+    echo "[dry-run]           both are sized in real tokens by the server's tokeniser, and their deadlines come from rung 3's measured curve (harness/prompt_budget.py)"
+    echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --bench <rung 3's file> --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+  fi
   if [ -n "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 6/6: bash harness/run_suite.sh $PROFILE_NAME $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   else
@@ -179,20 +209,40 @@ if [ -z "$FAIL_RUNG" ]; then
   fi
 fi
 
-# ── rung 3: the standard speed rung (llama-bench, the row's own flags) — needs the server DOWN ─────────────────
+# ── rung 3: llama.cpp stops the server and runs llama-bench. vLLM leaves the server up and calls bench_http.sh.
 BENCH_SPEED_JSON=""
 if [ -z "$FAIL_RUNG" ]; then
-  echo "▶ rung 3/6 — standard speed (bench_speed.sh)"
-  bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
-  if [ -n "$PROFILE_NAME" ]; then
-    SPEED_LOG="$LOGDIR/ladder-bench-speed-$$.log"
-    if bash "$here/bench_speed.sh" "$PROFILE_NAME" --depths "$DEPTHS" 2>&1 | tee "$SPEED_LOG"; then
-      BENCH_SPEED_JSON=$(grep -oE '[^ ]+-bench-[0-9]{8}-[0-9]{6}\.json' "$SPEED_LOG" | tail -1)
+  if [ "$ENGINE" = "vllm" ]; then
+    echo "▶ rung 3/6 — standard speed (bench_http.sh, server left up)"
+    if [ -n "$PROFILE_NAME" ]; then
+      if tok=$(tokenizer_dir "$GGUF"); then
+        SPEED_LOG="$LOGDIR/ladder-bench-http-$$.log"
+        HTTP_OUT="$A770B_DATA/results/${NAME}-http-$(date +%Y%m%d-%H%M%S).json"
+        if bash "$here/bench_http.sh" --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok" --save-result "$HTTP_OUT" 2>&1 | tee "$SPEED_LOG"; then
+          mapped="${HTTP_OUT%.json}.mapped.json"
+          if [ -f "$mapped" ]; then BENCH_SPEED_JSON="$mapped"; fi
+        else
+          FAIL_RUNG="speed"; FAIL_MSG="bench_http.sh failed — see $SPEED_LOG"
+        fi
+      else
+        FAIL_RUNG="speed"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
+      fi
     else
-      FAIL_RUNG="speed"; FAIL_MSG="bench_speed.sh failed — see $SPEED_LOG"
+      echo "⚠ skipping: the HTTP speed rung needs a registry profile, and $GGUF has none yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
     fi
   else
-    echo "⚠ skipping: bash harness/bench_speed.sh requires a registry profile name, and $GGUF has none yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
+    echo "▶ rung 3/6 — standard speed (bench_speed.sh)"
+    bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
+    if [ -n "$PROFILE_NAME" ]; then
+      SPEED_LOG="$LOGDIR/ladder-bench-speed-$$.log"
+      if bash "$here/bench_speed.sh" "$PROFILE_NAME" --depths "$DEPTHS" 2>&1 | tee "$SPEED_LOG"; then
+        BENCH_SPEED_JSON=$(grep -oE '[^ ]+-bench-[0-9]{8}-[0-9]{6}\.json' "$SPEED_LOG" | tail -1)
+      else
+        FAIL_RUNG="speed"; FAIL_MSG="bench_speed.sh failed — see $SPEED_LOG"
+      fi
+    else
+      echo "⚠ skipping: bash harness/bench_speed.sh requires a registry profile name, and $GGUF has none yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
+    fi
   fi
 fi
 
@@ -208,7 +258,12 @@ if [ -z "$FAIL_RUNG" ]; then
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
     # rung 3 has already measured how prefill slows with depth for this model on this card; the sweep sets each
     # point's deadline from that curve instead of from a constant that fits no model (harness/prompt_budget.py)
-    SWEEP_ARGS=(); [ -n "$BENCH_SPEED_JSON" ] && SWEEP_ARGS=(--bench "$BENCH_SPEED_JSON")
+    SWEEP_ARGS=()
+    if [ "$ENGINE" = "vllm" ]; then
+      SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS")
+    elif [ -n "$BENCH_SPEED_JSON" ]; then
+      SWEEP_ARGS=(--bench "$BENCH_SPEED_JSON")
+    fi
     ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
   fi
@@ -219,7 +274,12 @@ DEPTH_LOG=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 5/6 — depth probe at $FAR_END (graded: PASS/FAIL per question)"
   DEPTH_LOG="$LOGDIR/ladder-depth-probe-$$.log"
-  PROBE_ARGS=(--gen "$GEN"); [ -n "$BENCH_SPEED_JSON" ] && PROBE_ARGS+=(--bench "$BENCH_SPEED_JSON")
+  PROBE_ARGS=(--gen "$GEN")
+  if [ "$ENGINE" = "vllm" ]; then
+    PROBE_ARGS+=(--tokenize openai --model "$A770B_ALIAS")
+  elif [ -n "$BENCH_SPEED_JSON" ]; then
+    PROBE_ARGS+=(--bench "$BENCH_SPEED_JSON")
+  fi
   bash "$here/depth_probe.sh" "$FAR_END" "${PROBE_ARGS[@]}" 2>&1 | tee "$DEPTH_LOG"; rc=${PIPESTATUS[0]}
   case "$rc" in
     0) ;;

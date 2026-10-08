@@ -58,7 +58,12 @@ else
   python3 - "$TMPLOG" <<'PY'
 import re,sys
 lines=open(sys.argv[1],errors='ignore').read().splitlines()
-pe=[l for l in lines if 'prompt eval time' in l]; ev=[l for l in lines if 'eval time' in l and 'prompt eval' not in l]
+pe=[l for l in lines if 'prompt eval time' in l]
+has_ngen=any(re.search(r'task\s+\d+\s+\|\s+n_gen\s+=\s+\d+', l) for l in lines)
+if not pe and not has_ngen:
+    print("timings unavailable (log has no llama.cpp timing lines)")
+    sys.exit(0)
+ev=[l for l in lines if 'eval time' in l and 'prompt eval' not in l]
 def parse(l):
     m=re.search(r'=\s+([\d.]+) ms /\s+(\d+) tokens \(\s*([\d.]+) ms per token,\s*([\d.]+) tokens per second',l); return tuple(float(x) for x in m.groups()) if m else None
 P=[p for p in (parse(l) for l in pe) if p]; E=[e for e in (parse(l) for l in ev) if e]

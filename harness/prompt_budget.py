@@ -24,6 +24,7 @@ card's own numbers say it should is a finding, not something to wait out.
 Usage:
   prompt_budget.py fit  --corpus F --target N --out F [--plant-file F] [--plant-at 0.85]
                         [--overhead 128] [--url URL] [--key K]
+                        [--tokenize llama|openai] [--model NAME]
   prompt_budget.py time --tokens N [--bench F] [--gen 320] [--safety 1.5] [--floor 300] [--cap 7200]
 """
 import argparse
@@ -50,8 +51,15 @@ def _post(url, key, path, payload):
         return json.loads(r.read().decode())
 
 
-def count_tokens(url, key, text):
-    return len(_post(url, key, "/tokenize", {"content": text}).get("tokens", []))
+def count_tokens(url, key, text, tokenize="llama", model=""):
+    """llama.cpp posts {"content": text}. An OpenAI server posts model, prompt, and add_special_tokens false."""
+    if tokenize == "openai":
+        if not model:
+            raise ValueError("openai tokenize needs a model name")
+        payload = {"model": model, "prompt": text, "add_special_tokens": False}
+    else:
+        payload = {"content": text}
+    return len(_post(url, key, "/tokenize", payload).get("tokens", []))
 
 
 def build_prompt(corpus, chars, plant, plant_at):
@@ -66,6 +74,11 @@ def build_prompt(corpus, chars, plant, plant_at):
 def fit(args):
     url = args.url or f"http://{os.environ.get('A770B_HOST', '127.0.0.1')}:{os.environ.get('A770B_PORT', '7890')}"
     key = args.key or ""
+    tokenize = getattr(args, "tokenize", None) or "llama"
+    model = getattr(args, "model", None) or ""
+    if tokenize == "openai" and not model:
+        print("⛔ --tokenize openai needs --model", file=sys.stderr)
+        return 2
     corpus = open(args.corpus, encoding="utf-8", errors="ignore").read()
     plant = open(args.plant_file, encoding="utf-8", errors="ignore").read() if args.plant_file else ""
 
@@ -83,7 +96,7 @@ def fit(args):
     for _ in range(8):
         text = build_prompt(corpus, chars, plant, args.plant_at)
         try:
-            n = count_tokens(url, key, text)
+            n = count_tokens(url, key, text, tokenize, model)
         except (urllib.error.URLError, OSError, ValueError) as e:
             print(f"⛔ the server's /tokenize did not answer ({e}) — cannot size the prompt", file=sys.stderr)
             return 2
@@ -228,6 +241,8 @@ def main():
     f.add_argument("--overhead", type=int, default=128, help="tokens the caller's own wrapper will add")
     f.add_argument("--url")
     f.add_argument("--key")
+    f.add_argument("--tokenize", choices=("llama", "openai"), default="llama")
+    f.add_argument("--model", default="")
     f.set_defaults(func=fit)
 
     t = sub.add_parser("time", help="seconds to allow for a prompt of N tokens, from the measured curve")

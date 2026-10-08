@@ -115,7 +115,7 @@ def test_fit_refuses_a_prompt_far_under_the_target(monkeypatch, tmp_path):
 
     calls = {"n": 0}
 
-    def liar(url, key, text):  # honest when small, wild when large: a token count that runs away with size
+    def liar(url, key, text, tokenize="llama", model=""):  # honest when small, wild when large
         calls["n"] += 1
         return len(text) // 3 if len(text) < 5000 else 10 ** 7
 
@@ -131,7 +131,7 @@ def test_fit_never_exceeds_the_target(monkeypatch, tmp_path):
     corpus = tmp_path / "c.py"
     corpus.write_text("def a():\n    return 1\n" * 40000)
     out = tmp_path / "out.txt"
-    monkeypatch.setattr(m, "count_tokens", lambda url, key, text: len(text) // 3)
+    monkeypatch.setattr(m, "count_tokens", lambda url, key, text, tokenize="llama", model="": len(text) // 3)
     args = type("A", (), {"corpus": str(corpus), "target": 20000, "out": str(out),
                           "plant_file": None, "plant_at": 0.85, "overhead": 64,
                           "url": "http://127.0.0.1:1", "key": ""})()
@@ -191,3 +191,35 @@ def test_a_zero_speed_reading_cannot_revive_the_flat_extrapolation(tmp_path):
     at = {8192: {"pp": 414.08}, 32768: {"pp": 0.0}}
     seconds, _ = m.prefill_seconds(at, 100000)
     assert seconds is None, "only one usable depth remains after filtering — that cannot be extrapolated"
+
+
+def test_llama_tokenize_posts_content(monkeypatch):
+    m = load()
+    seen = {}
+
+    def fake(url, key, path, payload):
+        seen["payload"] = payload
+        return {"tokens": [1, 2, 3]}
+
+    monkeypatch.setattr(m, "_post", fake)
+    assert m.count_tokens("http://127.0.0.1:9", "", "hello") == 3
+    assert seen["payload"] == {"content": "hello"}
+
+
+def test_openai_tokenize_disables_special_tokens(monkeypatch):
+    m = load()
+    seen = {}
+
+    def fake(url, key, path, payload):
+        seen["payload"] = payload
+        return {"tokens": [1]}
+
+    monkeypatch.setattr(m, "_post", fake)
+    assert m.count_tokens("http://127.0.0.1:9", "", "hello", "openai", "qwen") == 1
+    assert seen["payload"] == {"model": "qwen", "prompt": "hello", "add_special_tokens": False}
+
+
+def test_openai_tokenize_without_a_model_is_refused():
+    m = load()
+    with pytest.raises(ValueError):
+        m.count_tokens("http://127.0.0.1:9", "", "hello", "openai", "")
