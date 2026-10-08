@@ -1298,6 +1298,13 @@ def test_env_exports_card_backend_mode():
     assert "A770B_QWEN35_9B_Q4KM_VULKAN_CARD:=a770" in result.stdout
     assert "A770B_QWEN35_9B_Q4KM_VULKAN_BACKEND:=vulkan" in result.stdout
     assert "A770B_QWEN35_9B_Q4KM_VULKAN_MODE:=display" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_ENGINE:=llama.cpp" in result.stdout
+
+    b70 = ROOT / "config" / "registry" / "b70.inference.json"
+    result = run("env", "--file", str(b70))
+    assert result.returncode == 0, result.stderr
+    assert "A770B_QWEN38_27B_UDQ6K_SYCL_ENGINE:=llama.cpp" in result.stdout
+    assert "A770B_QWEN38_27B_EXL3_4BPW_VLLM_ENGINE:=vllm" in result.stdout
 
 
 def test_check_fails_differing_instrument_within_registry(tmp_path):

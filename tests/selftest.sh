@@ -1148,9 +1148,10 @@ if printf '%s' "$cb_host" | grep -q "A770B_SERVE must be compose"; then
   echo "ok   compose: the host serve path is refused — serving is container-only"
 else echo "FAIL compose: the host serve path was not refused"; printf '%s\n' "$cb_host" | tail -5; fail=1
 fi
-# an unknown backend must be refused, never defaulted onto the Vulkan envelope
+# an unknown backend must be refused, never defaulted onto the Vulkan envelope.
+# This row names engine llama.cpp, so the resolver refuses the mismatch before the envelope's own line.
 cb_unk=$( _iso; A770B_QWEN38_27B_IQ3S_SYCL_BACKEND=cuda cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve qwen38-27b-iq3s-sycl 2>&1 )
-if printf '%s' "$cb_unk" | grep -q "backend 'cuda' is not one this harness serves"; then
+if printf '%s' "$cb_unk" | grep -q "engine llama.cpp does not match backend cuda"; then
   echo "ok   compose: an unknown backend is refused, not defaulted"
 else echo "FAIL compose: an unknown backend was not refused"; printf '%s\n' "$cb_unk" | tail -5; fail=1
 fi
@@ -1235,7 +1236,8 @@ printf 'llamacpp:prompt_tokens_total 300\nllamacpp:tokens_predicted_total 150\nl
 ( _iso; FAKE_CURL_LOG="$cb/curl.log" FAKE_CURL_METRICS_BODY="$cb/metrics-after-body.prom" cb_env bash -c \
   '. "$1"; _metrics_snapshot "$2"' \
   _ "$LOCAL_BUILD_SCRIPT" "$evd/results/ev-label.metrics-after.prom" ) >/dev/null 2>&1
-( _iso; cb_env bash -c '. "$1"; _stage_counters "$2"' \
+# serve() exports the resolved engine before this diff. An empty engine skips the write.
+( _iso; A770B_SERVED_ENGINE=llama.cpp cb_env bash -c '. "$1"; _stage_counters "$2"' \
   _ "$LOCAL_BUILD_SCRIPT" "ev-label" ) >/dev/null 2>&1
 apikey=$(cat "$cb/api.key" 2>/dev/null || true)
 if [ -f "$evd/results/ev-label.metrics-before.prom" ] && [ -f "$evd/results/ev-label.metrics-after.prom" ] \

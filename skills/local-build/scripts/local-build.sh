@@ -57,6 +57,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 fi
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh" || { [ "${1:-}" = "doctor" ] || exit 2; }; . "$A770B_PROJECT/harness/guard.sh"
+# shellcheck source=profile_engine.sh
+. "$(dirname "${BASH_SOURCE[0]}")/profile_engine.sh"
 if [ "${1:-}" = "doctor" ]; then
   SERVE="${SERVE:-${A770B_SERVE_SCRIPT:-$A770B_PROJECT/harness/serve_compose.sh}}"
 else
@@ -131,8 +133,12 @@ _write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4)
   # container log into engine_evidence.py log, so every successful serve leaves evidence beside the run's other
   # results, and record its path for a caller (the stage-counter diff, the ladder) to pick up. docker, python or
   # an unreadable log failing here must never fail the serve that already succeeded — warn once and carry on.
-  local profile="$1" backend="$2" model="$3" engine container out logtext
-  case "$backend" in vllm) engine=vllm ;; *) engine="llama.cpp" ;; esac
+  local profile="$1" model="$3" engine container out logtext
+  engine="${A770B_SERVED_ENGINE:-}"
+  if [ -z "$engine" ]; then
+    echo "⚠ A770B_SERVED_ENGINE is empty — skipping serve evidence for $profile" >&2
+    return 0
+  fi
   container="${A770B_COMPOSE_PROJECT}-llama-1"           # the one compose service name every envelope uses
   mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
   out="$A770B_DATA/results/serve-$profile-$(date +%Y%m%d-%H%M%S).evidence.json"
@@ -169,7 +175,11 @@ _stage_counters(){ # <label> — engine_evidence.py diff over <label>.metrics-be
   # <label>.counters.json; best-effort like the snapshot it reads (E4) — a failure here warns and leaves no
   # counters.json (engine_evidence.py diff itself already tolerates a missing before/after file with a note).
   local label="$1" engine
-  case "${A770B_SERVED_BACKEND:-}" in vllm) engine=vllm ;; *) engine="llama.cpp" ;; esac
+  engine="${A770B_SERVED_ENGINE:-}"
+  if [ -z "$engine" ]; then
+    echo "⚠ A770B_SERVED_ENGINE is empty — skipping stage counters for $label" >&2
+    return 0
+  fi
   if ! python3 "$A770B_PROJECT/harness/engine_evidence.py" diff --engine "$engine" \
       "$A770B_DATA/results/$label.metrics-before.prom" "$A770B_DATA/results/$label.metrics-after.prom" \
       --out "$A770B_DATA/results/$label.counters.json"
@@ -222,8 +232,14 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local lock_held run_alive msg old_profile LIVE_PY
   local -a rb_args
   profile_vars "$p"
+  A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
+  export A770B_SERVED_ENGINE
   _envelope_for_backend "$p"
-  [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
+  if [ "$A770B_SERVED_ENGINE" = "vllm" ]; then
+    [ -r "$gguf" ] || die "model not found: $gguf — put the model file or directory in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
+  else
+    [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
+  fi
   _export_live "$p"
   LIVE_PY="$A770B_PROJECT/harness/live_backend.py"
   live_json=$(python3 "$LIVE_PY" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null) || live_json=""
@@ -261,6 +277,8 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       if ! a770b_is_profile "$old_profile"; then echo "rollback failed: server is down"; return 1; fi
       p=$old_profile
       profile_vars "$p"
+      A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
+      export A770B_SERVED_ENGINE
       _envelope_for_backend "$p"
       if [ ! -r "$gguf" ]; then echo "rollback failed: server is down"; return 1; fi
       _export_live "$p"
