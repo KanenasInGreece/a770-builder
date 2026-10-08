@@ -53,6 +53,16 @@ No learned router. Read the brief (edit scope, file size, time you can spend), t
 
 Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=inference`). Run `local-build.sh menu` for this machine's measured models — the tables live there, not in this file.
 
+## Engine
+
+A profile names its engine. This skill serves llama.cpp on the vulkan and
+sycl backends, and vllm on the vllm backend. A named engine this skill does
+not serve is refused, and so is a backend that contradicts the named engine.
+When the profile omits the engine, vulkan and sycl stay llama.cpp and vllm
+stays vllm. This skill does not package an engine image, and it does not
+package llama-benchy. The model path is the row's model: a GGUF for
+llama.cpp, or the file or directory a vllm row names.
+
 ## Spec (optional)
 
 ```json

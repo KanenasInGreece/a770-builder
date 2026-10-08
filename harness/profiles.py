@@ -943,6 +943,9 @@ def cmd_env(args) -> int:
         )
         print(': "${A770B_%s_CARD:=%s}"' % (upper, prof["card"]))
         print(': "${A770B_%s_BACKEND:=%s}"' % (upper, prof["backend"]))
+        engine = prof.get("engine")
+        engine_str = engine if isinstance(engine, str) else ""
+        print(': "${A770B_%s_ENGINE:=%s}"' % (upper, engine_str))
         tool_parser = prof.get("tool_parser")
         tool_parser_str = tool_parser if isinstance(tool_parser, str) else ""
         print(': "${A770B_%s_TOOL_PARSER:=%s}"' % (upper, tool_parser_str))
