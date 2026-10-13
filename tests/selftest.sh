@@ -999,30 +999,34 @@ lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" b
 lad_seat=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad4" bash "$here/harness/ladder.sh" qwen35-9b-q4km-vulkan --seat "$t/mine" --dry-run 2>&1)
 lad_small=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad5" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 8192 --dry-run 2>&1); lad_small_rc=$?
 lad_flag=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad6" bash "$here/harness/ladder.sh" qwen35-9b-q4km-vulkan --seat --fresh --dry-run 2>&1); lad_flag_rc=$?
-if printf '%s\n' "$lad_res" | grep -q 'far_end=38976' && printf '%s\n' "$lad_res" | grep -q 'ctx_sweep.sh --bench' \
-  && printf '%s\n' "$lad_res" | grep -q 'depth_probe.sh 38976 --bench' \
+if printf '%s\n' "$lad_res" | grep -q 'far_end=38976' && ! printf '%s\n' "$lad_res" | grep -q -- '--bench' \
   && printf '%s\n' "$lad_res" | grep -q -- 'kit-seat --fresh' && ! printf '%s\n' "$lad_seat" | grep -q -- '--fresh' \
   && [ "$lad_small_rc" != 0 ] && printf '%s\n' "$lad_small" | grep -q '8000-token shallow point' \
   && [ "$lad_flag_rc" != 0 ] && printf '%s\n' "$lad_flag" | grep -q 'looks like an option'
-then echo "ok   ladder: the far end leaves 1024 tokens under the window, both long rungs are handed rung 3's measured curve, only the kit's own seat is replaced, and a window too small for both sweep points or a seat that is really a flag are refused"
-else echo "FAIL ladder: far end, --bench, seat replacement or the two refusals are not as expected"; printf '%s\n' "$lad_res" | head -12; fail=1
+then echo "ok   ladder: the far end leaves 1024 tokens under the window, the long rungs are not handed a speed file, only the kit's own seat is replaced, and a window too small for both sweep points or a seat that is really a flag are refused"
+else echo "FAIL ladder: far end, speed-file handoff, seat replacement or the two refusals are not as expected"; printf '%s\n' "$lad_res" | head -12; fail=1
 fi
 kill "$tok_pid" 2>/dev/null; wait "$tok_pid" 2>/dev/null
 
 # ── harness/ladder.sh (item 2): the one command that produces a row — --dry-run prints all six rungs and writes nothing
 lad_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data" bash "$here/harness/ladder.sh" qwen35-9b-q4km-vulkan --dry-run 2>&1)
 if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | grep -q 'bench_model.sh' \
-  && printf '%s\n' "$lad_out" | grep -q 'bench_speed.sh' && printf '%s\n' "$lad_out" | grep -q 'ctx_sweep.sh' \
-  && printf '%s\n' "$lad_out" | grep -q 'depth_probe.sh' && printf '%s\n' "$lad_out" | grep -q 'run_suite.sh' \
+  && ! printf '%s\n' "$lad_out" | grep -q 'bench_speed.sh' \
+  && { printf '%s\n' "$lad_out" | grep -q 'bench_http.sh' || printf '%s\n' "$lad_out" | grep -q 'no tokenizer.json'; } \
+  && { printf '%s\n' "$lad_out" | grep -q 'ctx_sweep.sh' || printf '%s\n' "$lad_out" | grep -q 'no tokenizer.json'; } \
+  && { printf '%s\n' "$lad_out" | grep -q 'depth_probe.sh' || printf '%s\n' "$lad_out" | grep -q 'no tokenizer.json'; } \
+  && ! printf '%s\n' "$lad_out" | grep -q -- '--bench' \
+  && printf '%s\n' "$lad_out" | grep -q 'run_suite.sh' \
   && printf '%s\n' "$lad_out" | grep -q 'nothing written' \
   && { [ ! -d "$t/ladder-data/results" ] || [ -z "$(ls -A "$t/ladder-data/results" 2>/dev/null)" ]; }
 then echo "ok   ladder: --dry-run names all six rungs (load, probes, speed, window, depth probe, task) and writes nothing"
 else echo "FAIL ladder: --dry-run output missing a rung or wrote something"; printf '%s\n' "$lad_out"; fail=1
 fi
 lad_model_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data2" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run 2>&1)
-if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_model_out" | grep -q -- '--model .*--ctx 40000'
-then echo "ok   ladder: a bare GGUF with no registry row skips the bench_speed.sh rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
-else echo "FAIL ladder: the no-row GGUF path did not skip bench_speed.sh or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
+if printf '%s\n' "$lad_model_out" | grep -q 'SKIPPED' && printf '%s\n' "$lad_model_out" | grep -q -- '--model .*--ctx 40000' \
+  && ! printf '%s\n' "$lad_model_out" | grep -q 'bench_speed.sh'
+then echo "ok   ladder: a bare GGUF with no registry row skips the speed rung (it needs a registry name) and still drives run_suite.sh --model for the task rung"
+else echo "FAIL ladder: the no-row GGUF path did not skip the speed rung or did not drive run_suite.sh --model"; printf '%s\n' "$lad_model_out"; fail=1
 fi
 # a bare GGUF with no --extra flags must not pass --extra '' to run_suite.sh (its parser refuses an empty value)
 if ! printf '%s\n' "$lad_model_out" | grep -q -- '--extra'
@@ -1038,6 +1042,198 @@ if ! grep -q 'raise SystemExit' "$here/harness/ladder.sh" \
   && [ -z "$(printf '{"suite":"X"}' | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")')" ]
 then echo "ok   ladder: the instrument line yields SUITE@V for a present kit_version and an empty string for an absent one (the guard then refuses)"
 else echo "FAIL ladder: the inline instrument computation is wrong or its guard is gone"; fail=1
+fi
+
+# ── four surfaces: roles.py names bring, speed, and count; the ladder does not keep a second copy
+if ! grep -q 'bench_speed.sh' "$here/harness/ladder.sh"
+then echo "ok   ladder: ladder.sh does not name bench_speed.sh"
+else echo "FAIL ladder: ladder.sh still contains bench_speed.sh"; fail=1
+fi
+role_names=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from profiles import ENGINE_VALUES; print(" ".join(sorted(ENGINE_VALUES)))' "$here/harness")
+role_ok=1
+for eng in llama.cpp vllm sglang; do
+  got=$(python3 "$here/harness/roles.py" speed "$eng"); rc=$?
+  [ "$rc" = 0 ] && [ "$got" = "bench_http.sh" ] || role_ok=0
+  got=$(python3 "$here/harness/roles.py" count "$eng"); rc=$?
+  [ "$rc" = 0 ] && [ "$got" = unmeasured ] || role_ok=0
+done
+[ "$(python3 "$here/harness/roles.py" bring llama.cpp)" = start ] || role_ok=0
+[ "$(python3 "$here/harness/roles.py" bring vllm)" = start ] || role_ok=0
+[ "$(python3 "$here/harness/roles.py" bring sglang)" = attach ] || role_ok=0
+[ "$(python3 "$here/harness/roles.py" kit)" = run_suite.sh ] || role_ok=0
+bring_other=$(python3 "$here/harness/roles.py" bring other 2>&1); bring_rc=$?
+speed_other=$(python3 "$here/harness/roles.py" speed other 2>&1); speed_rc=$?
+count_other=$(python3 "$here/harness/roles.py" count other 2>&1); count_rc=$?
+names_ok=1
+[ -n "$role_names" ] || names_ok=0
+# shellcheck disable=SC2086  # admitted engine names are single tokens
+for n in $role_names; do
+  printf '%s\n' "$bring_other" | grep -F -q "$n" || names_ok=0
+  printf '%s\n' "$speed_other" | grep -F -q "$n" || names_ok=0
+  printf '%s\n' "$count_other" | grep -F -q "$n" || names_ok=0
+done
+tim_a=$(python3 "$here/harness/roles.py" timings attached); tim_a_rc=$?
+tim_s=$(python3 "$here/harness/roles.py" timings started); tim_s_rc=$?
+if [ "$role_ok" = 1 ] && [ "$names_ok" = 1 ] && [ "$bring_rc" != 0 ] && [ "$speed_rc" != 0 ] && [ "$count_rc" != 0 ] \
+  && [ "$tim_a_rc" = 0 ] && [ "$tim_a" = "timings unavailable (attached server; this capture reads a compose container log)" ] \
+  && ! printf '%s\n' "$tim_a" | grep -q '0' \
+  && [ "$tim_s_rc" = 0 ] && [ "$tim_s" = compose-log ] && ! printf '%s\n' "$tim_s" | grep -q '0'
+then echo "ok   roles: speed is bench_http.sh, bring is start or attach, count is unmeasured, timings name the existing sentence, and an unknown engine is refused with the admitted names"
+else echo "FAIL roles: bring/speed/count/timings did not answer as specified (names: $role_names)"; printf '%s\n' "bring($bring_rc)=$bring_other" "speed($speed_rc)=$speed_other" "count($count_rc)=$count_other" "attached=$tim_a" "started=$tim_s"; fail=1
+fi
+python3 - "$t/four" <<'FOURPY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+
+def row(model, engine, backend, source="local", ctx=32768, weight_class="9b"):
+    return {
+        "model": model, "source": source, "family": "qwen", "architecture": "dense",
+        "quant": "Q4_K_M", "kv": "f16", "flash_attention": "off", "reasoning": "off",
+        "extra": "", "capability_source": "none", "use_for": "four surfaces dry-run",
+        "depth_probe_100k": "not run", "category": "dense", "weight_class": weight_class,
+        "measured_on": "test", "card": "a770", "backend": backend, "mode": "display",
+        "engine": engine, "ctx": ctx, "useful_ctx": 8000, "timeout_s": 1500,
+        "vram_gib_after_load": 1, "ram_gb_extra": 0,
+        "params_b": {"total": 9, "active": 9},
+        "speed": {
+            "decode_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+            "prefill_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+        },
+        "capability": {}, "instrument": "seat: test",
+    }
+
+def dump(path, profiles):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema": 1, "card": "a770", "mode": "display", "profiles": profiles}), encoding="utf-8")
+
+dump(root / "both.json", {
+    "llama-row": row("llama-dir", "llama.cpp", "vulkan"),
+    "vllm-row": row("vllm-dir", "vllm", "vllm"),
+    "wide-row": row("llama-dir", "llama.cpp", "vulkan", ctx=101024, weight_class="27b"),
+    "cap100k-row": row("llama-dir", "llama.cpp", "vulkan", ctx=100000, weight_class="70b"),
+})
+dump(root / "weight.json", {
+    "llama-row": row("weights.gguf", "llama.cpp", "vulkan"),
+})
+dump(root / "bare.json", {
+    "llama-row": row("weights.gguf", "llama.cpp", "vulkan", source="hub-sentinel/should-not-print"),
+})
+dump(root / "sglang.json", {
+    "sglang-row": row("sglang-model", "sglang", "sglang"),
+})
+(root / "dir-models" / "llama-dir").mkdir(parents=True)
+(root / "dir-models" / "vllm-dir").mkdir(parents=True)
+(root / "dir-models" / "llama-dir" / "tokenizer.json").write_text("{}", encoding="utf-8")
+(root / "dir-models" / "vllm-dir" / "tokenizer.json").write_text("{}", encoding="utf-8")
+(root / "file-models").mkdir(parents=True)
+(root / "file-models" / "weights.gguf").write_text("not a weight", encoding="utf-8")
+(root / "file-models" / "tokenizer.json").write_text("{}", encoding="utf-8")
+(root / "bare-models").mkdir(parents=True)
+(root / "bare-models" / "weights.gguf").write_text("not a weight", encoding="utf-8")
+(root / "sglang-models" / "sglang-model").mkdir(parents=True)
+(root / "sglang-models" / "sglang-model" / "tokenizer.json").write_text("{}", encoding="utf-8")
+FOURPY
+four_rung3() { printf '%s\n' "$1" | awk 'BEGIN{p=0} /rung 3\/6/{p=1} /rung 4\/6/{exit} p'; }
+four_dry() { # four_dry <registry> <models> <profile>
+  # The parent shell sourced env.sh, which exports A770B_PROFILES. That list would win
+  # over the temp file (profiles.py env uses :=), so the child must not inherit it.
+  env -u A770B_ATTACHED -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/dry-$$" \
+    A770B_PROFILES_FILE="$1" A770B_MODELS="$2" \
+    bash "$here/harness/ladder.sh" "$3" --dry-run 2>&1
+}
+for reg in both.json weight.json bare.json sglang.json; do
+  if ! python3 "$here/harness/profiles.py" check --file "$t/four/$reg" >/dev/null
+  then echo "FAIL roles: temp registry $reg is not valid"; python3 "$here/harness/profiles.py" check --file "$t/four/$reg" >&2; fail=1
+  fi
+done
+four_speed_ok=1
+for prof in llama-row vllm-row; do
+  out=$(four_dry "$t/four/both.json" "$t/four/dir-models" "$prof")
+  slice=$(four_rung3 "$out")
+  printf '%s\n' "$slice" | grep -q 'bench_http.sh' || four_speed_ok=0
+  printf '%s\n' "$slice" | grep -q 'stop' && four_speed_ok=0
+  printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b8192\b' || four_speed_ok=0
+  printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b32768\b' && four_speed_ok=0
+  printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b65536\b' && four_speed_ok=0
+  printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b100000\b' && four_speed_ok=0
+  printf '%s\n' "$out" | grep -q 'bench_speed.sh' && four_speed_ok=0
+  printf '%s\n' "$out" | grep -q -- '--bench' && four_speed_ok=0
+done
+out=$(four_dry "$t/four/weight.json" "$t/four/file-models" llama-row)
+slice=$(four_rung3 "$out")
+printf '%s\n' "$slice" | grep -q 'bench_http.sh' || four_speed_ok=0
+printf '%s\n' "$slice" | grep -q 'stop' && four_speed_ok=0
+printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b8192\b' || four_speed_ok=0
+printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b32768\b' && four_speed_ok=0
+printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b65536\b' && four_speed_ok=0
+printf '%s\n' "$slice" | grep -E -q -- '--pp [^;]*\b100000\b' && four_speed_ok=0
+printf '%s\n' "$out" | grep -q 'bench_speed.sh' && four_speed_ok=0
+out_wide=$(four_dry "$t/four/both.json" "$t/four/dir-models" wide-row)
+slice_wide=$(four_rung3 "$out_wide")
+printf '%s\n' "$slice_wide" | grep -q 'bench_http.sh' || four_speed_ok=0
+printf '%s\n' "$slice_wide" | grep -E -q -- '--pp [^;]*\b100000\b' || four_speed_ok=0
+out_cap=$(four_dry "$t/four/both.json" "$t/four/dir-models" cap100k-row)
+slice_cap=$(four_rung3 "$out_cap")
+printf '%s\n' "$slice_cap" | grep -q 'bench_http.sh' || four_speed_ok=0
+printf '%s\n' "$slice_cap" | grep -E -q -- '--pp [^;]*\b8192\b' || four_speed_ok=0
+printf '%s\n' "$slice_cap" | grep -E -q -- '--pp [^;]*\b32768\b' || four_speed_ok=0
+printf '%s\n' "$slice_cap" | grep -E -q -- '--pp [^;]*\b65536\b' || four_speed_ok=0
+printf '%s\n' "$slice_cap" | grep -E -q -- '--pp [^;]*\b100000\b' && four_speed_ok=0
+out=$(four_dry "$t/four/bare.json" "$t/four/bare-models" llama-row)
+printf '%s\n' "$out" | grep -q 'no tokenizer.json or tokenizer_config.json' || four_speed_ok=0
+printf '%s\n' "$out" | grep -q 'bench_speed.sh' && four_speed_ok=0
+printf '%s\n' "$out" | grep -F -q 'hub-sentinel/should-not-print' && four_speed_ok=0
+if [ "$four_speed_ok" = 1 ]
+then echo "ok   ladder: a directory or a weight file with a tokenizer dry-runs speed as bench_http.sh, and a weight file without one is the tokenizer refusal"
+else echo "FAIL ladder: speed dry-run was not bench_http.sh, named a stop, passed --bench, or missed the tokenizer refusal"; printf '%s\n' "$out" | head -20; fail=1
+fi
+sg=$(env -u A770B_ATTACHED -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/sg-dry" \
+  A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
+  bash "$here/harness/ladder.sh" sglang-row --dry-run 2>&1)
+if printf '%s\n' "$sg" | grep -q 'bring: attach' \
+  && printf '%s\n' "$sg" | grep -qx 'rung 3/6: not run — this skill does not start SGLang and no server is attached' \
+  && ! printf '%s\n' "$sg" | grep -q 'bench_http.sh' \
+  && ! printf '%s\n' "$sg" | grep -q 'llama-benchy' \
+  && ! printf '%s\n' "$sg" | grep -q 'tok/s'
+then echo "ok   ladder: an unattached sglang dry-run brings attach, does not name a speed command, and prints no tok/s figure"
+else echo "FAIL ladder: unattached sglang dry-run named a speed command or a tok/s figure"; printf '%s\n' "$sg"; fail=1
+fi
+sga=$(env -u A770B_PROFILES A770B_ATTACHED=1 A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/sg-att" \
+  A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
+  bash "$here/harness/ladder.sh" sglang-row --dry-run 2>&1)
+if printf '%s\n' "$sga" | grep -q 'bench_http.sh' \
+  && ! printf '%s\n' "$sga" | grep -q 'rung 3/6: not run'
+then echo "ok   ladder: an attached sglang dry-run names bench_http.sh on the speed rung"
+else echo "FAIL ladder: attached sglang dry-run did not name bench_http.sh"; printf '%s\n' "$sga" | head -20; fail=1
+fi
+mkdir -p "$t/four/bin"
+four_marker="$t/four/marker"
+cat > "$t/four/bin/bench_http.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "bench_http \$*" >> "$four_marker"
+exit 0
+EOF
+cat > "$t/four/bin/docker" <<EOF
+#!/bin/sh
+printf '%s\n' "docker \$*" >> "$four_marker"
+exit 0
+EOF
+cat > "$t/four/bin/uvx" <<EOF
+#!/bin/sh
+printf '%s\n' "uvx \$*" >> "$four_marker"
+exit 99
+EOF
+chmod +x "$t/four/bin/bench_http.sh" "$t/four/bin/docker" "$t/four/bin/uvx"
+sglive=$(env -u A770B_ATTACHED -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE="$t/four/missing-refuse" A770B_DATA="$t/four/sg-live" \
+  A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
+  A770B_DOCKER="$t/four/bin/docker" PATH="$t/four/bin:$PATH" \
+  bash "$here/harness/ladder.sh" sglang-row 2>&1); sglive_rc=$?
+if [ "$sglive_rc" != 0 ] && [ ! -e "$four_marker" ] \
+  && printf '%s\n' "$sglive" | grep -q 'this skill does not start SGLang and no server is attached' \
+  && ! printf '%s\n' "$sglive" | grep -q 'bench_model.sh'
+then echo "ok   ladder: a live unattached sglang rung fails before bench_model.sh, bench_http.sh, and any container command"
+else echo "FAIL ladder: live unattached sglang did not fail cleanly (rc=$sglive_rc marker=$( [ -e "$four_marker" ] && echo present || echo absent))"; printf '%s\n' "$sglive" | tail -25; fail=1
 fi
 
 # ── run_suite.sh --model/--ctx (item 3): a GGUF with no registry row can still climb the task rung

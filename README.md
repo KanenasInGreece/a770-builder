@@ -59,8 +59,9 @@ group ids, the MESA device pin, the read-only GGUF and API-key mounts, and a `12
 load and the live-backend sidecar stay on the host. `restart: "no"` means a reboot does not bring it back; stop it
 with `bash skills/local-build/scripts/local-build.sh stop`. Do not start it with a bare `docker compose up`: that
 skips the profile argv, the budget gate, the VRAM cap and the sidecar, and `--no-recreate` would keep the old model.
-The image is `full-vulkan` (not `server-vulkan`, which has no `llama-bench`), so the speed rung's bench runs as a
-one-shot in the same container after the server is stopped. Passthrough is unmeasured until a host brings it up.
+The image is `full-vulkan` (not `server-vulkan`, which has no `llama-bench`). The ladder's speed rung does not
+run that binary and does not stop the server: it calls `harness/bench_http.sh` (llama-benchy, called and not
+packaged) against the server the load rung left up. Passthrough is unmeasured until a host brings it up.
 `compose/a770-vulkan.env` (copied from `compose/a770-vulkan.env.example`) pins the image by digest so every host runs
 the same bytes; `local-build.sh doctor` warns, without failing, while that line is still the floating tag.
 

@@ -68,8 +68,8 @@ docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/ggml-org/llama.cpp:fu
 # paste the full-intel repo@sha256:… into A770B_LLAMA_IMAGE in compose/a770-sycl.env
 ```
 
-Use `full-*`, never `server-*`: the speed rung runs a one-shot `llama-bench` in the same image, which `server-*`
-does not ship.
+Use `full-*`, never `server-*`: `server-*` does not ship `llama-bench`, which a one-shot bench in that image still
+runs. The ladder's speed rung does not: it leaves the server up and calls `harness/bench_http.sh`.
 
 ## 5. Bring the server up
 

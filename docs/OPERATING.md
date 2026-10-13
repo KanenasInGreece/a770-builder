@@ -146,18 +146,17 @@ can spend, and takes the least costly profile whose card covers all three. `loca
 models are already up and which would need a restart; when nothing is loaded it lists the whole card and marks the
 default without calling it up.
 
-The standard speed number for a row is `harness/bench_speed.sh <profile>`: llama-bench run at the row's own served
-flags — `-fa`, `-ctk`/`-ctv`, `-ub`, a MoE row's `--n-cpu-moe` — at depths 0, 8k, 32k and the far end, one command a
-reader can run unchanged and compare against another row's, recorded in the registry as `speed.bench`. `--dry-run`
-prints that command without touching the card. It writes `$A770B_DATA/results/<profile>-bench-<date>.json` and
-refuses outright while the harness's own server is up, one GPU process on the card at a time; `harness/ctx_sweep.sh`
-stays the tool for what llama-bench does not watch — the VRAM peak during a prompt and the kernel log's reset count.
+The standard speed number for a row is `harness/bench_http.sh`: llama-benchy, called and not packaged, against the
+server the load rung left up, at prompt sizes 8192, 32768, 65536 and 100000. The ladder does not stop that server
+to take the number. Window and depth deadlines stay the unmeasured cap, and tokens are counted from the tokenizer
+directory beside the weights. `--dry-run` prints the command without touching the card. `harness/ctx_sweep.sh`
+stays the tool for what that speed call does not watch — the VRAM peak during a prompt and the kernel log's reset count.
 Its own far end is a target, not a measurement: the corpus slice it asks for is sized by four bytes a token, and
 this kit's corpus is dense real source rather than prose, so that rule understates — a sweep asking for 8,000 tokens
 sent 12,718. The far end actually recorded for a row is whatever token count its reply measured, never the number
 typed on the command line, and a row too slow to answer inside the run's own time ceiling leaves nothing to record
 at that depth at all (the 27B's own 100k attempt ran past a 3,600 s ceiling with no answer).
-Beside the llama-bench number sits the standard suite's own as-delivered speed, `harness/suite_report.py` reading a
+Beside that speed number sits the standard suite's own as-delivered speed, `harness/suite_report.py` reading a
 `run_suite.sh` results file's per-stage capture, recorded as `speed.delivered` — labelled, never given alone, since
 it answers a different question: not what the row can do at that flag set in isolation, but what it delivered inside
 a real coding run.
@@ -427,8 +426,8 @@ harness/ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q
 is wasted on a model that failed an earlier one), writes one JSON holding every rung's own numbers, and prints a
 REGISTRY ROW ready to paste under `profiles.<name>`. `<profile-or-gguf>` is either a name already in the registry
 (every knob comes from its row; `--ctx`/`--kv`/`--kv-v`/`--extra` alongside one is refused) or a bare GGUF/absolute
-path — a model with no row yet, which needs `--ctx` and skips only rung 3 (`bench_speed.sh` needs a registry
-profile: `harness/profiles.py card --name <profile>` has no ephemeral form). `--dry-run` prints every rung's command
+path — a model with no row yet, which needs `--ctx` and skips only rung 3 (the speed rung runs only when given a
+registry profile name; a bare GGUF has no row yet). `--dry-run` prints every rung's command
 and writes nothing. `AGENTS.md`, *The ladder*, is the full reference for every flag, what each rung decides, and
 what the ladder still leaves to a human (`use_for`, `fit.write`, `capability`, the reviewer choice, and every
 identity field).
@@ -450,8 +449,8 @@ identity field).
    the engine's own host buffers, transcribed by hand from the server log's `*_Host … buffer size` lines at `-lv
    4`, not computed here — shows as `offloaded N/M layers to GPU` with N < M when offload is partial), the sanity
    probes and the 17k summary; **3** —
-   `harness/bench_speed.sh <profile>`, llama-bench at the row's own served flags at depths 0, 8192, 32768 and the
-   far end (skipped for a bare GGUF); **4** — `harness/ctx_sweep.sh 8000 <far end>`, prefill, decode and VRAM
+   `harness/bench_http.sh`, llama-benchy at prompt sizes 8192, 32768, 65536 and 100000 against the server left up
+   (skipped for a bare GGUF); **4** — `harness/ctx_sweep.sh 8000 <far end>`, prefill, decode and VRAM
    against position, the source `useful_ctx`'s linear extension is drawn from; **5** — `harness/depth_probe.sh <far
    end>`, now graded PASS/FAIL per question, capping `useful_ctx` at 8,000 where it fails; **6** —
    `harness/run_suite.sh <profile>` (or `--model <gguf> --ctx <n> [--kv …] [--kv-v …] [--extra …] [--timeout …]` for

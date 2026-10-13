@@ -99,6 +99,42 @@ def test_mapped_file_fills_the_registry_keys_and_leaves_a_null_decode_null(tmp_p
     assert speed["bench"]["at_depth"]["8192"]["tg"] is None
 
 
+def test_llama_benchy_100k_is_the_100000_key_and_not_the_far_end(tmp_path):
+    mapped = {
+        "instrument": "llama-benchy",
+        "tool": "llama-benchy",
+        "prompt": 8192,
+        "gen": 128,
+        "flags": "uvx llama-benchy --pp 8192 32768 65536 --tg 128 --depth 0",
+        "at_depth": {
+            "8192": {"pp": 100.5, "tg": 21.0},
+            "32768": {"pp": 80.0, "tg": 19.0},
+            "65536": {"pp": 70.0, "tg": 18.0},
+            "98976": {"pp": 1.0, "tg": 1.0},
+        },
+        "source": "raw.json",
+    }
+    path = tmp_path / "mapped.json"
+    path.write_text(json.dumps(mapped), encoding="utf-8")
+    out = tmp_path / "ladder.json"
+    sweep = tmp_path / "sweep.log"
+    sweep.write_text("target tokens\n", encoding="utf-8")
+    depth = tmp_path / "depth.log"
+    depth.write_text("depth probe at 98976: not measured — none\n", encoding="utf-8")
+    argv = [
+        str(out), "name", "/models/m", "100000", "q8_0", "q8_0", "off", "", "1800",
+        "name", "SUITE-1@test", "98976", "", "",
+        str(tmp_path / "no-bench-model.json"), str(path), str(sweep), str(depth),
+        "", "", "", "", "2026-10-13T00:00:00",
+    ]
+    result = subprocess.run([sys.executable, str(LADDER_ROW)] + argv, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    speed = json.loads(out.read_text(encoding="utf-8"))["computed"]["speed"]
+    assert speed["prefill_tps"]["100k"] is None
+    assert speed["decode_tps"]["100k"] is None
+    assert speed["prefill_tps"]["64k"] == 70.0
+
+
 def _isolated(tmp_path):
     env = {k: v for k, v in os.environ.items() if not k.startswith("A770B_")}
     env.update({
@@ -241,7 +277,7 @@ def _sglang_registry(path, model_name):
     return path
 
 
-def _sglang_dry_run(tmp_path, with_tokenizer):
+def _sglang_dry_run(tmp_path, with_tokenizer, attached=False):
     models = tmp_path / "models"
     model = models / "sglang-model"
     model.mkdir(parents=True)
@@ -263,6 +299,8 @@ def _sglang_dry_run(tmp_path, with_tokenizer):
         "A770B_ALIAS": "local-builder",
         "A770B_CARD": "",
     })
+    if attached:
+        env["A770B_ATTACHED"] = "1"
     result = subprocess.run(
         ["bash", str(LADDER), "sglang-row", "--dry-run"],
         cwd=ROOT, capture_output=True, text=True, env=env,
@@ -270,17 +308,32 @@ def _sglang_dry_run(tmp_path, with_tokenizer):
     return result, model, marker
 
 
-def test_sglang_dry_run_prints_llama_benchy_and_does_not_start(tmp_path):
+def test_sglang_dry_run_does_not_start_or_name_a_speed_command_when_unattached(tmp_path):
     result, model, marker = _sglang_dry_run(tmp_path, with_tokenizer=True)
     assert result.returncode == 0, result.stdout + result.stderr
     text = result.stdout
-    assert "leave the server up" in text
-    assert "llama-benchy" in text
-    assert "uvx" in text
+    assert "rung 3/6: not run — this skill does not start SGLang and no server is attached" in text
+    assert "bring: attach" in text
+    assert "llama-benchy" not in text
+    assert "uvx" not in text
+    assert "tok/s" not in text
     assert "bench_speed.sh" not in text
     assert "bench_model.sh" not in text
     assert "serve_compose.sh start" not in text
     assert "this skill does not start SGLang" in text
+    assert str(model) in text
+    assert not marker.exists()
+
+
+def test_sglang_dry_run_names_bench_http_when_attached(tmp_path):
+    result, model, marker = _sglang_dry_run(tmp_path, with_tokenizer=True, attached=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    text = result.stdout
+    assert "bench_http.sh" in text
+    assert "llama-benchy" in text
+    assert "rung 3/6: not run" not in text
+    assert "bench_speed.sh" not in text
+    assert "bench_model.sh" not in text
     assert str(model) in text
     assert not marker.exists()
 
