@@ -9,7 +9,7 @@
 # own generated file — see a770b_ensure_corpus_file below), never against a fixed list.
 #
 #   depth_probe.sh <target_tokens> [--bench <llama-bench results.json>] [--gen <N>]
-#                  [--base-url URL] [--model NAME] [--tokenize llama|openai]
+#                  [--base-url URL] [--model NAME] [--tokenize llama|openai] [--tokenizer DIR]
 #
 # The target is REAL TOKENS, measured with the server's own tokeniser, and the deadline is read off the card's own
 # measured curve — see harness/prompt_budget.py for why both used to be guesses and what the guesses cost.
@@ -24,7 +24,7 @@ set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 here=$(cd "$(dirname "$0")" && pwd)
 URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key)
-want=""; BENCH=""; GEN=320; BASE_URL=""; MODEL_NAME="local-builder"; TOKENIZE="llama"
+want=""; BENCH=""; GEN=320; BASE_URL=""; MODEL_NAME="local-builder"; TOKENIZE="llama"; TOKENIZER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --bench) BENCH="${2:?path to a llama-bench results file}"; shift 2 ;;
@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
     --base-url) BASE_URL="${2:?base url}"; shift 2 ;;
     --model) MODEL_NAME="${2:?served model name}"; shift 2 ;;
     --tokenize) TOKENIZE="${2:?llama or openai}"; shift 2 ;;
+    --tokenizer) TOKENIZER="${2:?tokenizer directory}"; shift 2 ;;
     *) want="$1"; shift ;;
   esac
 done
@@ -42,6 +43,9 @@ case "$TOKENIZE" in
 esac
 if [ "$TOKENIZE" = "openai" ] && [ -z "$MODEL_NAME" ]; then
   echo "⛔ --tokenize openai needs --model" >&2; exit 2
+fi
+if [ "$TOKENIZE" = "openai" ] && [ -z "$TOKENIZER" ]; then
+  echo "⛔ --tokenize openai needs a tokenizer directory" >&2; exit 2
 fi
 if [ -n "$BASE_URL" ]; then URL="${BASE_URL%/}"; fi
 T=$(mktemp -d)
@@ -62,9 +66,11 @@ def orbital_checksum_v7(payload: bytes, salt: int = 4171) -> int:
 PLANT
 # the prompt, planted and cut to `want` real tokens by the server's own tokeniser (256 of them left for the
 # questions and the chat template wrapped around it below)
+fit_tok=()
+if [ "$TOKENIZE" = "openai" ]; then fit_tok=(--tokenizer "$TOKENIZER"); fi
 if ! toks_expected=$(python3 "$here/prompt_budget.py" fit --corpus "$A770B_CORPUS_FILE" --target "$want" \
       --out "$T/prompt" --plant-file "$T/plant" --plant-at 0.85 --overhead 256 --url "$URL" --key "$KEY" \
-      --tokenize "$TOKENIZE" --model "$MODEL_NAME"); then
+      --tokenize "$TOKENIZE" --model "$MODEL_NAME" "${fit_tok[@]}"); then
   echo "⛔ could not size a $want-token prompt for the depth probe" >&2; rm -rf "$T"; exit 2
 fi
 Q='You have just read a large body of Python source. Answer three questions, each in one or two sentences, precisely and only from the code you read:
@@ -104,11 +110,22 @@ def _int(v):
         return 0
 
 
+def _tps(src, key, spec):
+    # a missing timings field is not a measured zero
+    if not isinstance(src, dict) or key not in src or src[key] is None:
+        return "not measured"
+    try:
+        return format(float(src[key]), spec)
+    except (TypeError, ValueError):
+        return "not measured"
+
+
 r_raw, wall, vram_max, after, before, corpus_path, want, deadline = sys.argv[1:9]
 answer, refusal, answered = "", "", False
 try:
     r = json.loads(r_raw)
-    u, t = r.get("usage", {}), r.get("timings", {})
+    u = r.get("usage") if isinstance(r.get("usage"), dict) else {}
+    t = r.get("timings") if isinstance(r.get("timings"), dict) else {}
     msg = r["choices"][0]["message"]
     # a content field that came back at all means the model answered, even if it answered with nothing:
     # an empty answer at depth is a quality failure to be graded 0/3, never a request that was not made
@@ -123,8 +140,8 @@ try:
         rc = msg.get("reasoning_content") or ""
     bmsg = os.environ.get("A770B_BUDGET_MESSAGE") or ""
     trunc = bool(bmsg) and (bmsg in rc)
-    print(f"prompt_tokens={u.get('prompt_tokens')} wall={wall}s prefill_tps={t.get('prompt_per_second', 0):.0f} "
-          f"decode_tps={t.get('predicted_per_second', 0):.1f} vram_max={_num(vram_max, 'GiB')} resets={_int(after) - _int(before)} "
+    print(f"prompt_tokens={u.get('prompt_tokens')} wall={wall}s prefill_tps={_tps(t, 'prompt_per_second', '.0f')} "
+          f"decode_tps={_tps(t, 'predicted_per_second', '.1f')} vram_max={_num(vram_max, 'GiB')} resets={_int(after) - _int(before)} "
           f"reasoning_chars={len(rc)} reasoning_truncated={trunc}")
     if not answered:
         refusal = (r.get("error") or {}).get("message") or "the reply carried no choices[0].message.content"

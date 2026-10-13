@@ -825,14 +825,17 @@ A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A7
   bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-good.out" 2>&1; dp_good_rc=$?
 if [ "$dp_good_rc" = 0 ] && grep -q '^PASS: Q1' "$t/dp-good.out" && grep -q '^PASS: Q2' "$t/dp-good.out" \
   && grep -q '^PASS: Q3' "$t/dp-good.out" && grep -q 'depth probe at 1000: 3/3' "$t/dp-good.out" \
-  && grep -q '^ANSWER:' "$t/dp-good.out"
+  && grep -q '^ANSWER:' "$t/dp-good.out" && grep -q 'prefill_tps=500' "$t/dp-good.out" \
+  && grep -q 'decode_tps=20.0' "$t/dp-good.out"
 then echo "ok   depth_probe: a fully-correct reply grades PASS on all three questions (3/3) and exits 0, the raw answer still printed"
 else echo "FAIL depth_probe: good-answer grading did not pass as expected (rc=$dp_good_rc)"; cat "$t/dp-good.out"; fail=1
 fi
 A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" PATH="$t/dpbin:$PATH" DP_FAKE_ANSWER_FILE="$t/dp-bad.json" \
   bash "$here/harness/depth_probe.sh" 1000 > "$t/dp-bad.out" 2>&1; dp_bad_rc=$?
 if [ "$dp_bad_rc" = 1 ] && grep -q '^FAIL: Q1' "$t/dp-bad.out" && grep -q '^FAIL: Q2' "$t/dp-bad.out" \
-  && grep -q '^FAIL: Q3' "$t/dp-bad.out" && grep -qE 'depth probe at 1000: [01]/3' "$t/dp-bad.out"
+  && grep -q '^FAIL: Q3' "$t/dp-bad.out" && grep -qE 'depth probe at 1000: [01]/3' "$t/dp-bad.out" \
+  && grep -q 'prefill_tps=not measured' "$t/dp-bad.out" && grep -q 'decode_tps=not measured' "$t/dp-bad.out" \
+  && ! grep -q 'prefill_tps=0' "$t/dp-bad.out" && ! grep -q 'decode_tps=0' "$t/dp-bad.out"
 then echo "ok   depth_probe: a reply with none of the planted facts grades FAIL on all three questions and exits 1"
 else echo "FAIL depth_probe: bad-answer grading did not fail as expected (rc=$dp_bad_rc)"; cat "$t/dp-bad.out"; fail=1
 fi
@@ -964,6 +967,32 @@ if [ "$cs_fb_rc" = 0 ] && printf '%s\n' "$cs_fb" | grep -q 'the fixed generous f
 then echo "ok   ctx_sweep: a deadline the curve reader never produced is not used as one: the point still runs under the fixed generous deadline, which is named with the reason, and the operator's own override still wins"
 else echo "FAIL ctx_sweep: the failed deadline sub-process was not caught (fallback rc=$cs_fb_rc, override rc=$cs_ov_rc)"; printf '%s\n' "$cs_fb" "$cs_ov" | tail -20; fail=1
 fi
+python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":990},"choices":[{"message":{"content":"it computes a checksum"}}]}, open(sys.argv[1],"w"))' "$t/cs-no-rate.json"
+cs_norate=$(run_sweep "$t/cs-no-rate.json" "$here/harness" 1000 2>&1); cs_norate_rc=$?
+if [ "$cs_norate_rc" != 0 ] && printf '%s\n' "$cs_norate" | grep -q '1000: NOT MEASURED: the server reported no prefill or decode rate' \
+  && ! printf '%s\n' "$cs_norate" | grep -qE '^1000 +990 '
+then echo "ok   ctx_sweep: a reply with no prefill or decode rate is NOT MEASURED and fails the rung, never a zero"
+else echo "FAIL ctx_sweep: a missing rate was not refused (rc=$cs_norate_rc)"; printf '%s\n' "$cs_norate" | tail -20; fail=1
+fi
+mkdir -p "$t/csbin-empty"
+cat > "$t/csbin-empty/curl" <<'CSCURL'
+#!/bin/sh
+[ -n "${CS_CURL_LOG:-}" ] && printf '%s\n' "$*" >> "$CS_CURL_LOG"
+for a in "$@"; do
+  case "$a" in */health) exit 0 ;; esac
+done
+sleep 1
+cat "$CS_FAKE_ANSWER_FILE"
+CSCURL
+chmod +x "$t/csbin-empty/curl"
+cs_empty=$(CS_FAKE_ANSWER_FILE="$t/cs-in-tolerance.json" CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+  PATH="$t/csbin-empty:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_empty_rc=$?
+if [ "$cs_empty_rc" = 0 ] && printf '%s\n' "$cs_empty" | grep -qE '^1000 +990 ' \
+  && ! printf '%s\n' "$cs_empty" | grep -q 'server not healthy'
+then echo "ok   ctx_sweep: an empty HTTP success from /health still counts as healthy"
+else echo "FAIL ctx_sweep: an empty /health was treated as dead (rc=$cs_empty_rc)"; printf '%s\n' "$cs_empty" | tail -20; fail=1
+fi
 # a GGUF with no registry row: the dry-run paths never open the file, so this is a name inside the test's own
 # temporary directory — never a path on the machine that happens to be running the suite.
 lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run 2>&1)
@@ -1029,6 +1058,90 @@ rs_noreg=$( ( _iso; unset A770B_CARD; export A770B_CARD=b70; A770B_PROJECT="$her
 if printf '%s\n' "$rs_noreg" | grep -q "ephemeral profile 'candidate'"
 then echo "ok   I5: run_suite.sh --model --dry-run still runs for a card with no registry"
 else echo "FAIL I5: run_suite.sh --model --dry-run did not run with no registry"; printf '%s\n' "$rs_noreg" | tail -10; fail=1
+fi
+rs_att=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-att-data" bash "$here/harness/run_suite.sh" --base-url http://127.0.0.1:9/v1 --served-model-name my-served --ctx 8192 "$t/rs-att-seat" --dry-run 2>&1)
+if printf '%s\n' "$rs_att" | grep -q "no weight file" && printf '%s\n' "$rs_att" | grep -q -- '--profile candidate --base-url http://127.0.0.1:9/v1 --served-model-name my-served' \
+  && ! printf '%s\n' "$rs_att" | grep -q '\.gguf'
+then echo "ok   run_suite: --base-url/--served-model-name builds candidate with --ctx and forwards both flags, without a weight file"
+else echo "FAIL run_suite: attach dry-run did not forward the flags or named a weight file"; printf '%s\n' "$rs_att" | head -20; fail=1
+fi
+rs_rev=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-rev-data" bash "$here/harness/run_suite.sh" --base-url http://127.0.0.1:9/v1 --served-model-name my-served --ctx 8192 --reviewer other --dry-run 2>&1); rs_rev_rc=$?
+if [ "$rs_rev_rc" = 2 ] && printf '%s\n' "$rs_rev" | grep -q 'cannot be used with --base-url'
+then echo "ok   run_suite: --reviewer together with --base-url is refused"
+else echo "FAIL run_suite: --reviewer with --base-url was not refused (rc=$rs_rev_rc)"; printf '%s\n' "$rs_rev" | tail -8; fail=1
+fi
+rs_both=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-both-data" bash "$here/harness/run_suite.sh" --base-url http://127.0.0.1:9/v1 --served-model-name my-served --ctx 8192 --model "$t/no-row-model.gguf" --dry-run 2>&1); rs_both_rc=$?
+if [ "$rs_both_rc" = 2 ] && printf '%s\n' "$rs_both" | grep -q 'does not take --model'
+then echo "ok   run_suite: --base-url with --model is refused and no weight file is opened"
+else echo "FAIL run_suite: --base-url with --model was not refused (rc=$rs_both_rc)"; printf '%s\n' "$rs_both" | tail -8; fail=1
+fi
+# an already-up server: /health is an empty 200, /v1/health is not. Attach must not call serve (that path dies on engine sglang).
+cat > "$t/empty-health.py" <<'EHPY'
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        with open(os.environ["HIT"], "a", encoding="utf-8") as fh:
+            fh.write(path + "\n")
+        if path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+srv = HTTPServer(("127.0.0.1", 0), Handler)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+EHPY
+: > "$t/health-hits"
+HIT="$t/health-hits" python3 "$t/empty-health.py" > "$t/health-port" 2>/dev/null &
+eh_pid=$!
+for _ in $(seq 1 50); do [ -s "$t/health-port" ] && break; sleep 0.1; done
+eh_port=$(cat "$t/health-port" 2>/dev/null)
+att_seat="$t/attach-seat"
+git init -q "$att_seat"
+( cd "$att_seat" && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init )
+echo 'brief' > "$t/attach-brief.md"
+att_data="$t/attach-data"
+mkdir -p "$att_data/logs"
+sentinel="$t/sentinel.evidence.json"
+printf '%s\n' '{"sentinel":1}' > "$sentinel"
+printf '%s\n' "$sentinel" > "$att_data/logs/serve-evidence.path"
+att_out=$(A770B_DATA="$att_data" A770B_PROFILES=" candidate" A770B_CANDIDATE_MODEL=my-served A770B_CANDIDATE_CTX=4096 \
+  A770B_CANDIDATE_ENGINE=sglang A770B_CANDIDATE_BACKEND=sglang A770B_CANDIDATE_TIMEOUT=30 \
+  bash "$here/skills/local-build/scripts/local-build.sh" run "$att_seat" "$t/attach-brief.md" --profile candidate \
+  --base-url "http://127.0.0.1:${eh_port}/v1" --served-model-name my-served 2>&1); att_rc=$?
+if [ -n "$eh_port" ] && [ "$att_rc" = 3 ] && printf '%s\n' "$att_out" | grep -q "attached 127.0.0.1:${eh_port} model my-served" \
+  && printf '%s\n' "$att_out" | grep -q 'no model server' && ! printf '%s\n' "$att_out" | grep -q 'does not start SGLang' \
+  && ! printf '%s\n' "$att_out" | grep -q 'model not found' && grep -qx '/health' "$t/health-hits" \
+  && ! grep -q '/v1/health' "$t/health-hits" \
+  && [ ! -e "$att_data/logs/serve-evidence.path" ] && [ -f "$sentinel" ] \
+  && ! printf '%s\n' "$att_out" | grep -q 'No such container'
+then echo "ok   attach: run health-checks origin /health, does not call serve, drops the serve-evidence pointer, keeps the sentinel JSON, and stops before a model that is not up"
+else echo "FAIL attach: run did not stay on the already-up server (rc=$att_rc port=$eh_port)"; printf '%s\n' "$att_out" | tail -20; echo "hits: $(cat "$t/health-hits" 2>/dev/null)"; fail=1
+fi
+kill "$eh_pid" 2>/dev/null; wait "$eh_pid" 2>/dev/null
+A770B_ALIAS=my-served a770b_render_profile qwen35-9b-q4km-vulkan 4096 "$t/alias.jsonc" nokey >/dev/null 2>&1
+if python3 - "$t/alias.jsonc" <<'PY'
+import json, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+d = json.loads("\n".join(l for l in t.splitlines() if not l.lstrip().startswith("//")))
+models = d["provider"]["local-a770"]["models"]
+ok = "my-served" in models and "local-builder" not in models
+ok = ok and d["model"] == "local-a770/my-served" and d["small_model"] == "local-a770/my-served"
+ok = ok and "local-builder" in d["agent"]
+sys.exit(0 if ok else 1)
+PY
+then echo "ok   attach: the rendered profile sends the served model name and keeps the local-builder agent"
+else echo "FAIL attach: the rendered profile did not send the served model name"; fail=1
 fi
 lad_noreg=$( ( _iso; unset A770B_CARD; export A770B_CARD=b70; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad-noreg-data" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run ) 2>&1 )
 if printf '%s\n' "$lad_noreg" | grep -q 'rung 1/6'

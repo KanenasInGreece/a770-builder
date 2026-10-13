@@ -46,10 +46,12 @@ def resolve(engine, backend, name="row-a"):
         ("", "vulkan", "llama.cpp"),
         ("", "sycl", "llama.cpp"),
         ("", "vllm", "vllm"),
+        ("", "sglang", "sglang"),
         ("llama.cpp", "", "llama.cpp"),
         ("llama.cpp", "vulkan", "llama.cpp"),
         ("llama.cpp", "sycl", "llama.cpp"),
         ("vllm", "vllm", "vllm"),
+        ("sglang", "sglang", "sglang"),
     ],
 )
 def test_profile_engine_prints(engine, backend, expected):
@@ -82,13 +84,20 @@ def test_vllm_refuses_other_backend(backend):
     assert result.stderr == f"profile exl engine vllm does not match backend {backend}\n"
 
 
+@pytest.mark.parametrize("backend", ["", "vulkan", "sycl", "vllm", "cuda"])
+def test_sglang_refuses_other_backend(backend):
+    result = resolve("sglang", backend, name="exl")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == f"profile exl engine sglang does not match backend {backend}\n"
+
+
 @pytest.mark.parametrize(
     "engine,backend",
     [
-        ("sglang", "vulkan"),
-        ("sglang", ""),
-        ("sglang", "vllm"),
         ("exllamav2", "sycl"),
+        ("exllamav2", "sglang"),
+        ("exllamav2", ""),
     ],
 )
 def test_unknown_engine_is_refused_not_defaulted(engine, backend):
@@ -96,5 +105,5 @@ def test_unknown_engine_is_refused_not_defaulted(engine, backend):
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr == (
-        f"profile row-a engine '{engine}' is not one this skill serves (llama.cpp, vllm)\n"
+        f"profile row-a engine '{engine}' is not one this skill serves (llama.cpp, vllm, sglang)\n"
     )

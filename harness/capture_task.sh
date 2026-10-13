@@ -45,6 +45,9 @@ else
 fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
+if [ "${A770B_ATTACHED:-}" = 1 ]; then
+  echo "timings unavailable (attached server; this capture reads a compose container log)"
+else
 # Dump container log to temp file and parse from there (not stale host log).
 # Do not pass a colour-stripping flag: this docker does not accept one, and discarding
 # stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
@@ -84,6 +87,7 @@ gs=list(ngen.values())
 print(f"turns_with_n_gen={len(gs)} n_gen_max={max(gs) if gs else 0} n_gen_median={sorted(gs)[len(gs)//2] if gs else 0}")
 print(f"turns_n_gen_ge_10000={sum(1 for g in gs if g>=10000)}")
 PY
+fi
 fi
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"

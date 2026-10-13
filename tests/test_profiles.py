@@ -2269,7 +2269,17 @@ def test_check_fails_bad_engine(tmp_path):
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: qwen35-9b-q4km-vulkan: engine must be llama.cpp or vllm" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: engine must be llama.cpp, vllm, or sglang" in result.stderr
+
+
+def test_check_passes_sglang_on_sglang_backend(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["engine"] = "sglang"
+    prof["backend"] = "sglang"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
 
 
 # --- optional tool_parser (only meaningful on a vllm-backend row) ---

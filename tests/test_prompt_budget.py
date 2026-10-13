@@ -115,7 +115,7 @@ def test_fit_refuses_a_prompt_far_under_the_target(monkeypatch, tmp_path):
 
     calls = {"n": 0}
 
-    def liar(url, key, text, tokenize="llama", model=""):  # honest when small, wild when large
+    def liar(url, key, text, tokenize="llama", model="", tokenizer=""):  # honest when small, wild when large
         calls["n"] += 1
         return len(text) // 3 if len(text) < 5000 else 10 ** 7
 
@@ -131,7 +131,7 @@ def test_fit_never_exceeds_the_target(monkeypatch, tmp_path):
     corpus = tmp_path / "c.py"
     corpus.write_text("def a():\n    return 1\n" * 40000)
     out = tmp_path / "out.txt"
-    monkeypatch.setattr(m, "count_tokens", lambda url, key, text, tokenize="llama", model="": len(text) // 3)
+    monkeypatch.setattr(m, "count_tokens", lambda url, key, text, tokenize="llama", model="", tokenizer="": len(text) // 3)
     args = type("A", (), {"corpus": str(corpus), "target": 20000, "out": str(out),
                           "plant_file": None, "plant_at": 0.85, "overhead": 64,
                           "url": "http://127.0.0.1:1", "key": ""})()
@@ -206,20 +206,93 @@ def test_llama_tokenize_posts_content(monkeypatch):
     assert seen["payload"] == {"content": "hello"}
 
 
-def test_openai_tokenize_disables_special_tokens(monkeypatch):
+def test_openai_count_does_not_post_tokenize(monkeypatch, tmp_path):
+    """openai counts from tokenizer.json with add_special_tokens false. It does not post /tokenize."""
     m = load()
-    seen = {}
+    tokdir = tmp_path / "model"
+    tokdir.mkdir()
+    (tokdir / "tokenizer.json").write_text("{}", encoding="utf-8")
 
-    def fake(url, key, path, payload):
-        seen["payload"] = payload
-        return {"tokens": [1]}
+    def boom(*_a, **_k):
+        raise AssertionError("_post must not run")
 
-    monkeypatch.setattr(m, "_post", fake)
-    assert m.count_tokens("http://127.0.0.1:9", "", "hello", "openai", "qwen") == 1
-    assert seen["payload"] == {"model": "qwen", "prompt": "hello", "add_special_tokens": False}
+    class _Ids:
+        ids = [1, 2, 3]
+
+    class _Fake:
+        def encode(self, text, add_special_tokens=True):
+            assert text == "hello"
+            assert add_special_tokens is False
+            return _Ids()
+
+    monkeypatch.setattr(m, "_post", boom)
+    monkeypatch.setattr(m, "_load_tokenizer", lambda _path: _Fake())
+    assert m.count_tokens("http://127.0.0.1:9", "", "hello", "openai", "qwen", str(tokdir)) == 3
 
 
-def test_openai_tokenize_without_a_model_is_refused():
+def test_openai_without_a_tokenizer_raises():
     m = load()
     with pytest.raises(ValueError):
-        m.count_tokens("http://127.0.0.1:9", "", "hello", "openai", "")
+        m.count_tokens("http://127.0.0.1:9", "", "hello", "openai", "", "")
+
+
+def test_openai_directory_without_tokenizer_json_raises(tmp_path):
+    m = load()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError):
+        m.count_tokens("http://127.0.0.1:9", "", "hello", "openai", "", str(empty))
+
+
+def test_openai_import_error_reexecs_once_and_the_child_does_not(monkeypatch):
+    """An ImportError from the tokenizer import re-execs once. The child marker does not re-exec."""
+    import builtins
+
+    m = load()
+    seen = []
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tokenizers":
+            raise ImportError("no tokenizers")
+        return real_import(name, globals, locals, fromlist, level)
+
+    def fake_exec(_file, args):
+        seen.append(list(args))
+        raise RuntimeError("execvp does not return")
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(m.os, "execvp", fake_exec)
+    monkeypatch.setattr(m.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    os_mod = m.os
+    os_mod.environ.pop(m._TOKENIZERS_CHILD, None)
+    try:
+        with pytest.raises(RuntimeError, match="does not return"):
+            m._load_tokenizer("/tmp/tokenizer.json")
+        assert seen and seen[0][:5] == ["uv", "run", "--with", "tokenizers", "python3"]
+        assert os_mod.environ.get(m._TOKENIZERS_CHILD) == "1"
+
+        seen.clear()
+        with pytest.raises(ValueError, match="missing module: tokenizers"):
+            m._load_tokenizer("/tmp/tokenizer.json")
+        assert seen == []
+    finally:
+        os_mod.environ.pop(m._TOKENIZERS_CHILD, None)
+
+
+def test_fit_openai_without_a_tokenizer_does_not_blame_the_server(monkeypatch, capsys):
+    m = load()
+
+    def boom(*_a, **_k):
+        raise AssertionError("_post must not run")
+
+    monkeypatch.setattr(m, "_post", boom)
+    args = type("A", (), {
+        "corpus": "missing", "target": 100, "out": "out", "plant_file": None, "plant_at": 0.85,
+        "overhead": 0, "url": "http://127.0.0.1:9", "key": "", "tokenize": "openai",
+        "model": "served-name", "tokenizer": "",
+    })()
+    assert m.fit(args) == 2
+    err = capsys.readouterr().err
+    assert "tokenizer directory" in err
+    assert "/tokenize" not in err

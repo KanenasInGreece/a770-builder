@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # local-build.sh — the A770 builder seat, serving the profiles of the card mode's own registry. Installed as a skill in every agent's skill dir (copies).
-#   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S]     (no worktree = the default seat, A770B_SEAT)
+#   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve <profile> | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
@@ -234,6 +234,9 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
   export A770B_SERVED_ENGINE
+  if [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
+    die "this skill does not start SGLang"
+  fi
   _envelope_for_backend "$p"
   if [ "$A770B_SERVED_ENGINE" = "vllm" ]; then
     [ -r "$gguf" ] || die "model not found: $gguf — put the model file or directory in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
@@ -279,6 +282,9 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       profile_vars "$p"
       A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
       export A770B_SERVED_ENGINE
+      if [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
+        die "this skill does not start SGLang"
+      fi
       _envelope_for_backend "$p"
       if [ ! -r "$gguf" ]; then echo "rollback failed: server is down"; return 1; fi
       _export_live "$p"
@@ -290,6 +296,43 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   fi
   bash "$SERVE" stop >/dev/null 2>&1
   _serve_start_or_die
+}
+# _attach_running_server <base-url> <served-name> — use a server that is already up. Does not start or stop one.
+# Health is the origin /health after one trailing /v1 is removed. Any HTTP success is enough; the body is not read.
+_attach_running_server(){
+  local url="$1" name="$2" origin rest hostport code ev_logs ev_base
+  [ -n "$url" ] && [ -n "$name" ] || die "--base-url and --served-model-name are required together"
+  url="${url%/}"
+  origin="${url%/v1}"
+  case "$origin" in
+    http://*|https://*) ;;
+    *) die "--base-url must start with http:// or https://: $1" ;;
+  esac
+  rest="${origin#*://}"
+  hostport="${rest%%/*}"
+  case "$hostport" in
+    *:*) ;;
+    *) die "--base-url needs a host and a port: $1" ;;
+  esac
+  A770B_HOST="${hostport%:*}"
+  A770B_PORT="${hostport##*:}"
+  case "$A770B_PORT" in
+    ''|*[!0-9]*) die "--base-url port is not a number: $1" ;;
+  esac
+  [ -n "$A770B_HOST" ] || die "--base-url has no host: $1"
+  export A770B_HOST A770B_PORT A770B_ALIAS="$name"
+  code=$(curl -sS -o /dev/null --max-time 5 -w '%{http_code}' "$origin/health" 2>/dev/null || true)
+  case "$code" in
+    2*) ;;
+    *) die "server not healthy at $origin/health (HTTP ${code:-none})" ;;
+  esac
+  ev_logs="$A770B_DATA/logs"
+  ev_base="serve-evidence.path"
+  if [ -f "$ev_logs/$ev_base" ] && [ ! -L "$ev_logs/$ev_base" ]; then
+    rm -f -- "$ev_logs/$ev_base"
+  fi
+  export A770B_ATTACHED=1
+  echo "▶ attached $A770B_HOST:$A770B_PORT model $A770B_ALIAS (not starting a server)"
 }
 status(){ local c cid; c=$(current); version 2>&1
   if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"
@@ -472,10 +515,14 @@ case "${1:-}" in
     kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
-    shift; profile=""; timeout=""; spec=""; profile_set=0
+    unset A770B_ATTACHED
+    shift; profile=""; timeout=""; spec=""; profile_set=0; base_url=""; served_name=""
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; require_profile "$profile"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; require_profile "$profile"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; --base-url) base_url="${2:?base url}"; shift;; --served-model-name) served_name="${2:?served model name}"; shift;; *) die "unknown arg $1";; esac; shift; done
+    if [ -n "$base_url" ] || [ -n "$served_name" ]; then
+      [ -n "$base_url" ] && [ -n "$served_name" ] || die "--base-url and --served-model-name are required together"
+    fi
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
@@ -494,7 +541,11 @@ case "${1:-}" in
     run_lock                                                       # one run at a time on this card
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
     profile_vars "$profile"; t=${timeout:-$t}
-    serve "$profile" || exit $?
+    if [ -n "$base_url" ]; then
+      _attach_running_server "$base_url" "$served_name"    # exports host, port and alias; does not call serve or stop
+    else
+      serve "$profile" || exit $?
+    fi
     label="$profile-$(date +%Y%m%d-%H%M%S)"
     echo "▶ profile=$profile timeout=${t}s worktree=$WT brief=$BRIEF label=$label"
     mkdir -p "$A770B_DATA/results"
@@ -581,6 +632,6 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
 fi

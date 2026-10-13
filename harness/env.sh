@@ -234,10 +234,12 @@ a770b_render_profile(){
   [ -n "$top_p" ] && sampling_args+=(--top-p "$top_p")
   # the profile's own output_tokens (U2d) when set, else the global A770B_OUTPUT_TOKENS
   output=$(a770b_profile_var "$profile" OUTPUT_TOKENS); [ -n "$output" ] || output="$A770B_OUTPUT_TOKENS"
+  # A770B_ALIAS is the id the server expects. Unset, that is local-builder; an attached run exports the served name.
+  local -a model_args=(--model-id "${A770B_ALIAS:-local-builder}")
   if [ -n "${A770B_SPEC:-}" ] && [ -z "${4:-}" ]; then
-    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$output" --name "$profile" "${sampling_args[@]}" --spec "$A770B_SPEC" --seat "${A770B_RENDER_SEAT:?the seat the specification is checked against}" --echo "$out.echo.json"
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$output" --name "$profile" "${model_args[@]}" "${sampling_args[@]}" --spec "$A770B_SPEC" --seat "${A770B_RENDER_SEAT:?the seat the specification is checked against}" --echo "$out.echo.json"
   else
-    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$output" --name "$profile" "${sampling_args[@]}"
+    python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$output" --name "$profile" "${model_args[@]}" "${sampling_args[@]}"
   fi
 }
 a770b_opencode_bin(){ if [ -n "$A770B_OPENCODE_BIN" ]; then printf '%s\n' "$A770B_OPENCODE_BIN"; else dirname "$(readlink -f "$(command -v opencode)")"; fi; }

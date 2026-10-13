@@ -2,7 +2,7 @@
 # ctx_sweep.sh — prefill and decode against prompt position on the running server, with VRAM sampled during each
 # prompt and the kernel log watched. Answers "does the large window come at a spillover cost".
 #
-#   ctx_sweep.sh [--bench <llama-bench results.json>] [--tokenize llama|openai] [--model NAME] [sizes…]
+#   ctx_sweep.sh [--bench <llama-bench results.json>] [--tokenize llama|openai] [--model NAME] [--tokenizer DIR] [sizes…]
 #
 # Each size is a number of REAL TOKENS, measured with the server's own tokeniser (harness/prompt_budget.py fit),
 # not a character count guessed at four characters a token. That guess asked for 100,000 tokens and built a prompt
@@ -33,12 +33,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 BENCH=""
 TOKENIZE="llama"
 MODEL_NAME="local-builder"
+TOKENIZER=""
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --bench) BENCH="${2:?path to a llama-bench results file}"; shift 2 ;;
     --tokenize) TOKENIZE="${2:?llama or openai}"; shift 2 ;;
     --model) MODEL_NAME="${2:?served model name}"; shift 2 ;;
+    --tokenizer) TOKENIZER="${2:?tokenizer directory}"; shift 2 ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -48,6 +50,9 @@ case "$TOKENIZE" in
 esac
 if [ "$TOKENIZE" = "openai" ] && [ -z "$MODEL_NAME" ]; then
   echo "⛔ --tokenize openai needs --model" >&2; exit 2
+fi
+if [ "$TOKENIZE" = "openai" ] && [ -z "$TOKENIZER" ]; then
+  echo "⛔ --tokenize openai needs a tokenizer directory" >&2; exit 2
 fi
 URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("${ARGS[@]}")
 # default: two points, 8k and the far end (the operator's rule: extrapolate the curve between them, not sweep every window)
@@ -80,9 +85,11 @@ tolerance_for(){ local tol=$(( $1 * 5 / 100 )); [ "$tol" -ge 256 ] || tol=256; p
 # (the same refusal the character version made).
 declare -A PROMPT_FOR EXPECTED_FOR
 for want in "${SIZES[@]}"; do
+  tok_arg=()
+  [ -n "$TOKENIZER" ] && tok_arg=(--tokenizer "$TOKENIZER")
   if ! toks_expected=$(python3 "$here/prompt_budget.py" fit --corpus "$A770B_CORPUS_FILE" --target "$want" \
         --out "$T/prompt.$want" --overhead 64 --url "$URL" --key "$KEY" \
-        --tokenize "$TOKENIZE" --model "$MODEL_NAME"); then
+        --tokenize "$TOKENIZE" --model "$MODEL_NAME" "${tok_arg[@]}"); then
     echo "⛔ could not size a $want-token prompt from the corpus: refusing the sweep before any point is served" >&2
     rm -rf "$T"; exit 1
   fi
@@ -132,9 +139,18 @@ for want in "${SIZES[@]}"; do
   read -r toks pms pps dps <<<"$(python3 -c '
 import json,sys
 try:
-    r=json.loads(sys.argv[1]); u=r.get("usage",{}); t=r.get("timings",{})
-    print(u.get("prompt_tokens",0), round(t.get("prompt_ms",0)/1000,1), round(t.get("prompt_per_second",0),0), round(t.get("predicted_per_second",0),1))
-except Exception as e: print(0,0,0,0)' "$R")"
+    r=json.loads(sys.argv[1])
+    u=r.get("usage") if isinstance(r.get("usage"), dict) else {}
+    raw=r.get("timings")
+    t=raw if isinstance(raw, dict) else {}
+    def rate(key, nd):
+        if key not in t or t[key] is None:
+            return "MISSING"
+        return str(round(float(t[key]), nd))
+    pms=round(float(t.get("prompt_ms") or 0)/1000, 1)
+    print(u.get("prompt_tokens") or 0, pms, rate("prompt_per_second", 0), rate("predicted_per_second", 1))
+except Exception:
+    print(0, 0, 0, 0)' "$R")"
   wall=$(python3 -c "print(round($t1-$t0,1))"); after=$(kernel_resets_since '-1min')
   if [ "$toks" = 0 ]; then
     # say which of the two it was: the deadline we set, or the server turning the request down
@@ -153,6 +169,9 @@ except Exception as e: print(0,0,0,0)' "$R")"
     if [ "$off" -gt "$tol" ]; then
       echo "$want: NOT MEASURED: the server was sent $toks tokens, $off away from the $want asked for (tolerance $tol tokens, sizing expected $toks_expected); this point measures no depth the sweep was asked for"
       failed=1
+    elif [ "$pps" = "MISSING" ] || [ "$dps" = "MISSING" ]; then
+      echo "$want: NOT MEASURED: the server reported no prefill or decode rate"
+      failed=1
     else
       printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' "$want" "$toks" "$pms" "$pps" "$dps" "${vmax}GiB" "$((after-b0))"
       # what the curve said it would cost, beside what it did. They should be close, and the prediction should sit a
@@ -167,7 +186,10 @@ print(f"  prefill predicted {pred:.0f}s from the measured curve, actually {actua
       fi
     fi
   fi
-  curl -sf --max-time 5 "$URL/health" | grep -q '"ok"' || { echo "server not healthy after $want — stopping the sweep"; failed=1; break; }
+  # any HTTP success: the body is not part of the check (an empty 200 is healthy)
+  if ! curl -sf --max-time 5 -o /dev/null "$URL/health" >/dev/null; then
+    echo "server not healthy after $want — stopping the sweep"; failed=1; break
+  fi
 done
 rm -rf "$T"
 [ "$failed" = 0 ] || { echo "⛔ the sweep did not measure every point it was asked for" >&2; exit 1; }

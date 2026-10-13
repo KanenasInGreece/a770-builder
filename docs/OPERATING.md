@@ -520,14 +520,14 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 
 ## An already-running SGLang server
 
-`bench_http.sh`, `prompt_budget.py fit`, and `depth_probe.sh` can measure a server that is already up. Pass its base URL. The tokenize body is `model`, `prompt`, and `add_special_tokens` false. Health for that URL is any successful `GET /health`. The tokenizer is a model directory or a Hugging Face id, not the served name.
+`bench_http.sh`, `prompt_budget.py fit`, and `depth_probe.sh` can measure a server that is already up. Pass its base URL. fit counts from the tokenizer directory and does not post /tokenize. Health for that URL is any successful `GET /health`. The tokenizer is a model directory or a Hugging Face id, not the served name.
 
-This does not start SGLang, does not admit `engine: sglang`, and `ladder.sh` is not pointed at a Flash-Next tree or a packed store.
+The skill admits engine `sglang`. It still does not start SGLang, and `ladder.sh` is still not pointed at a Flash-Next tree or a packed store.
 
 ```text
 bash harness/bench_http.sh --base-url http://127.0.0.1:PORT --served-model-name NAME --tokenizer /path/to/model --dry-run
-python3 harness/prompt_budget.py fit --corpus "$A770B_CORPUS_FILE" --target 8192 --out prompt.txt --url http://127.0.0.1:PORT --tokenize openai --model NAME
-bash harness/depth_probe.sh 8192 --base-url http://127.0.0.1:PORT --tokenize openai --model NAME
+python3 harness/prompt_budget.py fit --corpus "$A770B_CORPUS_FILE" --target 8192 --out prompt.txt --url http://127.0.0.1:PORT --tokenize openai --model NAME --tokenizer /path/to/model
+bash harness/depth_probe.sh 8192 --base-url http://127.0.0.1:PORT --tokenize openai --model NAME --tokenizer /path/to/model
 ```
 
 ## What is in here
