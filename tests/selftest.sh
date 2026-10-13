@@ -1059,7 +1059,7 @@ for eng in llama.cpp vllm sglang; do
 done
 [ "$(python3 "$here/harness/roles.py" bring llama.cpp)" = start ] || role_ok=0
 [ "$(python3 "$here/harness/roles.py" bring vllm)" = start ] || role_ok=0
-[ "$(python3 "$here/harness/roles.py" bring sglang)" = attach ] || role_ok=0
+[ "$(python3 "$here/harness/roles.py" bring sglang)" = start ] || role_ok=0
 [ "$(python3 "$here/harness/roles.py" kit)" = run_suite.sh ] || role_ok=0
 bring_other=$(python3 "$here/harness/roles.py" bring other 2>&1); bring_rc=$?
 speed_other=$(python3 "$here/harness/roles.py" speed other 2>&1); speed_rc=$?
@@ -1119,8 +1119,11 @@ dump(root / "weight.json", {
 dump(root / "bare.json", {
     "llama-row": row("weights.gguf", "llama.cpp", "vulkan", source="hub-sentinel/should-not-print"),
 })
+_sg_row = row("sglang-model", "sglang", "sglang")
+_sg_row["tool_parser"] = "qwen3_coder"
+_sg_row["reasoning_parser"] = "qwen3"
 dump(root / "sglang.json", {
-    "sglang-row": row("sglang-model", "sglang", "sglang"),
+    "sglang-row": _sg_row,
 })
 (root / "dir-models" / "llama-dir").mkdir(parents=True)
 (root / "dir-models" / "vllm-dir").mkdir(parents=True)
@@ -1191,13 +1194,13 @@ fi
 sg=$(env -u A770B_ATTACHED -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/sg-dry" \
   A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
   bash "$here/harness/ladder.sh" sglang-row --dry-run 2>&1)
-if printf '%s\n' "$sg" | grep -q 'bring: attach' \
-  && printf '%s\n' "$sg" | grep -qx 'rung 3/6: not run — this skill does not start SGLang and no server is attached' \
-  && ! printf '%s\n' "$sg" | grep -q 'bench_http.sh' \
-  && ! printf '%s\n' "$sg" | grep -q 'llama-benchy' \
+if printf '%s\n' "$sg" | grep -q 'bring: start' \
+  && printf '%s\n' "$sg" | grep -q 'bench_model.sh' \
+  && printf '%s\n' "$sg" | grep -q 'bench_http.sh' \
+  && ! printf '%s\n' "$sg" | grep -q 'this skill does not start SGLang' \
   && ! printf '%s\n' "$sg" | grep -q 'tok/s'
-then echo "ok   ladder: an unattached sglang dry-run brings attach, does not name a speed command, and prints no tok/s figure"
-else echo "FAIL ladder: unattached sglang dry-run named a speed command or a tok/s figure"; printf '%s\n' "$sg"; fail=1
+then echo "ok   ladder: an sglang dry-run names the start and prints no tok/s figure"
+else echo "FAIL ladder: sglang dry-run did not name the start"; printf '%s\n' "$sg"; fail=1
 fi
 sga=$(env -u A770B_PROFILES A770B_ATTACHED=1 A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/sg-att" \
   A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
@@ -1230,10 +1233,12 @@ sglive=$(env -u A770B_ATTACHED -u A770B_PROFILES A770B_PROJECT="$here" A770B_REF
   A770B_DOCKER="$t/four/bin/docker" PATH="$t/four/bin:$PATH" \
   bash "$here/harness/ladder.sh" sglang-row 2>&1); sglive_rc=$?
 if [ "$sglive_rc" != 0 ] && [ ! -e "$four_marker" ] \
-  && printf '%s\n' "$sglive" | grep -q 'this skill does not start SGLang and no server is attached' \
-  && ! printf '%s\n' "$sglive" | grep -q 'bench_model.sh'
-then echo "ok   ladder: a live unattached sglang rung fails before bench_model.sh, bench_http.sh, and any container command"
-else echo "FAIL ladder: live unattached sglang did not fail cleanly (rc=$sglive_rc marker=$( [ -e "$four_marker" ] && echo present || echo absent))"; printf '%s\n' "$sglive" | tail -25; fail=1
+  && printf '%s\n' "$sglive" | grep -q 'b70-sglang.env.example' \
+  && ! printf '%s\n' "$sglive" | grep -q 'bench_http.sh' \
+  && ! printf '%s\n' "$sglive" | grep -q 'bench_model.sh' \
+  && ! printf '%s\n' "$sglive" | grep -q 'this skill does not start SGLang'
+then echo "ok   ladder: a live sglang rung with no env file refuses before bench_http.sh and any container command"
+else echo "FAIL ladder: live sglang did not refuse before docker (rc=$sglive_rc marker=$( [ -e "$four_marker" ] && echo present || echo absent))"; printf '%s\n' "$sglive" | tail -25; fail=1
 fi
 
 # ── run_suite.sh --model/--ctx (item 3): a GGUF with no registry row can still climb the task rung

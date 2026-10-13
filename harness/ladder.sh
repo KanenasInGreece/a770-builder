@@ -5,8 +5,8 @@
 #   1. load and VRAM at the target window  — harness/serve_compose.sh, wrapped inside harness/bench_model.sh
 #   2. the probes and the 17k summary       — harness/bench_model.sh <label> <gguf> <ctx> [flags]
 #   3. the standard speed rung              — harness/bench_http.sh for every admitted engine, server left up.
-#                                         bring/speed/count come from harness/roles.py. An attach
-#                                         engine is not started here. This skill does not start SGLang.
+#                                         bring/speed/count come from harness/roles.py. SGLang is
+#                                         started from compose/b70-sglang.yaml, not attached.
 #   4. the window rung                      — harness/ctx_sweep.sh 8000 <far end>  (VRAM/kernel-log safety read;
 #                                              still the source useful_ctx's linear extension is drawn from)
 #   5. the depth probe, now graded          — harness/depth_probe.sh <far end>  (caps useful_ctx where it fails)
@@ -171,8 +171,8 @@ if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] bring: $BRING"
   # Dry-run does not probe a port and does not treat a listening server as attached.
   if [ "$BRING" = attach ]; then
-    echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
-    echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
+    echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
+    echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
   else
     echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
     echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
@@ -181,7 +181,7 @@ if [ "$DRYRUN" = 1 ]; then
   if [ -z "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 3/6: SKIPPED — the speed rung runs only when given a registry profile name; $GGUF has no row yet"
   elif [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
-    echo "rung 3/6: not run — this skill does not start SGLang and no server is attached"
+    echo "rung 3/6: not run — bring is attach and no server is attached"
   elif [ "${#SPEED_SIZES[@]}" -eq 0 ]; then
     echo "[dry-run] rung 3/6: STOPPED — no standard prompt sizes fit the served window ($CTX, far end $FAR_END)"
   elif tok=$(tokenizer_dir "$GGUF"); then
@@ -218,7 +218,28 @@ FAIL_RUNG=""; FAIL_MSG=""
 # script, and before any container command. Dry-run never reaches this branch.
 if [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
   FAIL_RUNG="bring"
-  FAIL_MSG="this skill does not start SGLang and no server is attached"
+  FAIL_MSG="bring is attach and no server is attached"
+fi
+# SGLang starts on its own envelope. A missing env file is refused here, before
+# bench_model.sh, whose first act is a compose stop (a container command).
+if [ "$ENGINE" = sglang ]; then
+  A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml"
+  A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
+  A770B_SERVED_BACKEND=sglang
+  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_SERVED_BACKEND
+  if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
+    _sglang_env_ok=1
+    for _v in A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER \
+        A770B_SGLANG_CARD_NODE A770B_SGLANG_RENDER_NODE \
+        A770B_RENDER_GID A770B_VIDEO_GID; do
+      [ -n "${!_v:-}" ] || _sglang_env_ok=0
+    done
+    if [ "$_sglang_env_ok" = 0 ]; then
+      echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy ${A770B_COMPOSE_ENV_FILE}.example and edit it" >&2
+      FAIL_RUNG=bring
+      FAIL_MSG="sglang env file is missing"
+    fi
+  fi
 fi
 echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(date -Is)"
 
@@ -228,7 +249,7 @@ if [ -z "$FAIL_RUNG" ]; then
 echo "▶ rung 1-2/6 — load, VRAM, probes, 17k summary (bench_model.sh)"
 if [ "$BRING" = attach ]; then
   # bench_model.sh starts serve_compose.sh. Do not. The server is the operator's.
-  echo "this skill does not start SGLang" >&2
+  echo "bring is attach — not starting a server" >&2
 else
   # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
   if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$here/bench_model.sh" "$NAME" "$GGUF" "$CTX" $EXTRA; then
@@ -258,7 +279,7 @@ if [ -z "$FAIL_RUNG" ]; then
   if [ -z "$PROFILE_NAME" ]; then
     echo "⚠ skipping: the speed rung runs only when given a registry profile name, and $GGUF has no row yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
   elif [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
-    FAIL_RUNG="speed"; FAIL_MSG="this skill does not start SGLang and no server is attached"
+    FAIL_RUNG="speed"; FAIL_MSG="bring is attach and no server is attached"
   elif [ "${#SPEED_SIZES[@]}" -eq 0 ]; then
     FAIL_RUNG="speed"; FAIL_MSG="no standard prompt sizes fit the served window ($CTX, far end $FAR_END)"
   elif tok=$(tokenizer_dir "$GGUF"); then

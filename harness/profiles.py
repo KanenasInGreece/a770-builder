@@ -132,7 +132,7 @@ STRING_KEYS = (
     "model", "source", "family", "architecture", "quant", "kv", "kv_v", "flash_attention",
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
     "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
-    "task", "evidence", "engine", "tool_parser", "vllm_image",
+    "task", "evidence", "engine", "tool_parser", "reasoning_parser", "vllm_image",
 )
 # The task classes a row competes in. The organizing axis of a registry is now the task,
 # not the window: a row is a (model, quant, KV, context, sampling) cell that wins one of these.
@@ -149,7 +149,7 @@ PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {
     "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
     "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
-    "vllm_image",
+    "reasoning_parser", "vllm_image",
 }
 ENGINE_VALUES = {"llama.cpp", "vllm", "sglang"}
 CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
@@ -188,6 +188,25 @@ def _fmt_sampling_num(v) -> str:
 def sh_single_quote(s: str) -> str:
     """Quote `s` for a POSIX shell using single quotes, escaping any single quote it holds."""
     return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _check_parser_field(errors, name, prof, key, allowed, wrong_backend):
+    """Refuse a parser that is empty, malformed, or the word auto.
+
+    auto matches ^[a-z0-9_]+$, so the pattern alone would accept it. The launch
+    log that names a parser does not turn that parser on.
+    """
+    if key in prof:
+        val = prof[key]
+        if not isinstance(val, str) or not TOOL_PARSER_RE.match(val):
+            errors.append(f"{name}: {key} must match ^[a-z0-9_]+$")
+            return
+        if val == "auto":
+            errors.append(f"{name}: {key} must not be auto")
+        if prof.get("backend") not in allowed:
+            errors.append(f"{name}: {wrong_backend}")
+    elif prof.get("backend") == "sglang":
+        errors.append(f"{name}: {key} is required when backend is sglang")
 
 
 def validate(data) -> list[str]:
@@ -618,16 +637,19 @@ def validate(data) -> list[str]:
         if "engine" in prof and isinstance(prof["engine"], str) and prof["engine"] not in ENGINE_VALUES:
             errors.append(f"{name}: engine must be llama.cpp, vllm, or sglang")
 
-        if "tool_parser" in prof:
-            tp = prof["tool_parser"]
-            if not isinstance(tp, str) or not TOOL_PARSER_RE.match(tp):
-                errors.append(f"{name}: tool_parser must match ^[a-z0-9_]+$")
-            elif prof.get("backend") != "vllm":
-                errors.append(
-                    f"{name}: tool_parser is only meaningful when backend is vllm "
-                    f"(this row's backend is {prof.get('backend')!r}) -- llama.cpp parses "
-                    "tools from its own chat template"
-                )
+        # auto matches ^[a-z0-9_]+$, so it is refused by name. The launch log that
+        # names a parser does not turn that parser on.
+        _check_parser_field(
+            errors, name, prof, "tool_parser", {"vllm", "sglang"},
+            "tool_parser is only meaningful when backend is vllm or sglang "
+            f"(this row's backend is {prof.get('backend')!r}) -- llama.cpp parses "
+            "tools from its own chat template",
+        )
+        _check_parser_field(
+            errors, name, prof, "reasoning_parser", {"sglang"},
+            "reasoning_parser is only meaningful when backend is sglang "
+            f"(this row's backend is {prof.get('backend')!r})",
+        )
 
         if "vllm_image" in prof:
             image = prof["vllm_image"]
@@ -949,10 +971,13 @@ def cmd_env(args) -> int:
         tool_parser = prof.get("tool_parser")
         tool_parser_str = tool_parser if isinstance(tool_parser, str) else ""
         print(': "${A770B_%s_TOOL_PARSER:=%s}"' % (upper, tool_parser_str))
+        reasoning_parser = prof.get("reasoning_parser")
+        reasoning_parser_str = reasoning_parser if isinstance(reasoning_parser, str) else ""
+        print(': "${A770B_%s_REASONING_PARSER:=%s}"' % (upper, reasoning_parser_str))
         vllm_image = prof.get("vllm_image")
         vllm_image_str = vllm_image if isinstance(vllm_image, str) else ""
         print(': "${A770B_%s_VLLM_IMAGE:=%s}"' % (upper, vllm_image_str))
-        if prof.get("backend") == "vllm":
+        if prof.get("backend") in ("vllm", "sglang"):
             print(': "${A770B_%s_QUANT:=%s}"' % (upper, prof["quant"]))
         print(': "${A770B_%s_MODE:=%s}"' % (upper, prof["mode"]))
         if prof.get("operator_override") is True:

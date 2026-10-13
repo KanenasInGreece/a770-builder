@@ -84,6 +84,84 @@ _build_argv_vllm(){
     "$@"
   )
 }
+
+# _refuse_sglang_parser <flag> <value> — empty, malformed, or the word auto.
+# auto matches ^[a-z0-9_]+$, so the pattern alone would let it through. The
+# log line that names a parser does not turn that parser on.
+_refuse_sglang_parser(){
+  local flag="$1" val="$2"
+  if [ "$val" = "auto" ]; then
+    echo "⛔ sglang refuses --${flag} auto: the log line that names a parser does not turn it on" >&2
+    exit 2
+  fi
+  case "$val" in
+    ''|*[!a-z0-9_]*)
+      echo "⛔ sglang needs --${flag} set to a parser matching ^[a-z0-9_]+$ (empty and auto are refused)" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# _build_argv_sglang <model-in-container> <ctx> [extra…] — launch_server argv.
+# The binary is the entrypoint (python3). extra carries the trial flags that
+# are not the profile's model, context, name, quant, or parsers.
+_build_argv_sglang(){
+  local model="$1" ctx="$2"; shift 2
+  local quant="${QUANT:-${A770B_QUANT:-}}"
+  local tool_parser="${TOOL_PARSER:-}"
+  local reasoning_parser="${REASONING_PARSER:-}"
+  [ -n "$quant" ] || { echo "⛔ quantization must be set for the sglang backend (set QUANT or the profile row's quant field)" >&2; exit 2; }
+  _refuse_sglang_parser tool-call-parser "$tool_parser"
+  _refuse_sglang_parser reasoning-parser "$reasoning_parser"
+  ARGV=(
+    -m sglang.launch_server
+    --model-path "$model"
+    --quantization "$quant"
+    --served-model-name "$A770B_ALIAS"
+    --context-length "$ctx"
+    --port "$A770B_PORT"
+    --tool-call-parser "$tool_parser"
+    --reasoning-parser "$reasoning_parser"
+    "$@"
+  )
+}
+
+# _value_for <NAME> — an exported value wins; otherwise the gitignored env file,
+# which is the copy compose interpolates. Host paths stay in that file.
+_value_for(){
+  local key="$1" line val
+  val="${!key:-}"
+  if [ -n "$val" ]; then printf '%s\n' "$val"; return 0; fi
+  [ -f "$A770B_COMPOSE_ENV_FILE" ] || return 0
+  line=$(grep -E "^[[:space:]]*${key}=" "$A770B_COMPOSE_ENV_FILE" | tail -n 1 || true)
+  val="${line#*=}"
+  val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+  printf '%s\n' "$val"
+}
+
+# _sglang_preflight — before any docker call. Victim write-back stays on, and
+# the by-path node must be the container target (no remap onto card0).
+_sglang_preflight(){
+  local novict victim card render card_node render_node card_target render_target
+  novict="${NOVICT:-0}"
+  victim=$(_value_for EXL3_NVTIER_NO_VICTIM)
+  if [ "$novict" = 1 ] || [ "$victim" = 1 ]; then
+    echo "⛔ refuse: victim write-back stays on" >&2
+    exit 2
+  fi
+  card=$(_value_for A770B_DRM_CARD)
+  render=$(_value_for A770B_DRM_RENDER)
+  card_node=$(_value_for A770B_SGLANG_CARD_NODE)
+  render_node=$(_value_for A770B_SGLANG_RENDER_NODE)
+  card_target=$(readlink -f "$card" 2>/dev/null || true)
+  render_target=$(readlink -f "$render" 2>/dev/null || true)
+  if [ -z "$card_node" ] || [ -z "$render_node" ] || [ "$card_target" != "$card_node" ] || [ "$render_target" != "$render_node" ]; then
+    echo "⛔ refuse: by-path nodes are ${render_target:-missing} ${card_target:-missing}, not ${render_node:-unset} ${card_node:-unset}" >&2
+    exit 2
+  fi
+  [ -n "${A770B_CARD_VRAM_TOTAL:-}" ] || { echo "⛔ A770B_CARD_VRAM_TOTAL must be set before an sglang start (set A770B_CARD)" >&2; exit 2; }
+}
+
 # _container_host_pid — the host pid of the running compose container (empty when none); the sidecar and the
 # pidfile name a real host process so live_backend.read's liveness check keeps working for a container.
 _container_host_pid(){
@@ -201,12 +279,18 @@ case "${A770B_SERVED_BACKEND:-}" in
     ENTRYPOINT=""
     _build_argv_vllm "$MODEL_IN_CONTAINER" "$CTX" "$@"
     ;;
+  sglang)
+    # python3 is the entrypoint alone. The module stays in command so
+    # compose_override does not run the interpreter twice.
+    ENTRYPOINT="python3"
+    _build_argv_sglang "$MODEL_IN_CONTAINER" "$CTX" "$@"
+    ;;
   "")
-    echo "⛔ A770B_SERVED_BACKEND is unset or empty — must be one of: vulkan, sycl, vllm" >&2
+    echo "⛔ A770B_SERVED_BACKEND is unset or empty — must be one of: vulkan, sycl, vllm, sglang" >&2
     exit 2
     ;;
   *)
-    echo "⛔ backend '$A770B_SERVED_BACKEND' is not one this harness serves — must be one of: vulkan, sycl, vllm" >&2
+    echo "⛔ backend '$A770B_SERVED_BACKEND' is not one this harness serves — must be one of: vulkan, sycl, vllm, sglang" >&2
     exit 2
     ;;
 esac
@@ -225,6 +309,8 @@ if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
   _needed_vars=(A770B_LLAMA_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_RENDER_GID A770B_VIDEO_GID)
   if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
     _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
+  elif [ "${A770B_SERVED_BACKEND:-}" = "sglang" ]; then
+    _needed_vars=(A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_SGLANG_CARD_NODE A770B_SGLANG_RENDER_NODE A770B_RENDER_GID A770B_VIDEO_GID)
   fi
   for _v in "${_needed_vars[@]}"; do
     [ -n "${!_v:-}" ] || { echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy ${A770B_COMPOSE_ENV_FILE}.example and edit it" >&2; exit 2; }
@@ -234,6 +320,15 @@ fi
 # container starts, not fail open on the float comparison after it is already up
 python3 -c "import sys,math; v=float('$A770B_VRAM_CAP_GIB'); sys.exit(0 if (v>0 and math.isfinite(v)) else 1)" 2>/dev/null \
   || { echo "⛔ A770B_VRAM_CAP_GIB is not a positive finite number ('$A770B_VRAM_CAP_GIB') — set your card's measured VRAM cap in builder.env (raise it only after measuring what else the card holds)" >&2; exit 2; }
+# sglang checks run before any compose call. A later `down` is already docker.
+if [ "${A770B_SERVED_BACKEND:-}" = "sglang" ]; then
+  _sglang_preflight
+  # The profile model is the bind. EXL3_MODEL_PATH is that same in-container path.
+  A770B_SGLANG_MODEL_NAME="$(basename "$MODEL")"
+  A770B_SGLANG_MODEL_DIR="$MODEL"
+  EXL3_MODEL_PATH="/models/${A770B_SGLANG_MODEL_NAME}"
+  export A770B_SGLANG_MODEL_NAME A770B_SGLANG_MODEL_DIR EXL3_MODEL_PATH
+fi
 # a start is a recreate: take any existing container of this project down first, so the budget gate reads the card
 # free (a running container's VRAM is this project's, not a foreign server) and `up --force-recreate` starts from
 # the profile just built — a profile switch must not silently keep the old model.
@@ -253,11 +348,15 @@ fi
 # 150 tries, 2s apart, is the wait a load is given. A test may shorten it; an unset value does not.
 _health_tries="${A770B_HEALTH_TRIES:-150}"
 _health_pause="${A770B_HEALTH_PAUSE:-2}"
-if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
-  for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep "$_health_pause"; done
-else
-  for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep "$_health_pause"; done
-fi
+case "${A770B_SERVED_BACKEND:-}" in
+  vllm|sglang)
+    # HTTP success is enough. SGLang's /health body is not the llama.cpp "ok".
+    for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep "$_health_pause"; done
+    ;;
+  *)
+    for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep "$_health_pause"; done
+    ;;
+esac
 if ! curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1; then
   _fail_started 3 "⛔ the container did not answer /health"
 fi
@@ -277,6 +376,11 @@ limit_why="cap"
 if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
   limit=$(python3 -c "import sys; print(f'{0.9 * float(sys.argv[1]):.3f}')" "$A770B_CARD_VRAM_TOTAL")
   limit_why="0.9 of the card"
+elif [ "${A770B_SERVED_BACKEND:-}" = "sglang" ]; then
+  # The measured Flash-Next load sat near 31.9 GiB. That is above the llama.cpp
+  # cap and above 0.9 of this card, and it was kept. Stop only above the card.
+  limit="$A770B_CARD_VRAM_TOTAL"
+  limit_why="the card total"
 fi
 if python3 -c "import sys; sys.exit(0 if float('$used') > float('$limit') else 1)"; then
   _fail_started 3 "⛔ VRAM after load ${used} GiB > ${limit_why} ${limit} GiB — container STOPPED; use a smaller context, q4 KV, or, on a card that draws no desktop, A770B_CARD_MODE=inference"

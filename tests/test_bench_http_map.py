@@ -258,6 +258,8 @@ def _sglang_registry(path, model_name):
                 "backend": "sglang",
                 "mode": "inference",
                 "engine": "sglang",
+                "tool_parser": "qwen3_coder",
+                "reasoning_parser": "qwen3",
                 "ctx": 32768,
                 "useful_ctx": 8000,
                 "timeout_s": 1500,
@@ -308,19 +310,17 @@ def _sglang_dry_run(tmp_path, with_tokenizer, attached=False):
     return result, model, marker
 
 
-def test_sglang_dry_run_does_not_start_or_name_a_speed_command_when_unattached(tmp_path):
+def test_sglang_dry_run_names_the_start(tmp_path):
     result, model, marker = _sglang_dry_run(tmp_path, with_tokenizer=True)
     assert result.returncode == 0, result.stdout + result.stderr
     text = result.stdout
-    assert "rung 3/6: not run — this skill does not start SGLang and no server is attached" in text
-    assert "bring: attach" in text
-    assert "llama-benchy" not in text
-    assert "uvx" not in text
+    assert "bring: start" in text
+    assert "bench_model.sh" in text
+    assert "bench_http.sh" in text
+    assert "this skill does not start SGLang" not in text
+    assert "rung 3/6: not run" not in text
     assert "tok/s" not in text
     assert "bench_speed.sh" not in text
-    assert "bench_model.sh" not in text
-    assert "serve_compose.sh start" not in text
-    assert "this skill does not start SGLang" in text
     assert str(model) in text
     assert not marker.exists()
 
@@ -329,11 +329,13 @@ def test_sglang_dry_run_names_bench_http_when_attached(tmp_path):
     result, model, marker = _sglang_dry_run(tmp_path, with_tokenizer=True, attached=True)
     assert result.returncode == 0, result.stdout + result.stderr
     text = result.stdout
+    assert "bring: start" in text
     assert "bench_http.sh" in text
+    assert "bench_model.sh" in text
     assert "llama-benchy" in text
+    assert "this skill does not start SGLang" not in text
     assert "rung 3/6: not run" not in text
     assert "bench_speed.sh" not in text
-    assert "bench_model.sh" not in text
     assert str(model) in text
     assert not marker.exists()
 

@@ -1,0 +1,96 @@
+# SGLang container server — the container ENVELOPE only.
+# The measured Flash-Next start, translated into the compose envelope serve_compose.sh
+# already uses for vLLM. No model, no context, and no launch argv live here: the
+# profile row becomes `python3 -m sglang.launch_server` at serve time. This file
+# does not package the image; it pins the digest the trial already runs.
+#
+# Device targets are the by-path node's own path (the trial's same-path bind),
+# not a remap onto a neighbour node. Host paths stay in the env file.
+# security_opt label=disable is what that measured start used.
+services:
+  llama:
+    image: ${A770B_SGLANG_IMAGE:-ghcr.io/0xsero/sglang-exl3-xpu-flashnext@sha256:24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f}
+    restart: "no"
+    # --memory=40g --memory-swap=40g, shm 8g, cpuset 8-23, memlock unlimited.
+    mem_limit: 40g
+    memswap_limit: 40g
+    shm_size: 8g
+    cpuset: "8-23"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    user: "${A770B_CONTAINER_UID}:${A770B_CONTAINER_GID}"
+    group_add:
+      - "${A770B_RENDER_GID}"
+      - "${A770B_VIDEO_GID}"
+    security_opt:
+      - label=disable
+    # Long syntax: a PCI by-path source contains a colon, which the short
+    # host:container form cannot parse. The target is that node's own path.
+    devices:
+      - source: "${A770B_DRM_CARD}"
+        target: "${A770B_SGLANG_CARD_NODE}"
+        permissions: "rwm"
+      - source: "${A770B_DRM_RENDER}"
+        target: "${A770B_SGLANG_RENDER_NODE}"
+        permissions: "rwm"
+    volumes:
+      - "${A770B_SGLANG_MODEL_DIR}:/models/${A770B_SGLANG_MODEL_NAME}:ro"
+      - "${A770B_SGLANG_PACK}:/xfs:ro"
+      - "${A770B_SGLANG_PLUGIN}:/opt/trellis-serve/xpu/exl3xpu/sglang_plugin.py:ro"
+      - "${A770B_SGLANG_NVTIER}:/opt/trellis-serve/xpu/exl3xpu/nvtier.py:ro"
+      - "${A770B_SGLANG_MOE_PY}:/opt/trellis-serve/xpu/exl3xpu/moe_offload.py:ro"
+      - "${A770B_SGLANG_MOE_SO}:/n104/_moe_a8.so:ro"
+      - "${A770B_SGLANG_QSA_SO}:/n104/qsa_row_sycl.so:ro"
+      - "${A770B_SGLANG_HC}:/hc:ro"
+      - "${A770B_SGLANG_N107QSA}:/n107qsa:ro"
+      - "${A770B_SGLANG_QSA_BASE}:/opt/trellis-serve/xpu/exl3xpu/qsa_xpu_base.py:ro"
+      - "${A770B_SGLANG_QSA_OVERLAY}:/opt/trellis-serve/xpu/exl3xpu/qsa_xpu.py:ro"
+      - "${A770B_SGLANG_TCACHE}:/tcache"
+    # Trial container environment. A value in the env file overrides the default.
+    # HOME is the literal /tmp, not the host's ${HOME}.
+    environment:
+      HOME: /tmp
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-1}"
+      ZE_AFFINITY_MASK: "${ZE_AFFINITY_MASK:-0}"
+      NEOReadDebugKeys: "${NEOReadDebugKeys:-1}"
+      EnableSharedSystemUsmSupport: "${EnableSharedSystemUsmSupport:-1}"
+      EnableRecoverablePageFaults: "${EnableRecoverablePageFaults:-1}"
+      EXL3_MODEL_PATH: "${EXL3_MODEL_PATH:-/models/model}"
+      EXL3_MOE_LIB: "${EXL3_MOE_LIB:-/n104/_moe_a8.so}"
+      EXL3_MOE_SLOTS: "${EXL3_MOE_SLOTS:-8000}"
+      EXL3_MOE_CACHE: "${EXL3_MOE_CACHE:-1}"
+      EXL3_NVTIER_SVM_PREFETCH: "${EXL3_NVTIER_SVM_PREFETCH:-1}"
+      EXL3_NVTIER_STAGE: "${EXL3_NVTIER_STAGE:-1}"
+      EXL3_NVTIER_NO_VICTIM: "${EXL3_NVTIER_NO_VICTIM:-0}"
+      EXL3_NVTIER_ASYNC: "${EXL3_NVTIER_ASYNC:-1}"
+      EXL3_HC_DIR: "${EXL3_HC_DIR:-/hc}"
+      EXL3_HC_XPU: "${EXL3_HC_XPU:-1}"
+      EXL3_HC_MIX: "${EXL3_HC_MIX:-epilogue}"
+      EXL3_HC_COMBINE: "${EXL3_HC_COMBINE:-torch}"
+      TRITON_CACHE_DIR: "${TRITON_CACHE_DIR:-/tcache}"
+      EXL3_NVTIER_STAGE_PROF: "${EXL3_NVTIER_STAGE_PROF:-0}"
+      EXL3_NVTIER_STAGE_HOSTBUF: "${EXL3_NVTIER_STAGE_HOSTBUF:-5}"
+      EXL3_NVTIER_PREFILL_M: "${EXL3_NVTIER_PREFILL_M:-5}"
+      EXL3_NVTIER_PROF_EVERY: "${EXL3_NVTIER_PROF_EVERY:-48}"
+      EXL3_NVTIER_FILL_THREADS: "${EXL3_NVTIER_FILL_THREADS:-8}"
+      EXL3_NVTIER: "${EXL3_NVTIER:-1}"
+      EXL3_NVTIER_STORE: "${EXL3_NVTIER_STORE:-/xfs/qwen_experts.bin}"
+      EXL3_NVTIER_RAM_GB: "${EXL3_NVTIER_RAM_GB:-20}"
+      EXL3_NVTIER_LAYERS: "${EXL3_NVTIER_LAYERS:-48}"
+      EXL3_NGRAM_TIER: "${EXL3_NGRAM_TIER:-nvme}"
+      SGLANG_EXL3_NGRAM_RAM_GB: "${SGLANG_EXL3_NGRAM_RAM_GB:-1}"
+      SGLANG_EXL3_KV_BITS: "${SGLANG_EXL3_KV_BITS:-5}"
+      EXL3_QSA_DENSE_BYTES: "${EXL3_QSA_DENSE_BYTES:-134217728}"
+      EXL3_QSA_ROWS: "${EXL3_QSA_ROWS:-64}"
+      EXL3_TORCH_MEM_FRACTION: "${EXL3_TORCH_MEM_FRACTION:-0.95}"
+      TORCHINDUCTOR_COMPILE_THREADS: "${TORCHINDUCTOR_COMPILE_THREADS:-1}"
+      EXL3_QSA_IMPL: "${EXL3_QSA_IMPL:-sycl_row}"
+      EXL3_QSA_SELECT: "${EXL3_QSA_SELECT:-sycl}"
+      EXL3_QSA_TRITON_CHECK: "${EXL3_QSA_TRITON_CHECK:-4}"
+      EXL3_QSA_SELECT_CHECK: "${EXL3_QSA_SELECT_CHECK:-4}"
+      EXL3_QSA_SYCL_LIB: "${EXL3_QSA_SYCL_LIB:-/n104/qsa_row_sycl.so}"
+    ports:
+      - "127.0.0.1:${A770B_PORT}:${A770B_PORT}"
+    entrypoint: ["python3"]

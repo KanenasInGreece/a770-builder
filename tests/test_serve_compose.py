@@ -483,7 +483,7 @@ def test_dispatch_refuses_an_unknown_served_backend(tmp_path):
     r = _run(env, "plan", GGUF, "8192")
     assert r.returncode == 2
     assert "backend 'cuda' is not one this harness serves" in r.stderr
-    assert "must be one of: vulkan, sycl, vllm" in r.stderr
+    assert "must be one of: vulkan, sycl, vllm, sglang" in r.stderr
 
 
 def test_dispatch_refuses_an_empty_served_backend(tmp_path):
@@ -491,7 +491,7 @@ def test_dispatch_refuses_an_empty_served_backend(tmp_path):
     env = _env(tmp_path, bin_, A770B_SERVED_BACKEND="")
     r = _run(env, "plan", GGUF, "8192")
     assert r.returncode == 2
-    assert "A770B_SERVED_BACKEND is unset or empty — must be one of: vulkan, sycl, vllm" in r.stderr
+    assert "A770B_SERVED_BACKEND is unset or empty — must be one of: vulkan, sycl, vllm, sglang" in r.stderr
 
 
 def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
@@ -814,3 +814,380 @@ def test_status_says_down_when_no_pidfile_and_no_container(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "server: down" in r.stdout
     assert "server: UP" not in r.stdout
+
+
+SGLANG_DIGEST = (
+    "ghcr.io/0xsero/sglang-exl3-xpu-flashnext@sha256:"
+    "24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f"
+)
+SGLANG_YAML = ROOT / "compose" / "b70-sglang.yaml"
+SGLANG_ENV_EXAMPLE = ROOT / "compose" / "b70-sglang.env.example"
+SGLANG_MODEL = "Qwen3.8-Flash-Next-exl3-3.05bpw"
+SGLANG_CTX = 131072
+SGLANG_EXTRA = (
+    "--trust-remote-code --device xpu --host 0.0.0.0 "
+    "--disable-shared-experts-fusion --kv-cache-dtype fp8_e4m3 "
+    "--mem-fraction-static 0.85 --chunked-prefill-size 8192 "
+    f"--max-total-tokens {SGLANG_CTX} --max-running-requests 4 --dtype bfloat16 "
+    "--max-mamba-cache-size 32 --cuda-graph-backend-decode full "
+    "--cuda-graph-bs-decode 1 2 4"
+)
+
+
+def _sglang_fixture(path: Path, model_name: str) -> Path:
+    doc = {
+        "schema": 1,
+        "card": "b70",
+        "mode": "inference",
+        "profiles": {
+            "flashnext-fixture": {
+                "model": model_name,
+                "source": "local",
+                "family": "qwen",
+                "architecture": "dense",
+                "quant": "exl3",
+                "kv": "f16",
+                "flash_attention": "off",
+                "reasoning": "off",
+                "extra": SGLANG_EXTRA,
+                "capability_source": "none",
+                "use_for": "sglang plan fixture",
+                "depth_probe_100k": "not run",
+                "category": "dense",
+                "weight_class": "9b",
+                "measured_on": "test",
+                "card": "b70",
+                "backend": "sglang",
+                "mode": "inference",
+                "engine": "sglang",
+                "tool_parser": "qwen3_coder",
+                "reasoning_parser": "qwen3",
+                "ctx": SGLANG_CTX,
+                "useful_ctx": 8000,
+                "timeout_s": 1500,
+                "vram_gib_after_load": 31.9,
+                "ram_gb_extra": 0,
+                "params_b": {"total": 9, "active": 9},
+                "speed": {
+                    "decode_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+                    "prefill_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+                },
+                "capability": {},
+                "instrument": "seat: test",
+            }
+        },
+    }
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def _sglang_nodes(tmp_path: Path) -> dict:
+    dri = tmp_path / "dri"
+    by = dri / "by-path"
+    by.mkdir(parents=True)
+    card = dri / "card1"
+    render = dri / "renderD129"
+    card.write_text("", encoding="utf-8")
+    render.write_text("", encoding="utf-8")
+    (by / "pci-0000:0b:00.0-card").symlink_to(card)
+    (by / "pci-0000:0b:00.0-render").symlink_to(render)
+    return {
+        "A770B_DRM_CARD": str(by / "pci-0000:0b:00.0-card"),
+        "A770B_DRM_RENDER": str(by / "pci-0000:0b:00.0-render"),
+        "A770B_SGLANG_CARD_NODE": str(card.resolve()),
+        "A770B_SGLANG_RENDER_NODE": str(render.resolve()),
+        "A770B_SGLANG_IMAGE": SGLANG_DIGEST,
+        "A770B_RENDER_GID": "105",
+        "A770B_VIDEO_GID": "39",
+    }
+
+
+def _plan_sglang_from_fixture(tmp_path, env):
+    """Plan through the fixture's exported parsers, quant, ctx, and extra."""
+    profile = env["A770B_PROFILES_FILE"]
+    model = str(Path(env["A770B_MODELS"]) / SGLANG_MODEL)
+    script = f"""
+set -euo pipefail
+eval "$(python3 "{ROOT}/harness/profiles.py" env --file "{profile}")"
+export TOOL_PARSER="$A770B_FLASHNEXT_FIXTURE_TOOL_PARSER"
+export REASONING_PARSER="$A770B_FLASHNEXT_FIXTURE_REASONING_PARSER"
+export QUANT="$A770B_FLASHNEXT_FIXTURE_QUANT"
+# shellcheck disable=SC2086
+exec bash "{SERVE}" plan "{SGLANG_MODEL}" "$A770B_FLASHNEXT_FIXTURE_CTX" $A770B_FLASHNEXT_FIXTURE_EXTRA
+"""
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=ROOT, env=env), model
+
+
+def test_sglang_envelope_pins_the_trial_contract():
+    text = SGLANG_YAML.read_text(encoding="utf-8")
+    example = SGLANG_ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "/home/" not in text
+    assert "/home/" not in example
+    assert SGLANG_DIGEST in text
+    assert SGLANG_DIGEST in example
+    assert 'entrypoint: ["python3"]' in text
+    assert "127.0.0.1:${A770B_PORT}:${A770B_PORT}" in text
+    assert "mem_limit: 40g" in text and "memswap_limit: 40g" in text
+    assert 'cpuset: "8-23"' in text
+    assert "shm_size: 8g" in text
+    assert "label=disable" in text
+    assert "card0" not in text and "renderD128" not in text
+    assert "api.key" not in text and "--api-key" not in text
+    for target in (
+        "/xfs:ro",
+        "/opt/trellis-serve/xpu/exl3xpu/sglang_plugin.py:ro",
+        "/opt/trellis-serve/xpu/exl3xpu/nvtier.py:ro",
+        "/opt/trellis-serve/xpu/exl3xpu/moe_offload.py:ro",
+        "/n104/_moe_a8.so:ro",
+        "/n104/qsa_row_sycl.so:ro",
+        "/hc:ro",
+        "/n107qsa:ro",
+        "/opt/trellis-serve/xpu/exl3xpu/qsa_xpu_base.py:ro",
+        "/opt/trellis-serve/xpu/exl3xpu/qsa_xpu.py:ro",
+        ":/tcache",
+        "/models/${A770B_SGLANG_MODEL_NAME}:ro",
+    ):
+        assert target in text
+    for line in (
+        "HOME=/tmp",
+        "HF_HUB_OFFLINE=1",
+        "ZE_AFFINITY_MASK=0",
+        "NEOReadDebugKeys=1",
+        "EnableSharedSystemUsmSupport=1",
+        "EnableRecoverablePageFaults=1",
+        "EXL3_MOE_SLOTS=8000",
+        "EXL3_MOE_CACHE=1",
+        "EXL3_NVTIER_SVM_PREFETCH=1",
+        "EXL3_NVTIER_STAGE=1",
+        "EXL3_NVTIER_NO_VICTIM=0",
+        "EXL3_NVTIER_ASYNC=1",
+        "EXL3_HC_DIR=/hc",
+        "EXL3_HC_XPU=1",
+        "EXL3_HC_MIX=epilogue",
+        "EXL3_HC_COMBINE=torch",
+        "TRITON_CACHE_DIR=/tcache",
+        "EXL3_NVTIER_STAGE_PROF=0",
+        "EXL3_NVTIER_STAGE_HOSTBUF=5",
+        "EXL3_NVTIER_PREFILL_M=5",
+        "EXL3_NVTIER_PROF_EVERY=48",
+        "EXL3_NVTIER_FILL_THREADS=8",
+        "EXL3_NVTIER=1",
+        "EXL3_NVTIER_STORE=/xfs/qwen_experts.bin",
+        "EXL3_NVTIER_RAM_GB=20",
+        "EXL3_NVTIER_LAYERS=48",
+        "EXL3_NGRAM_TIER=nvme",
+        "SGLANG_EXL3_NGRAM_RAM_GB=1",
+        "SGLANG_EXL3_KV_BITS=5",
+        "EXL3_QSA_DENSE_BYTES=134217728",
+        "EXL3_QSA_ROWS=64",
+        "EXL3_TORCH_MEM_FRACTION=0.95",
+        "TORCHINDUCTOR_COMPILE_THREADS=1",
+        "EXL3_QSA_IMPL=sycl_row",
+        "EXL3_QSA_SELECT=sycl",
+        "EXL3_QSA_TRITON_CHECK=4",
+        "EXL3_QSA_SELECT_CHECK=4",
+        "EXL3_MOE_LIB=/n104/_moe_a8.so",
+        "EXL3_QSA_SYCL_LIB=/n104/qsa_row_sycl.so",
+        "EXL3_MODEL_PATH=/models/model",
+    ):
+        assert line in example
+
+
+def test_plan_sglang_carries_the_trial_server_flags(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    profile = _sglang_fixture(tmp_path / "fixture.json", SGLANG_MODEL)
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing-sglang.env"),
+        A770B_PROFILES_FILE=str(profile),
+        A770B_ALIAS="flashnext",
+        A770B_PORT="30260",
+        A770B_CARD_VRAM_TOTAL="32",
+    )
+    (Path(env["A770B_MODELS"]) / SGLANG_MODEL).mkdir()
+    r, _model = _plan_sglang_from_fixture(tmp_path, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "entrypoint: python3" in r.stdout
+    argv = _argv_lines(r.stdout)
+    assert argv[0] == "-m"
+    assert argv[1] == "sglang.launch_server"
+    assert "python3" not in argv
+    assert "--model-path" in argv
+    assert argv[argv.index("--model-path") + 1] == f"/models/{SGLANG_MODEL}"
+    assert argv[argv.index("--quantization") + 1] == "exl3"
+    assert argv[argv.index("--served-model-name") + 1] == "flashnext"
+    assert argv[argv.index("--context-length") + 1] == str(SGLANG_CTX)
+    assert argv[argv.index("--port") + 1] == "30260"
+    assert argv[argv.index("--tool-call-parser") + 1] == "qwen3_coder"
+    assert argv[argv.index("--reasoning-parser") + 1] == "qwen3"
+    assert argv[argv.index("--max-total-tokens") + 1] == str(SGLANG_CTX)
+    for flag in (
+        "--trust-remote-code",
+        "--disable-shared-experts-fusion",
+    ):
+        assert flag in argv
+    assert argv[argv.index("--device") + 1] == "xpu"
+    assert argv[argv.index("--kv-cache-dtype") + 1] == "fp8_e4m3"
+    assert argv[argv.index("--mem-fraction-static") + 1] == "0.85"
+    assert argv[argv.index("--chunked-prefill-size") + 1] == "8192"
+    assert argv[argv.index("--max-running-requests") + 1] == "4"
+    assert argv[argv.index("--dtype") + 1] == "bfloat16"
+    assert argv[argv.index("--max-mamba-cache-size") + 1] == "32"
+    assert argv[argv.index("--cuda-graph-backend-decode") + 1] == "full"
+    bs = argv.index("--cuda-graph-bs-decode")
+    assert argv[bs + 1:bs + 4] == ["1", "2", "4"]
+    assert "--api-key" not in argv
+    assert "compose:" in r.stdout
+    # plan prints the compose line; it must not have executed it
+    assert not log.exists()
+
+
+def test_plan_sglang_refuses_auto_and_empty_parsers_before_docker(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    (tmp_path / "models").mkdir(exist_ok=True)
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_QUANT="exl3",
+        TOOL_PARSER="auto",
+        REASONING_PARSER="qwen3",
+    )
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "refuses --tool-call-parser auto" in r.stderr
+    assert not log.exists()
+
+    env["TOOL_PARSER"] = "qwen3_coder"
+    env["REASONING_PARSER"] = ""
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert "reasoning-parser" in r.stderr
+    assert not log.exists()
+
+    env["REASONING_PARSER"] = "bad;value"
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 2
+    assert "reasoning-parser" in r.stderr
+    assert not log.exists()
+
+
+def test_start_sglang_missing_env_file_names_the_example_before_docker(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "no-sglang.env"),
+        A770B_QUANT="exl3",
+        TOOL_PARSER="qwen3_coder",
+        REASONING_PARSER="qwen3",
+    )
+    env.pop("A770B_SGLANG_IMAGE", None)
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "no-sglang.env.example" in r.stderr
+    assert not log.exists()
+
+
+def test_start_sglang_refuses_novict_and_a_mismatched_node_before_docker(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    nodes = _sglang_nodes(tmp_path)
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "no-sglang.env"),
+        A770B_QUANT="exl3",
+        TOOL_PARSER="qwen3_coder",
+        REASONING_PARSER="qwen3",
+        A770B_CARD_VRAM_TOTAL="32",
+        NOVICT="1",
+        **nodes,
+    )
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "victim write-back stays on" in r.stderr
+    assert not log.exists()
+
+    env["NOVICT"] = "0"
+    env["EXL3_NVTIER_NO_VICTIM"] = "1"
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2
+    assert "victim write-back stays on" in r.stderr
+    assert not log.exists()
+
+    env["EXL3_NVTIER_NO_VICTIM"] = "0"
+    env["A770B_SGLANG_RENDER_NODE"] = "/dev/dri/renderD128"
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2
+    assert "by-path nodes" in r.stderr
+    assert not log.exists()
+
+
+def test_start_sglang_keeps_a_load_above_the_llama_cap_and_below_the_card(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "exit 0")
+    used = 20 * 2**30
+    _make_bin(
+        bin_, "nvtop",
+        "echo '[{\"device_name\": \"Intel Arc A770 DG2\", \"mem_total\": 34359738368, "
+        f"\"mem_used\": {used}, \"mem_free\": 0}}]'",
+    )
+    nodes = _sglang_nodes(tmp_path)
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "no-sglang.env"),
+        A770B_QUANT="exl3",
+        TOOL_PARSER="qwen3_coder",
+        REASONING_PARSER="qwen3",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="15.3",
+        A770B_MIN_VRAM_MB="0",
+        EXL3_NVTIER_NO_VICTIM="0",
+        **nodes,
+    )
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "the card total" in r.stdout
+    assert "VRAM after load" in r.stdout
+    assert "STOPPED" not in r.stderr
+    ov = json.loads((Path(env["A770B_DATA"]) / "logs" / "compose-argv.override.json").read_text(encoding="utf-8"))
+    assert ov["services"]["llama"]["entrypoint"] == ["python3"]
+    assert ov["services"]["llama"]["command"][0] == "-m"
+    assert "python3" not in ov["services"]["llama"]["command"]
+
+
+def test_start_sglang_stops_when_used_vram_exceeds_the_card(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "exit 0")
+    used = 33 * 2**30
+    _make_bin(
+        bin_, "nvtop",
+        "echo '[{\"device_name\": \"Intel Arc A770 DG2\", \"mem_total\": 34359738368, "
+        f"\"mem_used\": {used}, \"mem_free\": 0}}]'",
+    )
+    nodes = _sglang_nodes(tmp_path)
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "no-sglang.env"),
+        A770B_QUANT="exl3",
+        TOOL_PARSER="qwen3_coder",
+        REASONING_PARSER="qwen3",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="15.3",
+        A770B_MIN_VRAM_MB="0",
+        EXL3_NVTIER_NO_VICTIM="0",
+        **nodes,
+    )
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "the card total" in r.stderr
+    assert "STOPPED" in r.stderr
+    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))

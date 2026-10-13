@@ -21,10 +21,8 @@ def _require(engine):
 
 
 def bring(engine):
-    """start for every admitted engine except sglang, which is attach."""
+    """start for every admitted engine, including sglang."""
     _require(engine)
-    if engine == "sglang":
-        return "attach"
     return "start"
 
 

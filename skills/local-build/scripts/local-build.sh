@@ -102,7 +102,8 @@ _envelope_for_backend_name(){ # select the container envelope for a backend name
   case "$1" in
     vulkan|sycl) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-$1.yaml";;
     vllm) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/vllm.yaml";;
-    *) die "backend '$1' is not one this harness serves (vulkan, sycl, vllm)";;
+    sglang) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml";;
+    *) die "backend '$1' is not one this harness serves (vulkan, sycl, vllm, sglang)";;
   esac
   A770B_SERVED_BACKEND="$1"
   A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
@@ -121,7 +122,7 @@ _envelope_for_backend(){ # the row's backend selects the container envelope. An 
 _envelope_from_sidecar(){ # the running container's backend selects the envelope, so `stop` ends it whatever it is
   local be; be=$(python3 "$A770B_PROJECT/harness/live_backend.py" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend") or "")' 2>/dev/null) || be=""
-  case "$be" in vulkan|sycl|vllm) _envelope_for_backend_name "$be";; esac
+  case "$be" in vulkan|sycl|vllm|sglang) _envelope_for_backend_name "$be";; esac
   return 0
 }
 _reload_lock_held(){ # true when another process holds the run lock; this shell's own fd 9 does not count
@@ -192,20 +193,26 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   # shellcheck disable=SC2086
   local quant; quant=$(a770b_profile_var "$p" QUANT)
   local tool_parser; tool_parser=$(a770b_profile_var "$p" TOOL_PARSER)
+  local reasoning_parser; reasoning_parser=$(a770b_profile_var "$p" REASONING_PARSER)
   # This start only. A vLLM row may name an image the pinned compose file does not hold.
   local vllm_image; vllm_image=$(a770b_profile_var "$p" VLLM_IMAGE)
   (
     if [ -n "$vllm_image" ]; then export A770B_VLLM_IMAGE="$vllm_image"; fi
-    QUANT=$quant TOOL_PARSER=$tool_parser KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
+    QUANT=$quant TOOL_PARSER=$tool_parser REASONING_PARSER=$reasoning_parser \
+      KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
       THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
       THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
       bash "$SERVE" start "$gguf" "$ctx" $extra
   ) || return 1
-  if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
-    for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
-  else
-    for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
-  fi
+  # SGLang /health is HTTP success, like vLLM. Do not grep the body for "ok".
+  case "${A770B_SERVED_BACKEND:-}" in
+    vllm|sglang)
+      for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
+      ;;
+    *)
+      for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+      ;;
+  esac
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || return 2
   _write_serve_evidence "$p" "${A770B_SERVED_BACKEND:-}" "$gguf"
   local thinking_desc="mode ${thinking_mode:-$reasoning}"
@@ -234,11 +241,8 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
   export A770B_SERVED_ENGINE
-  if [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
-    die "this skill does not start SGLang"
-  fi
   _envelope_for_backend "$p"
-  if [ "$A770B_SERVED_ENGINE" = "vllm" ]; then
+  if [ "$A770B_SERVED_ENGINE" = "vllm" ] || [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
     [ -r "$gguf" ] || die "model not found: $gguf — put the model file or directory in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
   else
     [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
@@ -282,9 +286,6 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       profile_vars "$p"
       A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
       export A770B_SERVED_ENGINE
-      if [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
-        die "this skill does not start SGLang"
-      fi
       _envelope_for_backend "$p"
       if [ ! -r "$gguf" ]; then echo "rollback failed: server is down"; return 1; fi
       _export_live "$p"
@@ -374,11 +375,19 @@ doctor(){
         _img_var="A770B_VLLM_IMAGE"
         _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
         ;;
+      sglang)
+        _img_var="A770B_SGLANG_IMAGE"
+        _needed_vars=(A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_SGLANG_CARD_NODE A770B_SGLANG_RENDER_NODE A770B_RENDER_GID A770B_VIDEO_GID)
+        ;;
       *)
         case "$A770B_COMPOSE_FILE" in
           */vllm.yaml|vllm.yaml)
             _img_var="A770B_VLLM_IMAGE"
             _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
+            ;;
+          */b70-sglang.yaml|b70-sglang.yaml)
+            _img_var="A770B_SGLANG_IMAGE"
+            _needed_vars=(A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_SGLANG_CARD_NODE A770B_SGLANG_RENDER_NODE A770B_RENDER_GID A770B_VIDEO_GID)
             ;;
         esac
         ;;
