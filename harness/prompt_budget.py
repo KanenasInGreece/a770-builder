@@ -6,8 +6,10 @@
         token on the Qwen tokenisers, so the old rule of thumb — four characters a token — asked
         for 100,000 tokens and built a prompt of 132,865. On a model served at 131,072 the server
         rejected it outright; on one served wider it simply cost a third more time than anyone
-        budgeted. This asks the server's own /tokenize endpoint instead of guessing, and returns a
-        prompt whose token count is at or just under the target, never over it.
+        budgeted. llama.cpp asks the server's own /tokenize endpoint instead of guessing.
+        openai counts from the tokenizer directory and does not post /tokenize. If this
+        interpreter cannot import tokenizers, fit re-execs once under uv; time and llama do not.
+        The prompt returned is at or just under the target, never over it.
 
   time  How long should that request be allowed to take ON THIS CARD?
         Prefill gets slower the deeper the prompt goes, so the cost of an N-token prompt is the
@@ -24,12 +26,13 @@ card's own numbers say it should is a finding, not something to wait out.
 Usage:
   prompt_budget.py fit  --corpus F --target N --out F [--plant-file F] [--plant-at 0.85]
                         [--overhead 128] [--url URL] [--key K]
-                        [--tokenize llama|openai] [--model NAME]
+                        [--tokenize llama|openai] [--model NAME] [--tokenizer DIR]
   prompt_budget.py time --tokens N [--bench F] [--gen 320] [--safety 1.5] [--floor 300] [--cap 7200]
 """
 import argparse
 import json
 import os
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -51,14 +54,60 @@ def _post(url, key, path, payload):
         return json.loads(r.read().decode())
 
 
-def count_tokens(url, key, text, tokenize="llama", model=""):
-    """llama.cpp posts {"content": text}. An OpenAI server posts model, prompt, and add_special_tokens false."""
+_TOKENIZER_CACHE = {}
+# Set in the environment before the one re-exec. A child that still cannot import must not exec again.
+_TOKENIZERS_CHILD = "PROMPT_BUDGET_TOKENIZERS_CHILD"
+
+
+def _reexec_with_tokenizers():
+    """Replace this process once with `uv run --with tokenizers python3` and the same arguments."""
+    if os.environ.get(_TOKENIZERS_CHILD):
+        raise ValueError("missing module: tokenizers")
+    if shutil.which("uv") is None:
+        print("uv is not on PATH", file=sys.stderr)
+        sys.exit(2)
+    os.environ[_TOKENIZERS_CHILD] = "1"
+    os.execvp("uv", ["uv", "run", "--with", "tokenizers", "python3", *sys.argv])
+    raise ValueError("missing module: tokenizers")
+
+
+def _tokenizer_json(tokenizer):
+    """A directory counts only when tokenizer.json is inside it. A served model name is not a tokenizer."""
+    raw = str(tokenizer or "").strip()
+    if not raw:
+        raise ValueError("a tokenizer directory is required")
+    path = os.path.abspath(raw)
+    if os.path.isdir(path):
+        found = os.path.join(path, "tokenizer.json")
+        if os.path.isfile(found):
+            return found
+        raise ValueError(f"{path} has no tokenizer.json")
+    if os.path.isfile(path) and os.path.basename(path) == "tokenizer.json":
+        return path
+    raise ValueError(f"{raw} is not a tokenizer directory")
+
+
+def _load_tokenizer(tokenizer_json):
+    """Load tokenizer.json once per path. openai counts from that file and does not post /tokenize."""
+    cached = _TOKENIZER_CACHE.get(tokenizer_json)
+    if cached is not None:
+        return cached
+    try:
+        from tokenizers import Tokenizer
+    except ImportError:
+        _reexec_with_tokenizers()
+    loaded = Tokenizer.from_file(tokenizer_json)
+    _TOKENIZER_CACHE[tokenizer_json] = loaded
+    return loaded
+
+
+def count_tokens(url, key, text, tokenize="llama", model="", tokenizer=""):
+    """llama.cpp posts {"content": text}. openai counts from the tokenizer directory and does not post /tokenize."""
     if tokenize == "openai":
-        if not model:
-            raise ValueError("openai tokenize needs a model name")
-        payload = {"model": model, "prompt": text, "add_special_tokens": False}
-    else:
-        payload = {"content": text}
+        loaded = _load_tokenizer(_tokenizer_json(tokenizer))
+        encoded = loaded.encode(text, add_special_tokens=False)
+        return len(encoded.ids)
+    payload = {"content": text}
     return len(_post(url, key, "/tokenize", payload).get("tokens", []))
 
 
@@ -76,8 +125,9 @@ def fit(args):
     key = args.key or ""
     tokenize = getattr(args, "tokenize", None) or "llama"
     model = getattr(args, "model", None) or ""
-    if tokenize == "openai" and not model:
-        print("⛔ --tokenize openai needs --model", file=sys.stderr)
+    tokenizer = getattr(args, "tokenizer", None) or ""
+    if tokenize == "openai" and not str(tokenizer).strip():
+        print("⛔ a tokenizer directory is required", file=sys.stderr)
         return 2
     corpus = open(args.corpus, encoding="utf-8", errors="ignore").read()
     plant = open(args.plant_file, encoding="utf-8", errors="ignore").read() if args.plant_file else ""
@@ -96,12 +146,18 @@ def fit(args):
     for _ in range(8):
         text = build_prompt(corpus, chars, plant, args.plant_at)
         try:
-            n = count_tokens(url, key, text, tokenize, model)
+            n = count_tokens(url, key, text, tokenize, model, tokenizer)
         except (urllib.error.URLError, OSError, ValueError) as e:
-            print(f"⛔ the server's /tokenize did not answer ({e}) — cannot size the prompt", file=sys.stderr)
+            if tokenize == "openai":
+                print(f"⛔ could not count tokens from the tokenizer directory ({e})", file=sys.stderr)
+            else:
+                print(f"⛔ the server's /tokenize did not answer ({e}) — cannot size the prompt", file=sys.stderr)
             return 2
         if n == 0:
-            print("⛔ /tokenize returned no tokens", file=sys.stderr)
+            if tokenize == "openai":
+                print("⛔ the tokenizer returned no tokens", file=sys.stderr)
+            else:
+                print("⛔ /tokenize returned no tokens", file=sys.stderr)
             return 2
         if n <= target:
             best = (text, n)
@@ -243,6 +299,7 @@ def main():
     f.add_argument("--key")
     f.add_argument("--tokenize", choices=("llama", "openai"), default="llama")
     f.add_argument("--model", default="")
+    f.add_argument("--tokenizer", default="", help="tokenizer directory, required when --tokenize is openai")
     f.set_defaults(func=fit)
 
     t = sub.add_parser("time", help="seconds to allow for a prompt of N tokens, from the measured curve")

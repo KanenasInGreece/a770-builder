@@ -401,6 +401,28 @@ def cmd_context(args) -> int:
     return 0
 
 
+def _apply_model_id(text, model_id):
+    """Point the provider model id at the served name. None means the template default."""
+    if model_id == "local-builder":
+        return text
+    if not isinstance(model_id, str) or model_id == "" or any(c in model_id for c in "\n\r"):
+        print("render_profile: model id is empty or not a single line", file=sys.stderr)
+        return None
+    key = json.dumps(model_id)
+    esc = key[1:-1]
+    needle = '"models": { "local-builder":'
+    if needle not in text:
+        print("render_profile: template has no local-builder model id", file=sys.stderr)
+        return None
+    text = text.replace(needle, '"models": { %s:' % key, 1)
+    text = text.replace('"name": "local-builder (', '"name": "%s (' % esc, 1)
+    text = text.replace('"model": "local-a770/local-builder"', '"model": "local-a770/%s"' % esc, 1)
+    text = text.replace(
+        '"small_model": "local-a770/local-builder"', '"small_model": "local-a770/%s"' % esc, 1
+    )
+    return text
+
+
 def cmd_render(args) -> int:
     spec = {}
     card_text = None
@@ -456,6 +478,14 @@ def cmd_render(args) -> int:
     sampling_line = _sampling_line(temperature, top_p)
     text = text.replace("__SAMPLING__", sampling_line if sampling_line is not None else "")
 
+    # The template's model id stays local-builder unless the caller names the server's model.
+    # The agent name is not that id and is left alone.
+    if args.model_id is not None:
+        applied = _apply_model_id(text, args.model_id)
+        if applied is None:
+            return 2
+        text = applied
+
     # Check for any remaining unreplaced placeholders
     pattern = r"__[A-Z][A-Z_]*__"
     if re.search(pattern, text):
@@ -484,6 +514,11 @@ def main() -> int:
     render_parser.add_argument("--ctx", "-c", required=True, help="Context window size")
     render_parser.add_argument("--output", "-m", required=True, help="Output window size")
     render_parser.add_argument("--name", "-n", required=True, help="Agent name")
+    render_parser.add_argument(
+        "--model-id",
+        default=None,
+        help="Served model id the profile sends (default: the template's local-builder)",
+    )
     render_parser.add_argument("--temperature", help="Sampling temperature for the agent block (0 <= t <= 2)")
     render_parser.add_argument("--top-p", dest="top_p", help="Sampling top_p for the agent block (0 < p <= 1)")
     render_parser.add_argument("--spec", help="Path to a run specification JSON (requires --seat)")

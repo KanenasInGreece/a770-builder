@@ -4,11 +4,14 @@
 # axes through a reviewer profile that is never the builder, and writes one results JSON per run.
 #   run_suite.sh <profile> [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]
 #   run_suite.sh --model <gguf> --ctx <n> [--kv <type>] [--kv-v <type>] [--extra "<flags>"] [--timeout <s>] [<seat>] [...]
+#   run_suite.sh --base-url URL --served-model-name NAME --ctx <n> [<seat>] [...]
 # The second form is how a new GGUF climbs the task rung before it has a registry row: instead of a name already in
 # config/registry/<card>.<mode>.json, --model/--ctx build an EPHEMERAL profile named "candidate" for this run alone (the
 # A770B_CANDIDATE_* variables the harness reads, exported here, never written to any file), so a model can be
 # task-graded the same way a registered one is before a human has measured and pasted its row (harness/ladder.sh
 # drives exactly this path). A registry profile name and --model are mutually exclusive — passing both is refused.
+# The third form is the same ephemeral profile for a server that is already up. It does not take --model and does not
+# open a weight file. --reviewer is refused with it: that path stops the builder server and starts another one.
 # The seat is NOT a clone of this repository (the model must not read harness/): it is an EXPORT of kit/seat/ — a
 # copy, git-init'ed and committed — into <seat> (default $A770B_DATA/kit-seat); a path that already exists and is
 # not empty is refused unless --fresh removes it first. The export is redone PER STAGE, not once for the whole
@@ -36,7 +39,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
 
-USAGE="usage: run_suite.sh <profile>|--model <gguf> --ctx <n> [--kv <type>] [--kv-v <type>] [--extra \"<flags>\"] [--timeout <s>] [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]"
+USAGE="usage: run_suite.sh <profile>|--model <gguf> --ctx <n>|--base-url URL --served-model-name NAME --ctx <n> [--kv <type>] [--kv-v <type>] [--extra \"<flags>\"] [--timeout <s>] [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]"
 [ $# -ge 1 ] || die "$USAGE"
 SUITE="$A770B_PROJECT/kit/suite.json"
 STAGES_FILTER=""
@@ -44,6 +47,7 @@ REVIEWER=""
 FRESH=0
 DRYRUN=0
 MODEL_GGUF=""; MODEL_CTX=""; MODEL_KV=""; MODEL_KV_V=""; MODEL_EXTRA=""; MODEL_TIMEOUT=""; MODEL_REASONING=""; MODEL_BUDGET=""
+BASE_URL=""; SERVED_NAME=""
 POSITIONALS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,6 +55,8 @@ while [ $# -gt 0 ]; do
     --stages) STAGES_FILTER="${2:?comma-separated stage ids}"; shift 2 ;;
     --reviewer) REVIEWER="${2:?reviewer profile name}"; shift 2 ;;
     --model) MODEL_GGUF="${2:?path to a gguf}"; shift 2 ;;
+    --base-url) BASE_URL="${2:?base url}"; shift 2 ;;
+    --served-model-name) SERVED_NAME="${2:?served model name}"; shift 2 ;;
     --ctx) MODEL_CTX="${2:?context window}"; shift 2 ;;
     --kv) MODEL_KV="${2:?kv cache type}"; shift 2 ;;
     --kv-v) MODEL_KV_V="${2:?kv_v cache type}"; shift 2 ;;
@@ -67,7 +73,33 @@ done
 
 PROFILE=""
 SEAT=""
-if [ -n "$MODEL_GGUF" ]; then
+RUN_ATTACH=()
+if [ -n "$BASE_URL" ] || [ -n "$SERVED_NAME" ]; then
+  [ -n "$BASE_URL" ] && [ -n "$SERVED_NAME" ] || die "--base-url and --served-model-name are required together"
+  [ -z "$MODEL_GGUF" ] || die "refusing: --base-url does not take --model and does not open a weight file"
+  [ -z "$REVIEWER" ] || die "refusing: --reviewer stops the builder server and starts another one; it cannot be used with --base-url"
+  [ -n "$MODEL_CTX" ] || die "--base-url requires --ctx <n>"
+  case ${#POSITIONALS[@]} in
+    0) : ;;
+    1)
+      if a770b_is_profile "${POSITIONALS[0]}"; then
+        die "refusing: a registry profile name (${POSITIONALS[0]}) and --base-url are mutually exclusive — pass one or the other"
+      fi
+      SEAT="${POSITIONALS[0]}" ;;
+    *) die "too many positional arguments with --base-url: ${POSITIONALS[*]} (a registry profile name and --base-url are mutually exclusive)" ;;
+  esac
+  PROFILE="candidate"
+  export A770B_CANDIDATE_MODEL="$SERVED_NAME"
+  export A770B_CANDIDATE_CTX="$MODEL_CTX"
+  export A770B_CANDIDATE_KV="${MODEL_KV:-q8_0}"
+  export A770B_CANDIDATE_KV_V="${MODEL_KV_V:-${MODEL_KV:-q8_0}}"
+  export A770B_CANDIDATE_REASONING="${MODEL_REASONING:-off}"
+  export A770B_CANDIDATE_TIMEOUT="${MODEL_TIMEOUT:-1500}"
+  export A770B_CANDIDATE_EXTRA="${MODEL_EXTRA:-}"
+  case " $A770B_PROFILES " in *" candidate "*) ;; *) export A770B_PROFILES="$A770B_PROFILES candidate" ;; esac
+  RUN_ATTACH=(--base-url "$BASE_URL" --served-model-name "$SERVED_NAME")
+  echo "▶ --base-url $BASE_URL --served-model-name $SERVED_NAME: ephemeral profile 'candidate' (ctx $MODEL_CTX), no weight file"
+elif [ -n "$MODEL_GGUF" ]; then
   [ -n "$MODEL_CTX" ] || die "--model requires --ctx <n>"
   case ${#POSITIONALS[@]} in
     0) : ;;
@@ -537,7 +569,11 @@ process_task(){
     else
       echo "[dry-run] $id: export seat (paste: ${SEAT_STATE[*]:-none}) -> git commit -m \"kit seat for $id\""
     fi
-    echo "[dry-run] $id: $LOCAL_BUILD run $WT $briefpath --spec $specpath --profile $PROFILE"
+    if [ ${#RUN_ATTACH[@]} -gt 0 ]; then
+      echo "[dry-run] $id: $LOCAL_BUILD run $WT $briefpath --spec $specpath --profile $PROFILE ${RUN_ATTACH[*]}"
+    else
+      echo "[dry-run] $id: $LOCAL_BUILD run $WT $briefpath --spec $specpath --profile $PROFILE"
+    fi
     if [ -n "$S_WORKING_CMD" ]; then echo "[dry-run] $id: A770B_HIDDEN_ROOT=$HIDDEN_ROOT $LOCAL_BUILD verify <label> $WT --test \"$S_WORKING_CMD\""
     else echo "[dry-run] $id: A770B_HIDDEN_ROOT=$HIDDEN_ROOT $LOCAL_BUILD verify <label> $WT"; fi
     [ -n "$S_CONFORMANCE_CMD" ] && echo "[dry-run] $id: $LOCAL_BUILD verify <label>.conformance $WT --test \"$S_CONFORMANCE_CMD\" (no spec beside it, so no hidden tests ride along)"
@@ -556,7 +592,7 @@ process_task(){
   WT=$(guard_worktree "$SEAT") || exit 2
   SECONDS=0
   local run_out rrc
-  run_out=$(bash "$LOCAL_BUILD" run "$WT" "$briefpath" --spec "$specpath" --profile "$PROFILE" 2>&1); rrc=$?
+  run_out=$(bash "$LOCAL_BUILD" run "$WT" "$briefpath" --spec "$specpath" --profile "$PROFILE" "${RUN_ATTACH[@]}" 2>&1); rrc=$?
   local wall_s=$SECONDS
   case "$rrc" in
     2|3)

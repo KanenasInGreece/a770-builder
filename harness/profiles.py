@@ -44,8 +44,8 @@ an unknown key or a wrong type is refused. The older top-level `reasoning` field
 stays for now and must not contradict `thinking.mode` when both are set (an "auto" mode never
 contradicts either value of `reasoning`).
 
-A row may also name the serving triple that a GGUF nickname hides: `engine` (`llama.cpp` or
-`vllm`), `checkpoint` (`format`, `weight_quant`, `activation_quant`), and `kernel` (`path`,
+A row may also name the serving triple that a GGUF nickname hides: `engine` (`llama.cpp`,
+`vllm`, or `sglang`), `checkpoint` (`format`, `weight_quant`, `activation_quant`), and `kernel` (`path`,
 `xmx`, `evidence`). All three are optional. Omitted means untested, not "the same as the
 quant label". A GGUF K-quant or I-quant is weights-only: `activation_quant` is `none` (activations
 stay in the engine's working precision). `none` is not 4-bit local math. `kernel` is filled only
@@ -151,7 +151,7 @@ OPTIONAL_KEYS = {
     "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
     "vllm_image",
 }
-ENGINE_VALUES = {"llama.cpp", "vllm"}
+ENGINE_VALUES = {"llama.cpp", "vllm", "sglang"}
 CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
 CHECKPOINT_REQUIRED_KEYS = {"format", "weight_quant", "activation_quant"}
 CHECKPOINT_KEYS = CHECKPOINT_REQUIRED_KEYS | {"evidence"}
@@ -616,7 +616,7 @@ def validate(data) -> list[str]:
                     errors.append(f"{name}: thinking.mode {mode!r} contradicts reasoning {reasoning!r}")
 
         if "engine" in prof and isinstance(prof["engine"], str) and prof["engine"] not in ENGINE_VALUES:
-            errors.append(f"{name}: engine must be llama.cpp or vllm")
+            errors.append(f"{name}: engine must be llama.cpp, vllm, or sglang")
 
         if "tool_parser" in prof:
             tp = prof["tool_parser"]

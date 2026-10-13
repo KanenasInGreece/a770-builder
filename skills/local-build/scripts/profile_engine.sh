@@ -11,6 +11,7 @@ _profile_engine(){
       case "$backend" in
         ""|vulkan|sycl) printf '%s\n' "llama.cpp"; return 0;;
         vllm) printf '%s\n' "vllm"; return 0;;
+        sglang) printf '%s\n' "sglang"; return 0;;
         *) die "backend '$backend' is not one this harness serves (vulkan, sycl, vllm)" || return $?;;
       esac
       ;;
@@ -26,8 +27,14 @@ _profile_engine(){
         *) die "profile $name engine vllm does not match backend $backend" || return $?;;
       esac
       ;;
+    sglang)
+      case "$backend" in
+        sglang) printf '%s\n' "sglang"; return 0;;
+        *) die "profile $name engine sglang does not match backend $backend" || return $?;;
+      esac
+      ;;
     *)
-      die "profile $name engine '$engine' is not one this skill serves (llama.cpp, vllm)" || return $?
+      die "profile $name engine '$engine' is not one this skill serves (llama.cpp, vllm, sglang)" || return $?
       ;;
   esac
 }

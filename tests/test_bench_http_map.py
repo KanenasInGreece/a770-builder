@@ -138,7 +138,24 @@ def test_dry_run_prints_the_uvx_command_and_does_not_call_uvx(tmp_path):
         assert size in line
     assert "--exact-tg" not in line
     assert "--tokenizer /models/Qwen" in line or "--tokenizer '/models/Qwen'" in line
+    assert "http://127.0.0.1:9/v1" in line
+    assert "--model local-builder" in line or "--model 'local-builder'" in line
+    assert "return_token_ids=false" in line
     assert not marker.exists()
+
+
+def test_dry_run_v1_base_is_not_doubled(tmp_path):
+    env = _isolated(tmp_path)
+    result = subprocess.run(
+        ["bash", str(HTTP), "--dry-run", "--base-url", "http://127.0.0.1:9/v1",
+         "--served-model-name", "local-builder", "--tokenizer", "/models/Qwen"],
+        cwd=ROOT, capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    line = result.stdout
+    assert "llama-benchy" in line
+    assert "http://127.0.0.1:9/v1" in line
+    assert "/v1/v1" not in line
 
 
 def test_tokenizer_equal_to_the_served_name_is_refused(tmp_path):
@@ -177,6 +194,105 @@ def test_vllm_dry_run_leaves_the_server_up_and_names_the_tokenizer(tmp_path):
     assert str(model) in text
     rung3 = text.split("rung 4/6", 1)[0]
     assert " stop" not in rung3
+
+
+def _sglang_registry(path, model_name):
+    doc = {
+        "schema": 1,
+        "card": "b70",
+        "mode": "inference",
+        "profiles": {
+            "sglang-row": {
+                "model": model_name,
+                "source": "local",
+                "family": "qwen",
+                "architecture": "dense",
+                "quant": "bf16",
+                "kv": "f16",
+                "flash_attention": "off",
+                "reasoning": "off",
+                "extra": "",
+                "capability_source": "none",
+                "use_for": "sglang dry-run",
+                "depth_probe_100k": "not run",
+                "category": "dense",
+                "weight_class": "9b",
+                "measured_on": "test",
+                "card": "b70",
+                "backend": "sglang",
+                "mode": "inference",
+                "engine": "sglang",
+                "ctx": 32768,
+                "useful_ctx": 8000,
+                "timeout_s": 1500,
+                "vram_gib_after_load": 1,
+                "ram_gb_extra": 0,
+                "params_b": {"total": 9, "active": 9},
+                "speed": {
+                    "decode_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+                    "prefill_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+                },
+                "capability": {},
+                "instrument": "seat: test",
+            }
+        },
+    }
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def _sglang_dry_run(tmp_path, with_tokenizer):
+    models = tmp_path / "models"
+    model = models / "sglang-model"
+    model.mkdir(parents=True)
+    if with_tokenizer:
+        (model / "tokenizer.json").write_text("{}", encoding="utf-8")
+    registry = _sglang_registry(tmp_path / "profiles.json", "sglang-model")
+    marker = tmp_path / "started-or-called"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name in ("uvx", "docker", "curl"):
+        stub = bindir / name
+        stub.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n", encoding="utf-8")
+        stub.chmod(0o755)
+    env = _isolated(tmp_path)
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    env.update({
+        "A770B_PROFILES_FILE": str(registry),
+        "A770B_MODELS": str(models),
+        "A770B_ALIAS": "local-builder",
+        "A770B_CARD": "",
+    })
+    result = subprocess.run(
+        ["bash", str(LADDER), "sglang-row", "--dry-run"],
+        cwd=ROOT, capture_output=True, text=True, env=env,
+    )
+    return result, model, marker
+
+
+def test_sglang_dry_run_prints_llama_benchy_and_does_not_start(tmp_path):
+    result, model, marker = _sglang_dry_run(tmp_path, with_tokenizer=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    text = result.stdout
+    assert "leave the server up" in text
+    assert "llama-benchy" in text
+    assert "uvx" in text
+    assert "bench_speed.sh" not in text
+    assert "bench_model.sh" not in text
+    assert "serve_compose.sh start" not in text
+    assert "this skill does not start SGLang" in text
+    assert str(model) in text
+    assert not marker.exists()
+
+
+def test_sglang_dry_run_stops_when_the_tokenizer_is_missing(tmp_path):
+    result, model, marker = _sglang_dry_run(tmp_path, with_tokenizer=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STOPPED" in result.stdout
+    assert "no tokenizer.json" in result.stdout
+    assert str(model) in result.stdout
+    assert "llama-benchy" not in result.stdout
+    assert not marker.exists()
 
 
 def test_vllm_dry_run_stops_when_the_tokenizer_is_missing(tmp_path):

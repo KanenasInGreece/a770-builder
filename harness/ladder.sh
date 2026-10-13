@@ -5,7 +5,8 @@
 #   1. load and VRAM at the target window  — harness/serve_compose.sh, wrapped inside harness/bench_model.sh
 #   2. the probes and the 17k summary       — harness/bench_model.sh <label> <gguf> <ctx> [flags]
 #   3. the standard speed rung              — llama.cpp: harness/bench_speed.sh, server down.
-#                                         vLLM: harness/bench_http.sh, server left up.
+#                                         vLLM and sglang: harness/bench_http.sh, server left up.
+#                                         This skill does not start SGLang.
 #   4. the window rung                      — harness/ctx_sweep.sh 8000 <far end>  (VRAM/kernel-log safety read;
 #                                              still the source useful_ctx's linear extension is drawn from)
 #   5. the depth probe, now graded          — harness/depth_probe.sh <far end>  (caps useful_ctx where it fails)
@@ -109,7 +110,24 @@ else
   BACKEND="${A770B_SERVED_BACKEND:-vulkan}"
   NAME=$(basename "$GGUF"); NAME="${NAME%.gguf}"
 fi
-case "$BACKEND" in vllm) ENGINE=vllm ;; *) ENGINE="llama.cpp" ;; esac
+# The profile field is the engine. An omitted field follows the backend: vllm stays vllm,
+# sglang stays sglang, and any other omitted engine stays llama.cpp. A named engine the
+# skill would refuse is already refused there; this is not a second resolver.
+ENGINE=""
+if [ -n "$PROFILE_NAME" ]; then
+  ENGINE=$(a770b_profile_var "$PROFILE_NAME" ENGINE)
+fi
+if [ -z "$ENGINE" ]; then
+  case "$BACKEND" in
+    vllm) ENGINE=vllm ;;
+    sglang) ENGINE=sglang ;;
+    *) ENGINE="llama.cpp" ;;
+  esac
+fi
+case "$ENGINE" in
+  vllm|sglang) HTTP_ENGINE=1 ;;
+  *) HTTP_ENGINE=0 ;;
+esac
 # the depth probe must leave room for the reasoning budget plus the answer: a fixed answer-only budget (320) starves
 # a thinking card of its answer — the class of defect that made the serious-sycl probe come back empty. The budget
 # is never hard-coded here: it is the row's own thinking budget (or the caller's, for a bare GGUF), or off.
@@ -146,10 +164,15 @@ case ",$DEPTHS," in *",$FAR_END,"*) ;; *) DEPTHS="$DEPTHS,$FAR_END" ;; esac
 if [ "$DRYRUN" = 1 ]; then
   FRESH_FLAG=""; { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && FRESH_FLAG=" --fresh"
   echo "[dry-run] ladder for ${PROFILE_NAME:-$GGUF} — ctx=$CTX kv=$KV/$KV_V extra='$EXTRA' reasoning=$REAS timeout=${TIMEOUT}s far_end=$FAR_END"
-  echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
-  echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
+  if [ "$ENGINE" = "sglang" ]; then
+    echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
+    echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
+  else
+    echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
+    echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
+  fi
   echo "[dry-run] evidence: $A770B_DOCKER logs ${A770B_COMPOSE_PROJECT}-llama-1 2>&1 | python3 harness/engine_evidence.py log --engine $ENGINE --log - --model $GGUF --out $LOGDIR/$NAME.evidence.json"
-  if [ -n "$PROFILE_NAME" ] && [ "$ENGINE" = "vllm" ]; then
+  if [ -n "$PROFILE_NAME" ] && [ "$HTTP_ENGINE" = 1 ]; then
     if tok=$(tokenizer_dir "$GGUF"); then
       echo "[dry-run] rung 3/6: leave the server up"
       bash "$here/bench_http.sh" --dry-run --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok"
@@ -161,10 +184,28 @@ if [ "$DRYRUN" = 1 ]; then
   else
     echo "[dry-run] rung 3/6: SKIPPED — harness/bench_speed.sh needs a registry profile ('harness/profiles.py card --name <profile>' has no ephemeral form); $GGUF has no row yet"
   fi
-  if [ "$ENGINE" = "vllm" ]; then
-    echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS 8000 $FAR_END"
-    echo "[dry-run]           both are sized in real tokens by the server's tokeniser; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
-    echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --tokenize openai --model $A770B_ALIAS --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+  http_tok=""
+  if [ "$HTTP_ENGINE" = 1 ]; then
+    http_tok=$(tokenizer_dir "$GGUF" || true)
+  fi
+  if [ "$ENGINE" = "sglang" ]; then
+    if [ -n "$http_tok" ]; then
+      echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok 8000 $FAR_END"
+      echo "[dry-run]           both are sized in real tokens from the tokenizer directory; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
+      echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+    else
+      echo "[dry-run] rung 4/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
+      echo "[dry-run] rung 5/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
+    fi
+  elif [ "$ENGINE" = "vllm" ]; then
+    if [ -n "$http_tok" ]; then
+      echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok 8000 $FAR_END"
+      echo "[dry-run]           both are sized in real tokens from the tokenizer directory; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
+      echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+    else
+      echo "[dry-run] rung 4/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
+      echo "[dry-run] rung 5/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
+    fi
   else
     echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
     echo "[dry-run]           both are sized in real tokens by the server's tokeniser, and their deadlines come from rung 3's measured curve (harness/prompt_budget.py)"
@@ -189,15 +230,20 @@ echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(d
 # ── rung 1+2: load and VRAM at the window, the probes and the 17k summary ──────────────────────────────────────
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 echo "▶ rung 1-2/6 — load, VRAM, probes, 17k summary (bench_model.sh)"
-# shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
-if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$here/bench_model.sh" "$NAME" "$GGUF" "$CTX" $EXTRA; then
-  FAIL_RUNG="load+probes"; FAIL_MSG="bench_model.sh failed — read $LOGDIR/llamacpp-a770.log"
+if [ "$ENGINE" = "sglang" ]; then
+  # bench_model.sh starts serve_compose.sh. Do not.
+  echo "this skill does not start SGLang" >&2
+else
+  # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
+  if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$here/bench_model.sh" "$NAME" "$GGUF" "$CTX" $EXTRA; then
+    FAIL_RUNG="load+probes"; FAIL_MSG="bench_model.sh failed — read $LOGDIR/llamacpp-a770.log"
+  fi
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 BENCH_MODEL_JSON="$A770B_DATA/results/$NAME.json"
 
 EVIDENCE_PATH=""
-if [ -z "$FAIL_RUNG" ]; then
+if [ -z "$FAIL_RUNG" ] && [ "$ENGINE" != "sglang" ]; then
   ev_out="$LOGDIR/$NAME.evidence.json"
   ev_container="${A770B_COMPOSE_PROJECT}-llama-1"
   if ev_logtext=$("$A770B_DOCKER" logs "$ev_container" 2>&1) \
@@ -209,10 +255,10 @@ if [ -z "$FAIL_RUNG" ]; then
   fi
 fi
 
-# ── rung 3: llama.cpp stops the server and runs llama-bench. vLLM leaves the server up and calls bench_http.sh.
+# ── rung 3: llama.cpp stops the server and runs llama-bench. vLLM and sglang leave the server up and call bench_http.sh.
 BENCH_SPEED_JSON=""
 if [ -z "$FAIL_RUNG" ]; then
-  if [ "$ENGINE" = "vllm" ]; then
+  if [ "$HTTP_ENGINE" = 1 ]; then
     echo "▶ rung 3/6 — standard speed (bench_http.sh, server left up)"
     if [ -n "$PROFILE_NAME" ]; then
       if tok=$(tokenizer_dir "$GGUF"); then
@@ -250,6 +296,32 @@ fi
 CTX_SWEEP_LOG=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 4/6 — window (ctx_sweep.sh at 8000 and $FAR_END)"
+  if [ "$ENGINE" = "sglang" ]; then
+    # the operator's server is already up; do not start or stop it
+    if tok=$(tokenizer_dir "$GGUF"); then
+      CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
+      SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
+      ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
+      [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
+    else
+      FAIL_RUNG="window"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
+    fi
+  elif [ "$ENGINE" = "vllm" ]; then
+    if ! tok=$(tokenizer_dir "$GGUF"); then
+      FAIL_RUNG="window"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
+    else
+      bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
+      # shellcheck disable=SC2086
+      if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" $EXTRA; then
+        FAIL_RUNG="window-serve"; FAIL_MSG="the server did not come up for the window rung"
+      else
+        CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
+        SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
+        ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
+        [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
+      fi
+    fi
+  else
   bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
   # shellcheck disable=SC2086
   if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" $EXTRA; then
@@ -259,13 +331,12 @@ if [ -z "$FAIL_RUNG" ]; then
     # rung 3 has already measured how prefill slows with depth for this model on this card; the sweep sets each
     # point's deadline from that curve instead of from a constant that fits no model (harness/prompt_budget.py)
     SWEEP_ARGS=()
-    if [ "$ENGINE" = "vllm" ]; then
-      SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS")
-    elif [ -n "$BENCH_SPEED_JSON" ]; then
+    if [ -n "$BENCH_SPEED_JSON" ]; then
       SWEEP_ARGS=(--bench "$BENCH_SPEED_JSON")
     fi
     ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
+  fi
   fi
 fi
 
@@ -275,11 +346,18 @@ if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 5/6 — depth probe at $FAR_END (graded: PASS/FAIL per question)"
   DEPTH_LOG="$LOGDIR/ladder-depth-probe-$$.log"
   PROBE_ARGS=(--gen "$GEN")
-  if [ "$ENGINE" = "vllm" ]; then
-    PROBE_ARGS+=(--tokenize openai --model "$A770B_ALIAS")
+  run_probe=1
+  if [ "$HTTP_ENGINE" = 1 ]; then
+    if tok=$(tokenizer_dir "$GGUF"); then
+      PROBE_ARGS+=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
+    else
+      FAIL_RUNG="depth-setup"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
+      run_probe=0
+    fi
   elif [ -n "$BENCH_SPEED_JSON" ]; then
     PROBE_ARGS+=(--bench "$BENCH_SPEED_JSON")
   fi
+  if [ "$run_probe" = 1 ]; then
   bash "$here/depth_probe.sh" "$FAR_END" "${PROBE_ARGS[@]}" 2>&1 | tee "$DEPTH_LOG"; rc=${PIPESTATUS[0]}
   case "$rc" in
     0) ;;
@@ -288,6 +366,7 @@ if [ -z "$FAIL_RUNG" ]; then
        FAIL_MSG="the server never answered the depth probe — the prompt was turned down, or the deadline cut it off. The model was never asked, so this says nothing about its quality at depth; see $DEPTH_LOG" ;;
     *) FAIL_RUNG="depth-setup"; FAIL_MSG="the depth probe could not be set up (exit $rc) — see $DEPTH_LOG" ;;
   esac
+  fi
 fi
 
 # ── rung 6: the task, under the model's own card line ────────────────────────────────────────────────────────

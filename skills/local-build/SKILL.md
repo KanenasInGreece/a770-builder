@@ -56,12 +56,15 @@ Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=infer
 ## Engine
 
 A profile names its engine. This skill serves llama.cpp on the vulkan and
-sycl backends, and vllm on the vllm backend. A named engine this skill does
-not serve is refused, and so is a backend that contradicts the named engine.
-When the profile omits the engine, vulkan and sycl stay llama.cpp and vllm
-stays vllm. This skill does not package an engine image, and it does not
-package llama-benchy. The model path is the row's model: a GGUF for
-llama.cpp, or the file or directory a vllm row names.
+sycl backends, vllm on the vllm backend, and sglang on the sglang backend.
+A named engine this skill does not serve is refused, and so is a backend
+that contradicts the named engine. When the profile omits the engine, vulkan
+and sycl stay llama.cpp, vllm stays vllm, and sglang stays sglang. An omitted
+engine does not become sglang unless the backend is sglang. This skill does
+not start SGLang and does not package its image. It does not package
+llama-benchy. The speed tool for sglang is llama-benchy, called and not
+copied. The model path is the row's model: a GGUF for llama.cpp, or the file
+or directory a vllm or sglang row names.
 
 ## Spec (optional)
 

@@ -24,6 +24,9 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$base" ] && [ -n "$served" ] && [ -n "$tokenizer" ] || usage
 base="${base%/}"
+# Health is the origin /health. The llama-benchy base ends in /v1.
+origin="${base%/v1}"
+bench_base="${origin}/v1"
 if [ "$tokenizer" = "$served" ]; then
   echo "⛔ --tokenizer must be a path or a Hugging Face id, not the served name '$served'" >&2
   exit 2
@@ -38,8 +41,9 @@ if [ -z "$save" ]; then
 fi
 
 cmd=(uvx llama-benchy
-  --base-url "$base"
+  --base-url "$bench_base"
   --served-model-name "$served"
+  --model "$served"
   --tokenizer "$tokenizer"
   --pp 8192 32768 65536 100000
   --tg 128
@@ -49,6 +53,7 @@ cmd=(uvx llama-benchy
   --no-cache
   --skip-coherence
   --latency-mode generation
+  --extra-body return_token_ids=false
   --format json
   --save-result "$save")
 flagline=$(printf '%q ' "${cmd[@]}")
@@ -58,8 +63,8 @@ if [ "$dry" = 1 ]; then
   exit 0
 fi
 
-if ! curl -sf --max-time 5 "$base/health" >/dev/null; then
-  echo "⛔ $base/health did not answer" >&2
+if ! curl -sf --max-time 5 "$origin/health" >/dev/null; then
+  echo "⛔ $origin/health did not answer" >&2
   exit 1
 fi
 "${cmd[@]}"
