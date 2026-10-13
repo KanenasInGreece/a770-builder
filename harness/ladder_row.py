@@ -179,7 +179,11 @@ if at_depth:
         speed[reg_key]["8k"] = pick(bench_field, 8192)
         speed[reg_key]["32k"] = pick(bench_field, 32768)
         speed[reg_key]["64k"] = pick(bench_field, 65536)
-        hundred_k_depth = far_end if far_end not in (8192, 32768, 65536) else 100000
+        # A llama-benchy 100k cell is the 100000 key only. A far-end depth is a different measurement.
+        if http_speed:
+            hundred_k_depth = 100000
+        else:
+            hundred_k_depth = far_end if far_end not in (8192, 32768, 65536) else 100000
         speed[reg_key]["100k"] = pick(bench_field, hundred_k_depth)
 
     if http_speed:

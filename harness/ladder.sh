@@ -4,9 +4,9 @@
 # an earlier one):
 #   1. load and VRAM at the target window  — harness/serve_compose.sh, wrapped inside harness/bench_model.sh
 #   2. the probes and the 17k summary       — harness/bench_model.sh <label> <gguf> <ctx> [flags]
-#   3. the standard speed rung              — llama.cpp: harness/bench_speed.sh, server down.
-#                                         vLLM and sglang: harness/bench_http.sh, server left up.
-#                                         This skill does not start SGLang.
+#   3. the standard speed rung              — harness/bench_http.sh for every admitted engine, server left up.
+#                                         bring/speed/count come from harness/roles.py. An attach
+#                                         engine is not started here. This skill does not start SGLang.
 #   4. the window rung                      — harness/ctx_sweep.sh 8000 <far end>  (VRAM/kernel-log safety read;
 #                                              still the source useful_ctx's linear extension is drawn from)
 #   5. the depth probe, now graded          — harness/depth_probe.sh <far end>  (caps useful_ctx where it fails)
@@ -21,10 +21,10 @@
 # comes from the row) or a bare GGUF (in A770B_MODELS) or an absolute path — a model with NO row yet, the case the
 # ladder exists for ("no script computes useful_ctx, grades the depth probe, fills speed.bench, or writes a
 # registry row" — an adversarial review). For a GGUF, --ctx is required; --kv/--kv-v/--extra/--timeout default the
-# way harness/run_suite.sh's own --model flow does (q8_0/q8_0/none/1500s). Rung 3 (bench_speed.sh) needs a REGISTRY
-# profile — its `harness/profiles.py card --name <profile>` lookup has no ephemeral form — so for a bare GGUF it is
-# SKIPPED with a clear note; every other rung, task rung included (harness/run_suite.sh --model <gguf> --ctx <n>,
-# the very capability this project added so a new GGUF can climb the task rung before it has a row), still runs.
+# way harness/run_suite.sh's own --model flow does (q8_0/q8_0/none/1500s). Rung 3 runs only when given a
+# registry profile name — a bare GGUF has no row yet, so it is SKIPPED with a clear note; every other rung,
+# task rung included (harness/run_suite.sh --model <gguf> --ctx <n>, the very capability this project added
+# so a new GGUF can climb the task rung before it has a row), still runs.
 #
 # The last step is harness/ladder_row.py — a file rather than a heredoc, so a test can drive it and an operator can
 # re-run it over the artefacts a terminated run left behind. It writes ONE JSON,
@@ -124,10 +124,11 @@ if [ -z "$ENGINE" ]; then
     *) ENGINE="llama.cpp" ;;
   esac
 fi
-case "$ENGINE" in
-  vllm|sglang) HTTP_ENGINE=1 ;;
-  *) HTTP_ENGINE=0 ;;
-esac
+# bring, speed, and count are roles.py's answers. The ladder does not keep a second copy.
+BRING=$(python3 "$here/roles.py" bring "$ENGINE") || die "roles.py bring refused engine '$ENGINE'"
+SPEED=$(python3 "$here/roles.py" speed "$ENGINE") || die "roles.py speed refused engine '$ENGINE'"
+COUNT=$(python3 "$here/roles.py" count "$ENGINE") || die "roles.py count refused engine '$ENGINE'"
+KIT=$(python3 "$here/roles.py" kit) || die "roles.py kit failed"
 # the depth probe must leave room for the reasoning budget plus the answer: a fixed answer-only budget (320) starves
 # a thinking card of its answer — the class of defect that made the serious-sycl probe come back empty. The budget
 # is never hard-coded here: it is the row's own thinking budget (or the caller's, for a bare GGUF), or off.
@@ -158,13 +159,18 @@ FAR_END=100000
 FAR_ROOM=$((CTX - 1024))
 [ "$FAR_ROOM" -lt "$FAR_END" ] 2>/dev/null && FAR_END="$FAR_ROOM"
 [ "$FAR_END" -gt 8000 ] || die "the served window ($CTX) leaves a far end of $FAR_END tokens, at or below the sweep's 8000-token shallow point — this ladder needs a window above about 9,024 tokens"
-DEPTHS="0,8192,32768"
-case ",$DEPTHS," in *",$FAR_END,"*) ;; *) DEPTHS="$DEPTHS,$FAR_END" ;; esac
+
+SPEED_SIZES=()
+for sz in 8192 32768 65536 100000; do
+  [ "$sz" -le "$FAR_END" ] && SPEED_SIZES+=("$sz")
+done
 
 if [ "$DRYRUN" = 1 ]; then
   FRESH_FLAG=""; { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && FRESH_FLAG=" --fresh"
   echo "[dry-run] ladder for ${PROFILE_NAME:-$GGUF} — ctx=$CTX kv=$KV/$KV_V extra='$EXTRA' reasoning=$REAS timeout=${TIMEOUT}s far_end=$FAR_END"
-  if [ "$ENGINE" = "sglang" ]; then
+  echo "[dry-run] bring: $BRING"
+  # Dry-run does not probe a port and does not treat a listening server as attached.
+  if [ "$BRING" = attach ]; then
     echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
     echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
   else
@@ -172,50 +178,33 @@ if [ "$DRYRUN" = 1 ]; then
     echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
   fi
   echo "[dry-run] evidence: $A770B_DOCKER logs ${A770B_COMPOSE_PROJECT}-llama-1 2>&1 | python3 harness/engine_evidence.py log --engine $ENGINE --log - --model $GGUF --out $LOGDIR/$NAME.evidence.json"
-  if [ -n "$PROFILE_NAME" ] && [ "$HTTP_ENGINE" = 1 ]; then
-    if tok=$(tokenizer_dir "$GGUF"); then
-      echo "[dry-run] rung 3/6: leave the server up"
-      bash "$here/bench_http.sh" --dry-run --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok"
-    else
-      echo "[dry-run] rung 3/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
-    fi
-  elif [ -n "$PROFILE_NAME" ]; then
-    echo "[dry-run] rung 3/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; bash harness/bench_speed.sh $PROFILE_NAME --depths $DEPTHS"
+  if [ -z "$PROFILE_NAME" ]; then
+    echo "[dry-run] rung 3/6: SKIPPED — the speed rung runs only when given a registry profile name; $GGUF has no row yet"
+  elif [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
+    echo "rung 3/6: not run — this skill does not start SGLang and no server is attached"
+  elif [ "${#SPEED_SIZES[@]}" -eq 0 ]; then
+    echo "[dry-run] rung 3/6: STOPPED — no standard prompt sizes fit the served window ($CTX, far end $FAR_END)"
+  elif tok=$(tokenizer_dir "$GGUF"); then
+    echo "[dry-run] rung 3/6: leave the server up; bash harness/$SPEED"
+    bash "$here/$SPEED" --dry-run --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok" --pp "${SPEED_SIZES[@]}"
   else
-    echo "[dry-run] rung 3/6: SKIPPED — harness/bench_speed.sh needs a registry profile ('harness/profiles.py card --name <profile>' has no ephemeral form); $GGUF has no row yet"
+    echo "[dry-run] rung 3/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
   fi
-  http_tok=""
-  if [ "$HTTP_ENGINE" = 1 ]; then
-    http_tok=$(tokenizer_dir "$GGUF" || true)
-  fi
-  if [ "$ENGINE" = "sglang" ]; then
-    if [ -n "$http_tok" ]; then
-      echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok 8000 $FAR_END"
+  if tok=$(tokenizer_dir "$GGUF"); then
+    echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+    if [ "$COUNT" = unmeasured ]; then
       echo "[dry-run]           both are sized in real tokens from the tokenizer directory; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
-      echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
-    else
-      echo "[dry-run] rung 4/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
-      echo "[dry-run] rung 5/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
     fi
-  elif [ "$ENGINE" = "vllm" ]; then
-    if [ -n "$http_tok" ]; then
-      echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok 8000 $FAR_END"
-      echo "[dry-run]           both are sized in real tokens from the tokenizer directory; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
-      echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --tokenize openai --model $A770B_ALIAS --tokenizer $http_tok --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
-    else
-      echo "[dry-run] rung 4/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
-      echo "[dry-run] rung 5/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
-    fi
+    echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --tokenize openai --model $A770B_ALIAS --tokenizer $tok --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
   else
-    echo "[dry-run] rung 4/6: bash harness/$(basename "$A770B_SERVE_SCRIPT") stop; KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/$(basename "$A770B_SERVE_SCRIPT") start $GGUF $CTX $EXTRA; bash harness/ctx_sweep.sh --bench <rung 3's file> 8000 $FAR_END"
-    echo "[dry-run]           both are sized in real tokens by the server's tokeniser, and their deadlines come from rung 3's measured curve (harness/prompt_budget.py)"
-    echo "[dry-run] rung 5/6: bash harness/depth_probe.sh $FAR_END --bench <rung 3's file> --gen $GEN  (graded: PASS/FAIL per question, exit 0 iff >=2/3, exit 3 iff the server never answered)"
+    echo "[dry-run] rung 4/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
+    echo "[dry-run] rung 5/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
   fi
   if [ -n "$PROFILE_NAME" ]; then
-    echo "[dry-run] rung 6/6: bash harness/run_suite.sh $PROFILE_NAME $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
+    echo "[dry-run] rung 6/6: bash harness/$KIT $PROFILE_NAME $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   else
     EXTRA_DRY=""; [ -n "$EXTRA" ] && EXTRA_DRY=" --extra '$EXTRA'"
-    echo "[dry-run] rung 6/6: bash harness/run_suite.sh --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V$EXTRA_DRY --reasoning $REAS${BUDGET:+ --reasoning-budget $BUDGET} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
+    echo "[dry-run] rung 6/6: bash harness/$KIT --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V$EXTRA_DRY --reasoning $REAS${BUDGET:+ --reasoning-budget $BUDGET} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   fi
   echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, suite, instrument computed; ram_gb_extra printed null — transcribe it by hand from the server log's *_Host … buffer size lines at -lv 4; use_for/fit.write/capability left as placeholders)"
   echo "[dry-run] nothing written"
@@ -225,13 +214,20 @@ fi
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
 LOGDIR="$A770B_DATA/logs"
 FAIL_RUNG=""; FAIL_MSG=""
+# An attach bring with no A770B_ATTACHED=1 fails before bench_model.sh, before the speed
+# script, and before any container command. Dry-run never reaches this branch.
+if [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
+  FAIL_RUNG="bring"
+  FAIL_MSG="this skill does not start SGLang and no server is attached"
+fi
 echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(date -Is)"
 
 # ── rung 1+2: load and VRAM at the window, the probes and the 17k summary ──────────────────────────────────────
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
+if [ -z "$FAIL_RUNG" ]; then
 echo "▶ rung 1-2/6 — load, VRAM, probes, 17k summary (bench_model.sh)"
-if [ "$ENGINE" = "sglang" ]; then
-  # bench_model.sh starts serve_compose.sh. Do not.
+if [ "$BRING" = attach ]; then
+  # bench_model.sh starts serve_compose.sh. Do not. The server is the operator's.
   echo "this skill does not start SGLang" >&2
 else
   # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
@@ -239,11 +235,12 @@ else
     FAIL_RUNG="load+probes"; FAIL_MSG="bench_model.sh failed — read $LOGDIR/llamacpp-a770.log"
   fi
 fi
+fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 BENCH_MODEL_JSON="$A770B_DATA/results/$NAME.json"
 
 EVIDENCE_PATH=""
-if [ -z "$FAIL_RUNG" ] && [ "$ENGINE" != "sglang" ]; then
+if [ -z "$FAIL_RUNG" ] && [ "$BRING" != attach ]; then
   ev_out="$LOGDIR/$NAME.evidence.json"
   ev_container="${A770B_COMPOSE_PROJECT}-llama-1"
   if ev_logtext=$("$A770B_DOCKER" logs "$ev_container" 2>&1) \
@@ -255,107 +252,57 @@ if [ -z "$FAIL_RUNG" ] && [ "$ENGINE" != "sglang" ]; then
   fi
 fi
 
-# ── rung 3: llama.cpp stops the server and runs llama-bench. vLLM and sglang leave the server up and call bench_http.sh.
+# ── rung 3: speed. The server from load stays up. This rung does not stop it.
 BENCH_SPEED_JSON=""
 if [ -z "$FAIL_RUNG" ]; then
-  if [ "$HTTP_ENGINE" = 1 ]; then
-    echo "▶ rung 3/6 — standard speed (bench_http.sh, server left up)"
-    if [ -n "$PROFILE_NAME" ]; then
-      if tok=$(tokenizer_dir "$GGUF"); then
-        SPEED_LOG="$LOGDIR/ladder-bench-http-$$.log"
-        HTTP_OUT="$A770B_DATA/results/${NAME}-http-$(date +%Y%m%d-%H%M%S).json"
-        if bash "$here/bench_http.sh" --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok" --save-result "$HTTP_OUT" 2>&1 | tee "$SPEED_LOG"; then
-          mapped="${HTTP_OUT%.json}.mapped.json"
-          if [ -f "$mapped" ]; then BENCH_SPEED_JSON="$mapped"; fi
-        else
-          FAIL_RUNG="speed"; FAIL_MSG="bench_http.sh failed — see $SPEED_LOG"
-        fi
-      else
-        FAIL_RUNG="speed"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
-      fi
+  if [ -z "$PROFILE_NAME" ]; then
+    echo "⚠ skipping: the speed rung runs only when given a registry profile name, and $GGUF has no row yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
+  elif [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
+    FAIL_RUNG="speed"; FAIL_MSG="this skill does not start SGLang and no server is attached"
+  elif [ "${#SPEED_SIZES[@]}" -eq 0 ]; then
+    FAIL_RUNG="speed"; FAIL_MSG="no standard prompt sizes fit the served window ($CTX, far end $FAR_END)"
+  elif tok=$(tokenizer_dir "$GGUF"); then
+    echo "▶ rung 3/6 — standard speed ($SPEED, server left up)"
+    SPEED_LOG="$LOGDIR/ladder-bench-http-$$.log"
+    HTTP_OUT="$A770B_DATA/results/${NAME}-http-$(date +%Y%m%d-%H%M%S).json"
+    if bash "$here/$SPEED" --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok" --save-result "$HTTP_OUT" --pp "${SPEED_SIZES[@]}" 2>&1 | tee "$SPEED_LOG"; then
+      mapped="${HTTP_OUT%.json}.mapped.json"
+      if [ -f "$mapped" ]; then BENCH_SPEED_JSON="$mapped"; fi
     else
-      echo "⚠ skipping: the HTTP speed rung needs a registry profile, and $GGUF has none yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
+      FAIL_RUNG="speed"; FAIL_MSG="$SPEED failed — see $SPEED_LOG"
     fi
   else
-    echo "▶ rung 3/6 — standard speed (bench_speed.sh)"
-    bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
-    if [ -n "$PROFILE_NAME" ]; then
-      SPEED_LOG="$LOGDIR/ladder-bench-speed-$$.log"
-      if bash "$here/bench_speed.sh" "$PROFILE_NAME" --depths "$DEPTHS" 2>&1 | tee "$SPEED_LOG"; then
-        BENCH_SPEED_JSON=$(grep -oE '[^ ]+-bench-[0-9]{8}-[0-9]{6}\.json' "$SPEED_LOG" | tail -1)
-      else
-        FAIL_RUNG="speed"; FAIL_MSG="bench_speed.sh failed — see $SPEED_LOG"
-      fi
-    else
-      echo "⚠ skipping: bash harness/bench_speed.sh requires a registry profile name, and $GGUF has none yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
-    fi
+    FAIL_RUNG="speed"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
   fi
 fi
 
-# ── rung 4: the window rung (ctx_sweep.sh) — needs the server UP, at the intended window ────────────────────────
+# ── rung 4: the window rung (ctx_sweep.sh). The server from load stays up. No new stop. ─────────────────────
+# count() is the unmeasured cap: window and depth are not handed a speed file, and this ladder does not teach the deadline reader a new curve.
 CTX_SWEEP_LOG=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 4/6 — window (ctx_sweep.sh at 8000 and $FAR_END)"
-  if [ "$ENGINE" = "sglang" ]; then
-    # the operator's server is already up; do not start or stop it
-    if tok=$(tokenizer_dir "$GGUF"); then
-      CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
-      SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
-      ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
-      [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
-    else
-      FAIL_RUNG="window"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
-    fi
-  elif [ "$ENGINE" = "vllm" ]; then
-    if ! tok=$(tokenizer_dir "$GGUF"); then
-      FAIL_RUNG="window"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
-    else
-      bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
-      # shellcheck disable=SC2086
-      if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" $EXTRA; then
-        FAIL_RUNG="window-serve"; FAIL_MSG="the server did not come up for the window rung"
-      else
-        CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
-        SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
-        ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
-        [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
-      fi
-    fi
-  else
-  bash "$A770B_SERVE_SCRIPT" stop >/dev/null 2>&1 || true
-  # shellcheck disable=SC2086
-  if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$A770B_SERVE_SCRIPT" start "$GGUF" "$CTX" $EXTRA; then
-    FAIL_RUNG="window-serve"; FAIL_MSG="the server did not come up for the window rung"
-  else
+  if tok=$(tokenizer_dir "$GGUF"); then
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
-    # rung 3 has already measured how prefill slows with depth for this model on this card; the sweep sets each
-    # point's deadline from that curve instead of from a constant that fits no model (harness/prompt_budget.py)
-    SWEEP_ARGS=()
-    if [ -n "$BENCH_SPEED_JSON" ]; then
-      SWEEP_ARGS=(--bench "$BENCH_SPEED_JSON")
-    fi
+    SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
     ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
-  fi
+  else
+    FAIL_RUNG="window"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
   fi
 fi
 
-# ── rung 5: the depth probe, once per model and window, now graded — server still up from rung 4 ───────────────
+# ── rung 5: the depth probe, once per model and window, now graded — server still up from load ──────────────
 DEPTH_LOG=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 5/6 — depth probe at $FAR_END (graded: PASS/FAIL per question)"
   DEPTH_LOG="$LOGDIR/ladder-depth-probe-$$.log"
   PROBE_ARGS=(--gen "$GEN")
   run_probe=1
-  if [ "$HTTP_ENGINE" = 1 ]; then
-    if tok=$(tokenizer_dir "$GGUF"); then
-      PROBE_ARGS+=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
-    else
-      FAIL_RUNG="depth-setup"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
-      run_probe=0
-    fi
-  elif [ -n "$BENCH_SPEED_JSON" ]; then
-    PROBE_ARGS+=(--bench "$BENCH_SPEED_JSON")
+  if tok=$(tokenizer_dir "$GGUF"); then
+    PROBE_ARGS+=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
+  else
+    FAIL_RUNG="depth-setup"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
+    run_probe=0
   fi
   if [ "$run_probe" = 1 ]; then
   bash "$here/depth_probe.sh" "$FAR_END" "${PROBE_ARGS[@]}" 2>&1 | tee "$DEPTH_LOG"; rc=${PIPESTATUS[0]}
@@ -389,7 +336,7 @@ if [ -z "$FAIL_RUNG" ]; then
   # the operator named by hand keeps run_suite.sh's guard.
   { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && RS_ARGS+=(--fresh)
   RS_LOG="$LOGDIR/ladder-run-suite-$$.log"
-  bash "$here/run_suite.sh" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}
+  bash "$here/$KIT" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}
   SUITE_RESULTS_JSON=$(grep -oE '[^ ]+-suite-[0-9]{8}-[0-9]{6}-[0-9]+\.json' "$RS_LOG" | tail -1)
   [ "$rc" = 0 ] || { FAIL_RUNG="task"; FAIL_MSG="run_suite.sh exited $rc — see $RS_LOG"; }
 fi

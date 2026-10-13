@@ -9,9 +9,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$here/env.sh"
 
-usage(){ echo "usage: bench_http.sh --base-url URL --served-model-name NAME --tokenizer PATH [--save-result FILE] [--dry-run]" >&2; exit 2; }
+usage(){ echo "usage: bench_http.sh --base-url URL --served-model-name NAME --tokenizer PATH [--save-result FILE] [--dry-run] [--pp size ...]" >&2; exit 2; }
 
-base=""; served=""; tokenizer=""; save=""; dry=0
+base=""; served=""; tokenizer=""; save=""; dry=0; sizes=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-url) base="${2:?--base-url needs a value}"; shift 2 ;;
@@ -19,6 +19,20 @@ while [ $# -gt 0 ]; do
     --tokenizer) tokenizer="${2:?--tokenizer needs a value}"; shift 2 ;;
     --save-result) save="${2:?--save-result needs a value}"; shift 2 ;;
     --dry-run) dry=1; shift ;;
+    --pp|--sizes)
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --*) break ;;
+          *)
+            for s in $1; do
+              sizes+=("$s")
+            done
+            shift ;;
+        esac
+      done
+      ;;
+    [0-9]*) sizes+=("$1"); shift ;;
     *) echo "⛔ unknown argument: $1" >&2; usage ;;
   esac
 done
@@ -40,12 +54,14 @@ if [ -z "$save" ]; then
   fi
 fi
 
+[ "${#sizes[@]}" -gt 0 ] || sizes=(8192 32768 65536 100000)
+
 cmd=(uvx llama-benchy
   --base-url "$bench_base"
   --served-model-name "$served"
   --model "$served"
   --tokenizer "$tokenizer"
-  --pp 8192 32768 65536 100000
+  --pp "${sizes[@]}"
   --tg 128
   --depth 0
   --runs 3
