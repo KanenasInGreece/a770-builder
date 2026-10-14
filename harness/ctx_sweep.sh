@@ -27,6 +27,13 @@
 # A point is filed under the size the SERVER SAYS IT RECEIVED, not the size asked for: one that landed outside the
 # tolerance below measured some other depth, and is reported as not measured rather than as a reading at a depth
 # nothing ran.
+#
+# A llama.cpp body is one JSON object: the two rates come from timings, and a missing rate stays MISSING, never
+# zero. A770B_SWEEP_STREAM=1 also sends stream and stream_options.include_usage. A server-sent event stream is
+# timed as its lines arrive. Prefill tok/s is prompt_tokens over the seconds to the first delta.content or
+# delta.reasoning_content. Decode tok/s is completion_tokens over the seconds after that line. Token counts come
+# from the last usage object. No first delta or no usage is the same failure as a missing rate. The request body
+# is unchanged when A770B_SWEEP_STREAM is unset.
 set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 here=$(cd "$(dirname "$0")" && pwd)
@@ -96,6 +103,133 @@ for want in "${SIZES[@]}"; do
   PROMPT_FOR[$want]="$T/prompt.$want"; EXPECTED_FOR[$want]="$toks_expected"
 done
 
+# one reader for every point: a JSON object keeps the timings rule; an event stream is clocked per line
+cat > "$T/read_point.py" <<'PY'
+import json
+import sys
+import time
+
+raw_path = sys.argv[1]
+start = time.perf_counter()
+rows = []
+with open(raw_path, "w", encoding="utf-8") as raw:
+    for line in sys.stdin:
+        now = time.perf_counter()
+        raw.write(line)
+        rows.append((now - start, line))
+
+
+def from_timings(obj):
+    usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+    raw_t = obj.get("timings")
+    timings = raw_t if isinstance(raw_t, dict) else {}
+
+    def rate(key, places):
+        if key not in timings or timings[key] is None:
+            return "MISSING"
+        return str(round(float(timings[key]), places))
+
+    pms = round(float(timings.get("prompt_ms") or 0) / 1000, 1)
+    print(usage.get("prompt_tokens") or 0, pms, rate("prompt_per_second", 0), rate("predicted_per_second", 1))
+
+
+def unmeasured():
+    print("UNMEASURED")
+
+
+def first_delta(event):
+    choices = event.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return False
+    delta = choices[0].get("delta")
+    if not isinstance(delta, dict):
+        return False
+    for key in ("content", "reasoning_content"):
+        value = delta.get(key)
+        if isinstance(value, str) and value != "":
+            return True
+    return False
+
+
+def as_count(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return int(value)
+
+
+def show_rate(value, places):
+    shown = round(float(value), places)
+    if shown == 0:
+        return None
+    return str(shown)
+
+
+def from_stream():
+    saw_data = False
+    first_at = None
+    usage = None
+    for at, line in rows:
+        text = line.strip()
+        if not text.startswith("data:"):
+            continue
+        saw_data = True
+        payload = text[5:].strip()
+        if payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if first_at is None and first_delta(event):
+            first_at = at
+        got = event.get("usage")
+        if isinstance(got, dict):
+            usage = got
+    if not saw_data:
+        print(0, 0, 0, 0)
+        return
+    if first_at is None or usage is None or not rows:
+        unmeasured()
+        return
+    prompt = as_count(usage.get("prompt_tokens"))
+    completion = as_count(usage.get("completion_tokens"))
+    end_at = rows[-1][0]
+    if prompt is None or completion is None or first_at <= 0 or end_at <= first_at:
+        unmeasured()
+        return
+    prefill = show_rate(prompt / first_at, 0)
+    decode = show_rate(completion / (end_at - first_at), 1)
+    if prefill is None or decode is None:
+        unmeasured()
+        return
+    print(prompt, round(first_at, 1), prefill, decode)
+
+
+def main():
+    text = "".join(line for _, line in rows).strip()
+    obj = None
+    if text.startswith("{") or text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            obj = parsed
+    try:
+        if obj is not None:
+            from_timings(obj)
+        elif any(line.strip().startswith("data:") for _, line in rows):
+            from_stream()
+        else:
+            print(0, 0, 0, 0)
+    except Exception:
+        print(0, 0, 0, 0)
+
+
+main()
+PY
 printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' target tokens ttft_s prefill_tps decode_tps vram_max resets
 for want in "${SIZES[@]}"; do
   toks_expected="${EXPECTED_FOR[$want]}"
@@ -103,7 +237,7 @@ for want in "${SIZES[@]}"; do
   if [ ! -s "${PROMPT_FOR[$want]}" ]; then
     echo "⛔ the $want-token prompt proved before the sweep is gone: stopping the sweep" >&2; failed=1; break
   fi
-  python3 -c 'import json,sys; t=open(sys.argv[1],encoding="utf-8").read(); print(json.dumps({"model":sys.argv[2],"max_tokens":96,"temperature":0,"messages":[{"role":"user","content":"Read this code and answer in one sentence: what does it do?\n\n"+t}]}))' "${PROMPT_FOR[$want]}" "$MODEL_NAME" > "$T/body"
+  python3 -c 'import json,os,sys; t=open(sys.argv[1],encoding="utf-8").read(); body={"model":sys.argv[2],"max_tokens":96,"temperature":0,"messages":[{"role":"user","content":"Read this code and answer in one sentence: what does it do?\n\n"+t}]}; os.environ.get("A770B_SWEEP_STREAM")=="1" and body.update(stream=True, stream_options={"include_usage":True}); print(json.dumps(body))' "${PROMPT_FOR[$want]}" "$MODEL_NAME" > "$T/body"
 
   # the deadline: from the measured curve when we have one, else whatever the operator set, else generous. The
   # sub-process that reads the curve can fail or print something that is not a number, and a deadline that was
@@ -133,26 +267,16 @@ for want in "${SIZES[@]}"; do
   b0=$(kernel_resets_since '-1min')
   vmax=0; ( while :; do u=$(gpu_used_gib); echo "$u"; sleep 2; done ) > "$T/vram" & VP=$!
   t0=$(date +%s.%N)
-  R=$(curl -s --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions")
+  # -sN so a streamed line is readable when it arrives, not when the body ends. The selftest's curl stub stays the client.
+  read -r toks pms pps dps <<<"$(curl -sN --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions" | python3 "$T/read_point.py" "$T/raw")"
   t1=$(date +%s.%N); kill $VP 2>/dev/null; wait $VP 2>/dev/null
   vmax=$(sort -n "$T/vram" | tail -1)
-  read -r toks pms pps dps <<<"$(python3 -c '
-import json,sys
-try:
-    r=json.loads(sys.argv[1])
-    u=r.get("usage") if isinstance(r.get("usage"), dict) else {}
-    raw=r.get("timings")
-    t=raw if isinstance(raw, dict) else {}
-    def rate(key, nd):
-        if key not in t or t[key] is None:
-            return "MISSING"
-        return str(round(float(t[key]), nd))
-    pms=round(float(t.get("prompt_ms") or 0)/1000, 1)
-    print(u.get("prompt_tokens") or 0, pms, rate("prompt_per_second", 0), rate("predicted_per_second", 1))
-except Exception:
-    print(0, 0, 0, 0)' "$R")"
+  R=$(cat "$T/raw" 2>/dev/null || true)
   wall=$(python3 -c "print(round($t1-$t0,1))"); after=$(kernel_resets_since '-1min')
-  if [ "$toks" = 0 ]; then
+  if [ "$toks" = "UNMEASURED" ]; then
+    echo "$want: NOT MEASURED: the server reported no prefill or decode rate"
+    failed=1
+  elif [ "$toks" = 0 ]; then
     # say which of the two it was: the deadline we set, or the server turning the request down
     if [ -z "$R" ]; then
       echo "$want: NO ANSWER after ${wall}s — the ${deadline}s deadline cut the request off (asked for $toks_expected tokens)"

@@ -196,7 +196,11 @@ if [ "$DRYRUN" = 1 ]; then
     echo "[dry-run] rung 3/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
   fi
   if tok=$(tokenizer_dir "$GGUF"); then
-    echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+    if [ "$ENGINE" = sglang ]; then
+      echo "[dry-run] rung 4/6: A770B_SWEEP_STREAM=1 bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+    else
+      echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+    fi
     if [ "$COUNT" = unmeasured ]; then
       echo "[dry-run]           both are sized in real tokens from the tokenizer directory; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
     fi
@@ -340,7 +344,9 @@ if [ -z "$FAIL_RUNG" ]; then
   if tok=$(tokenizer_dir "$GGUF"); then
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
     SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
-    ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
+    # SGLang has usage and no llama.cpp timings, so this rung asks for a stream. llama.cpp and vllm do not.
+    ( if [ "$ENGINE" = sglang ]; then export A770B_SWEEP_STREAM=1; fi
+      bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
   else
     FAIL_RUNG="window"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"

@@ -974,6 +974,81 @@ if [ "$cs_norate_rc" != 0 ] && printf '%s\n' "$cs_norate" | grep -q '1000: NOT M
 then echo "ok   ctx_sweep: a reply with no prefill or decode rate is NOT MEASURED and fails the rung, never a zero"
 else echo "FAIL ctx_sweep: a missing rate was not refused (rc=$cs_norate_rc)"; printf '%s\n' "$cs_norate" | tail -20; fail=1
 fi
+# a streamed completion: two data lines, then [DONE]. Rates come from the client clock. No usage is still a failure.
+mkdir -p "$t/csbin-stream" "$t/csbin-stream-bare"
+cat > "$t/csbin-stream/curl" <<'CSCURL'
+#!/bin/sh
+[ -n "${CS_CURL_LOG:-}" ] && printf '%s\n' "$*" >> "$CS_CURL_LOG"
+for a in "$@"; do
+  case "$a" in */health) printf '%s' '{"status":"ok"}'; exit 0 ;; esac
+done
+body=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-d" ]; then
+    case "$a" in @*) body=${a#@} ;; esac
+  fi
+  prev=$a
+done
+stream=0
+if [ -n "$body" ] && python3 -c 'import json,sys; b=json.load(open(sys.argv[1],encoding="utf-8")); opts=b.get("stream_options") if isinstance(b.get("stream_options"), dict) else {}; sys.exit(0 if b.get("stream") is True and opts.get("include_usage") is True else 1)' "$body"; then
+  stream=1
+fi
+if [ "$stream" != 1 ]; then
+  printf '%s\n' '{"usage":{"prompt_tokens":990},"choices":[{"message":{"content":"it computes a checksum"}}]}'
+  exit 0
+fi
+sleep 0.4
+printf '%s\n' 'data: {"choices":[{"delta":{"content":"it computes a checksum"}}]}'
+sleep 0.4
+printf '%s\n' 'data: {"choices":[{"delta":{"content":""}}],"usage":{"prompt_tokens":990,"completion_tokens":8}}'
+printf '%s\n' 'data: [DONE]'
+CSCURL
+cat > "$t/csbin-stream-bare/curl" <<'CSCURL'
+#!/bin/sh
+[ -n "${CS_CURL_LOG:-}" ] && printf '%s\n' "$*" >> "$CS_CURL_LOG"
+for a in "$@"; do
+  case "$a" in */health) printf '%s' '{"status":"ok"}'; exit 0 ;; esac
+done
+body=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-d" ]; then
+    case "$a" in @*) body=${a#@} ;; esac
+  fi
+  prev=$a
+done
+stream=0
+if [ -n "$body" ] && python3 -c 'import json,sys; b=json.load(open(sys.argv[1],encoding="utf-8")); opts=b.get("stream_options") if isinstance(b.get("stream_options"), dict) else {}; sys.exit(0 if b.get("stream") is True and opts.get("include_usage") is True else 1)' "$body"; then
+  stream=1
+fi
+if [ "$stream" != 1 ]; then
+  printf '%s\n' '{"usage":{"prompt_tokens":990},"timings":{"prompt_ms":12000,"prompt_per_second":500,"predicted_per_second":20},"choices":[{"message":{"content":"it computes a checksum"}}]}'
+  exit 0
+fi
+printf '%s\n' 'data: {"choices":[{"delta":{"content":"it computes"}}]}'
+printf '%s\n' 'data: {"choices":[{"delta":{"content":" a checksum"}}]}'
+printf '%s\n' 'data: [DONE]'
+CSCURL
+chmod +x "$t/csbin-stream/curl" "$t/csbin-stream-bare/curl"
+cs_stream=$(CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= A770B_SWEEP_STREAM=1 \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+  PATH="$t/csbin-stream:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_stream_rc=$?
+cs_stream_off=$(CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+  PATH="$t/csbin-stream:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_stream_off_rc=$?
+cs_stream_bare=$(CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= A770B_SWEEP_STREAM=1 \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+  PATH="$t/csbin-stream-bare:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_stream_bare_rc=$?
+cs_stream_rates=1
+printf '%s\n' "$cs_stream" | awk '$1==1000 && $2==990 { if ($4 ~ /^[0-9]+(\.[0-9]+)?$/ && $5 ~ /^[0-9]+(\.[0-9]+)?$/ && $4+0>0 && $5+0>0) found=1 } END { exit found?0:1 }' || cs_stream_rates=0
+if [ "$cs_stream_rc" = 0 ] && [ "$cs_stream_rates" = 1 ] && ! printf '%s\n' "$cs_stream" | grep -q 'NOT MEASURED' \
+  && [ "$cs_stream_off_rc" != 0 ] && printf '%s\n' "$cs_stream_off" | grep -q '1000: NOT MEASURED: the server reported no prefill or decode rate' \
+  && [ "$cs_stream_bare_rc" != 0 ] && printf '%s\n' "$cs_stream_bare" | grep -q '1000: NOT MEASURED' \
+  && ! printf '%s\n' "$cs_stream_bare" | grep -qE '^1000 +[0-9]'
+then echo "ok   ctx_sweep: a streamed completion prints a numeric prefill and decode rate, and a stream with no usage is NOT MEASURED"
+else echo "FAIL ctx_sweep: stream rates were not measured from the client clock (stream rc=$cs_stream_rc rates=$cs_stream_rates bare rc=$cs_stream_bare_rc unset rc=$cs_stream_off_rc)"; printf '%s\n' "$cs_stream" "$cs_stream_off" "$cs_stream_bare" | tail -30; fail=1
+fi
 mkdir -p "$t/csbin-empty"
 cat > "$t/csbin-empty/curl" <<'CSCURL'
 #!/bin/sh
