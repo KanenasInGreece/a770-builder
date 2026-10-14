@@ -106,17 +106,34 @@ done
 # one reader for every point: a JSON object keeps the timings rule; an event stream is clocked per line
 cat > "$T/read_point.py" <<'PY'
 import json
+import os
 import sys
 import time
 
 raw_path = sys.argv[1]
 start = time.perf_counter()
 rows = []
+# os.read returns what has arrived. Text-mode readline pulls a whole buffer and then
+# stamps every line in it at the loop, which makes a short decode look several times faster.
+fd = sys.stdin.buffer.fileno()
+pending = b""
 with open(raw_path, "w", encoding="utf-8") as raw:
-    for line in sys.stdin:
+    while True:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
         now = time.perf_counter()
-        raw.write(line)
-        rows.append((now - start, line))
+        pending += chunk
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            text = line.decode("utf-8", "replace") + "\n"
+            raw.write(text)
+            rows.append((now - start, text))
+    if pending:
+        now = time.perf_counter()
+        text = pending.decode("utf-8", "replace")
+        raw.write(text)
+        rows.append((now - start, text))
 
 
 def from_timings(obj):

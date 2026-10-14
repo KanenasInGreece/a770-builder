@@ -132,6 +132,12 @@ try:
     content = msg.get("content")
     answered = isinstance(content, str)
     answer = (content or "").strip()
+    # a server that splits the trace can leave content empty and put the reply on the reasoning channel
+    if not answer:
+        rc_answer = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        if isinstance(rc_answer, str) and rc_answer.strip():
+            answer = rc_answer.strip()
+            print("answer channel: reasoning")
     # llama.cpp puts the budget marker in reasoning_content. A server that splits the trace uses reasoning.
     reasoning = msg.get("reasoning")
     if isinstance(reasoning, str) and reasoning:
