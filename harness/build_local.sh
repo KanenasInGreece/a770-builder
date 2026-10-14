@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build_local.sh — dispatch a brief to the local builder through opencode, inside the sandbox.
 #   build_local.sh <worktree> <brief-file-or-text>
-# Env: PROFILE (required: a name in A770B_PROFILES; there is no default), LOCAL_AGENT, LOCAL_TIMEOUT (s), SANDBOX=0 to run unconfined (testing).
+# Env: PROFILE (required: a name in A770B_PROFILES; there is no default), LOCAL_AGENT, LOCAL_TIMEOUT (s, a caller fence; unset means no clock), SANDBOX=0 to run unconfined (testing).
 # The opencode config is RENDERED per run from config/opencode.profile.template.jsonc with the server URL, the
 # profile's context window and the output limit from env.sh, so the model's client and the server can never disagree.
 # Rules: the target is a self-contained clone that is not a protected checkout (guard.sh); opencode runs with
@@ -37,14 +37,34 @@ before=$(safe_git "$WT" status --porcelain | wc -l)
 set +e
 AGENT_ARGS=(); [ -n "${LOCAL_AGENT:-}" ] && AGENT_ARGS=(--agent "$LOCAL_AGENT")
 PROMPT="Read Local_Documentation/briefs/brief-$stamp.md in this project and carry out the task it describes. Work only inside this project directory. Do not run git commit, push, merge or any docker/systemctl command."
-RUNPID="$A770B_DATA/logs/run.pid"                              # the pid of `timeout`, for the life of the run: local-build.sh stop-run ends exactly it
+RUNPID="$A770B_DATA/logs/run.pid"                              # the process-group leader, for the life of the run: local-build.sh stop-run ends exactly it
 trap 'rm -f "$RUNPID"' EXIT INT TERM                          # the file must not outlive the run, even one ended by a signal
+# No LOCAL_TIMEOUT means no clock: exec the sandbox (or opencode) directly. The same pid becomes the
+# process-group leader, so stop-run can signal the group. A set LOCAL_TIMEOUT is a caller fence; the pid
+# file then names `timeout`, which is that leader.
+exec_lead(){
+  exec python3 -c 'import os,sys
+try:
+    os.setpgid(0, 0)
+except OSError:
+    pass
+os.execvp(sys.argv[1], sys.argv[1:])' "$@"
+}
 if [ "${SANDBOX:-1}" = 1 ]; then
-  ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "${LOCAL_TIMEOUT:-1800}" bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
-      opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 9>&- ) 2>&1 | tee "$LOG"
+  if [ -n "${LOCAL_TIMEOUT:-}" ]; then
+    ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "$LOCAL_TIMEOUT" bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
+        opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 9>&- ) 2>&1 | tee "$LOG"
+  else
+    ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
+        opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 9>&- ) 2>&1 | tee "$LOG"
+  fi
 else
   echo "⚠ SANDBOX=0: running opencode UNCONFINED (testing only)" | tee -a "$LOG"
-  ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "${LOCAL_TIMEOUT:-1800}" opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null ) 2>&1 | tee "$LOG"
+  if [ -n "${LOCAL_TIMEOUT:-}" ]; then
+    ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "$LOCAL_TIMEOUT" opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null ) 2>&1 | tee "$LOG"
+  else
+    ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null ) 2>&1 | tee "$LOG"
+  fi
 fi
 rc=${PIPESTATUS[0]}
 rm -f "$RUNPID"

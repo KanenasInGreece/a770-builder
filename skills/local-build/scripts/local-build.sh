@@ -3,7 +3,7 @@
 #   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
-#   serve <profile> | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
+#   serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
 #   profiles [--name N]   the registry card (config/registry/<card>.<mode>.json) with the served values, for a caller choosing a profile
 #   menu              ready / also / the cold full slice as JSON, for a caller picking a row
 #   doctor            what this machine lacks to run the seat, one line per check; exit 1 when anything is missing
@@ -102,7 +102,8 @@ _envelope_for_backend_name(){ # select the container envelope for a backend name
   case "$1" in
     vulkan|sycl) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-$1.yaml";;
     vllm) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/vllm.yaml";;
-    *) die "backend '$1' is not one this harness serves (vulkan, sycl, vllm)";;
+    sglang) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml";;
+    *) die "backend '$1' is not one this harness serves (vulkan, sycl, vllm, sglang)";;
   esac
   A770B_SERVED_BACKEND="$1"
   A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
@@ -121,7 +122,7 @@ _envelope_for_backend(){ # the row's backend selects the container envelope. An 
 _envelope_from_sidecar(){ # the running container's backend selects the envelope, so `stop` ends it whatever it is
   local be; be=$(python3 "$A770B_PROJECT/harness/live_backend.py" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend") or "")' 2>/dev/null) || be=""
-  case "$be" in vulkan|sycl|vllm) _envelope_for_backend_name "$be";; esac
+  case "$be" in vulkan|sycl|vllm|sglang) _envelope_for_backend_name "$be";; esac
   return 0
 }
 _reload_lock_held(){ # true when another process holds the run lock; this shell's own fd 9 does not count
@@ -192,20 +193,26 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
   # shellcheck disable=SC2086
   local quant; quant=$(a770b_profile_var "$p" QUANT)
   local tool_parser; tool_parser=$(a770b_profile_var "$p" TOOL_PARSER)
+  local reasoning_parser; reasoning_parser=$(a770b_profile_var "$p" REASONING_PARSER)
   # This start only. A vLLM row may name an image the pinned compose file does not hold.
   local vllm_image; vllm_image=$(a770b_profile_var "$p" VLLM_IMAGE)
   (
     if [ -n "$vllm_image" ]; then export A770B_VLLM_IMAGE="$vllm_image"; fi
-    QUANT=$quant TOOL_PARSER=$tool_parser KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
+    QUANT=$quant TOOL_PARSER=$tool_parser REASONING_PARSER=$reasoning_parser \
+      KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
       THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
       THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
       bash "$SERVE" start "$gguf" "$ctx" $extra
   ) || return 1
-  if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
-    for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
-  else
-    for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
-  fi
+  # SGLang /health is HTTP success, like vLLM. Do not grep the body for "ok".
+  case "${A770B_SERVED_BACKEND:-}" in
+    vllm|sglang)
+      for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
+      ;;
+    *)
+      for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
+      ;;
+  esac
   curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || return 2
   _write_serve_evidence "$p" "${A770B_SERVED_BACKEND:-}" "$gguf"
   local thinking_desc="mode ${thinking_mode:-$reasoning}"
@@ -234,11 +241,8 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
   export A770B_SERVED_ENGINE
-  if [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
-    die "this skill does not start SGLang"
-  fi
   _envelope_for_backend "$p"
-  if [ "$A770B_SERVED_ENGINE" = "vllm" ]; then
+  if [ "$A770B_SERVED_ENGINE" = "vllm" ] || [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
     [ -r "$gguf" ] || die "model not found: $gguf — put the model file or directory in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
   else
     [ -r "$gguf" ] || die "model not found: $gguf — put the GGUF in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
@@ -282,9 +286,6 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       profile_vars "$p"
       A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
       export A770B_SERVED_ENGINE
-      if [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
-        die "this skill does not start SGLang"
-      fi
       _envelope_for_backend "$p"
       if [ ! -r "$gguf" ]; then echo "rollback failed: server is down"; return 1; fi
       _export_live "$p"
@@ -296,6 +297,38 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   fi
   bash "$SERVE" stop >/dev/null 2>&1
   _serve_start_or_die
+}
+# bench_profile <profile> [--pp <sizes>] [--dry-run] — serve that profile, then llama-benchy. Not bench_model.sh.
+bench_profile(){
+  local p dry=0
+  local -a pp=() http_args=()
+  p="${1:?}"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      --pp)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --*) break ;;
+            *) pp+=("$1"); shift ;;
+          esac
+        done
+        [ "${#pp[@]}" -gt 0 ] || die "--pp needs sizes"
+        ;;
+      *) die "unknown arg $1" ;;
+    esac
+  done
+  profile_vars "$p"
+  if [ "$dry" != 1 ]; then
+    run_lock
+    serve "$p" || return $?
+  fi
+  http_args=(--base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$gguf")
+  [ "$dry" = 1 ] && http_args+=(--dry-run)
+  [ "${#pp[@]}" -gt 0 ] && http_args+=(--pp "${pp[@]}")
+  bash "$A770B_PROJECT/harness/bench_http.sh" "${http_args[@]}"
 }
 # _attach_running_server <base-url> <served-name> — use a server that is already up. Does not start or stop one.
 # Health is the origin /health after one trailing /v1 is removed. Any HTTP success is enough; the body is not read.
@@ -374,11 +407,19 @@ doctor(){
         _img_var="A770B_VLLM_IMAGE"
         _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
         ;;
+      sglang)
+        _img_var="A770B_SGLANG_IMAGE"
+        _needed_vars=(A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_SGLANG_CARD_NODE A770B_SGLANG_RENDER_NODE A770B_RENDER_GID A770B_VIDEO_GID)
+        ;;
       *)
         case "$A770B_COMPOSE_FILE" in
           */vllm.yaml|vllm.yaml)
             _img_var="A770B_VLLM_IMAGE"
             _needed_vars=(A770B_VLLM_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_BY_PATH_DIR A770B_RENDER_GID A770B_VIDEO_GID)
+            ;;
+          */b70-sglang.yaml|b70-sglang.yaml)
+            _img_var="A770B_SGLANG_IMAGE"
+            _needed_vars=(A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER A770B_SGLANG_CARD_NODE A770B_SGLANG_RENDER_NODE A770B_RENDER_GID A770B_VIDEO_GID)
             ;;
         esac
         ;;
@@ -497,6 +538,7 @@ doctor(){
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 case "${1:-}" in
   serve)  run_lock; [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; serve "$2" ;;
+  bench)  [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; case "$2" in --*) die "unknown arg $2";; esac; shift; bench_profile "$@" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   profiles) if [ -n "$A770B_PROFILES" ]; then shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@"; else empty_registry_line; fi ;;
@@ -504,13 +546,19 @@ case "${1:-}" in
   doctor) doctor ;;
   stop)   _envelope_from_sidecar; bash "$SERVE" stop ;;
   stop-run)
-    # end exactly the run in progress, through its own pid: one TERM to the timeout process ends its whole process
-    # group (measured on this host), and the run then unwinds as a timeout does — the capture is written, the seat reset.
+    # end exactly the run in progress, through its own pid. The pid file names the process-group leader:
+    # `timeout` when this run has a caller fence, the sandbox when it has no clock. One TERM to that leader
+    # (and to its group, when the pid leads one) ends the run — the capture is written, the seat reset.
     # Never by process name: bwrap is also every Flatpak app on the desktop.
     RUNPID="$A770B_DATA/logs/run.pid"
-    pid=$(run_pid_alive "$RUNPID") || die "no run to stop: $RUNPID names no live timeout process of this harness (a finished run removes the file; a stale or foreign pid is refused, never signalled)"
-    echo "▶ ending run pid $pid (timeout → sandbox → opencode): one TERM, then up to 30 s for the capture and the reset to follow"
-    kill -TERM "$pid" 2>/dev/null || die "could not signal pid $pid"
+    pid=$(run_pid_alive "$RUNPID") || die "no run to stop: $RUNPID names no live run leader of this harness (a finished run removes the file; a stale or foreign pid is refused, never signalled)"
+    echo "▶ ending run pid $pid (the process-group leader): one TERM, then up to 30 s for the capture and the reset to follow"
+    _pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+    if [ -n "$_pgid" ] && [ "$_pgid" = "$pid" ]; then
+      kill -TERM -- "-$pid" 2>/dev/null || die "could not signal pid $pid"
+    else
+      kill -TERM "$pid" 2>/dev/null || die "could not signal pid $pid"
+    fi
     for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
     kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
@@ -538,23 +586,60 @@ case "${1:-}" in
       [ -n "$timeout" ] || [ "$spec_timeout" = "-" ] || timeout="$spec_timeout"
     fi
     [ -n "$profile" ] || { if [ -n "$A770B_PROFILES" ]; then die "no profile: pass --profile <name> (there is no default profile) or set \"profile\" in the specification — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }
+    # A spec with no fit is a measurement and is allowed. A spec with fit must clear the profile's
+    # measured_tasks entry for fit.task. The refusal names the failed check. This is before the run lock
+    # and before any server starts.
+    if [ -n "$SPEC_SNAP" ]; then
+      fit_line=$(python3 - "$SPEC_SNAP" "$profile" "${A770B_PROFILES_FILE:-}" <<'PY'
+import json, os, sys
+sys.path.insert(0, os.path.join(os.environ["A770B_PROJECT"], "harness"))
+from render_profile import fit_failed_check
+spec_path, profile, profiles_file = sys.argv[1:4]
+spec = json.load(open(spec_path, encoding="utf-8"))
+fit = spec.get("fit") if isinstance(spec, dict) else None
+if not isinstance(fit, dict):
+    sys.exit(0)
+prof = None
+if profiles_file:
+    try:
+        data = json.load(open(profiles_file, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = None
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    if isinstance(profiles, dict) and isinstance(profiles.get(profile), dict):
+        prof = profiles[profile]
+name = fit_failed_check(fit, prof)
+if name:
+    print("fit: %s: failed check %s" % (fit.get("task"), name))
+    sys.exit(2)
+PY
+) || { rm -f -- "$SPEC_SNAP"; die "${fit_line:-fit refused}"; }
+    fi
     run_lock                                                       # one run at a time on this card
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
-    profile_vars "$profile"; t=${timeout:-$t}
+    profile_vars "$profile"
     if [ -n "$base_url" ]; then
       _attach_running_server "$base_url" "$served_name"    # exports host, port and alias; does not call serve or stop
     else
       serve "$profile" || exit $?
     fi
     label="$profile-$(date +%Y%m%d-%H%M%S)"
-    echo "▶ profile=$profile timeout=${t}s worktree=$WT brief=$BRIEF label=$label"
+    # The profile's timeout_s is recorded headroom, not a clock. No --timeout and no spec timeout
+    # means no clock. An explicit --timeout or spec timeout is a caller fence for this run only.
+    if [ -n "$timeout" ]; then
+      echo "▶ profile=$profile timeout=${timeout}s worktree=$WT brief=$BRIEF label=$label"
+      fence_env=(LOCAL_TIMEOUT="$timeout")
+    else
+      echo "▶ profile=$profile timeout=none worktree=$WT brief=$BRIEF label=$label"
+      fence_env=()
+    fi
     mkdir -p "$A770B_DATA/results"
     _metrics_snapshot "$A770B_DATA/results/$label.metrics-before.prom"
     aside=0
     restore(){ if [ "$aside" = 1 ] && [ -f "$WT/AGENTS.md.local-off" ]; then mv -f "$WT/AGENTS.md.local-off" "$WT/AGENTS.md"; aside=0; fi; }
     trap restore EXIT INT TERM                                    # restored even on crash or timeout
     if [ -f "$WT/AGENTS.md" ]; then mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"; aside=1; fi
-    A770B_SPEC="$SPEC_SNAP" PROFILE="$profile" LOCAL_AGENT=local-builder LOCAL_TIMEOUT="$t" bash "$BUILD" "$WT" "$BRIEF" 2>&1 | grep -vE '^\s*$' | tail -15 | cut -c1-240
+    env -u LOCAL_TIMEOUT "${fence_env[@]}" A770B_SPEC="$SPEC_SNAP" PROFILE="$profile" LOCAL_AGENT=local-builder bash "$BUILD" "$WT" "$BRIEF" 2>&1 | grep -vE '^\s*$' | tail -15 | cut -c1-240
     brc=${PIPESTATUS[0]}
     restore
     case "$brc" in 2|3) echo "⛔ build refused (exit $brc) — no capture, no reset" >&2; exit "$brc";; esac
@@ -632,6 +717,6 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
 fi

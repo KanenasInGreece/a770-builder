@@ -23,7 +23,8 @@ DEFAULT_PROMPT = (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ALLOWED_TOP_KEYS = {"profile", "timeout", "card", "scope", "bash_allow", "context", "verify"}
+ALLOWED_TOP_KEYS = {"profile", "timeout", "card", "scope", "bash_allow", "context", "verify", "fit"}
+FIT_SPEC_KEYS = {"estimate_s", "context_tokens", "thinking", "task"}
 REGISTRY_DIR = REPO_ROOT / "config" / "registry"
 SCOPE_EDIT_RE = re.compile(r"^[A-Za-z0-9._/*-]+$")
 BASH_ALLOW_RE = re.compile(r"^[A-Za-z0-9 ._/*:-]+$")
@@ -216,7 +217,50 @@ def validate_and_load(spec_path: str, seat_dir: str):
                 if not isinstance(h, str) or not VERIFY_HIDDEN_RE.match(h):
                     raise SpecError("verify", "each 'hidden' entry must match ^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+    # Rule 10: fit, when present, is the four-key caller check. A missing fit is a measurement and is allowed.
+    if "fit" in data:
+        fit = data["fit"]
+        if not isinstance(fit, dict) or set(fit.keys()) != FIT_SPEC_KEYS:
+            raise SpecError("fit", "must be an object with estimate_s, context_tokens, thinking and task")
+        for nk in ("estimate_s", "context_tokens"):
+            v = fit[nk]
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise SpecError("fit", f"{nk} must be a positive integer")
+        if fit["thinking"] not in ("on", "off"):
+            raise SpecError("fit", "thinking must be on or off")
+        if not isinstance(fit["task"], str) or not fit["task"]:
+            raise SpecError("fit", "task must be a non-empty string")
+
     return data, card_text, card_source
+
+
+def _pos_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def fit_failed_check(fit, profile):
+    """The first check a present fit fails against one profile, or None when every check holds.
+
+    Order: measured_tasks, quality, estimate_s, context_tokens, thinking.
+    estimate_s must be strictly below the entry's wall_s. context_tokens must be strictly
+    below the profile's useful_ctx. thinking must equal the entry's thinking.
+    """
+    if not isinstance(profile, dict):
+        return "measured_tasks"
+    tasks = profile.get("measured_tasks")
+    task = fit.get("task") if isinstance(fit, dict) else None
+    entry = tasks.get(task) if isinstance(tasks, dict) else None
+    if not isinstance(entry, dict):
+        return "measured_tasks"
+    if entry.get("quality") != "pass":
+        return "quality"
+    if not _pos_int(fit.get("estimate_s")) or not _pos_int(entry.get("wall_s")) or not (fit["estimate_s"] < entry["wall_s"]):
+        return "estimate_s"
+    if not _pos_int(fit.get("context_tokens")) or not _pos_int(profile.get("useful_ctx")) or not (fit["context_tokens"] < profile["useful_ctx"]):
+        return "context_tokens"
+    if fit.get("thinking") != entry.get("thinking"):
+        return "thinking"
+    return None
 
 
 def _write_file(path: str, content: bytes) -> None:

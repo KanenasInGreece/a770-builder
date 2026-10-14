@@ -2277,12 +2277,41 @@ def test_check_passes_sglang_on_sglang_backend(tmp_path):
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
     prof["engine"] = "sglang"
     prof["backend"] = "sglang"
+    prof["tool_parser"] = "qwen3_coder"
+    prof["reasoning_parser"] = "qwen3"
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 0, result.stderr
 
 
-# --- optional tool_parser (only meaningful on a vllm-backend row) ---
+def test_check_fails_sglang_without_parsers(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["engine"] = "sglang"
+    prof["backend"] = "sglang"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "tool_parser is required when backend is sglang" in result.stderr
+    assert "reasoning_parser is required when backend is sglang" in result.stderr
+
+
+def test_check_fails_parser_auto_by_name(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["engine"] = "sglang"
+    prof["backend"] = "sglang"
+    prof["tool_parser"] = "auto"
+    prof["reasoning_parser"] = "auto"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "tool_parser must not be auto" in result.stderr
+    assert "reasoning_parser must not be auto" in result.stderr
+    assert "must match ^[a-z0-9_]+$" not in result.stderr
+
+
+# --- tool_parser on vllm or sglang; reasoning_parser on sglang ---
 
 
 def test_check_passes_tool_parser_on_a_vllm_row(tmp_path):
@@ -2304,7 +2333,7 @@ def test_check_fails_tool_parser_on_a_non_vllm_row(tmp_path):
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert (
-        "profiles: qwen35-9b-q4km-vulkan: tool_parser is only meaningful when backend is vllm "
+        "profiles: qwen35-9b-q4km-vulkan: tool_parser is only meaningful when backend is vllm or sglang "
         "(this row's backend is 'vulkan')" in result.stderr
     )
 
@@ -2343,6 +2372,36 @@ def test_env_exports_empty_tool_parser_when_absent():
     result = run("env", "--file", str(PROFILES_JSON))
     assert result.returncode == 0, result.stderr
     assert "A770B_QWEN35_9B_Q4KM_VULKAN_TOOL_PARSER:=}" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_REASONING_PARSER:=}" in result.stdout
+
+
+def test_env_exports_reasoning_parser_and_quant_for_sglang(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "sglang"
+    prof["engine"] = "sglang"
+    prof["quant"] = "exl3"
+    prof["checkpoint"]["weight_quant"] = "exl3"
+    prof["tool_parser"] = "qwen3_coder"
+    prof["reasoning_parser"] = "qwen3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("env", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_TOOL_PARSER:=qwen3_coder" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_REASONING_PARSER:=qwen3" in result.stdout
+    assert "A770B_QWEN35_9B_Q4KM_VULKAN_QUANT:=exl3" in result.stdout
+
+
+def test_check_fails_reasoning_parser_on_vllm(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["tool_parser"] = "qwen3_coder"
+    prof["reasoning_parser"] = "qwen3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "reasoning_parser is only meaningful when backend is sglang" in result.stderr
 
 
 def test_check_passes_bf16_kv_on_a_vllm_row(tmp_path):
@@ -2730,3 +2789,36 @@ def test_empty_line_names_the_missing_card():
     result = run("empty-line")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "no builder card set (A770B_CARD) — climb one with ladder.sh <gguf> --ctx N"
+
+
+def test_check_passes_measured_tasks(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_tasks"] = {
+        "s2-backend": {"quality": "pass", "wall_s": 900, "context_tokens": 4000, "thinking": "off"},
+        "t0-slow": {"quality": "fail", "wall_s": 2, "context_tokens": None, "thinking": "on"},
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_measured_tasks_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_tasks"] = {
+        "s2-backend": {"quality": "pass", "wall_s": 900, "context_tokens": 4000, "thinking": "off", "note": "x"},
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "unknown key note" in result.stderr
+
+
+def test_check_fails_measured_tasks_zero_context(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_tasks"] = {
+        "s2-backend": {"quality": "pass", "wall_s": 900, "context_tokens": 0, "thinking": "off"},
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "context_tokens must be a positive int or null" in result.stderr

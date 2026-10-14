@@ -2,11 +2,12 @@
 # ladder.sh — the one command a stranger runs to produce a registry row. Runs the rungs AGENTS.md's "The ladder"
 # names, in the order it names them, stopping at the first failure (a later rung is wasted on a model that failed
 # an earlier one):
-#   1. load and VRAM at the target window  — harness/serve_compose.sh, wrapped inside harness/bench_model.sh
-#   2. the probes and the 17k summary       — harness/bench_model.sh <label> <gguf> <ctx> [flags]
-#   3. the standard speed rung              — harness/bench_http.sh for every admitted engine, server left up.
-#                                         bring/speed/count come from harness/roles.py. An attach
-#                                         engine is not started here. This skill does not start SGLang.
+#   1. load and VRAM at the target window  — serve_compose.sh start, for every engine. MemAvailable and VRAM are sampled here.
+#   2. one llama-benchy call                — harness/bench_http.sh at prompt size 8192 when that size fits the
+#                                            served window, otherwise the largest standard size that fits.
+#   3. the standard speed rung              — harness/bench_http.sh for every admitted engine, the full speed set, server left up.
+#                                         bring/speed/count come from harness/roles.py. SGLang is
+#                                         started from compose/b70-sglang.yaml, not attached.
 #   4. the window rung                      — harness/ctx_sweep.sh 8000 <far end>  (VRAM/kernel-log safety read;
 #                                              still the source useful_ctx's linear extension is drawn from)
 #   5. the depth probe, now graded          — harness/depth_probe.sh <far end>  (caps useful_ctx where it fails)
@@ -164,6 +165,19 @@ SPEED_SIZES=()
 for sz in 8192 32768 65536 100000; do
   [ "$sz" -le "$FAR_END" ] && SPEED_SIZES+=("$sz")
 done
+# Rung 2's one prompt. 8192 when it fits; otherwise the largest of the standard sizes that fits.
+# Empty when none of 8192, 32768, 65536, 100000 fit the served window.
+initial_pp(){
+  local sz best=""
+  if [ 8192 -le "$FAR_END" ]; then
+    printf '%s\n' 8192
+    return 0
+  fi
+  for sz in 8192 32768 65536 100000; do
+    [ "$sz" -le "$FAR_END" ] && best=$sz
+  done
+  [ -n "$best" ] && printf '%s\n' "$best"
+}
 
 if [ "$DRYRUN" = 1 ]; then
   FRESH_FLAG=""; { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && FRESH_FLAG=" --fresh"
@@ -171,17 +185,25 @@ if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] bring: $BRING"
   # Dry-run does not probe a port and does not treat a listening server as attached.
   if [ "$BRING" = attach ]; then
-    echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
-    echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — this skill does not start SGLang"
+    echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
+    echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
   else
-    echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
-    echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
+    echo "[dry-run] rung 1/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA} — MemAvailable sampled before and after; VRAM sampled after load"
+    _pp=$(initial_pp || true)
+    if [ -z "$_pp" ]; then
+      echo "[dry-run] rung 2/6: STOPPED — no standard prompt size fits the served window ($CTX, far end $FAR_END)"
+    elif tok=$(tokenizer_dir "$GGUF"); then
+      echo "[dry-run] rung 2/6: one llama-benchy call through harness/$SPEED at prompt size $_pp"
+      bash "$here/$SPEED" --dry-run --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok" --pp "$_pp"
+    else
+      echo "[dry-run] rung 2/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
+    fi
   fi
   echo "[dry-run] evidence: $A770B_DOCKER logs ${A770B_COMPOSE_PROJECT}-llama-1 2>&1 | python3 harness/engine_evidence.py log --engine $ENGINE --log - --model $GGUF --out $LOGDIR/$NAME.evidence.json"
   if [ -z "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 3/6: SKIPPED — the speed rung runs only when given a registry profile name; $GGUF has no row yet"
   elif [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
-    echo "rung 3/6: not run — this skill does not start SGLang and no server is attached"
+    echo "rung 3/6: not run — bring is attach and no server is attached"
   elif [ "${#SPEED_SIZES[@]}" -eq 0 ]; then
     echo "[dry-run] rung 3/6: STOPPED — no standard prompt sizes fit the served window ($CTX, far end $FAR_END)"
   elif tok=$(tokenizer_dir "$GGUF"); then
@@ -191,7 +213,11 @@ if [ "$DRYRUN" = 1 ]; then
     echo "[dry-run] rung 3/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
   fi
   if tok=$(tokenizer_dir "$GGUF"); then
-    echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+    if [ "$ENGINE" = sglang ]; then
+      echo "[dry-run] rung 4/6: A770B_SWEEP_STREAM=1 bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+    else
+      echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+    fi
     if [ "$COUNT" = unmeasured ]; then
       echo "[dry-run]           both are sized in real tokens from the tokenizer directory; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
     fi
@@ -214,27 +240,80 @@ fi
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
 LOGDIR="$A770B_DATA/logs"
 FAIL_RUNG=""; FAIL_MSG=""
-# An attach bring with no A770B_ATTACHED=1 fails before bench_model.sh, before the speed
+# An attach bring with no A770B_ATTACHED=1 fails before serve_compose.sh, before the speed
 # script, and before any container command. Dry-run never reaches this branch.
 if [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
   FAIL_RUNG="bring"
-  FAIL_MSG="this skill does not start SGLang and no server is attached"
+  FAIL_MSG="bring is attach and no server is attached"
+fi
+# SGLang starts on its own envelope. A missing env file is refused here, before
+# serve_compose.sh, which is a container command.
+if [ "$ENGINE" = sglang ]; then
+  A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml"
+  A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
+  A770B_SERVED_BACKEND=sglang
+  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_SERVED_BACKEND
+  if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
+    _sglang_env_ok=1
+    for _v in A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER \
+        A770B_SGLANG_CARD_NODE A770B_SGLANG_RENDER_NODE \
+        A770B_RENDER_GID A770B_VIDEO_GID; do
+      [ -n "${!_v:-}" ] || _sglang_env_ok=0
+    done
+    if [ "$_sglang_env_ok" = 0 ]; then
+      echo "⛔ A770B_SERVE=compose needs $A770B_COMPOSE_ENV_FILE (or the envelope's image/DRM/GID values in the environment) — copy ${A770B_COMPOSE_ENV_FILE}.example and edit it" >&2
+      FAIL_RUNG=bring
+      FAIL_MSG="sglang env file is missing"
+    fi
+  fi
 fi
 echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(date -Is)"
 
-# ── rung 1+2: load and VRAM at the window, the probes and the 17k summary ──────────────────────────────────────
+# ── rung 1: load and VRAM. rung 2: one llama-benchy call. The server stays up for rung 3. ──
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 if [ -z "$FAIL_RUNG" ]; then
-echo "▶ rung 1-2/6 — load, VRAM, probes, 17k summary (bench_model.sh)"
-if [ "$BRING" = attach ]; then
-  # bench_model.sh starts serve_compose.sh. Do not. The server is the operator's.
-  echo "this skill does not start SGLang" >&2
-else
-  # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
-  if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$here/bench_model.sh" "$NAME" "$GGUF" "$CTX" $EXTRA; then
-    FAIL_RUNG="load+probes"; FAIL_MSG="bench_model.sh failed — read $LOGDIR/llamacpp-a770.log"
+  echo "▶ rung 1/6 — load (serve_compose.sh); MemAvailable and VRAM"
+  if [ "$BRING" = attach ]; then
+    echo "bring is attach — not starting a server" >&2
+  else
+    _q=""; _tool=""; _reason=""
+    if [ -n "$PROFILE_NAME" ]; then
+      _q=$(a770b_profile_var "$PROFILE_NAME" QUANT)
+      _tool=$(a770b_profile_var "$PROFILE_NAME" TOOL_PARSER)
+      _reason=$(a770b_profile_var "$PROFILE_NAME" REASONING_PARSER)
+    fi
+    _t0=$(date +%s.%N)
+    # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
+    if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
+        QUANT="$_q" TOOL_PARSER="$_tool" REASONING_PARSER="$_reason" \
+        bash "$here/serve_compose.sh" start "$GGUF" "$CTX" $EXTRA; then
+      FAIL_RUNG="load"; FAIL_MSG="serve_compose.sh failed"
+    else
+      _vram=$(gpu_used_gib)
+      _load=$(T0="$_t0" T1="$(date +%s.%N)" python3 -c 'import os; print(round(float(os.environ["T1"]) - float(os.environ["T0"]), 1))')
+      python3 - "$A770B_DATA/results/$NAME.json" "$NAME" "$GGUF" "$CTX" "$_load" "$_vram" <<'PY'
+import json, sys
+out, label, gguf, ctx, load_s, vram = sys.argv[1:7]
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump({"label": label, "gguf": gguf, "ctx": int(ctx), "load_s": float(load_s), "vram_gib_after_load": float(vram)}, fh)
+PY
+    fi
   fi
-fi
+  if [ -z "$FAIL_RUNG" ]; then
+    _pp=$(initial_pp || true)
+    if [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
+      FAIL_RUNG="initial-speed"; FAIL_MSG="bring is attach and no server is attached"
+    elif [ -z "$_pp" ]; then
+      FAIL_RUNG="initial-speed"; FAIL_MSG="no standard prompt size fits the served window ($CTX, far end $FAR_END)"
+    elif tok=$(tokenizer_dir "$GGUF"); then
+      echo "▶ rung 2/6 — one llama-benchy call (harness/$SPEED) at prompt size $_pp"
+      if ! bash "$here/$SPEED" --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok" --pp "$_pp"; then
+        FAIL_RUNG="initial-speed"; FAIL_MSG="$SPEED failed"
+      fi
+    else
+      FAIL_RUNG="initial-speed"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"
+    fi
+  fi
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 BENCH_MODEL_JSON="$A770B_DATA/results/$NAME.json"
@@ -258,7 +337,7 @@ if [ -z "$FAIL_RUNG" ]; then
   if [ -z "$PROFILE_NAME" ]; then
     echo "⚠ skipping: the speed rung runs only when given a registry profile name, and $GGUF has no row yet — its speed.bench and the registry's decode_tps/prefill_tps four keys will be empty in this row"
   elif [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
-    FAIL_RUNG="speed"; FAIL_MSG="this skill does not start SGLang and no server is attached"
+    FAIL_RUNG="speed"; FAIL_MSG="bring is attach and no server is attached"
   elif [ "${#SPEED_SIZES[@]}" -eq 0 ]; then
     FAIL_RUNG="speed"; FAIL_MSG="no standard prompt sizes fit the served window ($CTX, far end $FAR_END)"
   elif tok=$(tokenizer_dir "$GGUF"); then
@@ -284,7 +363,9 @@ if [ -z "$FAIL_RUNG" ]; then
   if tok=$(tokenizer_dir "$GGUF"); then
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
     SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
-    ( bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
+    # SGLang has usage and no llama.cpp timings, so this rung asks for a stream. llama.cpp and vllm do not.
+    ( if [ "$ENGINE" = sglang ]; then export A770B_SWEEP_STREAM=1; fi
+      bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
   else
     FAIL_RUNG="window"; FAIL_MSG="no tokenizer.json or tokenizer_config.json for $GGUF"

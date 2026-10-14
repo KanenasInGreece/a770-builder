@@ -708,3 +708,45 @@ def test_bash_allow_refuses_node_test_from_specification(tmp_path):
     result = run_check(spec, seat)
     assert result.returncode == 2
     assert "bash_allow" in result.stderr
+
+
+def test_fit_bad_shape_is_refused(tmp_path):
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    spec = write_spec(tmp_path / "spec.json", {"fit": {"estimate_s": 600, "thinking": "off"}})
+    result = run_check(spec, seat)
+    assert result.returncode == 2
+    assert "fit" in result.stderr
+
+
+def test_fit_well_formed_is_accepted(tmp_path):
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    spec = write_spec(tmp_path / "spec.json", {
+        "fit": {"estimate_s": 600, "context_tokens": 4000, "thinking": "off", "task": "s2-backend"},
+    })
+    result = run_check(spec, seat)
+    assert result.returncode == 0, result.stderr
+
+
+def test_fit_refusal_names_the_failed_check():
+    sys.path.insert(0, str(RENDERER.parent))
+    from render_profile import fit_failed_check
+    fit = {"estimate_s": 600, "context_tokens": 4000, "thinking": "off", "task": "s2-backend"}
+    assert fit_failed_check(fit, None) == "measured_tasks"
+    assert fit_failed_check(fit, {"useful_ctx": 8000, "measured_tasks": {}}) == "measured_tasks"
+    entry = {"quality": "fail", "wall_s": 900, "context_tokens": 1000, "thinking": "off"}
+    prof = {"useful_ctx": 8000, "measured_tasks": {"s2-backend": entry}}
+    assert fit_failed_check(fit, prof) == "quality"
+    entry = {"quality": "pass", "wall_s": 600, "context_tokens": 1000, "thinking": "off"}
+    prof = {"useful_ctx": 8000, "measured_tasks": {"s2-backend": entry}}
+    assert fit_failed_check(fit, prof) == "estimate_s"
+    entry = {"quality": "pass", "wall_s": 900, "context_tokens": 1000, "thinking": "off"}
+    prof = {"useful_ctx": 4000, "measured_tasks": {"s2-backend": entry}}
+    assert fit_failed_check(fit, prof) == "context_tokens"
+    entry = {"quality": "pass", "wall_s": 900, "context_tokens": 1000, "thinking": "on"}
+    prof = {"useful_ctx": 8000, "measured_tasks": {"s2-backend": entry}}
+    assert fit_failed_check(fit, prof) == "thinking"
+    entry = {"quality": "pass", "wall_s": 900, "context_tokens": 1000, "thinking": "off"}
+    prof = {"useful_ctx": 8000, "measured_tasks": {"s2-backend": entry}}
+    assert fit_failed_check(fit, prof) is None

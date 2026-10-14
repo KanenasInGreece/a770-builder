@@ -19,6 +19,7 @@ description: Use when delegating a bounded coding task to a LOCAL Intel Arc mode
 | State | `bash <skill-dir>/scripts/local-build.sh status` |
 | Doctor | `bash <skill-dir>/scripts/local-build.sh doctor` |
 | Server | `bash <skill-dir>/scripts/local-build.sh serve <card>` · `stop` |
+| Bench | `bash <skill-dir>/scripts/local-build.sh bench <profile> [--pp <sizes>]` |
 | Stop run | `bash <skill-dir>/scripts/local-build.sh stop-run` |
 | Reset | `bash <skill-dir>/scripts/local-build.sh reset [<seat>]` |
 | Version | `bash <skill-dir>/scripts/local-build.sh --version` · `check-update` |
@@ -60,10 +61,11 @@ sycl backends, vllm on the vllm backend, and sglang on the sglang backend.
 A named engine this skill does not serve is refused, and so is a backend
 that contradicts the named engine. When the profile omits the engine, vulkan
 and sycl stay llama.cpp, vllm stays vllm, and sglang stays sglang. An omitted
-engine does not become sglang unless the backend is sglang. This skill does
-not start SGLang and does not package its image. It does not package
-llama-benchy. The speed tool for sglang is llama-benchy, called and not
-copied. The model path is the row's model: a GGUF for llama.cpp, or the file
+engine does not become sglang unless the backend is sglang. This skill starts
+SGLang from the profile's tool_parser and reasoning_parser and the
+sglang compose envelope, and still does not package the image. It
+does not package llama-benchy. The speed tool for sglang is llama-benchy,
+called and not copied. The model path is the row's model: a GGUF for llama.cpp, or the file
 or directory a vllm or sglang row names.
 
 ## Spec (optional)
