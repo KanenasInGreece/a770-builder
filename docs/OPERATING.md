@@ -21,7 +21,9 @@ bash skills/local-build/scripts/local-build.sh reset                            
 bash skills/local-build/scripts/local-build.sh serve <profile> · profiles [--name <profile>] · menu · status · stop · stop-run · --version · check-update
 ```
 
-A run that must be ended early is ended with `stop-run`: the harness records the pid of the run's `timeout` process while it lives, `stop-run` sends exactly that pid one TERM after checking it is a timeout of this harness, and the run then captures what the seat did and resets the seat as an expired timeout does. Never end a run by process name: `bwrap` is also every Flatpak application on the desktop.
+A run with no `--timeout` and no spec `timeout` has no clock. It runs until it finishes. An explicit `--timeout` or a spec `timeout` is a caller fence for that one run. The profile's `timeout_s` is recorded headroom, not a clock the skill wraps the run in.
+
+`stop-run` ends the run in progress. The pid file names the process-group leader: the `timeout` process when a caller fence is set, and the sandbox when no clock was set. `stop-run` checks that pid is this harness's leader, then sends one TERM to it, and to its group when the pid leads one. The run then captures what the seat did and resets the seat. Never end a run by process name: `bwrap` is also every Flatpak application on the desktop.
 
 `run` refuses anything but the root of a standalone clone that is not a live checkout, refuses a seat that is not clean
 (ignored files included, so nothing from an earlier run can pass as this one's; `reset` clears it), takes the run lock, starts or

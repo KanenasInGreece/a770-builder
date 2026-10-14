@@ -96,16 +96,18 @@ llama_pid_alive(){
   printf '%s\n' "$pid"
 }
 
-# run_pid_alive <pidfile> — prints the pid only if it is alive AND is the timeout process of a run of this harness (comm timeout, cmdline naming sandbox_run.sh or opencode run); a stale or foreign pid is refused, never signalled.
+# run_pid_alive <pidfile> — prints the pid only if it is alive AND is this harness's run leader.
+# With a caller fence the leader's comm is timeout. With no clock it is the sandbox (bash sandbox_run.sh)
+# or unconfined opencode. The cmdline must name sandbox_run.sh or opencode run. A stale or foreign pid is refused.
 run_pid_alive(){
   local pf="$1" pid comm cmdline
   [ -f "$pf" ] || return 1
   pid=$(cat "$pf" 2>/dev/null); [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
-  [ "$comm" = "timeout" ] || return 1
   cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
   case "$cmdline" in *sandbox_run.sh*|*"opencode run"*) : ;; *) return 1;; esac
+  case "$comm" in timeout|bash|opencode|sandbox_run.sh) : ;; *) return 1;; esac
   printf '%s\n' "$pid"
 }
 

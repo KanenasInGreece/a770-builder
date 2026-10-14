@@ -546,13 +546,19 @@ case "${1:-}" in
   doctor) doctor ;;
   stop)   _envelope_from_sidecar; bash "$SERVE" stop ;;
   stop-run)
-    # end exactly the run in progress, through its own pid: one TERM to the timeout process ends its whole process
-    # group (measured on this host), and the run then unwinds as a timeout does — the capture is written, the seat reset.
+    # end exactly the run in progress, through its own pid. The pid file names the process-group leader:
+    # `timeout` when this run has a caller fence, the sandbox when it has no clock. One TERM to that leader
+    # (and to its group, when the pid leads one) ends the run — the capture is written, the seat reset.
     # Never by process name: bwrap is also every Flatpak app on the desktop.
     RUNPID="$A770B_DATA/logs/run.pid"
-    pid=$(run_pid_alive "$RUNPID") || die "no run to stop: $RUNPID names no live timeout process of this harness (a finished run removes the file; a stale or foreign pid is refused, never signalled)"
-    echo "▶ ending run pid $pid (timeout → sandbox → opencode): one TERM, then up to 30 s for the capture and the reset to follow"
-    kill -TERM "$pid" 2>/dev/null || die "could not signal pid $pid"
+    pid=$(run_pid_alive "$RUNPID") || die "no run to stop: $RUNPID names no live run leader of this harness (a finished run removes the file; a stale or foreign pid is refused, never signalled)"
+    echo "▶ ending run pid $pid (the process-group leader): one TERM, then up to 30 s for the capture and the reset to follow"
+    _pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+    if [ -n "$_pgid" ] && [ "$_pgid" = "$pid" ]; then
+      kill -TERM -- "-$pid" 2>/dev/null || die "could not signal pid $pid"
+    else
+      kill -TERM "$pid" 2>/dev/null || die "could not signal pid $pid"
+    fi
     for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
     kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
@@ -580,23 +586,60 @@ case "${1:-}" in
       [ -n "$timeout" ] || [ "$spec_timeout" = "-" ] || timeout="$spec_timeout"
     fi
     [ -n "$profile" ] || { if [ -n "$A770B_PROFILES" ]; then die "no profile: pass --profile <name> (there is no default profile) or set \"profile\" in the specification — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }
+    # A spec with no fit is a measurement and is allowed. A spec with fit must clear the profile's
+    # measured_tasks entry for fit.task. The refusal names the failed check. This is before the run lock
+    # and before any server starts.
+    if [ -n "$SPEC_SNAP" ]; then
+      fit_line=$(python3 - "$SPEC_SNAP" "$profile" "${A770B_PROFILES_FILE:-}" <<'PY'
+import json, os, sys
+sys.path.insert(0, os.path.join(os.environ["A770B_PROJECT"], "harness"))
+from render_profile import fit_failed_check
+spec_path, profile, profiles_file = sys.argv[1:4]
+spec = json.load(open(spec_path, encoding="utf-8"))
+fit = spec.get("fit") if isinstance(spec, dict) else None
+if not isinstance(fit, dict):
+    sys.exit(0)
+prof = None
+if profiles_file:
+    try:
+        data = json.load(open(profiles_file, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = None
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    if isinstance(profiles, dict) and isinstance(profiles.get(profile), dict):
+        prof = profiles[profile]
+name = fit_failed_check(fit, prof)
+if name:
+    print("fit: %s: failed check %s" % (fit.get("task"), name))
+    sys.exit(2)
+PY
+) || { rm -f -- "$SPEC_SNAP"; die "${fit_line:-fit refused}"; }
+    fi
     run_lock                                                       # one run at a time on this card
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
-    profile_vars "$profile"; t=${timeout:-$t}
+    profile_vars "$profile"
     if [ -n "$base_url" ]; then
       _attach_running_server "$base_url" "$served_name"    # exports host, port and alias; does not call serve or stop
     else
       serve "$profile" || exit $?
     fi
     label="$profile-$(date +%Y%m%d-%H%M%S)"
-    echo "▶ profile=$profile timeout=${t}s worktree=$WT brief=$BRIEF label=$label"
+    # The profile's timeout_s is recorded headroom, not a clock. No --timeout and no spec timeout
+    # means no clock. An explicit --timeout or spec timeout is a caller fence for this run only.
+    if [ -n "$timeout" ]; then
+      echo "▶ profile=$profile timeout=${timeout}s worktree=$WT brief=$BRIEF label=$label"
+      fence_env=(LOCAL_TIMEOUT="$timeout")
+    else
+      echo "▶ profile=$profile timeout=none worktree=$WT brief=$BRIEF label=$label"
+      fence_env=()
+    fi
     mkdir -p "$A770B_DATA/results"
     _metrics_snapshot "$A770B_DATA/results/$label.metrics-before.prom"
     aside=0
     restore(){ if [ "$aside" = 1 ] && [ -f "$WT/AGENTS.md.local-off" ]; then mv -f "$WT/AGENTS.md.local-off" "$WT/AGENTS.md"; aside=0; fi; }
     trap restore EXIT INT TERM                                    # restored even on crash or timeout
     if [ -f "$WT/AGENTS.md" ]; then mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"; aside=1; fi
-    A770B_SPEC="$SPEC_SNAP" PROFILE="$profile" LOCAL_AGENT=local-builder LOCAL_TIMEOUT="$t" bash "$BUILD" "$WT" "$BRIEF" 2>&1 | grep -vE '^\s*$' | tail -15 | cut -c1-240
+    env -u LOCAL_TIMEOUT "${fence_env[@]}" A770B_SPEC="$SPEC_SNAP" PROFILE="$profile" LOCAL_AGENT=local-builder bash "$BUILD" "$WT" "$BRIEF" 2>&1 | grep -vE '^\s*$' | tail -15 | cut -c1-240
     brc=${PIPESTATUS[0]}
     restore
     case "$brc" in 2|3) echo "⛔ build refused (exit $brc) — no capture, no reset" >&2; exit "$brc";; esac

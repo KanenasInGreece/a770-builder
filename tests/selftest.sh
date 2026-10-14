@@ -87,6 +87,15 @@ spec_refused "a nested unknown key" '{"verify":{"timeout":5}}'
 spec_refused "a git pattern" '{"bash_allow":["git push *"]}'
 spec_refused "a bare wildcard" '{"bash_allow":["*"]}'
 spec_refused "a card outside the seat" '{"card":"../spec.json"}'
+spec_refused "a fit with a bad shape" '{"fit":{"estimate_s":600,"context_tokens":4000,"thinking":"off"}}'
+spec_refused "a fit with a zero estimate" '{"fit":{"estimate_s":0,"context_tokens":4000,"thinking":"off","task":"s2-backend"}}'
+printf '%s' '{"fit":{"estimate_s":600,"context_tokens":4000,"thinking":"off","task":"s2-backend"}}' > "$t/spec-fit.json"
+if python3 "$RP" check --spec "$t/spec-fit.json" --seat "$sd" >/dev/null 2>&1; then echo "ok   spec: a well-formed fit is accepted"
+else echo "FAIL spec: a well-formed fit was refused"; fail=1; fi
+fn=$(awk 'BEGIN{p=0} /^stage_outcome\(\)\{/{p=1} p{print} p && /^\}/{exit}' "$here/harness/run_suite.sh")
+if printf '%s\n' "$fn" | grep -q 'TIMEOUT_S\|timeout_s\|-ge\|-gt'; then
+  echo "FAIL suite: stage_outcome compares the wall to timeout_s"; fail=1
+else echo "ok   suite: stage_outcome does not compare the wall to timeout_s"; fi
 spec_refused "a card over the limit" "{\"card\":{\"text\":\"$(head -c 8001 /dev/zero | tr '\0' x)\"}}"
 ln -s "$t/spec.json" "$t/spec-link.json"; printf '{}' > "$t/spec.json"
 if python3 "$RP" check --spec "$t/spec-link.json" --seat "$sd" 2>/dev/null; then echo "FAIL spec: a symlinked specification was admitted"; fail=1; else echo "ok   spec: a symlinked specification is refused"; fi
@@ -364,12 +373,10 @@ if grep -n 'guard_path_policy\|--bind "$WT"' "$here/harness/sandbox_run.sh" | he
 then echo "ok   sandbox: the path policy runs before the worktree is bind-mounted"
 else echo "FAIL sandbox_run.sh bind-mounts the worktree before the path policy"; fail=1; fi
 grep -q 'A770B_REFUSE=/nonexistent' "$here/tests/kit_selftest.sh" && echo "ok   sandbox: kit_selftest.sh sets A770B_REFUSE so the empty-list refusal cannot fire there" || { echo "FAIL kit_selftest.sh does not set A770B_REFUSE=/nonexistent"; fail=1; }
-# KU10 — Defect 2: a capture that genuinely carries no server-side timings line at all (the run's wall clock
-# reached the profile's own timeout before capture_task.sh's own SLOG parse ever had anything to report) must be
-# recorded with requests/prompt_tokens/gen_tokens = null, never 0, and the stage's own "outcome" must read
-# "timeout", not a plain failure — so a reader can tell a slow model from a wrong one — carried through into
-# suite_report.py's table (TIMEOUT, not FAIL) and its --json (a "timeouts" count). A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT=1 shrinks
-# the profile's own timeout window to one second so a two-second fake run trips it without an hour of card time.
+# KU10 — a capture that carries no server-side timings line at all is recorded with
+# requests/prompt_tokens/gen_tokens = null, never 0. The stage outcome is the grader: verify exits 1,
+# so the outcome is fail and the summary line says quality=fail. The wall is still recorded. It is not
+# compared to timeout_s, so shrinking that window does not turn the stage into a timeout.
 # This fixture's own fresh kit/seat/ export (export_kit_seat, one main stage, never touched by the fake run) also
 # proves the other half of Defect 3: the .gitignore lands there too, not only from export_reference_seat above.
 kut="$t/kutimeout"; mkdir -p "$kut/tasks" "$kut/seat"
@@ -387,7 +394,7 @@ set -uo pipefail
 case "${1:-}" in
   run)
     shift; WT="$1"; BRIEF="$2"; shift 2
-    sleep 2   # longer than A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT=1 below, so this stage's wall_s trips the timeout comparison
+    sleep 2   # wall_s is recorded; it must not turn the stage into a timeout
     label="fake-$(basename "$BRIEF" .md)"
     mkdir -p "$A770B_DATA/results"
     echo "# fake capture — no server-side timings line at all (the run never got that far)" > "$A770B_DATA/results/$label.task.md"
@@ -401,7 +408,12 @@ esac
 FAKE
 chmod +x "$kut/fake-local-build.sh"
 rm -f "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json
-outT=$(A770B_LOCAL_BUILD="$kut/fake-local-build.sh" A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT=1 bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/kutimeout-seat" --suite "$kut/suite.json" 2>&1); rcT=$?
+# Point the writer at a copy. record_measured must not publish into config/registry/.
+ku_ship="$here/config/registry/a770.display.json"
+ku_copy="$t/ku10-profiles.json"
+cp -- "$ku_ship" "$ku_copy"
+ku_sha=$(sha256sum "$ku_ship")
+outT=$(A770B_LOCAL_BUILD="$kut/fake-local-build.sh" A770B_PROFILES_FILE="$ku_copy" A770B_QWEN35_9B_Q4KM_VULKAN_TIMEOUT=1 bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/kutimeout-seat" --suite "$kut/suite.json" 2>&1); rcT=$?
 resT=$(ls -t "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json 2>/dev/null | head -1)
 if [ "$rcT" = 0 ] && [ -n "$resT" ] && python3 - "$resT" <<'PY'
 import json, sys
@@ -409,23 +421,46 @@ d = json.load(open(sys.argv[1]))
 s = d["stages"][0]
 assert s["id"] == "t0-slow", s
 assert s["requests"] is None and s["prompt_tokens"] is None and s["gen_tokens"] is None, s
-assert s["outcome"] == "timeout", s
+assert s["outcome"] == "fail", s
+assert "quality" not in s, s
 assert s["working"] is False, s
+assert isinstance(s["wall_s"], (int, float)) and s["wall_s"] >= 2, s
 sys.exit(0)
 PY
 then
   tbl=$(python3 "$here/harness/suite_report.py" "$resT" 2>&1)
   jsonT=$(python3 "$here/harness/suite_report.py" "$resT" --json 2>/dev/null)
-  if printf '%s\n' "$tbl" | grep -qE '^t0-slow +TIMEOUT ' && printf '%s' "$jsonT" | python3 -c '
+  if printf '%s\n' "$outT" | grep -q 'quality=fail' \
+    && printf '%s\n' "$tbl" | grep -qE '^t0-slow +FAIL ' \
+    && ! printf '%s\n' "$tbl" | grep -qE '^t0-slow +TIMEOUT ' \
+    && printf '%s' "$jsonT" | python3 -c '
 import json, sys
 d = json.loads(sys.stdin.read())
-assert d["timeouts"] == 1, d
-' 2>/dev/null
-  then echo "ok   suite: a capture with no timings line at all records requests/tokens as null (never 0) and the stage outcome as timeout; suite_report.py shows TIMEOUT in its table and counts it in --json"
-  else echo "FAIL suite: suite_report.py did not show the timeout distinction — table: $tbl / json: $jsonT"; fail=1
+assert d["timeouts"] == 0, d
+' 2>/dev/null \
+    && python3 - "$ku_ship" "$ku_copy" <<'PY'
+import json, sys
+ship, copy = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+sp = ship["profiles"]["qwen35-9b-q4km-vulkan"]
+cp = copy["profiles"]["qwen35-9b-q4km-vulkan"]
+assert "t0-slow" not in (sp.get("measured_tasks") or {}), sp.get("measured_tasks")
+mt = cp["measured_tasks"]["t0-slow"]
+assert mt["quality"] == "fail" and mt["wall_s"] >= 2 and mt["context_tokens"] is None and mt["thinking"] == "on", mt
+for key, value in sp.items():
+    if key == "measured_tasks":
+        continue
+    assert cp[key] == value, key
+PY
+  then echo "ok   suite: a capture with no timings line records requests/tokens as null (never 0) and the stage outcome as fail; the summary says quality=fail; suite_report.py shows FAIL and timeouts 0"
+  else echo "FAIL suite: null tokens / fail outcome / quality=fail did not hold — table: $tbl / json: $jsonT"; printf '%s\n' "$outT" | tail -20; fail=1
   fi
 else
-  echo "FAIL suite: run_suite.sh did not record null requests/tokens + a timeout outcome for a captureless-timings stage (rc=$rcT res=$resT)"; printf '%s\n' "$outT" | tail -20; fail=1
+  echo "FAIL suite: run_suite.sh did not record null requests/tokens + a fail outcome for a capture with no timings (rc=$rcT res=$resT)"; printf '%s\n' "$outT" | tail -20; fail=1
+fi
+if [ "$(sha256sum "$ku_ship")" = "$ku_sha" ]; then
+  echo "ok   suite: KU10 left the shipped registry unchanged"
+else
+  echo "FAIL suite: KU10 modified the shipped registry"; fail=1
 fi
 # Defect 3 (export_kit_seat half): the main-suite export above (kutimeout-seat) must carry the same .gitignore.
 if [ -f "$t/kutimeout-seat/.gitignore" ] && grep -qx 'CMakeFiles/' "$t/kutimeout-seat/.gitignore" && grep -qx '__pycache__/' "$t/kutimeout-seat/.gitignore"; then
@@ -1085,7 +1120,7 @@ kill "$tok_pid" 2>/dev/null; wait "$tok_pid" 2>/dev/null
 
 # ── harness/ladder.sh (item 2): the one command that produces a row — --dry-run prints all six rungs and writes nothing
 lad_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/ladder-data" bash "$here/harness/ladder.sh" qwen35-9b-q4km-vulkan --dry-run 2>&1)
-if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | grep -q 'bench_model.sh' \
+if printf '%s\n' "$lad_out" | grep -q 'rung 1/6' && printf '%s\n' "$lad_out" | grep -q 'serve_compose.sh' \
   && ! printf '%s\n' "$lad_out" | grep -q 'bench_speed.sh' \
   && { printf '%s\n' "$lad_out" | grep -q 'bench_http.sh' || printf '%s\n' "$lad_out" | grep -q 'no tokenizer.json'; } \
   && { printf '%s\n' "$lad_out" | grep -q 'ctx_sweep.sh' || printf '%s\n' "$lad_out" | grep -q 'no tokenizer.json'; } \
@@ -1280,9 +1315,12 @@ else echo "FAIL ladder: sglang dry-run did not name the start"; printf '%s\n' "$
 fi
 lc=$(four_dry "$t/four/both.json" "$t/four/dir-models" llama-row)
 vl=$(four_dry "$t/four/both.json" "$t/four/dir-models" vllm-row)
-if printf '%s\n' "$lc" | grep -q 'bench_model.sh' && printf '%s\n' "$vl" | grep -q 'bench_model.sh'
-then echo "ok   ladder: a llama.cpp dry-run and a vllm dry-run still name bench_model.sh"
-else echo "FAIL ladder: llama.cpp or vllm dry-run dropped bench_model.sh"; fail=1
+four_rung2() { printf '%s\n' "$1" | awk 'BEGIN{p=0} /rung 2\/6/{p=1} /rung 3\/6/{exit} p'; }
+lc2=$(four_rung2 "$lc"); vl2=$(four_rung2 "$vl")
+if printf '%s\n' "$lc2" | grep -q 'bench_http.sh' && ! printf '%s\n' "$lc2" | grep -q 'bench_model.sh' \
+  && printf '%s\n' "$vl2" | grep -q 'bench_http.sh' && ! printf '%s\n' "$vl2" | grep -q 'bench_model.sh'
+then echo "ok   ladder: a llama.cpp dry-run and a vllm dry-run name bench_http.sh on the initial speed rung, not bench_model.sh"
+else echo "FAIL ladder: llama.cpp or vllm initial speed rung did not name bench_http.sh, or it named bench_model.sh"; printf '%s\n' "$lc2" "$vl2"; fail=1
 fi
 sga=$(env -u A770B_PROFILES A770B_ATTACHED=1 A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/sg-att" \
   A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \

@@ -13,6 +13,76 @@ LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log
 [ -f "$BLOG" ] || { echo "⛔ build log not found: $BLOG" >&2; exit 2; }
 OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; TMPLOG=$(mktemp)
 trap 'rm -f -- "$TMPLOG"' EXIT
+# llama.cpp timings from a container log. Prints the requests= line, or the no-timing-lines sentence.
+emit_llama_timings(){
+  python3 - "$1" <<'PY'
+import re,sys
+lines=open(sys.argv[1],errors='ignore').read().splitlines()
+pe=[l for l in lines if 'prompt eval time' in l]
+has_ngen=any(re.search(r'task\s+\d+\s+\|\s+n_gen\s+=\s+\d+', l) for l in lines)
+if not pe and not has_ngen:
+    print("timings unavailable (log has no llama.cpp timing lines)")
+    sys.exit(0)
+ev=[l for l in lines if 'eval time' in l and 'prompt eval' not in l]
+def parse(l):
+    m=re.search(r'=\s+([\d.]+) ms /\s+(\d+) tokens \(\s*([\d.]+) ms per token,\s*([\d.]+) tokens per second',l); return tuple(float(x) for x in m.groups()) if m else None
+P=[p for p in (parse(l) for l in pe) if p]; E=[e for e in (parse(l) for l in ev) if e]
+n=len(E); pt=sum(p[1] for p in P); gt=sum(e[1] for e in E)
+ttft=sorted(p[0] for p in P); tpot=sorted(e[2] for e in E)
+q=lambda a,f: a[int(f*(len(a)-1))] if a else 0
+print(f"requests={n} prompt_tokens_total={int(pt)} gen_tokens_total={int(gt)}")
+print(f"TTFT ms (prompt eval): median={q(ttft,.5):.0f} p90={q(ttft,.9):.0f} max={q(ttft,1):.0f}   largest prompt={int(max((p[1] for p in P),default=0))} tokens")
+print(f"TPOT ms: median={q(tpot,.5):.1f} p90={q(tpot,.9):.1f}   decode tok/s median={1000/q(tpot,.5) if q(tpot,.5) else 0:.1f}")
+print(f"prefill tok/s over all prompts={pt/ (sum(p[0] for p in P)/1000) if P else 0:.0f}")
+# last n_gen per slot task — the reasoning-budget ceiling shows up here as a generation that stops at the budget
+ngen={}
+for l in lines:
+    m=re.search(r'task\s+(\d+)\s+\|\s+n_gen\s+=\s+(\d+)', l)
+    if m:
+        ngen[int(m.group(1))]=int(m.group(2))
+gs=list(ngen.values())
+print(f"turns_with_n_gen={len(gs)} n_gen_max={max(gs) if gs else 0} n_gen_median={sorted(gs)[len(gs)//2] if gs else 0}")
+print(f"turns_n_gen_ge_10000={sum(1 for g in gs if g>=10000)}")
+PY
+}
+# JSON prompt_tokens numbers in the build log. One sum line, or a sentence that the context was not measured. Never 0.
+emit_prompt_tokens_from_build(){
+  python3 - "$1" <<'PY'
+import json, sys
+found = []
+def walk(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == "prompt_tokens" and isinstance(v, int) and not isinstance(v, bool) and v > 0:
+                found.append(v)
+            else:
+                walk(v)
+    elif isinstance(o, list):
+        for v in o:
+            walk(v)
+dec = json.JSONDecoder()
+for line in open(sys.argv[1], errors="ignore"):
+    s = line.strip()
+    if s.startswith("data:"):
+        s = s[5:].strip()
+    i = 0
+    while True:
+        j = s.find("{", i)
+        if j < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(s, j)
+        except json.JSONDecodeError:
+            i = j + 1
+            continue
+        walk(obj)
+        i = j + end
+if found:
+    print("prompt_tokens_total=%d" % sum(found))
+else:
+    print("context was not measured")
+PY
+}
 # the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
 { safe_git_diff "$WT"
   safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
@@ -45,49 +115,28 @@ else
 fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
-if [ "${A770B_ATTACHED:-}" = 1 ]; then
-  echo "timings unavailable (attached server; this capture reads a compose container log)"
-else
 # Dump container log to temp file and parse from there (not stale host log).
 # Do not pass a colour-stripping flag: this docker does not accept one, and discarding
 # stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
 CONTAINER="${A770B_COMPOSE_PROJECT}-llama-1"
 # llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
-if ! "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1; then
+if [ "${A770B_ATTACHED:-}" = 1 ]; then
+  llama_out=""
+  if "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1 && [ -s "$TMPLOG" ]; then
+    llama_out=$(emit_llama_timings "$TMPLOG")
+  fi
+  # No llama.cpp timing line: sum JSON prompt_tokens usage in the build log. Never print 0.
+  if printf '%s\n' "$llama_out" | grep -q 'requests='; then
+    printf '%s\n' "$llama_out"
+  else
+    emit_prompt_tokens_from_build "$BLOG"
+  fi
+elif ! "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1; then
   echo "timings unavailable (docker logs failed: $(head -1 -- "$TMPLOG" | tr -d '\r'))"
 elif [ ! -s "$TMPLOG" ]; then
   echo "timings unavailable (no container log)"
 else
-  python3 - "$TMPLOG" <<'PY'
-import re,sys
-lines=open(sys.argv[1],errors='ignore').read().splitlines()
-pe=[l for l in lines if 'prompt eval time' in l]
-has_ngen=any(re.search(r'task\s+\d+\s+\|\s+n_gen\s+=\s+\d+', l) for l in lines)
-if not pe and not has_ngen:
-    print("timings unavailable (log has no llama.cpp timing lines)")
-    sys.exit(0)
-ev=[l for l in lines if 'eval time' in l and 'prompt eval' not in l]
-def parse(l):
-    m=re.search(r'=\s+([\d.]+) ms /\s+(\d+) tokens \(\s*([\d.]+) ms per token,\s*([\d.]+) tokens per second',l); return tuple(float(x) for x in m.groups()) if m else None
-P=[p for p in (parse(l) for l in pe) if p]; E=[e for e in (parse(l) for l in ev) if e]
-n=len(E); pt=sum(p[1] for p in P); gt=sum(e[1] for e in E)
-ttft=sorted(p[0] for p in P); tpot=sorted(e[2] for e in E)
-q=lambda a,f: a[int(f*(len(a)-1))] if a else 0
-print(f"requests={n} prompt_tokens_total={int(pt)} gen_tokens_total={int(gt)}")
-print(f"TTFT ms (prompt eval): median={q(ttft,.5):.0f} p90={q(ttft,.9):.0f} max={q(ttft,1):.0f}   largest prompt={int(max((p[1] for p in P),default=0))} tokens")
-print(f"TPOT ms: median={q(tpot,.5):.1f} p90={q(tpot,.9):.1f}   decode tok/s median={1000/q(tpot,.5) if q(tpot,.5) else 0:.1f}")
-print(f"prefill tok/s over all prompts={pt/ (sum(p[0] for p in P)/1000) if P else 0:.0f}")
-# last n_gen per slot task — the reasoning-budget ceiling shows up here as a generation that stops at the budget
-ngen={}
-for l in lines:
-    m=re.search(r'task\s+(\d+)\s+\|\s+n_gen\s+=\s+(\d+)', l)
-    if m:
-        ngen[int(m.group(1))]=int(m.group(2))
-gs=list(ngen.values())
-print(f"turns_with_n_gen={len(gs)} n_gen_max={max(gs) if gs else 0} n_gen_median={sorted(gs)[len(gs)//2] if gs else 0}")
-print(f"turns_n_gen_ge_10000={sum(1 for g in gs if g>=10000)}")
-PY
-fi
+  emit_llama_timings "$TMPLOG"
 fi
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"

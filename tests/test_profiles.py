@@ -2789,3 +2789,36 @@ def test_empty_line_names_the_missing_card():
     result = run("empty-line")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "no builder card set (A770B_CARD) — climb one with ladder.sh <gguf> --ctx N"
+
+
+def test_check_passes_measured_tasks(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_tasks"] = {
+        "s2-backend": {"quality": "pass", "wall_s": 900, "context_tokens": 4000, "thinking": "off"},
+        "t0-slow": {"quality": "fail", "wall_s": 2, "context_tokens": None, "thinking": "on"},
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_measured_tasks_unknown_key(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_tasks"] = {
+        "s2-backend": {"quality": "pass", "wall_s": 900, "context_tokens": 4000, "thinking": "off", "note": "x"},
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "unknown key note" in result.stderr
+
+
+def test_check_fails_measured_tasks_zero_context(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["measured_tasks"] = {
+        "s2-backend": {"quality": "pass", "wall_s": 900, "context_tokens": 0, "thinking": "off"},
+    }
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "context_tokens must be a positive int or null" in result.stderr

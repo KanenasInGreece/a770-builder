@@ -226,8 +226,10 @@ def test_vllm_dry_run_leaves_the_server_up_and_names_the_tokenizer(tmp_path):
     text = result.stdout
     assert "leave the server up" in text
     assert "llama-benchy" in text
-    assert "bench_model.sh" in text
     assert "bench_speed.sh" not in text
+    rung2 = text.split("rung 2/6", 1)[1].split("rung 3/6", 1)[0]
+    assert "bench_http.sh" in rung2
+    assert "bench_model.sh" not in rung2
     assert str(model) in text
     rung3 = text.split("rung 4/6", 1)[0]
     assert " stop" not in rung3

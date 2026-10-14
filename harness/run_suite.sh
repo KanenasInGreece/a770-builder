@@ -134,11 +134,8 @@ fi
 SEAT="${SEAT:-$A770B_DATA/kit-seat}"
 
 a770b_is_profile "$PROFILE" || die "$(profile_refusal "$PROFILE")"
-# the profile's own timeout window (the registry's timeout_s — the same budget build_local.sh's `timeout`
-# wraps the model's run in): a captured timeout still exits 0 all the way back up through local-build.sh run (the
-# capture itself succeeded), so this wall-clock budget is the only signal process_task has for telling a stage
-# that ran out of time from one that plainly failed — see stage_outcome below.
-TIMEOUT_S=$(a770b_profile_var "$PROFILE" TIMEOUT)
+# timeout_s stays on the row as headroom a caller may compare. It is not a clock, and a stage is never
+# a timeout because the wall reached it. The grader's exit is the only quality result.
 if [ -n "$REVIEWER" ]; then
   a770b_is_profile "$REVIEWER" || die "reviewer $(profile_refusal "$REVIEWER")"
   builder_model=$(a770b_profile_var "$PROFILE" MODEL); reviewer_model=$(a770b_profile_var "$REVIEWER" MODEL)
@@ -472,20 +469,139 @@ print(json.dumps(rec))
 PY
 }
 
-# stage_outcome <working "true"|"false"|""> <wall_s> — "timeout" when the measured wall time reached the
-# profile's own configured budget (TIMEOUT_S, set once above from the registry's timeout_s — the same
-# window build_local.sh's `timeout` wraps the model's run in); a captured timeout still exits 0 all the way back
-# through local-build.sh run (the capture itself succeeded), so this wall-clock comparison is the only signal
-# available here for telling a slow model (still working when the clock ran out) from a plainly wrong one.
-# Otherwise "pass"/"fail" from the verify exit code, or empty when there was no verify at all (working is "").
+# stage_outcome <working "true"|"false"|""> [wall_s]
+# pass when verify says working, fail when it does not, empty when there was no verify.
+# wall_s is recorded on the stage. It is not read here and is never compared to timeout_s.
+# A caller fence that fires is still not a timeout outcome: the grader's exit is the only quality result.
 stage_outcome(){
-  local working="$1" wall="$2"
-  if [ -n "$TIMEOUT_S" ] && [ -n "$wall" ] && [ "$wall" -ge "$TIMEOUT_S" ] 2>/dev/null; then
-    printf 'timeout\n'
-  elif [ "$working" = true ]; then printf 'pass\n'
+  local working="$1"
+  if [ "$working" = true ]; then printf 'pass\n'
   elif [ "$working" = false ]; then printf 'fail\n'
   else printf '\n'
   fi
+}
+
+# record_measured <id> <working true|false> <wall_s> <prompt_tokens>
+# After a stage is emitted, write measured_tasks[<id>] on this profile inside A770B_PROFILES_FILE.
+# quality comes from working. context_tokens is the prompt-token total, or null when it was not measured
+# (never 0). thinking is the profile's reasoning, on or off. useful_ctx, timeout_s and every other field stay.
+# A missing file is a warning. A profile that is not in the file is left alone. An entry that would not
+# pass profiles.py check is not written. The JSON is written in the profiles file's own directory and
+# published with os.replace; a failed replace leaves the original file untouched.
+record_measured(){
+  local id="$1" working="$2" wall="$3" ptok="${4:-}"
+  local pf="${A770B_PROFILES_FILE:-}" reasoning
+  if [ ! -e "$pf" ]; then
+    echo "⚠ measured_tasks: profiles file is missing — not updated" >&2
+    return 0
+  fi
+  if [ ! -f "$pf" ] || [ ! -w "$pf" ]; then
+    echo "⚠ measured_tasks: profiles file is not writable — not updated" >&2
+    return 0
+  fi
+  reasoning=$(a770b_profile_var "$PROFILE" REASONING 2>/dev/null || true)
+  python3 - "$pf" "$PROFILE" "$id" "$working" "$wall" "$ptok" "$reasoning" "$A770B_PROJECT/harness/profiles.py" <<'PY' || echo "⚠ measured_tasks: update failed — continuing" >&2
+import json, os, subprocess, sys, tempfile
+path, profile, stage, working, wall, ptok, thinking, checker = sys.argv[1:9]
+
+def warn(msg):
+    print("⚠ measured_tasks: " + msg, file=sys.stderr)
+
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, json.JSONDecodeError):
+    warn("profiles file is not JSON — not updated")
+    sys.exit(0)
+if not isinstance(data, dict):
+    warn("profiles file is not a JSON object — not updated")
+    sys.exit(0)
+profiles = data.get("profiles")
+if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
+    sys.exit(0)
+if thinking not in ("on", "off"):
+    warn("profile reasoning is not on or off — not updated")
+    sys.exit(0)
+wall_txt = str(wall).strip()
+if not wall_txt.isdigit() or int(wall_txt) <= 0:
+    warn("wall_s is not a positive integer — not updated")
+    sys.exit(0)
+ctx = None
+pt = str(ptok).strip()
+if pt.isdigit() and int(pt) > 0:
+    ctx = int(pt)
+quality = "pass" if working == "true" else "fail"
+prof = profiles[profile]
+mt = prof.get("measured_tasks")
+if not isinstance(mt, dict):
+    mt = {}
+mt[stage] = {
+    "quality": quality,
+    "wall_s": int(wall_txt),
+    "context_tokens": ctx,
+    "thinking": thinking,
+}
+prof["measured_tasks"] = mt
+text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+dest = os.path.abspath(path)
+dest_dir = os.path.dirname(dest) or "."
+# Same directory as the destination, so replace stays on one filesystem. A dot prefix keeps a
+# leftover out of the registry's *.json listing.
+fd, tmp = tempfile.mkstemp(prefix=".measured-", suffix=".json", dir=dest_dir)
+stage_dir = ""
+
+def check_file(target):
+    return subprocess.run(
+        [sys.executable, checker, "check", "--file", target],
+        capture_output=True, text=True)
+
+def check_detail(chk):
+    detail = (chk.stderr or "check failed").strip().splitlines()
+    return detail[-1] if detail else "check failed"
+
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    chk = check_file(tmp)
+    # A file under config/registry/ is judged by its basename. The temp's own name fails that
+    # rule; the same inode under the destination basename is the check the destination must pass.
+    if chk.returncode != 0 and "must be <card>.<mode>.json" in (chk.stderr or ""):
+        stage_dir = tempfile.mkdtemp(prefix=".measured-", dir=dest_dir)
+        named = os.path.join(stage_dir, os.path.basename(dest))
+        try:
+            os.link(tmp, named)
+        except OSError as exc:
+            warn("could not stage the profiles file for check (" + str(exc) + ") — not updated")
+            sys.exit(0)
+        chk = check_file(named)
+    if chk.returncode != 0:
+        warn("updated profile would not pass profiles.py check — not updated (" + check_detail(chk) + ")")
+        sys.exit(0)
+    try:
+        os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    except OSError:
+        pass
+    try:
+        os.replace(tmp, path)
+        tmp = ""
+    except OSError as exc:
+        warn("could not replace profiles file (" + str(exc) + ") — not updated")
+finally:
+    if tmp:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    if stage_dir:
+        try:
+            os.remove(os.path.join(stage_dir, os.path.basename(dest)))
+        except OSError:
+            pass
+        try:
+            os.rmdir(stage_dir)
+        except OSError:
+            pass
+PY
 }
 
 # review_stage <rubric-file> <artefact-file> — one keyed HTTP request to the reviewer's own server; prints the score
@@ -614,8 +730,9 @@ process_task(){
       serve_ev_path=$(head -n 1 "$A770B_DATA/logs/serve-evidence.path" 2>/dev/null || true)
     fi
     emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$no_cap_outcome" "null" "${serve_ev_path:-}"
+    record_measured "$id" false "$wall_s" ""
     write_results
-    echo "stage $id: ${no_cap_outcome:-FAILED} (no capture, run exit $rrc)"
+    echo "stage $id: quality=fail ${no_cap_outcome:-FAILED} (no capture, run exit $rrc)"
     return 0
   fi
   local capfile="$A770B_DATA/results/$label.task.md" patchfile="$A770B_DATA/results/$label.patch"
@@ -628,6 +745,12 @@ process_task(){
   requests=$(printf '%s' "$reqline" | grep -oE '^requests=[0-9]+' | cut -d= -f2)
   prompt_tokens=$(printf '%s' "$reqline" | grep -oE 'prompt_tokens_total=[0-9]+' | cut -d= -f2)
   gen_tokens=$(printf '%s' "$reqline" | grep -oE 'gen_tokens_total=[0-9]+' | cut -d= -f2)
+  # A capture attached to a server with no llama.cpp timings prints one prompt_tokens_total= line and
+  # nothing else. An absent count stays empty (the JSON field stays null). A 0 is not a measurement.
+  if [ -z "$prompt_tokens" ]; then
+    lone=$(grep -a -oE 'prompt_tokens_total=[0-9]+' "$capfile" 2>/dev/null | tail -1 | cut -d= -f2 || true)
+    if [ -n "$lone" ] && [ "$lone" -gt 0 ] 2>/dev/null; then prompt_tokens=$lone; fi
+  fi
   local lines=0 added hdrs
   if [ -f "$patchfile" ]; then
     # grep -c prints 0 AND exits 1 on no match; `|| echo 0` then made "0\n0", a syntax error that
@@ -675,8 +798,11 @@ process_task(){
     serve_ev_path=$(head -n 1 "$A770B_DATA/logs/serve-evidence.path" 2>/dev/null || true)
   fi
   emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome" "$counters_json" "${serve_ev_path:-}"
+  record_measured "$id" "$working" "$wall_s" "$prompt_tokens"
   write_results
-  echo "stage $id: working=$working outcome=${outcome:-n/a} conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-n/a} tokens=${prompt_tokens:-n/a}+${gen_tokens:-n/a}"
+  local quality=fail
+  [ "$working" = true ] && quality=pass
+  echo "stage $id: working=$working outcome=${outcome:-n/a} quality=$quality conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-n/a} tokens=${prompt_tokens:-n/a}+${gen_tokens:-n/a}"
 }
 
 rc=0

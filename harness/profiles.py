@@ -143,14 +143,15 @@ TASK_VALUES = {
 INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
-    "instrument", "thinking", "operator_override", "checkpoint", "kernel",
+    "instrument", "thinking", "operator_override", "checkpoint", "kernel", "measured_tasks",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {
     "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
     "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
-    "reasoning_parser", "vllm_image",
+    "reasoning_parser", "vllm_image", "measured_tasks",
 }
+MEASURED_TASK_KEYS = {"quality", "wall_s", "context_tokens", "thinking"}
 ENGINE_VALUES = {"llama.cpp", "vllm", "sglang"}
 CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
 CHECKPOINT_REQUIRED_KEYS = {"format", "weight_quant", "activation_quant"}
@@ -441,6 +442,36 @@ def validate(data) -> list[str]:
                         vv = fit[kk]
                         if not isinstance(vv, str) or not vv:
                             errors.append(f"{name}: fit.{kk} must be a non-empty string")
+
+        if "measured_tasks" in prof:
+            measured = prof["measured_tasks"]
+            if not isinstance(measured, dict):
+                errors.append(f"{name}: measured_tasks must be an object")
+            else:
+                for tid, entry in measured.items():
+                    where = f"{name}: measured_tasks.{tid}"
+                    if not isinstance(tid, str) or not tid:
+                        errors.append(f"{name}: measured_tasks: task id must be a non-empty string")
+                        continue
+                    if not isinstance(entry, dict):
+                        errors.append(f"{where} must be an object")
+                        continue
+                    for kk in entry.keys():
+                        if kk not in MEASURED_TASK_KEYS:
+                            errors.append(f"{where}: unknown key {kk}")
+                    for kk in MEASURED_TASK_KEYS:
+                        if kk not in entry:
+                            errors.append(f"{where}: missing key {kk}")
+                    if "quality" in entry and entry["quality"] not in ("pass", "fail"):
+                        errors.append(f"{where}: quality must be pass or fail")
+                    if "wall_s" in entry and not _is_pos_int(entry["wall_s"]):
+                        errors.append(f"{where}: wall_s must be a positive int")
+                    if "context_tokens" in entry:
+                        ct = entry["context_tokens"]
+                        if ct is not None and not _is_pos_int(ct):
+                            errors.append(f"{where}: context_tokens must be a positive int or null")
+                    if "thinking" in entry and entry["thinking"] not in ("on", "off"):
+                        errors.append(f"{where}: thinking must be on or off")
 
         if "suite" in prof:
             suite = prof["suite"]
