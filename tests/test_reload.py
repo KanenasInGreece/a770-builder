@@ -118,6 +118,20 @@ def _chmod_x(path: Path) -> Path:
     return path
 
 
+def _write_docker_stub(path: Path) -> None:
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \" $* \" in\n"
+        "  *\" ps -q \"*)\n"
+        "    if [ \"${SERVE_CONTAINER_UP:-0}\" = 1 ]; then printf '%s\\n' cid123; fi\n"
+        "    exit 0 ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    _chmod_x(path)
+
+
 def _registry_with_sycl(path: Path) -> Path:
     data = json.loads(PROFILES_JSON.read_text(encoding="utf-8"))
     row = copy.deepcopy(data["profiles"]["qwen35-9b-q4km-vulkan"])
@@ -151,6 +165,8 @@ def _serve_env(tmp_path: Path, *, fail_start: bool = False) -> dict:
     _chmod_x(llama)
     serve_log = tmp_path / "serve.log"
     serve_log.write_text("", encoding="utf-8")
+    docker = tmp_path / "docker"
+    _write_docker_stub(docker)
     env = {k: v for k, v in os.environ.items() if not k.startswith("A770B_")}
     env.update(
         A770B_PROJECT=str(ROOT),
@@ -165,10 +181,13 @@ def _serve_env(tmp_path: Path, *, fail_start: bool = False) -> dict:
         A770B_LLAMA_BIN=str(llama),
         A770B_API_KEY_FILE=str(xdg / "api.key"),
         A770B_ALLOW_NO_NVTOP="1",
+        A770B_DOCKER=str(docker),
+        A770B_COMPOSE_PROJECT="seat-test",
         XDG_CONFIG_HOME=str(xdg),
         SERVE=str(stub),
         SERVE_LOG=str(serve_log),
         SERVE_FAIL_START="1" if fail_start else "0",
+        SERVE_CONTAINER_UP="0",
     )
     return env
 
@@ -285,3 +304,85 @@ def test_serve_exports_live_identity_on_successful_stub_start(tmp_path):
     assert "backend=vulkan" in last
     assert "mode=display" in last
     assert "profile=qwen35-9b-q4km-vulkan" in last
+
+
+def _sidecar(env: dict, pid: int) -> Path:
+    path = Path(env["A770B_DATA"]) / "logs" / "live-backend.json"
+    live_backend.write(
+        str(path),
+        {
+            "card": "a770",
+            "backend": "vulkan",
+            "mode": "display",
+            "model": QWEN,
+            "profile": "qwen35-9b-q4km-vulkan",
+            "pid": pid,
+        },
+    )
+    return path
+
+
+def test_serve_refuses_a_running_container_when_the_pidfile_is_missing(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    env["SERVE_CONTAINER_UP"] = "1"
+    sidecar = _sidecar(env, live_pid)
+    result = _run_serve(env, "qwen35-9b-q4km-vulkan")
+    assert result.returncode != 0
+    assert "serve refused: the container is running and the pidfile is missing" in result.stdout
+    assert sidecar.is_file()
+    lines = _log_lines(env)
+    assert "stop" not in lines
+    assert not any(line.startswith("start ") for line in lines)
+
+
+def test_serve_refuses_when_the_matching_server_does_not_answer_health(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    _write_live_sidecar(env, live_pid)
+    sidecar = Path(env["A770B_DATA"]) / "logs" / "live-backend.json"
+    result = _run_serve(env, "qwen35-9b-q4km-vulkan")
+    assert result.returncode != 0
+    assert "serve refused: 127.0.0.1:9 did not answer /health" in result.stdout
+    assert sidecar.is_file()
+    lines = _log_lines(env)
+    assert "stop" not in lines
+    assert not any(line.startswith("start ") for line in lines)
+
+
+def test_serve_matching_health_and_models_stays_up(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    httpd = HTTPServer(("127.0.0.1", 0), _Health)
+    env["A770B_PORT"] = str(httpd.server_address[1])
+    _write_live_sidecar(env, live_pid)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" in result.stdout
+    lines = _log_lines(env)
+    assert "stop" not in lines
+    assert not any(line.startswith("start ") for line in lines)
+
+
+def test_serve_with_no_container_and_no_pidfile_still_starts(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    sidecar = _sidecar(env, live_pid)
+    httpd = HTTPServer(("127.0.0.1", 0), _Health)
+    env["A770B_PORT"] = str(httpd.server_address[1])
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sidecar.is_file()
+    lines = _log_lines(env)
+    assert "stop" in lines
+    assert any(line.startswith("start ") for line in lines)

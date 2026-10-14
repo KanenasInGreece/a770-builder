@@ -372,7 +372,7 @@ def test_vllm_dry_run_stops_when_the_tokenizer_is_missing(tmp_path):
     assert "llama-benchy" not in result.stdout
 
 
-def test_a_log_with_no_llama_cpp_timings_does_not_print_a_zero_request_line(tmp_path):
+def _capture_untimed(tmp_path, blog_text, label):
     seat = tmp_path / "seat"
     seat.mkdir()
     subprocess.run(["git", "init", "-q", str(seat)], check=True)
@@ -392,19 +392,35 @@ def test_a_log_with_no_llama_cpp_timings_does_not_print_a_zero_request_line(tmp_
         """), encoding="utf-8")
     docker.chmod(0o755)
     blog = tmp_path / "build.log"
-    blog.write_text("ok\n", encoding="utf-8")
+    blog.write_text(blog_text, encoding="utf-8")
     env = _isolated(tmp_path)
     env["A770B_DOCKER"] = str(docker)
     env["PATH"] = f"{bindir}:{env['PATH']}"
     result = subprocess.run(
-        ["bash", str(ROOT / "harness" / "capture_task.sh"), "notime", str(seat), str(blog)],
+        ["bash", str(ROOT / "harness" / "capture_task.sh"), label, str(seat), str(blog)],
         cwd=ROOT, capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    report = tmp_path / "results" / "notime.task.md"
-    body = report.read_text(encoding="utf-8")
+    return (tmp_path / "results" / f"{label}.task.md").read_text(encoding="utf-8")
+
+
+def test_a_log_with_no_llama_cpp_timings_does_not_print_a_zero_request_line(tmp_path):
+    body = _capture_untimed(tmp_path, "ok\n", "notime")
     assert "timings unavailable (log has no llama.cpp timing lines)" in body
+    assert "context was not measured" in body
     assert "requests=" not in body
+    assert "prompt_tokens_total=" not in body
+
+
+def test_a_log_with_no_llama_cpp_timings_sums_one_prompt_tokens_number(tmp_path):
+    body = _capture_untimed(tmp_path, '{"usage":{"prompt_tokens":4321}}\n', "onetok")
+    assert "timings unavailable (log has no llama.cpp timing lines)" in body
+    assert body.index("timings unavailable (log has no llama.cpp timing lines)") < body.index(
+        "prompt_tokens_total=4321"
+    )
+    assert "prompt_tokens_total=4321" in body
+    assert "requests=" not in body
+    assert "context was not measured" not in body
 
 
 def test_render_readme_skips_the_attribution_block(tmp_path):
