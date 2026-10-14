@@ -521,7 +521,7 @@ the sandbox's use of `bubblewrap`, `socat`, `uv` and the opencode binary from `A
 
 `bench_http.sh`, `prompt_budget.py fit`, and `depth_probe.sh` can measure a server that is already up. Pass its base URL. fit counts from the tokenizer directory and does not post /tokenize. Health for that URL is any successful `GET /health`. The tokenizer is a model directory or a Hugging Face id, not the served name.
 
-The skill starts SGLang from the profile's tool_parser and reasoning_parser and the compose/b70-sglang.yaml envelope, and still does not package the image. `ladder.sh` is still not pointed at a Flash-Next tree or a packed store.
+The skill starts SGLang from the profile's tool_parser and reasoning_parser and the compose/b70-sglang.yaml envelope, and still does not package the image. An sglang ladder starts from `compose/b70-sglang.yaml` and takes speed from llama-benchy.
 
 ```text
 bash harness/bench_http.sh --base-url http://127.0.0.1:PORT --served-model-name NAME --tokenizer /path/to/model --dry-run

@@ -19,6 +19,7 @@ description: Use when delegating a bounded coding task to a LOCAL Intel Arc mode
 | State | `bash <skill-dir>/scripts/local-build.sh status` |
 | Doctor | `bash <skill-dir>/scripts/local-build.sh doctor` |
 | Server | `bash <skill-dir>/scripts/local-build.sh serve <card>` · `stop` |
+| Bench | `bash <skill-dir>/scripts/local-build.sh bench <profile> [--pp <sizes>]` |
 | Stop run | `bash <skill-dir>/scripts/local-build.sh stop-run` |
 | Reset | `bash <skill-dir>/scripts/local-build.sh reset [<seat>]` |
 | Version | `bash <skill-dir>/scripts/local-build.sh --version` · `check-update` |

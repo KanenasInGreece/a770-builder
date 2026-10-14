@@ -4,6 +4,8 @@ import json
 import struct
 from pathlib import Path
 
+import pytest
+
 from harness.engine_evidence import (
     gguf_tensor_mix,
     gguf_tensor_mix_path,
@@ -348,6 +350,27 @@ def test_cli_log_reads_the_fixture_from_stdin_with_dash(tmp_path, monkeypatch, c
     assert data["source"] == "-"
     assert data["build"] == "10920 (eafe15a5e)"
     assert "notes" not in data
+
+
+def test_cli_log_sglang_writes_null_rates(tmp_path):
+    """sglang is not a llama.cpp or vllm counter source, so rates stay null and tok/s is not invented."""
+    log = tmp_path / "sglang.log"
+    log.write_text("decode 42.0 tok/s\n", encoding="utf-8")
+    out = tmp_path / "out.json"
+    rc = main_cli(["log", "--engine", "sglang", "--log", str(log), "--out", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["engine"] == "sglang"
+    assert data["rates"] is None
+    assert data["notes"] == ["this log is not a llama.cpp or vllm counter source"]
+    assert "42.0" not in out.read_text(encoding="utf-8")
+
+
+def test_cli_diff_rejects_sglang():
+    """The diff command stays limited to vllm and llama.cpp."""
+    with pytest.raises(SystemExit) as caught:
+        main_cli(["diff", "--engine", "sglang", "before.prom", "after.prom"])
+    assert caught.value.code == 2
 
 
 def test_cli_log_vllm_fixture(tmp_path):

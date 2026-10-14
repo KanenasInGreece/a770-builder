@@ -2,8 +2,9 @@
 # ladder.sh — the one command a stranger runs to produce a registry row. Runs the rungs AGENTS.md's "The ladder"
 # names, in the order it names them, stopping at the first failure (a later rung is wasted on a model that failed
 # an earlier one):
-#   1. load and VRAM at the target window  — harness/serve_compose.sh, wrapped inside harness/bench_model.sh
-#   2. the probes and the 17k summary       — harness/bench_model.sh <label> <gguf> <ctx> [flags]
+#   1. load and VRAM at the target window  — serve_compose.sh. llama.cpp and vllm reach it through bench_model.sh;
+#                                            sglang starts serve_compose.sh itself and samples MemAvailable and VRAM.
+#   2. the probes and the 17k summary       — bench_model.sh for llama.cpp and vllm. sglang does not read llama.cpp timings.
 #   3. the standard speed rung              — harness/bench_http.sh for every admitted engine, server left up.
 #                                         bring/speed/count come from harness/roles.py. SGLang is
 #                                         started from compose/b70-sglang.yaml, not attached.
@@ -173,6 +174,10 @@ if [ "$DRYRUN" = 1 ]; then
   if [ "$BRING" = attach ]; then
     echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
     echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
+  elif [ "$ENGINE" = sglang ]; then
+    # sglang has no llama.cpp probe; naming bench_model.sh here would put that script on the rung.
+    echo "[dry-run] rung 1/6: bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA} — MemAvailable sampled before and after; VRAM sampled after load"
+    echo "[dry-run] rung 2/6: no llama.cpp probe"
   else
     echo "[dry-run] rung 1/6: load — MemAvailable sampled before and after (feeds memavailable_drop_gb; ram_gb_extra is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4, never sampled here)"
     echo "[dry-run] rung 2/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/bench_model.sh $NAME $GGUF $CTX $EXTRA"
@@ -221,7 +226,7 @@ if [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
   FAIL_MSG="bring is attach and no server is attached"
 fi
 # SGLang starts on its own envelope. A missing env file is refused here, before
-# bench_model.sh, whose first act is a compose stop (a container command).
+# serve_compose.sh, which is a container command.
 if [ "$ENGINE" = sglang ]; then
   A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml"
   A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
@@ -246,6 +251,35 @@ echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(d
 # ── rung 1+2: load and VRAM at the window, the probes and the 17k summary ──────────────────────────────────────
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 if [ -z "$FAIL_RUNG" ]; then
+if [ "$ENGINE" = sglang ]; then
+  echo "▶ rung 1/6 — load (serve_compose.sh); MemAvailable and VRAM"
+  if [ "$BRING" = attach ]; then
+    echo "bring is attach — not starting a server" >&2
+  else
+    _sg_quant=""; _sg_tool=""; _sg_reason=""
+    if [ -n "$PROFILE_NAME" ]; then
+      _sg_quant=$(a770b_profile_var "$PROFILE_NAME" QUANT)
+      _sg_tool=$(a770b_profile_var "$PROFILE_NAME" TOOL_PARSER)
+      _sg_reason=$(a770b_profile_var "$PROFILE_NAME" REASONING_PARSER)
+    fi
+    _sg_t0=$(date +%s.%N)
+    # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
+    if ! QUANT="$_sg_quant" TOOL_PARSER="$_sg_tool" REASONING_PARSER="$_sg_reason" \
+        bash "$here/serve_compose.sh" start "$GGUF" "$CTX" $EXTRA; then
+      FAIL_RUNG="load"; FAIL_MSG="serve_compose.sh failed"
+    else
+      _sg_vram=$(gpu_used_gib)
+      _sg_load=$(T0="$_sg_t0" T1="$(date +%s.%N)" python3 -c 'import os; print(round(float(os.environ["T1"]) - float(os.environ["T0"]), 1))')
+      python3 - "$A770B_DATA/results/$NAME.json" "$NAME" "$GGUF" "$CTX" "$_sg_load" "$_sg_vram" <<'PY'
+import json, sys
+out, label, gguf, ctx, load_s, vram = sys.argv[1:7]
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump({"label": label, "gguf": gguf, "ctx": int(ctx), "load_s": float(load_s), "vram_gib_after_load": float(vram)}, fh)
+PY
+    fi
+  fi
+  echo "▶ rung 2/6 — no llama.cpp probe"
+else
 echo "▶ rung 1-2/6 — load, VRAM, probes, 17k summary (bench_model.sh)"
 if [ "$BRING" = attach ]; then
   # bench_model.sh starts serve_compose.sh. Do not. The server is the operator's.
@@ -255,6 +289,7 @@ else
   if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" bash "$here/bench_model.sh" "$NAME" "$GGUF" "$CTX" $EXTRA; then
     FAIL_RUNG="load+probes"; FAIL_MSG="bench_model.sh failed — read $LOGDIR/llamacpp-a770.log"
   fi
+fi
 fi
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")

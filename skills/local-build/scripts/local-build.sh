@@ -3,7 +3,7 @@
 #   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
-#   serve <profile> | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
+#   serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
 #   profiles [--name N]   the registry card (config/registry/<card>.<mode>.json) with the served values, for a caller choosing a profile
 #   menu              ready / also / the cold full slice as JSON, for a caller picking a row
 #   doctor            what this machine lacks to run the seat, one line per check; exit 1 when anything is missing
@@ -298,6 +298,38 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   bash "$SERVE" stop >/dev/null 2>&1
   _serve_start_or_die
 }
+# bench_profile <profile> [--pp <sizes>] [--dry-run] — serve that profile, then llama-benchy. Not bench_model.sh.
+bench_profile(){
+  local p dry=0
+  local -a pp=() http_args=()
+  p="${1:?}"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      --pp)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --*) break ;;
+            *) pp+=("$1"); shift ;;
+          esac
+        done
+        [ "${#pp[@]}" -gt 0 ] || die "--pp needs sizes"
+        ;;
+      *) die "unknown arg $1" ;;
+    esac
+  done
+  profile_vars "$p"
+  if [ "$dry" != 1 ]; then
+    run_lock
+    serve "$p" || return $?
+  fi
+  http_args=(--base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$gguf")
+  [ "$dry" = 1 ] && http_args+=(--dry-run)
+  [ "${#pp[@]}" -gt 0 ] && http_args+=(--pp "${pp[@]}")
+  bash "$A770B_PROJECT/harness/bench_http.sh" "${http_args[@]}"
+}
 # _attach_running_server <base-url> <served-name> — use a server that is already up. Does not start or stop one.
 # Health is the origin /health after one trailing /v1 is removed. Any HTTP success is enough; the body is not read.
 _attach_running_server(){
@@ -506,6 +538,7 @@ doctor(){
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 case "${1:-}" in
   serve)  run_lock; [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; serve "$2" ;;
+  bench)  [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; case "$2" in --*) die "unknown arg $2";; esac; shift; bench_profile "$@" ;;
   reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
   status) status ;;
   profiles) if [ -n "$A770B_PROFILES" ]; then shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@"; else empty_registry_line; fi ;;
@@ -641,6 +674,6 @@ case "${1:-}" in
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
 fi

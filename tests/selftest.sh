@@ -1195,12 +1195,19 @@ sg=$(env -u A770B_ATTACHED -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=
   A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
   bash "$here/harness/ladder.sh" sglang-row --dry-run 2>&1)
 if printf '%s\n' "$sg" | grep -q 'bring: start' \
-  && printf '%s\n' "$sg" | grep -q 'bench_model.sh' \
+  && printf '%s\n' "$sg" | grep -q 'serve_compose.sh start' \
+  && ! printf '%s\n' "$sg" | grep -q 'bench_model.sh' \
   && printf '%s\n' "$sg" | grep -q 'bench_http.sh' \
   && ! printf '%s\n' "$sg" | grep -q 'this skill does not start SGLang' \
   && ! printf '%s\n' "$sg" | grep -q 'tok/s'
-then echo "ok   ladder: an sglang dry-run names the start and prints no tok/s figure"
+then echo "ok   ladder: an sglang dry-run names the start and bench_http.sh, not bench_model.sh"
 else echo "FAIL ladder: sglang dry-run did not name the start"; printf '%s\n' "$sg"; fail=1
+fi
+lc=$(four_dry "$t/four/both.json" "$t/four/dir-models" llama-row)
+vl=$(four_dry "$t/four/both.json" "$t/four/dir-models" vllm-row)
+if printf '%s\n' "$lc" | grep -q 'bench_model.sh' && printf '%s\n' "$vl" | grep -q 'bench_model.sh'
+then echo "ok   ladder: a llama.cpp dry-run and a vllm dry-run still name bench_model.sh"
+else echo "FAIL ladder: llama.cpp or vllm dry-run dropped bench_model.sh"; fail=1
 fi
 sga=$(env -u A770B_PROFILES A770B_ATTACHED=1 A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/sg-att" \
   A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
@@ -1228,10 +1235,13 @@ printf '%s\n' "uvx \$*" >> "$four_marker"
 exit 99
 EOF
 chmod +x "$t/four/bin/bench_http.sh" "$t/four/bin/docker" "$t/four/bin/uvx"
+# A private mount hides the host env file so this is the missing-file refusal.
+mkdir -p "$t/four/compose-mask"
+cp -a "$here/compose/b70-sglang.yaml" "$here/compose/b70-sglang.env.example" "$t/four/compose-mask/"
 sglive=$(env -u A770B_ATTACHED -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE="$t/four/missing-refuse" A770B_DATA="$t/four/sg-live" \
   A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
   A770B_DOCKER="$t/four/bin/docker" PATH="$t/four/bin:$PATH" \
-  bash "$here/harness/ladder.sh" sglang-row 2>&1); sglive_rc=$?
+  unshare --user --map-root-user --mount bash -c "mount --bind '$t/four/compose-mask' '$here/compose' && exec bash '$here/harness/ladder.sh' sglang-row" 2>&1); sglive_rc=$?
 if [ "$sglive_rc" != 0 ] && [ ! -e "$four_marker" ] \
   && printf '%s\n' "$sglive" | grep -q 'b70-sglang.env.example' \
   && ! printf '%s\n' "$sglive" | grep -q 'bench_http.sh' \
@@ -1239,6 +1249,38 @@ if [ "$sglive_rc" != 0 ] && [ ! -e "$four_marker" ] \
   && ! printf '%s\n' "$sglive" | grep -q 'this skill does not start SGLang'
 then echo "ok   ladder: a live sglang rung with no env file refuses before bench_http.sh and any container command"
 else echo "FAIL ladder: live sglang did not refuse before docker (rc=$sglive_rc marker=$( [ -e "$four_marker" ] && echo present || echo absent))"; printf '%s\n' "$sglive" | tail -25; fail=1
+fi
+bench_uvx_marker="$t/four/bench-uvx-called"
+cat > "$t/four/bin/uvx" <<EOF
+#!/bin/sh
+touch "$bench_uvx_marker"
+exit 99
+EOF
+chmod +x "$t/four/bin/uvx"
+bench_out=$(env -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/bench-data" \
+  A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
+  PATH="$t/four/bin:$PATH" \
+  bash "$here/skills/local-build/scripts/local-build.sh" bench sglang-row --pp 8192 --dry-run 2>&1); bench_rc=$?
+if [ "$bench_rc" = 0 ] && ! [ -e "$bench_uvx_marker" ] \
+  && printf '%s\n' "$bench_out" | grep -q 'uvx llama-benchy' \
+  && ! printf '%s\n' "$bench_out" | grep -q 'bench_model.sh'
+then echo "ok   bench: local-build.sh bench --dry-run prints the uvx llama-benchy line and does not call uvx"
+else echo "FAIL bench: dry-run did not print uvx llama-benchy or it called uvx (rc=$bench_rc)"; printf '%s\n' "$bench_out"; fail=1
+fi
+bench_bad=$(env -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/bench-bad" \
+  A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
+  bash "$here/skills/local-build/scripts/local-build.sh" bench sglang-row --nope 2>&1); bench_bad_rc=$?
+bench_miss=$(env -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/bench-miss" \
+  A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
+  bash "$here/skills/local-build/scripts/local-build.sh" bench nosuch 2>&1); bench_miss_rc=$?
+serve_miss=$(env -u A770B_PROFILES A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/four/serve-miss" \
+  A770B_PROFILES_FILE="$t/four/sglang.json" A770B_MODELS="$t/four/sglang-models" \
+  bash "$here/skills/local-build/scripts/local-build.sh" serve nosuch 2>&1); serve_miss_rc=$?
+if [ "$bench_bad_rc" = 2 ] && printf '%s\n' "$bench_bad" | grep -q 'unknown arg --nope' \
+  && [ "$bench_miss_rc" = 2 ] && [ "$serve_miss_rc" = 2 ] \
+  && [ "$bench_miss" = "$serve_miss" ] && ! [ -e "$bench_uvx_marker" ]
+then echo "ok   bench: an unknown argument is refused, and a missing profile is refused the same way serve refuses one"
+else echo "FAIL bench: unknown arg or missing profile was not refused like serve"; printf '%s\n' "bad($bench_bad_rc)=$bench_bad" "bench=$bench_miss" "serve=$serve_miss"; fail=1
 fi
 
 # ── run_suite.sh --model/--ctx (item 3): a GGUF with no registry row can still climb the task rung

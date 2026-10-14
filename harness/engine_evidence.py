@@ -801,7 +801,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     log_parser = subparsers.add_parser("log", help="Parse engine log and optional model metadata into evidence JSON.")
-    log_parser.add_argument("--engine", choices=["vllm", "llama.cpp"], default="vllm", help="Inference engine name")
+    log_parser.add_argument("--engine", choices=["vllm", "llama.cpp", "sglang"], default="vllm", help="Inference engine name")
     log_parser.add_argument("--log", required=True, help="Path to server log file, or - for stdin")
     log_parser.add_argument("--model", default=None, help="Path to model file (.gguf) or directory")
     log_parser.add_argument("--out", default=None, help="Output file path (default stdout)")
@@ -813,6 +813,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     diff_parser.add_argument("--out", default=None, help="Output file path (default stdout)")
 
     args = parser.parse_args(argv)
+
+    if args.command == "log" and args.engine == "sglang":
+        # This log is not a llama.cpp or vllm counter source; do not invent tok/s from it.
+        data = {
+            "engine": "sglang",
+            "rates": None,
+            "notes": ["this log is not a llama.cpp or vllm counter source"],
+        }
+        rendered = json.dumps(data, indent=2)
+        if args.out:
+            out_p = Path(args.out)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_p.write_text(rendered, encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
 
     if args.command == "log":
         notes = []

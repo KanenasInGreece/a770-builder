@@ -226,6 +226,7 @@ def test_vllm_dry_run_leaves_the_server_up_and_names_the_tokenizer(tmp_path):
     text = result.stdout
     assert "leave the server up" in text
     assert "llama-benchy" in text
+    assert "bench_model.sh" in text
     assert "bench_speed.sh" not in text
     assert str(model) in text
     rung3 = text.split("rung 4/6", 1)[0]
@@ -315,7 +316,8 @@ def test_sglang_dry_run_names_the_start(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     text = result.stdout
     assert "bring: start" in text
-    assert "bench_model.sh" in text
+    assert "serve_compose.sh start" in text
+    assert "bench_model.sh" not in text
     assert "bench_http.sh" in text
     assert "this skill does not start SGLang" not in text
     assert "rung 3/6: not run" not in text
@@ -331,7 +333,7 @@ def test_sglang_dry_run_names_bench_http_when_attached(tmp_path):
     text = result.stdout
     assert "bring: start" in text
     assert "bench_http.sh" in text
-    assert "bench_model.sh" in text
+    assert "bench_model.sh" not in text
     assert "llama-benchy" in text
     assert "this skill does not start SGLang" not in text
     assert "rung 3/6: not run" not in text
