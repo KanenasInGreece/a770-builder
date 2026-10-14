@@ -1541,6 +1541,10 @@ cat > "$cb/bin/docker" <<'EOF'
 printf '%s\n' "$*" >> "${FAKE_DOCKER_LOG:?}"
 case " $* " in
   *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
+  # docker ps --filter is the project's container probe. compose ps -q is a different call and still prints cid.
+  *" --filter "*)
+    [ "${FAKE_CONTAINER_UP:-}" = 1 ] && printf '%s\n' cid
+    exit 0;;
   *" ps -q "*) printf '%s\n' cid; exit 0;;
   *" inspect "*) printf '%s\n' 4242; exit 0;;
   *" logs "*)
@@ -1560,6 +1564,9 @@ case "${!#}" in
   *"/metrics")
     [ -z "${FAKE_CURL_METRICS_FAIL:-}" ] || exit 1
     cat "${FAKE_CURL_METRICS_BODY:-/dev/null}"; exit 0;;
+  *"/health")
+    [ -z "${FAKE_CURL_HEALTH_FAIL:-}" ] || exit 1
+    echo '{"ok": true}'; exit 0;;
   *) echo '{"ok": true}'; exit 0;;
 esac
 EOF
@@ -1609,6 +1616,34 @@ if grep -q 'a770-vulkan.yaml' "$cb/docker.log" && ! grep -q 'a770-sycl.yaml' "$c
 then echo "ok   compose: a vulkan row selects the vulkan envelope from its backend"
 else echo "FAIL compose: a vulkan row did not select the vulkan envelope"; printf '%s\n' "$cb_vk" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
 fi
+# a container that is already this project's, with no pidfile, is refused. The sidecar stays. stop is not called.
+rm -f "$cb/data/logs/llamacpp-a770.pid"
+python3 "$here/harness/live_backend.py" write --path "$cb/data/logs/live-backend.json" \
+  --card a770 --backend vulkan --mode inference --model Qwen3.5-9B-Q4_K_M.gguf \
+  --profile qwen35-9b-q4km-vulkan --pid 1
+: > "$cb/docker.log"
+cb_miss=$( _iso; FAKE_CONTAINER_UP=1 cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve qwen35-9b-q4km-vulkan 2>&1 ); cb_miss_rc=$?
+if [ "$cb_miss_rc" != 0 ] && printf '%s\n' "$cb_miss" | grep -q 'serve refused: the container is running and the pidfile is missing' \
+  && [ -f "$cb/data/logs/live-backend.json" ] && ! grep -q ' down' "$cb/docker.log" && ! grep -q ' stop' "$cb/docker.log"
+then echo "ok   serve: a running container with no pidfile is refused, the sidecar stays, and stop is not called"
+else echo "FAIL serve: a running container with no pidfile was not refused cleanly (rc=$cb_miss_rc)"; printf '%s\n' "$cb_miss" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
+fi
+# the same backend and model, and /health does not answer: refuse by host and port. Do not stop.
+sleep 120 & cb_hp=$!
+python3 "$here/harness/live_backend.py" write --path "$cb/data/logs/live-backend.json" \
+  --card a770 --backend vulkan --mode inference --model Qwen3.5-9B-Q4_K_M.gguf \
+  --profile qwen35-9b-q4km-vulkan --pid "$cb_hp"
+printf '%s\n' "$cb_hp" > "$cb/data/logs/llamacpp-a770.pid"
+: > "$cb/docker.log"
+cb_health=$( _iso; A770B_HOST=127.0.0.1 A770B_PORT=9 FAKE_CURL_HEALTH_FAIL=1 cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve qwen35-9b-q4km-vulkan 2>&1 ); cb_health_rc=$?
+kill "$cb_hp" 2>/dev/null || true
+wait "$cb_hp" 2>/dev/null || true
+if [ "$cb_health_rc" != 0 ] && printf '%s\n' "$cb_health" | grep -q 'serve refused: 127.0.0.1:9 did not answer /health' \
+  && [ -f "$cb/data/logs/live-backend.json" ] && ! grep -q ' down' "$cb/docker.log" && ! grep -q ' stop' "$cb/docker.log"
+then echo "ok   serve: a matching server that does not answer /health is refused by host and port, and stop is not called"
+else echo "FAIL serve: a matching server with no /health was not refused cleanly (rc=$cb_health_rc)"; printf '%s\n' "$cb_health" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
+fi
+rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid"
 # the host serve path was removed: A770B_SERVE=host is refused, never served
 cb_host=$( _iso; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
   A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_SERVE=host \

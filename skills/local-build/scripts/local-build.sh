@@ -249,10 +249,18 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   fi
   _export_live "$p"
   LIVE_PY="$A770B_PROJECT/harness/live_backend.py"
-  live_json=$(python3 "$LIVE_PY" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null) || live_json=""
   req_backend=$(a770b_profile_var "$p" BACKEND)
   export A770B_SERVED_BACKEND="${req_backend:-vulkan}"
   req_model=$(basename "$gguf")
+  # read deletes the sidecar when the pidfile is missing. Do not call it then, and do not stop a container
+  # that is already this project's when there is no pidfile to name it.
+  live_json=""
+  if [ -f "$PIDF" ]; then
+    live_json=$(python3 "$LIVE_PY" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null) || live_json=""
+  elif [ -n "$(_compose_container_id)" ]; then
+    echo "serve refused: the container is running and the pidfile is missing"
+    return 1
+  fi
   if [ -n "$live_json" ]; then
     live_backend=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["backend"])')
     live_model=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
@@ -261,6 +269,9 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       if curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
         if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
         echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+      else
+        echo "serve refused: $A770B_HOST:$A770B_PORT did not answer /health"
+        return 1
       fi
     else
       if [ "$live_backend" != "$req_backend" ] && python3 "$LIVE_PY" remote-cannot-switch --host "$A770B_HOST"; then

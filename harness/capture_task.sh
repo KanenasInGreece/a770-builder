@@ -136,7 +136,12 @@ elif ! "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1; then
 elif [ ! -s "$TMPLOG" ]; then
   echo "timings unavailable (no container log)"
 else
-  emit_llama_timings "$TMPLOG"
+  # A reused server: keep the llama.cpp sentence, then the build-log count when it has no requests= line.
+  llama_out=$(emit_llama_timings "$TMPLOG")
+  printf '%s\n' "$llama_out"
+  if ! printf '%s\n' "$llama_out" | grep -q 'requests='; then
+    emit_prompt_tokens_from_build "$BLOG"
+  fi
 fi
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"
