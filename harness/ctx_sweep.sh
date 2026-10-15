@@ -28,6 +28,10 @@
 # tolerance below measured some other depth, and is reported as not measured rather than as a reading at a depth
 # nothing ran.
 #
+# Of the two ways a point can be refused, the missing rate is asked first and before anything is computed on the
+# token count: a point whose server sent no prefill or decode rate measured no rate whatever depth its prompt
+# landed at, and how far that prompt sat from the size asked for decides nothing about the rate it never gave.
+#
 # A llama.cpp body is one JSON object: the two rates come from timings, and a missing rate stays MISSING, never
 # zero. A770B_SWEEP_STREAM=1 also sends stream and stream_options.include_usage. A server-sent event stream is
 # timed as its lines arrive. Prefill tok/s is prompt_tokens over the seconds to the first delta.content or
@@ -255,29 +259,34 @@ for want in "${SIZES[@]}"; do
     echo "$want: NOT MEASURED: the completion had no prompt token count"
     failed=1
   else
-    # the server reports how many tokens it received, and that is the depth this point measured. A point whose
-    # prompt landed far from the size asked for measured some other depth, and filing it under the size asked for
-    # would record a measurement nothing took: it is reported as not measured instead, and fails the rung.
-    tol=$(tolerance_for "$want")
-    off=$(( toks > want ? toks - want : want - toks ))
-    if [ "$off" -gt "$tol" ]; then
-      echo "$want: NOT MEASURED: the server was sent $toks tokens, $off away from the $want asked for (tolerance $tol tokens, sizing expected $toks_expected); this point measures no depth the sweep was asked for"
-      failed=1
-    elif [ "$pps" = "MISSING" ] || [ "$dps" = "MISSING" ]; then
+    # the rate first, and before anything is computed on the token count: a point that reported no prefill or
+    # decode rate measured no rate whatever depth its prompt landed at, and the depth sentence below would bury
+    # that. Nothing is subtracted here, so a MISSING rate is refused on its own grounds.
+    if [ "$pps" = "MISSING" ] || [ "$dps" = "MISSING" ]; then
       echo "$want: NOT MEASURED: the server reported no prefill or decode rate"
       failed=1
     else
-      printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' "$want" "$toks" "$pms" "$pps" "$dps" "${vmax}GiB" "$((after-b0))"
-      # what the curve said it would cost, beside what it did. They should be close, and the prediction should sit a
-      # little high; a request that runs well past its own prediction is the card telling you something changed.
-      if [ -n "$predicted" ] && [ "$predicted" -gt 0 ] 2>/dev/null \
-          && printf '%s' "$pms" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
-        python3 -c '
+      # the server reports how many tokens it received, and that is the depth this point measured. A point whose
+      # prompt landed far from the size asked for measured some other depth, and filing it under the size asked for
+      # would record a measurement nothing took: it is reported as not measured instead, and fails the rung.
+      tol=$(tolerance_for "$want")
+      off=$(( toks > want ? toks - want : want - toks ))
+      if [ "$off" -gt "$tol" ]; then
+        echo "$want: NOT MEASURED: the server was sent $toks tokens, $off away from the $want asked for (tolerance $tol tokens, sizing expected $toks_expected); this point measures no depth the sweep was asked for"
+        failed=1
+      else
+        printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' "$want" "$toks" "$pms" "$pps" "$dps" "${vmax}GiB" "$((after-b0))"
+        # what the curve said it would cost, beside what it did. They should be close, and the prediction should sit a
+        # little high; a request that runs well past its own prediction is the card telling you something changed.
+        if [ -n "$predicted" ] && [ "$predicted" -gt 0 ] 2>/dev/null \
+            && printf '%s' "$pms" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+          python3 -c '
 import sys
 pred, actual = float(sys.argv[1]), float(sys.argv[2])
 ratio = actual / pred if pred else 0
 note = " — ran past its own prediction, worth a look" if ratio > 1.3 else ""
 print(f"  prefill predicted {pred:.0f}s from the measured curve, actually {actual:.0f}s ({ratio:.2f}x){note}")' "$predicted" "$pms"
+        fi
       fi
     fi
   fi

@@ -450,6 +450,12 @@ def object_line_completions(line):
 def completions_from_build_log(text):
     '''Recognized completions in order: an SSE run is one, a plain line may hold several.
 
+    A blank line does not end a run: the run is the blank and data: lines between
+    the first and the last of them. A run that holds no data: line at all is a
+    stretch of blank lines and nothing else, so it is not a completion and is
+    skipped. Recorded as one it would be a completion whose count is absent, and
+    the blank lines separating two counted completions, or the ones a file ends
+    with, would turn a measured sum into the sentence for an unmeasured one.
     A line that is not an SSE run and holds no object whose own keys include
     usage or choices is not a completion at all. It splits the runs around it and
     contributes nothing to the sum, so prose between two completions leaves the
@@ -463,13 +469,16 @@ def completions_from_build_log(text):
         stripped = lines[index].strip()
         if stripped == '' or stripped.startswith('data:'):
             run = []
+            saw_data = False
             while index < total:
                 current = lines[index].strip()
                 if current != '' and not current.startswith('data:'):
                     break
+                saw_data = saw_data or current.startswith('data:')
                 run.append(lines[index])
                 index += 1
-            completions.append(sse_run_record(run))
+            if saw_data:
+                completions.append(sse_run_record(run))
             continue
         found = object_line_completions(lines[index])
         completions.extend(found)

@@ -654,6 +654,35 @@ class CaptureChecks(TempTree):
             self.assertEqual((code, err), (0, ""), label)
             self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=50"], label)
 
+    def test_check_16_a_blank_line_between_two_plain_objects_leaves_them_two_completions(self):
+        # A blank line holds no data, so a run of nothing but blank lines is no completion of its own whose
+        # count is absent: two plain usage objects that nothing but a blank line separates stay two counted
+        # completions, and their counts sum.
+        code, out, err, lines = self.capture(
+            "", '{"usage":{"prompt_tokens":7}}\n\n{"usage":{"prompt_tokens":50}}\n')
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=57"])
+        self.assertNotIn(NO_TOKEN_LINE, out)
+
+    def test_blank_lines_alone_are_no_completion(self):
+        # the blank lines a file leads or ends with, and the ones between two completions, add no completion
+        for label, build, total in [
+            ("trailing blank lines", '{"usage":{"prompt_tokens":7}}\n\n   \n', "7"),
+            ("leading blank lines", '\n\t\n{"usage":{"prompt_tokens":7}}\n', "7"),
+            ("blank lines round a data run", '\ndata: {"usage":{"prompt_tokens":9}}\n\n', "9"),
+            ("blank lines between a run and a plain line",
+             'data: {"usage":{"prompt_tokens":4}}\n\n\n{"usage":{"prompt_tokens":2}}\n', "6"),
+        ]:
+            code, out, err, lines = self.capture("", build)
+            self.assertEqual((code, err), (0, ""), label)
+            self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=" + total], label)
+            self.assertNotIn(NO_TOKEN_LINE, out, label)
+        # a build log of nothing but blank lines holds no recognised completion, so it is not measured
+        for label, build in [("no lines at all", ""), ("blank lines only", "\n   \n\t\n")]:
+            code, out, err, lines = self.capture("", build)
+            self.assertEqual((code, err), (0, ""), label)
+            self.assertEqual(lines, [NO_RATE_LINE, NO_TOKEN_LINE], label)
+
     def test_check_16_a_prose_line_between_two_runs_splits_them(self):
         # the prose line is no completion at all, so it splits the runs and the two counts still sum
         build = ('data: {"usage":{"prompt_tokens":7}}\n'

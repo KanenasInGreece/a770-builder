@@ -1043,6 +1043,18 @@ if [ "$cs_norate_rc" != 0 ] && printf '%s\n' "$cs_norate" | grep -q '1000: NOT M
 then echo "ok   ctx_sweep: a reply with no prefill or decode rate is NOT MEASURED and fails the rung, never a zero"
 else echo "FAIL ctx_sweep: a missing rate was not refused (rc=$cs_norate_rc)"; printf '%s\n' "$cs_norate" | tail -20; fail=1
 fi
+# and when both refusals would apply at once: no timings at all, and a prompt that landed far from the size asked
+# for. The rate is the thing this point never measured, and it is refused before anything is subtracted on the
+# token count — a distance the point was never asked to prove must not become the reason printed for it.
+python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":1500},"choices":[{"message":{"content":"it computes a checksum"}}]}, open(sys.argv[1],"w"))' "$t/cs-no-rate-far-off.json"
+cs_norate_far=$(run_sweep "$t/cs-no-rate-far-off.json" "$here/harness" 1000 2>&1); cs_norate_far_rc=$?
+if [ "$cs_norate_far_rc" != 0 ] \
+  && printf '%s\n' "$cs_norate_far" | grep -q '1000: NOT MEASURED: the server reported no prefill or decode rate' \
+  && ! printf '%s\n' "$cs_norate_far" | grep -q 'away from the 1000 asked for' \
+  && ! printf '%s\n' "$cs_norate_far" | grep -qE '^1000 +1500 '
+then echo "ok   ctx_sweep: a point that gave no rate and also landed far from the size asked for is refused for its missing rate, not for its depth — nothing was computed on the token count to decide it"
+else echo "FAIL ctx_sweep: the depth sentence buried the missing rate (rc=$cs_norate_far_rc)"; printf '%s\n' "$cs_norate_far" | tail -20; fail=1
+fi
 # a streamed completion: two data lines, then [DONE]. Rates come from the client clock. No usage is still a failure.
 mkdir -p "$t/csbin-stream" "$t/csbin-stream-bare"
 cat > "$t/csbin-stream/curl" <<'CSCURL'
