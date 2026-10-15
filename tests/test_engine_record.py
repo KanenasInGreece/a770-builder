@@ -945,6 +945,13 @@ class HealthChecks(unittest.TestCase):
         code, out, err = invoke(["health", "204"], stdin=b"")
         self.assertEqual((code, out, err), (0, "ok\n", ""))
 
+    def test_a_long_digit_string_does_not_raise(self):
+        rc, out, err = invoke(["health", ("0" * 4400) + "200"])
+        self.assertEqual((rc, out, err), (0, "ok\n", ""))
+        rc, out, err = invoke(["health", "9" * 5000])
+        self.assertEqual((rc, out, err), (1, "no\n", ""))
+        self.assertNotIn("Traceback", err)
+
 
 class ModuleHygiene(unittest.TestCase):
     """Brief check 12's and 23's clause on the file itself: no engine, no clock."""

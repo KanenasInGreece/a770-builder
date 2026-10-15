@@ -369,7 +369,15 @@ def cmd_health(args):
     if len(args) != 1 or re.fullmatch(r'[0-9]+', args[0]) is None:
         print('no')
         return 1
-    if 200 <= int(args[0]) <= 299:
+    # Leading zeros are part of the spelling, not of the value. A digit string
+    # longer than a few thousand characters makes int() raise, and this command
+    # does not raise. Anything that cannot be 200..299 is no.
+    digits = args[0].lstrip('0') or '0'
+    if len(digits) > 3:
+        print('no')
+        return 1
+    code = int(digits)
+    if 200 <= code <= 299:
         print('ok')
         return 0
     print('no')
