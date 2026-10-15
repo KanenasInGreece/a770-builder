@@ -4,10 +4,7 @@ import sys
 
 from profiles import ENGINE_VALUES
 
-_ATTACHED_TIMINGS = (
-    "timings unavailable (attached server; this capture reads a compose container log)"
-)
-_STARTED_TIMINGS = "compose-log"
+_TIMINGS = "engine_record"
 
 
 def _admitted():
@@ -50,9 +47,9 @@ def kit():
 def timings(which):
     """Name which capture_task.sh sentence applies. Does not read a log or invent a rate."""
     if which == "attached":
-        return _ATTACHED_TIMINGS
+        return _TIMINGS
     if which == "started":
-        return _STARTED_TIMINGS
+        return _TIMINGS
     print("usage: roles.py timings attached|started", file=sys.stderr)
     raise SystemExit(2)
 

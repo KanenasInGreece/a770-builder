@@ -107,10 +107,12 @@ done
 cat > "$T/read_point.py" <<'PY'
 import json
 import os
+import subprocess
 import sys
 import time
 
 raw_path = sys.argv[1]
+module = sys.argv[2]
 start = time.perf_counter()
 rows = []
 # os.read returns what has arrived. Text-mode readline pulls a whole buffer and then
@@ -136,116 +138,66 @@ with open(raw_path, "w", encoding="utf-8") as raw:
         rows.append((now - start, text))
 
 
-def from_timings(obj):
-    usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
-    raw_t = obj.get("timings")
-    timings = raw_t if isinstance(raw_t, dict) else {}
-
-    def rate(key, places):
-        if key not in timings or timings[key] is None:
-            return "MISSING"
-        return str(round(float(timings[key]), places))
-
-    pms = round(float(timings.get("prompt_ms") or 0) / 1000, 1)
-    print(usage.get("prompt_tokens") or 0, pms, rate("prompt_per_second", 0), rate("predicted_per_second", 1))
+def ask(command, stdin_text):
+    # the module decides where the answer came from; the reader only hands it the body it clocked
+    done = subprocess.run([sys.executable, module, command],
+                          input=stdin_text, capture_output=True, text=True)
+    return done.stdout.strip()
 
 
-def unmeasured():
-    print("UNMEASURED")
-
-
-def first_delta(event):
-    choices = event.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        return False
-    delta = choices[0].get("delta")
-    if not isinstance(delta, dict):
-        return False
-    for key in ("content", "reasoning_content"):
-        value = delta.get(key)
-        if isinstance(value, str) and value != "":
-            return True
-    return False
-
-
-def as_count(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-        return None
-    return int(value)
-
-
-def show_rate(value, places):
-    shown = round(float(value), places)
-    if shown == 0:
-        return None
-    return str(shown)
-
-
-def from_stream():
-    saw_data = False
-    first_at = None
-    usage = None
+def main():
+    text = "".join(line for _, line in rows).strip()
+    if not text:
+        # an empty body never reaches window: the shell's deadline branch owns it
+        print("NO_ANSWER")
+        return
+    has_data = False
+    samples = []
     for at, line in rows:
-        text = line.strip()
-        if not text.startswith("data:"):
+        seen = line.strip()
+        if not seen.startswith("data:"):
             continue
-        saw_data = True
-        payload = text[5:].strip()
-        if payload == "[DONE]":
+        has_data = True
+        payload = seen[5:].strip()
+        if payload == "" or payload == "[DONE]":
             continue
         try:
             event = json.loads(payload)
         except json.JSONDecodeError:
             continue
-        if not isinstance(event, dict):
-            continue
-        if first_at is None and first_delta(event):
-            first_at = at
-        got = event.get("usage")
-        if isinstance(got, dict):
-            usage = got
-    if not saw_data:
-        print(0, 0, 0, 0)
+        if isinstance(event, dict):
+            samples.append([at, event])
+    if not has_data:
+        print(ask("window", text) or "NO_ANSWER")
         return
-    if first_at is None or usage is None or not rows:
-        unmeasured()
-        return
-    prompt = as_count(usage.get("prompt_tokens"))
-    completion = as_count(usage.get("completion_tokens"))
-    end_at = rows[-1][0]
-    if prompt is None or completion is None or first_at <= 0 or end_at <= first_at:
-        unmeasured()
-        return
-    prefill = show_rate(prompt / first_at, 0)
-    decode = show_rate(completion / (end_at - first_at), 1)
-    if prefill is None or decode is None:
-        unmeasured()
-        return
-    print(prompt, round(first_at, 1), prefill, decode)
-
-
-def main():
-    text = "".join(line for _, line in rows).strip()
-    obj = None
-    if text.startswith("{") or text.startswith("["):
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            obj = parsed
+    rec = None
     try:
-        if obj is not None:
-            from_timings(obj)
-        elif any(line.strip().startswith("data:") for _, line in rows):
-            from_stream()
+        rec = json.loads(ask("stream", json.dumps(samples)))
+    except ValueError:
+        rec = None
+    if not isinstance(rec, dict):
+        print("NO_ANSWER")
+        return
+    tokens = rec.get("prompt_tokens")
+    if tokens is None:
+        # every event an object without choices is the server turning the request down, not a silent completion
+        if all("choices" not in event for _, event in samples):
+            print("NO_ANSWER")
         else:
-            print(0, 0, 0, 0)
-    except Exception:
-        print(0, 0, 0, 0)
+            print("UNMEASURED")
+        return
+    prefill = rec.get("prefill_tps")
+    decode = rec.get("decode_tps")
+    if prefill is None or decode is None:
+        print(tokens, "MISSING", "MISSING", "MISSING")
+        return
+    print(tokens, round(rec.get("first_delta_s") or 0, 1), round(prefill), round(decode, 1))
 
 
-main()
+try:
+    main()
+except Exception:
+    print("NO_ANSWER")
 PY
 printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' target tokens ttft_s prefill_tps decode_tps vram_max resets
 for want in "${SIZES[@]}"; do
@@ -285,21 +237,21 @@ for want in "${SIZES[@]}"; do
   vmax=0; ( while :; do u=$(gpu_used_gib); echo "$u"; sleep 2; done ) > "$T/vram" & VP=$!
   t0=$(date +%s.%N)
   # -sN so a streamed line is readable when it arrives, not when the body ends. The selftest's curl stub stays the client.
-  read -r toks pms pps dps <<<"$(curl -sN --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions" | python3 "$T/read_point.py" "$T/raw")"
+  read -r toks pms pps dps <<<"$(curl -sN --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions" | python3 "$T/read_point.py" "$T/raw" "$A770B_PROJECT/harness/engine_record.py")"
   t1=$(date +%s.%N); kill $VP 2>/dev/null; wait $VP 2>/dev/null
   vmax=$(sort -n "$T/vram" | tail -1)
   R=$(cat "$T/raw" 2>/dev/null || true)
   wall=$(python3 -c "print(round($t1-$t0,1))"); after=$(kernel_resets_since '-1min')
-  if [ "$toks" = "UNMEASURED" ]; then
-    echo "$want: NOT MEASURED: the server reported no prefill or decode rate"
+  if [ -z "$R" ]; then
+    # an empty body is the deadline that we set, never a rate failure and never the server's own words
+    echo "$want: NO ANSWER after ${wall}s — the ${deadline}s deadline cut the request off (asked for $toks_expected tokens)"
     failed=1
-  elif [ "$toks" = 0 ]; then
-    # say which of the two it was: the deadline we set, or the server turning the request down
-    if [ -z "$R" ]; then
-      echo "$want: NO ANSWER after ${wall}s — the ${deadline}s deadline cut the request off (asked for $toks_expected tokens)"
-    else
-      echo "$want: NO ANSWER (wall ${wall}s): $(echo "$R" | head -c 200)"
-    fi
+  elif [ "$toks" = "NO_ANSWER" ]; then
+    # the server answered with something that is not a completion: its own words, capped
+    echo "$want: NO ANSWER (wall ${wall}s): $(echo "$R" | head -c 200)"
+    failed=1
+  elif [ "$toks" = "UNMEASURED" ]; then
+    echo "$want: NOT MEASURED: the completion had no prompt token count"
     failed=1
   else
     # the server reports how many tokens it received, and that is the depth this point measured. A point whose
@@ -317,7 +269,8 @@ for want in "${SIZES[@]}"; do
       printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' "$want" "$toks" "$pms" "$pps" "$dps" "${vmax}GiB" "$((after-b0))"
       # what the curve said it would cost, beside what it did. They should be close, and the prediction should sit a
       # little high; a request that runs well past its own prediction is the card telling you something changed.
-      if [ -n "$predicted" ] && [ "$predicted" -gt 0 ] 2>/dev/null; then
+      if [ -n "$predicted" ] && [ "$predicted" -gt 0 ] 2>/dev/null \
+          && printf '%s' "$pms" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
         python3 -c '
 import sys
 pred, actual = float(sys.argv[1]), float(sys.argv[2])

@@ -92,7 +92,9 @@ b0=$(kernel_resets_since '-1min')
 ( while :; do gpu_used_gib; sleep 2; done ) > "$T/vram" & VP=$!
 t0=$(date +%s); R=$(curl -s --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions"); t1=$(date +%s)
 kill $VP 2>/dev/null; wait $VP 2>/dev/null
-python3 - "$R" "$((t1-t0))" "$(sort -n "$T/vram" | tail -1)" "$(kernel_resets_since '-1min')" "$b0" "$T/prompt" "$want" "$deadline" <<'PY'
+# counts and rates come from the module, not from a parser in this script; an unreadable reply leaves it empty
+REC=$(printf '%s' "$R" | python3 "$A770B_PROJECT/harness/engine_record.py" completion 2>/dev/null || true)
+python3 - "$R" "$((t1-t0))" "$(sort -n "$T/vram" | tail -1)" "$(kernel_resets_since '-1min')" "$b0" "$T/prompt" "$want" "$deadline" "$REC" <<'PY'
 import json, os, re, sys
 
 def _num(v, unit=""):
@@ -110,22 +112,35 @@ def _int(v):
         return 0
 
 
-def _tps(src, key, spec):
-    # a missing timings field is not a measured zero
-    if not isinstance(src, dict) or key not in src or src[key] is None:
+def _count(rec):
+    # an absent count says so; a measured zero prints 0
+    v = rec.get("prompt_tokens")
+    if isinstance(v, bool) or not isinstance(v, int):
+        return "not measured"
+    return str(v)
+
+
+def _rate(rec, key, spec):
+    # a missing rate is not a measured zero; a rate of 0 the engine reported is a real zero
+    v = rec.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
         return "not measured"
     try:
-        return format(float(src[key]), spec)
+        return format(float(v), spec)
     except (TypeError, ValueError):
         return "not measured"
 
 
-r_raw, wall, vram_max, after, before, corpus_path, want, deadline = sys.argv[1:9]
+r_raw, wall, vram_max, after, before, corpus_path, want, deadline, rec_raw = sys.argv[1:10]
+try:
+    rec = json.loads(rec_raw)
+except ValueError:
+    rec = {}
+if not isinstance(rec, dict):
+    rec = {}
 answer, refusal, answered = "", "", False
 try:
     r = json.loads(r_raw)
-    u = r.get("usage") if isinstance(r.get("usage"), dict) else {}
-    t = r.get("timings") if isinstance(r.get("timings"), dict) else {}
     msg = r["choices"][0]["message"]
     # a content field that came back at all means the model answered, even if it answered with nothing:
     # an empty answer at depth is a quality failure to be graded 0/3, never a request that was not made
@@ -146,8 +161,8 @@ try:
         rc = msg.get("reasoning_content") or ""
     bmsg = os.environ.get("A770B_BUDGET_MESSAGE") or ""
     trunc = bool(bmsg) and (bmsg in rc)
-    print(f"prompt_tokens={u.get('prompt_tokens')} wall={wall}s prefill_tps={_tps(t, 'prompt_per_second', '.0f')} "
-          f"decode_tps={_tps(t, 'predicted_per_second', '.1f')} vram_max={_num(vram_max, 'GiB')} resets={_int(after) - _int(before)} "
+    print(f"prompt_tokens={_count(rec)} wall={wall}s prefill_tps={_rate(rec, 'prefill_tps', '.0f')} "
+          f"decode_tps={_rate(rec, 'decode_tps', '.1f')} vram_max={_num(vram_max, 'GiB')} resets={_int(after) - _int(before)} "
           f"reasoning_chars={len(rc)} reasoning_truncated={trunc}")
     if not answered:
         refusal = (r.get("error") or {}).get("message") or "the reply carried no choices[0].message.content"

@@ -61,8 +61,8 @@ A770B_REFUSE=/nonexistent bash "$here/harness/capture_task.sh" selftest-link "$r
 if grep -q "MARKER-$$" "$A770B_DATA/results/selftest-link.task.md" "$A770B_DATA/results/selftest-link.patch" 2>/dev/null; then echo "FAIL capture read through a symlink"; fail=1; else echo "ok   capture: a symlink is named, never read"; fi
 # docker logs has no --no-color (unknown flag; discarding stderr made C9 look like it had no container log)
 if grep -q -- '--no-color' "$here/harness/capture_task.sh"; then echo "FAIL capture: docker logs still passes --no-color, which this docker refuses"; fail=1
-elif grep -q 'turns_with_n_gen=' "$here/harness/capture_task.sh"; then echo "ok   capture: docker logs has no --no-color and records per-turn n_gen"
-else echo "FAIL capture: n_gen is not recorded from the container log"; fail=1; fi
+elif ! grep -q 'emit_llama_timings\|emit_prompt_tokens_from_build' "$here/harness/capture_task.sh" && [ "$(grep -c 'engine_record.py" capture' "$here/harness/capture_task.sh")" -ge 2 ]; then echo "ok   capture: docker logs has no --no-color and both capture paths call engine_record.py capture"
+else echo "FAIL capture: an emit function survived or a capture path does not call engine_record.py capture"; fail=1; fi
 # a stub docker that prints a llama.cpp slot log: capture must report n_gen_max from it, not "timings unavailable"
 mkdir -p "$t/bin"
 printf '#!/bin/bash\ncat "$0.log" >&2\n' > "$t/bin/docker"; chmod +x "$t/bin/docker"
@@ -1185,9 +1185,9 @@ done
 tim_a=$(python3 "$here/harness/roles.py" timings attached); tim_a_rc=$?
 tim_s=$(python3 "$here/harness/roles.py" timings started); tim_s_rc=$?
 if [ "$role_ok" = 1 ] && [ "$names_ok" = 1 ] && [ "$bring_rc" != 0 ] && [ "$speed_rc" != 0 ] && [ "$count_rc" != 0 ] \
-  && [ "$tim_a_rc" = 0 ] && [ "$tim_a" = "timings unavailable (attached server; this capture reads a compose container log)" ] \
+  && [ "$tim_a_rc" = 0 ] && [ "$tim_a" = "engine_record" ] \
   && ! printf '%s\n' "$tim_a" | grep -q '0' \
-  && [ "$tim_s_rc" = 0 ] && [ "$tim_s" = compose-log ] && ! printf '%s\n' "$tim_s" | grep -q '0'
+  && [ "$tim_s_rc" = 0 ] && [ "$tim_s" = "engine_record" ] && ! printf '%s\n' "$tim_s" | grep -q '0'
 then echo "ok   roles: speed is bench_http.sh, bring is start or attach, count is unmeasured, timings name the existing sentence, and an unknown engine is refused with the admitted names"
 else echo "FAIL roles: bring/speed/count/timings did not answer as specified (names: $role_names)"; printf '%s\n' "bring($bring_rc)=$bring_other" "speed($speed_rc)=$speed_other" "count($count_rc)=$count_other" "attached=$tim_a" "started=$tim_s"; fail=1
 fi
@@ -1566,6 +1566,8 @@ case "${!#}" in
     cat "${FAKE_CURL_METRICS_BODY:-/dev/null}"; exit 0;;
   *"/health")
     [ -z "${FAKE_CURL_HEALTH_FAIL:-}" ] || exit 1
+    # the -w form (a serve wait): answer with the code, not a body
+    for a in "$@"; do case "$a" in *%{http_code}*) echo 200; exit 0;; esac; done
     echo '{"ok": true}'; exit 0;;
   *) echo '{"ok": true}'; exit 0;;
 esac

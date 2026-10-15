@@ -204,16 +204,17 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
       THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
       bash "$SERVE" start "$gguf" "$ctx" $extra
   ) || return 1
-  # SGLang /health is HTTP success, like vLLM. Do not grep the body for "ok".
-  case "${A770B_SERVED_BACKEND:-}" in
-    vllm|sglang)
-      for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep 2; done
-      ;;
-    *)
-      for _ in $(seq 1 90); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep 2; done
-      ;;
-  esac
-  curl -sf "http://$A770B_HOST:$A770B_PORT/health" >/dev/null || return 2
+  # One wait for every backend: engine_record.py health decides on the HTTP code alone — a 2xx is healthy on any
+  # engine, a 3xx is not, and the body is never read. The quotes keep an empty code one argument, and `|| true`
+  # keeps a refused connection from ending the wait early.
+  local code=""
+  for _ in $(seq 1 90); do
+    code=$(curl -sS -o /dev/null --max-time 2 -w '%{http_code}' "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null || true)
+    python3 "$A770B_PROJECT/harness/engine_record.py" health "$code" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  code=$(curl -sS -o /dev/null --max-time 2 -w '%{http_code}' "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null || true)
+  python3 "$A770B_PROJECT/harness/engine_record.py" health "$code" >/dev/null 2>&1 || return 2
   _write_serve_evidence "$p" "${A770B_SERVED_BACKEND:-}" "$gguf"
   local thinking_desc="mode ${thinking_mode:-$reasoning}"
   [ -n "$thinking_effort" ] && thinking_desc="$thinking_desc · effort $thinking_effort"
