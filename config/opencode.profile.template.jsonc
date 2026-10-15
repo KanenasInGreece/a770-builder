@@ -17,7 +17,7 @@
     "local-a770": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Local builder (__NAME__)",
-      "options": { "baseURL": "__BASEURL__", "apiKey": "__APIKEY__" },
+      "options": { "baseURL": "__BASEURL__", "apiKey": "__APIKEY__", "chunkTimeout": false },
       "models": { "local-builder": { "name": "local-builder (__NAME__)", "limit": { "context": __CTX__, "output": __OUTPUT__ } } }
     }
   },
