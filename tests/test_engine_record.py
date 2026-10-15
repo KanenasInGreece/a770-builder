@@ -12,9 +12,9 @@ It is also collected by pytest unchanged, for the merger's ``pytest -q tests/``.
 
 Only the module is under test in this file. The caller-side checks of the brief
 (roles.py timings, the local-build.sh wait loop, ctx_sweep.sh's branches,
-capture_task.sh's deleted inline Python, depth_probe.sh's formatting) are not
-asserted here: those edits are not part of this pass, so a missing caller edit is
-expected rather than a failure of these tests.
+capture_task.sh's deleted inline Python, depth_probe.sh's formatting) are part of
+this pass too, but they are asserted by ``bash tests/selftest.sh``, which runs
+beside this file: a missing caller edit fails that script, not these tests.
 """
 
 import json
@@ -655,19 +655,24 @@ class CaptureChecks(TempTree):
             self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=50"], label)
 
     def test_check_16_a_prose_line_between_two_runs_splits_them(self):
+        # the prose line is no completion at all, so it splits the runs and the two counts still sum
         build = ('data: {"usage":{"prompt_tokens":7}}\n'
                  'prose here\n'
                  'data: {"usage":{"prompt_tokens":50}}\n')
         code, out, err, lines = self.capture("", build)
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(lines, [NO_RATE_LINE, NO_TOKEN_LINE])
-        self.assertNotIn("prompt_tokens_total=", out)
+        self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=57"])
 
     def test_a_done_line_is_neither_an_event_nor_a_usage(self):
         code, out, err, lines = self.capture(
             "", 'data: {"usage":{"prompt_tokens":33}}\ndata: [DONE]\n')
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=33"])
+        # a plain `Done.` is prose: it ends the run, it is not a completion, the count stays measured
+        code, out, err, lines = self.capture(
+            "", 'data: {"usage":{"prompt_tokens":4}}\nDone.\n')
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=4"])
 
     def test_a_data_payload_that_is_not_an_object_is_skipped(self):
         code, out, err, lines = self.capture(
@@ -736,6 +741,12 @@ class CaptureChecks(TempTree):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(lines, [NO_RATE_LINE, NO_TOKEN_LINE])
         self.assertNotIn("prompt_tokens_total=", out)
+        # beside a real completion the wrapper is still no completion at all: it neither counts
+        # nor turns the sentence absent, so the completion that does hold usage prints on its own
+        code, out, err, lines = self.capture("", build + '{"usage":{"prompt_tokens":20}}\n')
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(lines, [NO_RATE_LINE, "prompt_tokens_total=20"])
+        self.assertNotIn("=8", out)
 
     def test_the_rate_line_is_the_last_completion_that_has_both_rates(self):
         build = ('{"choices":[{"message":{"content":"a"}}],"usage":{"prompt_tokens":10},'

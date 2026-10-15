@@ -180,8 +180,9 @@ def main():
         return
     tokens = rec.get("prompt_tokens")
     if tokens is None:
-        # every event an object without choices is the server turning the request down, not a silent completion
-        if all("choices" not in event for _, event in samples):
+        # every event an object that carries an error and no choices is the server turning the request
+        # down; any other null count is a completion whose count was never reported, which is unmeasured
+        if all("error" in event and "choices" not in event for _, event in samples):
             print("NO_ANSWER")
         else:
             print("UNMEASURED")

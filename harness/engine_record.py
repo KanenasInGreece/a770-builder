@@ -447,17 +447,13 @@ def object_line_completions(line):
         position = max(end, start + 1)
 
 
-def unmeasured_completion():
-    '''A completion whose count is absent: nothing here can be summed for it.'''
-    return {'prompt_tokens': None, 'prefill_tps': None, 'decode_tps': None}
-
-
 def completions_from_build_log(text):
     '''Recognized completions in order: an SSE run is one, a plain line may hold several.
 
-    A plain line that holds no usage and no choices object is a completion whose
-    count is absent, so one prose line among the completions keeps the sum
-    unmeasured instead of reporting a partial sum.
+    A line that is not an SSE run and holds no object whose own keys include
+    usage or choices is not a completion at all. It splits the runs around it and
+    contributes nothing to the sum, so prose between two completions leaves the
+    count of the completions that do hold usage measured, not partial.
     '''
     lines = text.splitlines()
     completions = []
@@ -476,7 +472,7 @@ def completions_from_build_log(text):
             completions.append(sse_run_record(run))
             continue
         found = object_line_completions(lines[index])
-        completions.extend(found if found else [unmeasured_completion()])
+        completions.extend(found)
         index += 1
     return completions
 

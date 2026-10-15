@@ -8,6 +8,10 @@ for f in "$here"/harness/*.sh "$here"/skills/local-build/scripts/local-build.sh 
   [ -f "$f" ] || continue; bash -n "$f" || { echo "FAIL syntax: $f"; fail=1; }
 done
 t=$(mktemp -d)
+# the shipped registry is read-only for this script: every writer is pointed at a copy under $t. Its sha256 is
+# recorded here and compared again at the very end, so a check that published a row into config/registry/ fails
+# the run instead of quietly leaving the seat's own registry behind.
+ship_registry_sha=$(sha256sum "$here/config/registry/a770.display.json" 2>/dev/null || true)
 # isolation (I11): this machine's own ~/.config/a770-builder/builder(.<mode>).env must never reach the selftest's
 # baseline, whatever mode it selects and whatever the calling shell already exported — clear every exported A770B_*
 # this process carries, then set exactly the baseline the checks below assume: display mode, an empty XDG_CONFIG_HOME.
@@ -930,6 +934,36 @@ if [ "$dp_trunc_rc" = 0 ] && grep -q 'reasoning_truncated=True' "$t/dp-trunc.out
 then echo "ok   depth_probe: thinking cut off by the budget is recorded reasoning_truncated=True, completed thinking False"
 else echo "FAIL depth_probe: truncation not recorded (trunc_rc=$dp_trunc_rc complete_rc=$dp_complete_rc)"; cat "$t/dp-trunc.out" "$t/dp-complete.out"; fail=1
 fi
+# ── the depth probe's header line, four ways: an absent count says so rather than printing 0, a reported zero ────
+# ── rate is a real zero and not "not measured", and a reply that never put content on the wire is the unanswered ─
+# ── path (exit 3) rather than a graded 0/3. These read only the header, so a quick stand-in curl is enough: the  ─
+# ── sampler still takes its first reading before the stand-in answers.                                       ─
+mkdir -p "$t/dpbin-fast"
+cat > "$t/dpbin-fast/curl" <<'DPCURL'
+#!/bin/sh
+sleep 0.3
+cat "$DP_FAKE_ANSWER_FILE"
+DPCURL
+chmod +x "$t/dpbin-fast/curl"
+python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":10},"choices":[{"message":{"content":"the Adler prime"}}]}, open(sys.argv[1],"w"))' "$t/dp-f-count.json"
+python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":10},"timings":{"prompt_per_second":0,"predicted_per_second":0},"choices":[{"message":{"content":"the Adler prime"}}]}, open(sys.argv[1],"w"))' "$t/dp-f-zeros.json"
+python3 -c 'import json,sys; json.dump({"choices":[{"message":{"content":"the Adler prime"}}]}, open(sys.argv[1],"w"))' "$t/dp-f-nousage.json"
+python3 -c 'import json,sys; json.dump({"usage":{"prompt_tokens":10},"choices":[{"message":{"reasoning_content":"I thought it through and stopped"}}]}, open(sys.argv[1],"w"))' "$t/dp-f-nocontent.json"
+dp_hdr(){ A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+  PATH="$t/dpbin-fast:$PATH" DP_FAKE_ANSWER_FILE="$1" bash "$here/harness/depth_probe.sh" 1000 > "$2" 2>&1; }
+dp_hdr "$t/dp-f-count.json" "$t/dp-f-count.out"; dp_count_rc=$?
+dp_hdr "$t/dp-f-zeros.json" "$t/dp-f-zeros.out"; dp_zeros_rc=$?
+dp_hdr "$t/dp-f-nousage.json" "$t/dp-f-nousage.out"; dp_nousage_rc=$?
+dp_hdr "$t/dp-f-nocontent.json" "$t/dp-f-nocontent.out"; dp_nocontent_rc=$?
+if grep -q 'prompt_tokens=10 wall=.*prefill_tps=not measured decode_tps=not measured' "$t/dp-f-count.out" \
+  && grep -q 'prefill_tps=0 decode_tps=0.0' "$t/dp-f-zeros.out" \
+  && grep -q 'prompt_tokens=not measured' "$t/dp-f-nousage.out" \
+  && ! grep -q 'prompt_tokens=0' "$t/dp-f-nousage.out" \
+  && [ "$dp_nocontent_rc" = 3 ] && grep -q 'depth probe at 1000: not measured' "$t/dp-f-nocontent.out" \
+  && ! grep -qE ': [0-9]+/3' "$t/dp-f-nocontent.out"
+then echo "ok   depth_probe: usage 10 with no timings prints 10 and two not measured, a reported zero rate prints 0 and 0.0, a reply with no usage prints prompt_tokens=not measured and never 0, and a reply with reasoning but no content key is the unanswered exit 3 and is never graded 0/3 (count rc=$dp_count_rc zeros rc=$dp_zeros_rc nousage rc=$dp_nousage_rc)"
+else echo "FAIL depth_probe: the header fixtures did not print as expected (count rc=$dp_count_rc zeros rc=$dp_zeros_rc nousage rc=$dp_nousage_rc nocontent rc=$dp_nocontent_rc)"; cat "$t/dp-f-count.out" "$t/dp-f-zeros.out" "$t/dp-f-nousage.out" "$t/dp-f-nocontent.out"; fail=1
+fi
 # ── harness/ctx_sweep.sh's own behaviour: the window rung proved with no card and no server. The stand-in
 # tokeniser above sizes each prompt; a fake curl answers the completion from a file the check names, and answers
 # the health check that follows it, so every path below runs without a model.
@@ -1083,6 +1117,51 @@ if [ "$cs_stream_rc" = 0 ] && [ "$cs_stream_rates" = 1 ] && ! printf '%s\n' "$cs
   && ! printf '%s\n' "$cs_stream_bare" | grep -qE '^1000 +[0-9]'
 then echo "ok   ctx_sweep: a streamed completion prints a numeric prefill and decode rate, and a stream with no usage is NOT MEASURED"
 else echo "FAIL ctx_sweep: stream rates were not measured from the client clock (stream rc=$cs_stream_rc rates=$cs_stream_rates bare rc=$cs_stream_bare_rc unset rc=$cs_stream_off_rc)"; printf '%s\n' "$cs_stream" "$cs_stream_off" "$cs_stream_bare" | tail -30; fail=1
+fi
+# the branch markers the ladder reads must stay in the reader, and the four zeros that used to stand in for a
+# missing measurement must never come back.
+if grep -q 'include_usage' "$here/harness/ctx_sweep.sh" && grep -q 'NO_ANSWER' "$here/harness/ctx_sweep.sh" \
+  && grep -q 'UNMEASURED' "$here/harness/ctx_sweep.sh" && grep -q 'MISSING' "$here/harness/ctx_sweep.sh" \
+  && ! grep -q '0 0 0 0' "$here/harness/ctx_sweep.sh"
+then echo "ok   ctx_sweep: include_usage is still asked for and NO_ANSWER, UNMEASURED and MISSING are all still there, and the file holds no '0 0 0 0' standing in for a missing measurement"
+else echo "FAIL ctx_sweep: a branch marker is gone (include_usage/NO_ANSWER/UNMEASURED/MISSING) or '0 0 0 0' came back"; fail=1
+fi
+# a null token count is two different things and the sweep says them apart: a stream whose every event is the
+# server's own refusal is NO ANSWER, a stream that carried a completion and simply never reported a count is
+# NOT MEASURED. Only the absence of choices is not enough to call it a refusal.
+mkdir -p "$t/csbin-stream-refused" "$t/csbin-stream-usage"
+cat > "$t/csbin-stream-refused/curl" <<'CSCURL'
+#!/bin/sh
+[ -n "${CS_CURL_LOG:-}" ] && printf '%s\n' "$*" >> "$CS_CURL_LOG"
+for a in "$@"; do
+  case "$a" in */health) printf '%s' '{"status":"ok"}'; exit 0 ;; esac
+done
+printf '%s\n' 'data: {"error":{"code":400,"message":"the requested capacity exceeds the context"}}'
+printf '%s\n' 'data: [DONE]'
+CSCURL
+cat > "$t/csbin-stream-usage/curl" <<'CSCURL'
+#!/bin/sh
+[ -n "${CS_CURL_LOG:-}" ] && printf '%s\n' "$*" >> "$CS_CURL_LOG"
+for a in "$@"; do
+  case "$a" in */health) printf '%s' '{"status":"ok"}'; exit 0 ;; esac
+done
+printf '%s\n' 'data: {"usage":{"completion_tokens":8}}'
+printf '%s\n' 'data: [DONE]'
+CSCURL
+chmod +x "$t/csbin-stream-refused/curl" "$t/csbin-stream-usage/curl"
+cs_null_refused=$(CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= A770B_SWEEP_STREAM=1 \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+  PATH="$t/csbin-stream-refused:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_null_refused_rc=$?
+cs_null_usage=$(CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= A770B_SWEEP_STREAM=1 \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" \
+  PATH="$t/csbin-stream-usage:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_null_usage_rc=$?
+if [ "$cs_null_refused_rc" != 0 ] && printf '%s\n' "$cs_null_refused" | grep -q '1000: NO ANSWER' \
+  && printf '%s\n' "$cs_null_refused" | grep -q 'the requested capacity exceeds the context' \
+  && ! printf '%s\n' "$cs_null_refused" | grep -q 'the completion had no prompt token count' \
+  && [ "$cs_null_usage_rc" != 0 ] && printf '%s\n' "$cs_null_usage" | grep -q '1000: NOT MEASURED: the completion had no prompt token count' \
+  && ! printf '%s\n' "$cs_null_usage" | grep -q '1000: NO ANSWER'
+then echo "ok   ctx_sweep: a stream of nothing but the server's refusal is NO ANSWER with its words, and a stream whose events hold usage but no prompt count and no error is NOT MEASURED — the absence of choices alone never calls a null count a refusal (refused rc=$cs_null_refused_rc usage rc=$cs_null_usage_rc)"
+else echo "FAIL ctx_sweep: the null-token sentences were not told apart (refused rc=$cs_null_refused_rc usage rc=$cs_null_usage_rc)"; printf '%s\n' "$cs_null_refused" "$cs_null_usage" | tail -30; fail=1
 fi
 mkdir -p "$t/csbin-empty"
 cat > "$t/csbin-empty/curl" <<'CSCURL'
@@ -1793,6 +1872,18 @@ if ! grep -q 'budget gate or VRAM cap refused' "$here/skills/local-build/scripts
 then echo "ok   skill: local-build.sh has dropped the old cause-claiming wording"
 else echo "FAIL skill: local-build.sh's failure wording is not the hedged replacement (old claim present, or 'see the error above' missing)"; fail=1
 fi
+# the health wait, scoped to the wait itself: it decides on the HTTP status code through the module and survives a
+# connection the engine refuses. The two absences are checked inside that function only, and the update check's own
+# `curl -fsS` further down the file is a different request that stays exactly as it is.
+lb_sh="$here/skills/local-build/scripts/local-build.sh"
+lb_wait=$(sed -n '/^_serve_start(){/,/^}$/p' "$lb_sh")
+lb_body_grep="grep -q '\"ok\"'"
+if printf '%s\n' "$lb_wait" | grep -q 'engine_record.py" health' && printf '%s\n' "$lb_wait" | grep -q '|| true' \
+  && ! printf '%s\n' "$lb_wait" | grep -qF "$lb_body_grep" && ! printf '%s\n' "$lb_wait" | grep -qF 'curl -f' \
+  && grep -qF 'curl -fsS' "$lb_sh"
+then echo "ok   skill: the health wait decides through engine_record.py health with || true, reads no body and takes no -f flag inside the wait, and the update check's curl -fsS is still there"
+else echo "FAIL skill: the health wait is not the module-decided wait (want engine_record.py\" health and || true, no $lb_body_grep and no curl -f inside it), or the update check lost its curl -fsS"; printf '%s\n' "$lb_wait"; fail=1
+fi
 
 # the skill copy finds its own checkout: with A770B_PROJECT unset and no builder.env, a copy that sits inside a
 # checkout resolves to that checkout (so running a branch's script tests the branch); an installed copy, which is
@@ -1800,6 +1891,14 @@ fi
 sl_out=$(cd / && env -u A770B_PROJECT XDG_CONFIG_HOME="$t/xdg" bash "$here/skills/local-build/scripts/local-build.sh" version 2>&1)
 if printf '%s\n' "$sl_out" | grep -q "$here"; then echo "ok   skill: a copy inside a checkout resolves A770B_PROJECT to its own checkout"
 else echo "FAIL skill: self-location did not resolve to $here"; printf '%s\n' "$sl_out"; fail=1
+fi
+
+# the run is over: the shipped registry must be the file the run started with. Everything that writes a row or a
+# profile was pointed at a copy under $t, so a difference here means a check published into the seat's own registry.
+ship_registry_sha_end=$(sha256sum "$here/config/registry/a770.display.json" 2>/dev/null || true)
+if [ -n "$ship_registry_sha" ] && [ "$ship_registry_sha" = "$ship_registry_sha_end" ]
+then echo "ok   registry: config/registry/a770.display.json is byte for byte the file the run started with"
+else echo "FAIL registry: config/registry/a770.display.json is not what the run started with"; echo "start: $ship_registry_sha"; echo "end:   $ship_registry_sha_end"; fail=1
 fi
 
 rm -rf "$t" "$A770B_DATA"
