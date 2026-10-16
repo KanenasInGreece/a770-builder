@@ -450,6 +450,151 @@
         "write": "not measured"
       },
       "use_for": "A B70 builder on vLLM for the EXL3 4.00bpw safetensors. Served language-model only, prediction head present and unused, speculation off, ctx 100,000, host VRAM 28.15 GiB after the bench. The pinned intel vLLM image will not load this quant; serve uses this row's image. The engine log says kv_cache_dtype auto on dtype bfloat16, recorded here as kv bf16; the vLLM argv does not take a K/V quant flag. No llama.cpp host-buffer lines, so ram_gb_extra is 0. Prefill 1893.1 tok/s at 8184 tokens and 1320.6 tok/s at 98729 tokens. The only 128-token decode is 33.87 tok/s at depth 0. The 98729-token completion stopped after 12 tokens at 27.58 tok/s, so decode at 8k, 32k, 64k and 100k was not measured. useful_ctx is the served window, not the four-tokens-a-second figure, and the depth probe was not run. Reasoning was off in the engine. The chat template still emitted a think tag, and those tokens counted as output and were not capped. Kit 3/3: the counted JavaScript stage is a retest after the first JavaScript stage applied an empty patch; backend and optimise are the first run. A tool call parsed."
+    },
+    "flashnext": {
+      "model": "Qwen3.8-Flash-Next-exl3-3.05bpw",
+      "source": "https://github.com/sybil-solutions/qwen38-flash-next-b70-offload",
+      "family": "qwen3.8",
+      "architecture": "qwen4_exp",
+      "quant": "exl3",
+      "kv": "f16",
+      "flash_attention": "off",
+      "reasoning": "off",
+      "extra": "--trust-remote-code --device xpu --host 0.0.0.0 --disable-shared-experts-fusion --kv-cache-dtype fp8_e4m3 --mem-fraction-static 0.85 --chunked-prefill-size 8192 --max-total-tokens 131072 --max-running-requests 4 --dtype bfloat16 --max-mamba-cache-size 32 --cuda-graph-backend-decode full --cuda-graph-bs-decode 1 2 4",
+      "capability_source": "The serve recipe published its own speed and quality tables on a different image and a different machine. Those numbers are not this row. This card's kit numbers are in speed, suite, and evidence.",
+      "use_for": "SGLang launch of Qwen3.8-Flash-Next EXL3 3.05bpw on the B70. Served context 131072. Useful window 100000: the sweep decoded 10.1 tok/s at 7958 tokens and 14.2 tok/s at 99887 tokens, both faster than 4 tok/s, and the 100000-token depth probe passed 3/3 at 99789 tokens. llama-benchy generation mode, mean of 3, decodes about 10.5, 10.0, 10.5 and 10.3 tok/s at 8192, 32768, 65536 and 100000, with prefill 1665.2, 1013.6, 1340.2 and 1219.6 tok/s. Those bench cells are not the sweep. The kit passed 3 of 3 counted stages, mean wall 1831 s, and all three references, on the server that was already up. Host-buffer RAM was not remeasured. Delivered suite rates were not measured.",
+      "depth_probe_100k": "pass (3/3)",
+      "category": "moe",
+      "weight_class": "180b-a6b",
+      "placement": "container",
+      "measured_on": "Arc Pro B70 32 GB, SGLang attached, 2026-10-16",
+      "card": "b70",
+      "backend": "sglang",
+      "mode": "inference",
+      "engine": "sglang",
+      "tool_parser": "qwen3_coder",
+      "reasoning_parser": "qwen3",
+      "checkpoint": {
+        "format": "safetensors",
+        "weight_quant": "EXL3-3.05bpw",
+        "activation_quant": "bf16",
+        "evidence": "quantization_config.json: quant_method exl3, version 1.4.4, bits 3.05, head_bits 5, codebook mul1, vision_bits 5, mtp_bits 3. The served argv sets dtype bfloat16."
+      },
+      "ctx": 131072,
+      "useful_ctx": 100000,
+      "timeout_s": 1500,
+      "vram_gib_after_load": 31.52,
+      "ram_gb_extra": 20,
+      "params_b": {
+        "total": 180,
+        "active": 6
+      },
+      "speed": {
+        "decode_tps": {
+          "8k": 10.5,
+          "32k": 10.0,
+          "64k": 10.5,
+          "100k": 10.3
+        },
+        "prefill_tps": {
+          "8k": 1665.2,
+          "32k": 1013.6,
+          "64k": 1340.2,
+          "100k": 1219.6
+        },
+        "far_end": {
+          "tokens": 99887,
+          "decode_tps": 14.2,
+          "prefill_tps": 1088,
+          "ttft_s": 91.8
+        },
+        "bench": {
+          "tool": "llama-benchy",
+          "prompt": 8192,
+          "gen": 128,
+          "flags": "--pp 8192 32768 65536 100000 --tg 128 --depth 0 --runs 3 --concurrency 1 --no-cache --skip-coherence --latency-mode generation --extra-body return_token_ids=false",
+          "at_depth": {
+            "8192": {
+              "pp": 1665.2,
+              "tg": 10.5
+            },
+            "32768": {
+              "pp": 1013.6,
+              "tg": 10.0
+            },
+            "65536": {
+              "pp": 1340.2,
+              "tg": 10.5
+            },
+            "100000": {
+              "pp": 1219.6,
+              "tg": 10.3
+            }
+          },
+          "source": "http-20261016-120918.json via http-20261016-120918.mapped.json. llama-benchy generation latency, mean of 3, depth 0, concurrency 1, response 128. The window sweep at 7958 tokens measured prefill 750 and decode 10.1; the 8192 cell is that other instrument. Full means stay in the mapped file."
+        }
+      },
+      "capability": {},
+      "instrument": "SUITE-1@1",
+      "task": "code-edit",
+      "evidence": "Image ghcr.io/0xsero/sglang-exl3-xpu-flashnext digest 24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f. The measurement exported A770B_PORT=30260; the skill default stays 7890. Container memory 40g, swap 40g, shm 8g, cpuset 8-23. NV tier on, victim write-back on (NO_VICTIM=0), RAM cap 20 on the stored run, 48 layers, 8000 MoE slots, n-gram tier nvme, KV bits 5, QSA sycl_row. The host has 62.69 GiB of RAM. The weights do not fit on the 32 GiB card. This host's env asks for 24 without a run at 24. The start-gate sample was 27.31 GiB. The kit load that fitted was 31.52 GiB. The device bind is that card's by-path node. Sweep decode 10.1 tok/s at 7958 tokens and 14.2 tok/s at 99887 tokens. Depth probe 3/3 at 99789 prompt tokens. llama-benchy generation mode, mean of 3, depth 0, 128 generated tokens: 8192 is 1665.2/10.5, 32768 is 1013.6/10.0, 65536 is 1340.2/10.5, 100000 is 1219.6/10.3. Those cells are not the sweep. Suite source candidate-suite-20261016-122801-3122074.json. Counted stages s1-frontend 2224 s / 503734 tokens, s2-backend 1039 s / 219758 tokens, s3-optimise 2230 s / 670707 tokens. Not counted toward pass: s0-design 738 s, ref-cpp-binary-search-tree 1235 s, ref-javascript-forth 1428 s, ref-python-pov 916 s. Thinking off. timeout_s stays 1500; the counted walls 2224 s and 2230 s exceed it. The recipe is https://github.com/sybil-solutions/qwen38-flash-next-b70-offload (MIT, archived 2026-10-12). Sparse attention follows Strata, https://github.com/Niko1221/Strata (MIT). Their published speeds are not this card, and this row does not copy their image.",
+      "fit": {
+        "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 1831.0 s, all three reference exercises passed (2026-10-16, first run, attached server).",
+        "write": "not measured"
+      },
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "mean_wall_s": 1831.0,
+        "source": "candidate-suite-20261016-122801-3122074.json",
+        "instrument": "SUITE-1@1"
+      },
+      "measured_tasks": {
+        "s0-design": {
+          "quality": "pass",
+          "wall_s": 738,
+          "context_tokens": 113291,
+          "thinking": "off"
+        },
+        "s1-frontend": {
+          "quality": "pass",
+          "wall_s": 2224,
+          "context_tokens": 503734,
+          "thinking": "off"
+        },
+        "s2-backend": {
+          "quality": "pass",
+          "wall_s": 1039,
+          "context_tokens": 219758,
+          "thinking": "off"
+        },
+        "s3-optimise": {
+          "quality": "pass",
+          "wall_s": 2230,
+          "context_tokens": 670707,
+          "thinking": "off"
+        },
+        "ref-cpp-binary-search-tree": {
+          "quality": "pass",
+          "wall_s": 1235,
+          "context_tokens": 151712,
+          "thinking": "off"
+        },
+        "ref-javascript-forth": {
+          "quality": "pass",
+          "wall_s": 1428,
+          "context_tokens": 504215,
+          "thinking": "off"
+        },
+        "ref-python-pov": {
+          "quality": "pass",
+          "wall_s": 916,
+          "context_tokens": 138185,
+          "thinking": "off"
+        }
+      }
     }
   }
 }

@@ -39,7 +39,8 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
     """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path).
 
     The fake docker is stateful: `up` marks a container up, `down` clears it (unless down_clears is False), and
-    `ps -q`/`inspect` answer only while it is up, so a stop really stops and a recreate really recreates.
+    `ps -q` answers only while it is up, so a stop really stops and a recreate really recreates.
+    `exited=True` makes `inspect` print pid 0 while `ps --all` still lists the container.
     """
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
@@ -50,6 +51,7 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
     down_body = f': > "{state}"; exit 0;;' if down_clears else 'exit 0;;'
     up_body = 'echo "docker compose up failed" >&2; exit 1;;' if up_fails else f'printf up > "{state}"; exit 0;;'
     ps_body = 'exit 0;;' if exited else f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
+    inspect_pid = "0" if exited else host_pid
     ps_all_body = f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
     # logs succeeds only while the container state file is present, and only for
     # the id ps --all would have printed. A copy after down must not stay green.
@@ -65,7 +67,7 @@ case " $* " in
   *" up "*) {up_body}
   *" ps --all -q "*|*" ps -q --all "*|*" ps "*" --all "*) {ps_all_body}
   *" ps -q "*) {ps_body}
-  *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{host_pid}"; exit 0;;
+  *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{inspect_pid}"; exit 0;;
   *" logs "*) {logs_arm}
   *) exit 0;;
 esac''')
@@ -103,6 +105,7 @@ def _env(tmp_path: Path, bin_=None, **overrides) -> dict:
         A770B_VIDEO_GID="39",
         A770B_DOCKER="docker",
         A770B_PORT="7890",
+        A770B_PROFILES_FILE="",
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
         FAKE_PGREP="",
     )
@@ -842,7 +845,7 @@ def _sglang_fixture(path: Path, model_name: str) -> Path:
         "profiles": {
             "flashnext-fixture": {
                 "model": model_name,
-                "source": "local",
+                "source": "https://example.com/flashnext-fixture",
                 "family": "qwen",
                 "architecture": "dense",
                 "quant": "exl3",
@@ -1190,4 +1193,352 @@ def test_start_sglang_stops_when_used_vram_exceeds_the_card(tmp_path):
     assert r.returncode == 3, r.stdout + r.stderr
     assert "the card total" in r.stderr
     assert "STOPPED" in r.stderr
+    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+
+
+FRAMEWORK_NAMES = ("vllm-embed", "vllm-rerank", "neo4j-memory", "postgres-vector")
+
+
+def test_b70_envelope_keeps_the_measured_limits():
+    text = SGLANG_YAML.read_text(encoding="utf-8")
+    assert "mem_limit: 40g" in text
+    assert "memswap_limit: 40g" in text
+    assert "shm_size: 8g" in text
+    assert 'cpuset: "8-23"' in text
+    assert "${EXL3_NVTIER_RAM_GB:-20}" in text
+    example = SGLANG_ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "EXL3_NVTIER_RAM_GB=20" in example
+    assert "64 GiB" in example
+    assert "32 GiB" in example
+    assert "24" + "g" not in text
+    assert ":-" + "12" not in text
+
+
+def _label_docker(tmp_path: Path, state: dict) -> tuple[Path, Path, Path]:
+    """A docker that answers from compose labels. It never talks to a live daemon."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir(exist_ok=True)
+    log = tmp_path / "docker.log"
+    state_path = tmp_path / "containers.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    script = r'''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+log = Path(os.environ["FAKE_DOCKER_LOG"])
+state_path = Path(os.environ["FAKE_STATE"])
+with log.open("a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\n")
+state = json.loads(state_path.read_text(encoding="utf-8"))
+
+def save():
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+def split_compose(rest):
+    i = 0
+    project = None
+    files = []
+    while i < len(rest):
+        a = rest[i]
+        if a == "--env-file" and i + 1 < len(rest):
+            i += 2
+            continue
+        if a == "-p" and i + 1 < len(rest):
+            project = rest[i + 1]
+            i += 2
+            continue
+        if a == "-f" and i + 1 < len(rest):
+            files.append(rest[i + 1])
+            i += 2
+            continue
+        break
+    return project, files, rest[i:], i
+
+if args[:2] == ["compose", "version"]:
+    print("Docker Compose version v2.30.0")
+    sys.exit(0)
+if args and args[0] == "compose":
+    project, files, tail, _ = split_compose(args[1:])
+    cmd = tail[0] if tail else ""
+    joined = ",".join(files)
+    service = next((t for t in tail[1:] if not t.startswith("-")), "")
+    show_all = "--all" in tail
+    chosen = []
+    for c in state["containers"]:
+        if c["project"] != project or c["files"] != joined:
+            continue
+        if service and c["service"] != service:
+            continue
+        if not show_all and not c["running"]:
+            continue
+        chosen.append(c)
+    if cmd == "ps":
+        for c in chosen:
+            print(c["id"])
+        sys.exit(0)
+    if cmd == "down":
+        if state.get("down_exit"):
+            print("compose error", file=sys.stderr)
+            sys.exit(1)
+        if not state.get("down_leaves"):
+            for c in chosen:
+                c["running"] = False
+            save()
+        sys.exit(0)
+    if cmd == "up":
+        started = False
+        for c in state["containers"]:
+            if c["project"] == project and c["files"] == joined:
+                c["running"] = True
+                c["pid"] = c.get("pid") or 4242
+                started = True
+        if not started:
+            state["containers"].append({
+                "id": "started",
+                "name": "a770-builder-llama-1",
+                "project": project or "",
+                "service": "llama",
+                "files": joined,
+                "running": True,
+                "pid": 4242,
+                "log": "started log",
+            })
+        save()
+        sys.exit(0)
+    sys.exit(0)
+if args and args[0] == "ps":
+    show_all = any(a.startswith("-") and "a" in a for a in args)
+    want = {}
+    for a in args:
+        if a.startswith("label="):
+            key, value = a[len("label="):].split("=", 1)
+            want[key] = value
+    for c in state["containers"]:
+        if not show_all and not c["running"]:
+            continue
+        if want.get("com.docker.compose.project") not in (None, c["project"]):
+            continue
+        if want.get("com.docker.compose.service") not in (None, c["service"]):
+            continue
+        print(c["id"])
+    sys.exit(0)
+if args[:2] == ["inspect", "-f"] and len(args) >= 4:
+    fmt, cid = args[2], args[3]
+    c = next((x for x in state["containers"] if x["id"] == cid), None)
+    if c is None:
+        sys.exit(1)
+    if fmt == "{{.State.Pid}}":
+        print(c["pid"] if c["running"] else 0)
+    elif fmt == "{{.Name}}":
+        print("/" + c["name"])
+    elif "config_files" in fmt:
+        print(c["files"])
+    else:
+        print("")
+    sys.exit(0)
+if args and args[0] == "logs" and len(args) >= 2:
+    c = next((x for x in state["containers"] if x["id"] == args[1]), None)
+    if c is None or not c.get("log_ok", True):
+        sys.exit(1)
+    print(c.get("log", ""))
+    sys.exit(0)
+sys.exit(0)
+'''
+    path = bin_ / "docker"
+    path.write_text(script, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    _make_bin(bin_, "curl", 'echo \'{"ok": true}\'; exit 0')
+    _make_bin(bin_, "pgrep", 'printf "%s\\n" ${FAKE_PGREP:-}')
+    _make_bin(bin_, "nvtop", 'echo \'[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\'')
+    return bin_, log, state_path
+
+
+def _stop_world(tmp_path: Path, *, down_exit: bool = False, down_leaves: bool = False):
+    override = tmp_path / "data" / "logs" / "compose-argv.override.json"
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("{}\n", encoding="utf-8")
+    foreign_a = tmp_path / "other-a.yaml"
+    foreign_b = tmp_path / "other-b.yaml"
+    foreign_a.write_text("services: {}\n", encoding="utf-8")
+    foreign_b.write_text("services: {}\n", encoding="utf-8")
+    ours = f"{SGLANG_YAML},{override}"
+    foreign = f"{foreign_a},{foreign_b}"
+    containers = [
+        {"id": "both", "name": "a770-builder-llama-1", "project": "a770-builder", "service": "llama",
+         "files": ours, "running": True, "pid": 4242, "log": "yaml-plus-override log"},
+        {"id": "otherwt", "name": "a770-builder-llama-2", "project": "a770-builder", "service": "llama",
+         "files": foreign, "running": True, "pid": 4243, "log": "other-worktree log"},
+        {"id": "otherproj", "name": "someone-llama", "project": "someone-else", "service": "llama",
+         "files": foreign, "running": True, "pid": 4244, "log": "other-project log"},
+    ]
+    for i, name in enumerate(FRAMEWORK_NAMES):
+        containers.append({
+            "id": f"fw{i}", "name": name, "project": "a770-builder", "service": "llama",
+            "files": f"{tmp_path}/framework-{name}.yaml", "running": True, "pid": 5000 + i,
+            "log": f"{name} log",
+        })
+    bin_, log, state_path = _label_docker(tmp_path, {"down_exit": down_exit, "down_leaves": down_leaves, "containers": containers})
+    env = _env(
+        tmp_path, bin_,
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_PROJECT="a770-builder",
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing.env"),
+        FAKE_DOCKER_LOG=str(log),
+        FAKE_STATE=str(state_path),
+    )
+    logs = Path(env["A770B_DATA"]) / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "llamacpp-a770.pid").write_text("99999\n", encoding="utf-8")
+    (logs / "live-backend.json").write_text("{}\n", encoding="utf-8")
+    return env, log, state_path, logs
+
+
+def _running_ids(state_path: Path) -> set[str]:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    return {c["id"] for c in state["containers"] if c["running"]}
+
+
+def test_stop_removes_the_override_container_and_another_worktree(tmp_path):
+    env, log, state_path, logs = _stop_world(tmp_path)
+    r = _run(env, "stop")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "stopped (compose project a770-builder)" in r.stdout
+    assert not (logs / "llamacpp-a770.pid").exists()
+    assert not (logs / "live-backend.json").exists()
+    running = _running_ids(state_path)
+    assert "both" not in running
+    assert "otherwt" not in running
+    assert "otherproj" in running
+    for i in range(len(FRAMEWORK_NAMES)):
+        assert f"fw{i}" in running
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert not any(c.split()[0] == "rm" for c in calls if c.split())
+    assert any(" logs both" in f" {c} " for c in calls)
+    assert not any(" logs otherproj" in f" {c} " or " logs fw" in f" {c} " for c in calls)
+    kept = logs / "llamacpp-a770.log"
+    assert kept.is_file()
+    kept_text = kept.read_text(encoding="utf-8")
+    assert kept_text.strip() == "yaml-plus-override log"
+    assert "other-worktree log" not in kept_text
+    logs_at = [i for i, c in enumerate(calls) if " logs " in f" {c} "]
+    downs = [i for i, c in enumerate(calls) if c.endswith(" down") or " down" in f" {c} "]
+    assert logs_at and downs and logs_at[0] < downs[0]
+    assert any("other-a.yaml" in c and c.endswith(" down") or ("other-a.yaml" in c and " down" in f" {c} ") for c in calls)
+    assert not any("someone-else" in c for c in calls)
+
+
+def test_stop_ignores_an_exited_container_whose_compose_file_is_gone(tmp_path):
+    """An exited container whose compose file is gone does not make stop exit 3, and does not delete a running container of another project."""
+    override = tmp_path / "data" / "logs" / "compose-argv.override.json"
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("{}\n", encoding="utf-8")
+    missing = tmp_path / "removed-worktree" / "compose.yaml"
+    foreign = tmp_path / "other-project.yaml"
+    foreign.write_text("services: {}\n", encoding="utf-8")
+    ours = f"{SGLANG_YAML},{override}"
+    containers = [
+        {"id": "ghost", "name": "a770-builder-llama-old", "project": "a770-builder", "service": "llama",
+         "files": str(missing), "running": False, "pid": 0, "log": "exited log"},
+        {"id": "live", "name": "a770-builder-llama-1", "project": "a770-builder", "service": "llama",
+         "files": ours, "running": True, "pid": 4242, "log": "yaml-plus-override log"},
+        {"id": "otherproj", "name": "someone-llama", "project": "someone-else", "service": "llama",
+         "files": str(foreign), "running": True, "pid": 4244, "log": "other-project log"},
+        {"id": "fw0", "name": FRAMEWORK_NAMES[0], "project": "a770-builder", "service": "llama",
+         "files": str(tmp_path / "framework.yaml"), "running": True, "pid": 5000, "log": "framework log"},
+    ]
+    bin_, log, state_path = _label_docker(tmp_path, {"containers": containers})
+    env = _env(
+        tmp_path, bin_,
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_PROJECT="a770-builder",
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing.env"),
+        FAKE_DOCKER_LOG=str(log),
+        FAKE_STATE=str(state_path),
+    )
+    logs = Path(env["A770B_DATA"]) / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "llamacpp-a770.pid").write_text("99999\n", encoding="utf-8")
+    (logs / "live-backend.json").write_text("{}\n", encoding="utf-8")
+    r = _run(env, "stop")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "compose file is not on disk" not in (r.stdout + r.stderr)
+    running = _running_ids(state_path)
+    assert "live" not in running
+    assert "otherproj" in running
+    assert "fw0" in running
+    assert "ghost" not in running
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert not any(c.split()[0] == "rm" for c in calls if c.split())
+    assert not any("removed-worktree" in c for c in calls)
+
+
+def test_start_takes_down_another_worktrees_running_container(tmp_path):
+    foreign = tmp_path / "other-a.yaml"
+    foreign.write_text("services: {}\n", encoding="utf-8")
+    elsewhere = tmp_path / "other-project.yaml"
+    elsewhere.write_text("services: {}\n", encoding="utf-8")
+    containers = [
+        {"id": "otherwt", "name": "a770-builder-llama-2", "project": "a770-builder", "service": "llama",
+         "files": str(foreign), "running": True, "pid": 4243, "log": "other-worktree log"},
+        {"id": "otherproj", "name": "someone-llama", "project": "someone-else", "service": "llama",
+         "files": str(elsewhere), "running": True, "pid": 4244, "log": "other-project log"},
+    ]
+    bin_, log, state_path = _label_docker(tmp_path, {"containers": containers})
+    env = _env(
+        tmp_path, bin_,
+        A770B_COMPOSE_FILE=str(ENVELOPE),
+        A770B_COMPOSE_PROJECT="a770-builder",
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing.env"),
+        FAKE_DOCKER_LOG=str(log),
+        FAKE_STATE=str(state_path),
+    )
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 0, r.stdout + r.stderr
+    running = _running_ids(state_path)
+    assert "otherwt" not in running
+    assert "otherproj" in running
+    calls = log.read_text(encoding="utf-8").splitlines()
+    foreign_downs = [i for i, c in enumerate(calls) if "other-a.yaml" in c and " down" in f" {c} "]
+    ups = [i for i, c in enumerate(calls) if " up " in f" {c} "]
+    assert foreign_downs and ups and foreign_downs[0] < ups[0]
+
+
+def test_stop_keeps_the_pidfile_when_down_leaves_the_container(tmp_path):
+    env, _, state_path, logs = _stop_world(tmp_path, down_leaves=True)
+    r = _run(env, "stop")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "stopped (compose project" not in (r.stdout + r.stderr)
+    assert "still running" in r.stderr
+    assert (logs / "llamacpp-a770.pid").is_file()
+    assert (logs / "live-backend.json").is_file()
+    assert "both" in _running_ids(state_path)
+    assert "otherwt" in _running_ids(state_path)
+
+
+def test_stop_keeps_the_pidfile_when_compose_errors(tmp_path):
+    env, _, state_path, logs = _stop_world(tmp_path, down_exit=True)
+    r = _run(env, "stop")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "stopped (compose project" not in (r.stdout + r.stderr)
+    assert "compose down failed" in r.stderr
+    assert (logs / "llamacpp-a770.pid").is_file()
+    assert (logs / "live-backend.json").is_file()
+    assert "both" in _running_ids(state_path)
+    assert "otherwt" in _running_ids(state_path)
+
+
+def test_start_with_no_previous_container_does_not_warn_about_the_new_log(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path, running=False)
+    r = _run(_env(tmp_path, bin_), "start", GGUF, "8192")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "could not be kept" not in r.stderr
+    assert "new server" not in r.stderr
+
+
+def test_start_with_a_previous_container_keeps_that_log_before_down(tmp_path):
+    bin_, log = _fake_runtime(tmp_path, running=True)
+    env = _env(tmp_path, bin_)
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "new server" not in r.stderr
     _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))

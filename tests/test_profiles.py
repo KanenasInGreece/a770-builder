@@ -2822,3 +2822,89 @@ def test_check_fails_measured_tasks_zero_context(tmp_path):
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert "context_tokens must be a positive int or null" in result.stderr
+
+
+def test_check_accepts_source_that_is_the_word_local(tmp_path):
+    """A row may record source as the word local. The published flashnext row is still checked on its own."""
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["source"] = "https://example.com/local-build"
+    path = write_json(tmp_path / "url.json", data)
+    ok = run("check", "--file", str(path))
+    assert ok.returncode == 0, ok.stderr
+
+    row["source"] = "local"
+    path = write_json(tmp_path / "word.json", data)
+    word = run("check", "--file", str(path))
+    assert word.returncode == 0, word.stderr
+
+
+B70_JSON = ROOT / "config" / "registry" / "b70.inference.json"
+B70_KEPT = (
+    "qwen38-27b-udq6k-sycl",
+    "qwen38-27b-q6k-oq8-sycl",
+    "qwen38-27b-q6k-qkv8-mtp-sycl",
+    "qwen38-27b-exl3-4bpw-vllm",
+)
+RECIPE_URL = "https://github.com/sybil-solutions/qwen38-flash-next-b70-offload"
+STRATA_URL = "https://github.com/Niko1221/Strata"
+SERVED_DIGEST = "24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f"
+
+
+def test_b70_registry_keeps_four_rows_and_records_flashnext():
+    data = json.loads(B70_JSON.read_text(encoding="utf-8"))
+    names = list(data["profiles"])
+    for kept in B70_KEPT:
+        assert kept in names
+    assert "flashnext" in names
+    row = data["profiles"]["flashnext"]
+    assert row["source"] == RECIPE_URL
+    assert row["category"] == "moe"
+    assert row["weight_class"] == "180b-a6b"
+    assert row["task"] == "code-edit"
+    assert row["engine"] == "sglang" and row["backend"] == "sglang"
+    assert row["card"] == "b70" and row["mode"] == "inference"
+    assert row["kv"] == "f16"
+    assert "--kv-cache-dtype fp8_e4m3" in row["extra"]
+    assert row["ctx"] == 131072 and row["useful_ctx"] == 100000
+    assert row["timeout_s"] == 1500
+    assert row["vram_gib_after_load"] == 31.52
+    assert row["ram_gb_extra"] == 20
+    assert row["depth_probe_100k"] == "pass (3/3)"
+    assert row["capability"] == {}
+    assert "different image" in row["capability_source"]
+    assert "different machine" in row["capability_source"]
+    assert "delivered" not in row["speed"]
+    assert "kernel" not in row
+    assert "sampling" not in row
+    assert row["speed"]["decode_tps"] == {"8k": 10.5, "32k": 10.0, "64k": 10.5, "100k": 10.3}
+    assert row["speed"]["prefill_tps"] == {"8k": 1665.2, "32k": 1013.6, "64k": 1340.2, "100k": 1219.6}
+    assert row["speed"]["far_end"] == {"tokens": 99887, "decode_tps": 14.2, "prefill_tps": 1088, "ttft_s": 91.8}
+    assert row["suite"]["briefs"] == 3 and row["suite"]["runs"] == 3 and row["suite"]["passed"] == 3
+    assert row["suite"]["timeouts"] == 0 and row["suite"]["mean_wall_s"] == 1831.0
+    assert row["suite"]["instrument"] == "SUITE-1@1"
+    tasks = row["measured_tasks"]
+    assert tasks["s1-frontend"]["wall_s"] == 2224 and tasks["s1-frontend"]["context_tokens"] == 503734
+    assert tasks["s2-backend"]["wall_s"] == 1039 and tasks["s2-backend"]["context_tokens"] == 219758
+    assert tasks["s3-optimise"]["wall_s"] == 2230 and tasks["s3-optimise"]["context_tokens"] == 670707
+    assert "ref-cpp-example" not in tasks
+    blob = json.dumps(row)
+    assert SERVED_DIGEST in blob
+    assert "30260" in row["evidence"] and "7890" in row["evidence"]
+    assert "62.69" in row["evidence"] and "27.31" in row["evidence"]
+    assert RECIPE_URL in row["evidence"] and "Strata" in row["evidence"] and STRATA_URL in row["evidence"]
+    for banned in (
+        "d30d" + "f691",
+        "/home" + "/",
+        "/xfs" + "/",
+        "fact" + ":",
+        "decision" + ":",
+        "retro" + ":",
+        "46" + ".22",
+        "runtime copy",
+        "24" + "g",
+    ):
+        assert banned not in blob
+    assert row["source"] != "local"
+    result = run("check", "--file", str(B70_JSON))
+    assert result.returncode == 0, result.stderr

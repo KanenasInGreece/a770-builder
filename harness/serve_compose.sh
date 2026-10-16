@@ -20,10 +20,13 @@ CONTAINER="llama"                      # the compose service name; the project n
 KCONTAINER="/run/a770b/api.key"        # where the envelope mounts the key, read-only
 
 # _compose <global opts…> <subcommand…> — the one place the compose invocation is assembled (project, envelope,
-# optional gitignored env file). The override file is added by the caller with a second -f where it is needed.
+# optional gitignored env file, and the argv override once that file exists). A container started with both
+# files is invisible to a yaml-only ps or down.
 _compose(){
-  local -a envf=(); [ -f "$A770B_COMPOSE_ENV_FILE" ] && envf=(--env-file "$A770B_COMPOSE_ENV_FILE")
-  "$A770B_DOCKER" compose "${envf[@]}" -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" "$@"
+  local -a envf=() files=(-f "$A770B_COMPOSE_FILE")
+  [ -f "$A770B_COMPOSE_ENV_FILE" ] && envf=(--env-file "$A770B_COMPOSE_ENV_FILE")
+  [ -f "$OVERRIDE" ] && files+=(-f "$OVERRIDE")
+  "$A770B_DOCKER" compose "${envf[@]}" -p "$A770B_COMPOSE_PROJECT" "${files[@]}" "$@"
 }
 # _build_argv_llama <model-in-container> <ctx> [extra…] — the measured Vulkan flag set, with the container differences
 # only: the /models path and the in-container host/port/key path (the envelope mounts the key). The binary is NOT
@@ -173,23 +176,48 @@ _container_host_pid(){
   if [ -n "$p" ] && [ "$p" != 0 ]; then printf '%s\n' "$p"; fi   # a dead container reports pid 0, not a live server
   return 0
 }
+# _serve_log_ids — this checkout's compose ps plus any other project llama container.
+# This checkout's exited container is a log to keep. Another worktree's exited container is not:
+# the second loop skips an id _pid_if_running does not print.
+# No id means there is no previous container. The caller stays quiet in that case.
+_serve_log_ids(){
+  local id seen=" "
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    seen="$seen$id "
+    printf '%s\n' "$id"
+  done < <(_compose ps --all -q "$CONTAINER" 2>/dev/null || true)
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    [ -n "$(_pid_if_running "$id" || true)" ] || continue
+    case "$seen" in *" $id "*) continue ;; esac
+    printf '%s\n' "$id"
+  done < <(project_llama_ids)
+}
+
 # _keep_serve_log — compose down deletes the container log, so copy it to a
 # temp file in this directory and move that file onto the durable log only
-# after docker logs succeeds. ps --all includes an exited container. A
-# symlink is removed first; mv -T refuses a directory at the destination.
+# after docker logs succeeds. The first id that copies is the durable file.
+# A symlink is removed first; mv -T refuses a directory at the destination.
+# No previous container is not a failed log of the server about to start.
 _keep_serve_log(){
   local dest="$A770B_DATA/logs/llamacpp-a770.log" cid tmp
+  local -a ids=()
+  while IFS= read -r cid; do
+    [ -n "$cid" ] || continue
+    ids+=("$cid")
+  done < <(_serve_log_ids)
+  [ ${#ids[@]} -gt 0 ] || return 0
   # A failed mkdir must not abort the caller: teardown still has to run.
   mkdir -p "$A770B_DATA/logs" || {
-    echo "⚠ the serve log could not be kept (could not create the log directory)" >&2
+    echo "⚠ the previous container's log could not be kept (could not create the log directory)" >&2
     return 0
   }
-  cid=$(_compose ps --all -q "$CONTAINER" 2>/dev/null || true)
-  if [ -n "$cid" ]; then
+  for cid in "${ids[@]}"; do
     # mktemp creates the file itself. A fallback name would let `>` follow a
     # symlink planted at that predictable path.
     tmp=$(mktemp "$dest.tmp.XXXXXX") || {
-      echo "⚠ the serve log could not be kept (could not create a temporary file)" >&2
+      echo "⚠ the previous container's log could not be kept (could not create a temporary file)" >&2
       return 0
     }
     if "$A770B_DOCKER" logs "$cid" >"$tmp" 2>&1; then
@@ -200,8 +228,44 @@ _keep_serve_log(){
       fi
     fi
     rm -f "$tmp"
-  fi
-  echo "⚠ the serve log could not be kept (no container, or docker logs failed)" >&2
+  done
+  echo "⚠ the previous container's log could not be kept" >&2
+  return 0
+}
+
+# _down_other_worktree_llama — a container in this compose project whose config_files label is another
+# worktree. compose down filtered by our files leaves it running. Take it down with its own files.
+# Never another compose project, and never the four framework container names (project_llama_ids).
+_down_other_worktree_llama(){
+  local id files ours part
+  local -a parts=() fargs=()
+  ours="$A770B_COMPOSE_FILE"
+  [ -f "$OVERRIDE" ] && ours="$ours,$OVERRIDE"
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    # An exited container has no host pid. A missing compose file on that id must not refuse stop.
+    [ -n "$(_pid_if_running "$id" || true)" ] || continue
+    files=$("$A770B_DOCKER" inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$id" 2>/dev/null || true)
+    [ -n "$files" ] || continue
+    [ "$files" = "$ours" ] && continue
+    fargs=()
+    IFS=',' read -r -a parts <<< "$files"
+    for part in "${parts[@]}"; do
+      if [ ! -f "$part" ]; then
+        echo "⛔ compose down failed — a project container's compose file is not on disk" >&2
+        return 3
+      fi
+      fargs+=(-f "$part")
+    done
+    if [ ${#fargs[@]} -eq 0 ]; then
+      echo "⛔ compose down failed — a project container has no compose file" >&2
+      return 3
+    fi
+    if ! "$A770B_DOCKER" compose -p "$A770B_COMPOSE_PROJECT" "${fargs[@]}" down; then
+      echo "⛔ compose down failed — the card is NOT free" >&2
+      return 3
+    fi
+  done < <(project_llama_ids)
   return 0
 }
 # _fail_started <exit> <message> — a container that came up and then failed.
@@ -218,15 +282,20 @@ _fail_started(){
 case "${1:-}" in
   stop)
     _keep_serve_log
-    _compose down >/dev/null 2>&1 || true
+    # a compose error is not a stop: the pidfile and the sidecar stay while the container may still be up
+    if ! _compose down >/dev/null; then
+      echo "⛔ compose down failed — the card is NOT free" >&2
+      exit 3
+    fi
+    if ! _down_other_worktree_llama; then exit 3; fi
     # a live llama-server named by the pidfile that is not this project's container is a host server from
     # before container-only serving; removing the pidfile would orphan it, so keep it and say so
     if pid=$(llama_pid_alive "$PIDFILE"); then
       echo "⛔ the pidfile names a live llama-server (pid $pid) that is not a container of $A770B_COMPOSE_PROJECT — a host server from before container-only serving; it still holds the card. Stop it yourself (kill $pid), then remove $PIDFILE" >&2
       exit 3
     fi
-    rm -f "$PIDFILE" "$MARK" "$SIDECAR"
     if compose_project_running; then echo "⛔ the container is still running after down — the card is NOT free; check the docker daemon" >&2; exit 3; fi
+    rm -f "$PIDFILE" "$MARK" "$SIDECAR"
     echo "stopped (compose project $A770B_COMPOSE_PROJECT)"
     exit 0;;
   status)
@@ -334,13 +403,16 @@ fi
 # the profile just built — a profile switch must not silently keep the old model.
 _keep_serve_log
 _compose down >/dev/null 2>&1 || true
+# Another worktree's llama container is this project, so the stray-server gate counts it as ours.
+# Take it down before that gate, or start can leave it running beside the new server.
+if ! _down_other_worktree_llama; then exit 3; fi
 budget_gate || exit 1
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
 _ep_arg=()
 [ -n "$ENTRYPOINT" ] && _ep_arg=(--entrypoint "$ENTRYPOINT")
 python3 "$(dirname "$0")/compose_override.py" "${_ep_arg[@]}" --out "$OVERRIDE" -- "${ARGV[@]}"
 # recreate, never --no-recreate: a profile change must replace the container
-if ! _compose -f "$OVERRIDE" up -d --force-recreate; then
+if ! _compose up -d --force-recreate; then
   echo "⛔ docker compose up failed — the container did not start (docker's error is above); nothing was left running" >&2
   rm -f "$PIDFILE" "$MARK" "$SIDECAR"
   exit 1

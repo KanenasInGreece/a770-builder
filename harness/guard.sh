@@ -166,18 +166,56 @@ health_status(){ local body word
   [ -n "$word" ] && echo "$word" || echo "answered, no status field"
 }
 
+# project_llama_ids — containers in this compose project whose service is llama, including exited ones
+# (`docker ps -aq`). The four framework names are never selected, even when they carry the same project label.
+# A container whose compose files are another worktree is still this project, so it is listed here;
+# compose ps filtered by this checkout's files does not see it. A caller that needs a live container
+# skips an id when _pid_if_running prints nothing.
+project_llama_ids(){
+  command -v "$A770B_DOCKER" >/dev/null 2>&1 || return 0
+  local id name
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    name=$("$A770B_DOCKER" inspect -f '{{.Name}}' "$id" 2>/dev/null || true)
+    name=${name#/}
+    case "$name" in
+      vllm-embed|vllm-rerank|neo4j-memory|postgres-vector) continue ;;
+    esac
+    printf '%s\n' "$id"
+  done < <("$A770B_DOCKER" ps -aq \
+      --filter "label=com.docker.compose.project=${A770B_COMPOSE_PROJECT}" \
+      --filter "label=com.docker.compose.service=llama" 2>/dev/null || true)
+  return 0
+}
+
+# _pid_if_running <id> — the host pid, or nothing when the container is stopped (pid 0) or inspect fails.
+_pid_if_running(){
+  local p
+  p=$("$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$1" 2>/dev/null || true)
+  if [ -n "$p" ] && [ "$p" != 0 ]; then printf '%s\n' "$p"; fi
+}
+
 # compose_project_pids — the host pids of the compose project's running containers, one per line (empty when none,
 # when docker is absent, or when the envelope does not exist). A container shares the host PID namespace, so its
 # llama-server shows up in pgrep; these pids are what budget_gate subtracts to tell its OWN container from a foreign
-# host server (pgrep and a pidfile alone lie for a container).
+# host server (pgrep and a pidfile alone lie for a container). The file set is the envelope plus
+# logs/compose-argv.override.json when that file exists, and any other project llama container the file set misses.
 compose_project_pids(){
   command -v "$A770B_DOCKER" >/dev/null 2>&1 || return 0
   [ -f "$A770B_COMPOSE_FILE" ] || return 0
-  local id p
-  for id in $("$A770B_DOCKER" compose -p "$A770B_COMPOSE_PROJECT" -f "$A770B_COMPOSE_FILE" ps -q 2>/dev/null); do
-    p=$("$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true)
-    if [ -n "$p" ] && [ "$p" != 0 ]; then printf '%s\n' "$p"; fi   # a stopped container has pid 0: not a server
-  done
+  local id seen=" " ov="$A770B_DATA/logs/compose-argv.override.json"
+  local -a files=(-f "$A770B_COMPOSE_FILE")
+  [ -f "$ov" ] && files+=(-f "$ov")
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    seen="$seen$id "
+    _pid_if_running "$id"
+  done < <("$A770B_DOCKER" compose -p "$A770B_COMPOSE_PROJECT" "${files[@]}" ps -q 2>/dev/null || true)
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    case "$seen" in *" $id "*) continue ;; esac
+    _pid_if_running "$id"
+  done < <(project_llama_ids)
   return 0
 }
 # compose_project_running — true when the project has at least one running container.
