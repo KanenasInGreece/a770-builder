@@ -265,6 +265,9 @@ def validate(data) -> list[str]:
         for k in STRING_KEYS:
             if k in prof and not isinstance(prof[k], str):
                 errors.append(f"{name}: {k} must be a string")
+        source = prof.get("source")
+        if isinstance(source, str) and source.strip() == "local":
+            errors.append(f"{name}: source must not be the word local")
 
         task = prof.get("task")
         if isinstance(task, str) and task not in TASK_VALUES:

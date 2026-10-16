@@ -243,7 +243,7 @@ def _sglang_registry(path, model_name):
         "profiles": {
             "sglang-row": {
                 "model": model_name,
-                "source": "local",
+                "source": "https://example.com/sglang-row",
                 "family": "qwen",
                 "architecture": "dense",
                 "quant": "bf16",
@@ -421,11 +421,17 @@ def test_an_unnamed_engine_does_not_count_a_number_in_the_transcript(tmp_path):
     assert "requests=" not in body
 
 
-def test_render_readme_skips_the_attribution_block(tmp_path):
+def test_render_readme_leads_with_the_attribution(tmp_path):
     env = _isolated(tmp_path)
     result = subprocess.run(["bash", str(ROOT / "render_readme.sh")], cwd=ROOT, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     html = (ROOT / "README.html").read_text(encoding="utf-8")
-    intro = html.split("<h2>", 1)[0]
-    assert "a770-builder is a harness around a local GPU" in intro
-    assert "Eugene Rakhmatulin" not in intro
+    title_at = html.index("<h1>")
+    after_title = html[html.index("</h1>", title_at) + len("</h1>"):]
+    first, description = after_title.split("a770-builder is a harness around a local GPU", 1)
+    assert "llama-benchy" in first
+    assert "https://github.com/sybil-solutions/qwen38-flash-next-b70-offload" in first
+    assert "Strata" in first
+    assert "https://github.com/Niko1221/Strata" in first
+    assert "d30d" + "f691" not in html
+    assert description

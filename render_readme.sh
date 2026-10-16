@@ -28,8 +28,29 @@ readme = pathlib.Path("README.md").read_text()
 title_match = re.search(r"^#\s+(.+)$", readme, re.M)
 project = title_match.group(1).strip() if title_match else "this project"
 
+def md_inline(s):
+    """Escape text and render [label](url) as a link."""
+    parts = []
+    pos = 0
+    for match in re.finditer(r"\[([^\]]+)\]\(([^)]+)\)", s):
+        parts.append(esc(s[pos:match.start()]))
+        parts.append(f'<a href="{esc(match.group(2))}">{esc(match.group(1))}</a>')
+        pos = match.end()
+    parts.append(esc(s[pos:]))
+    return "".join(parts)
+
+
 body_after_title = readme[title_match.end():] if title_match else readme
-# The marked block under the title is the llama-benchy notice. The recap opens on the project description.
+attr_match = re.search(
+    r"<!--\s*benchy-attribution:begin\s*-->(.*?)<!--\s*benchy-attribution:end\s*-->",
+    body_after_title,
+    flags=re.S,
+)
+attribution = ""
+if attr_match:
+    raw = " ".join(line.strip() for line in attr_match.group(1).strip().splitlines())
+    attribution = md_inline(raw)
+# The marked block is rendered on its own, under the title. The project description is the next paragraph.
 body_after_title = re.sub(
     r"<!--\s*benchy-attribution:begin\s*-->.*?<!--\s*benchy-attribution:end\s*-->",
     "",
@@ -144,6 +165,8 @@ commands_html = "\n".join(inline(c) for c in commands)
 
 parts = []
 parts.append(f"<h1>{esc(project)} — operator recap</h1>")
+if attribution:
+    parts.append(f"<p>{attribution}</p>")
 parts.append(
     '<p class="note">Local recap, generated from the repository\'s own state — not shipped, not the document of '
     f"record. <code>README.md</code> is the document of record for anyone but the operator.</p>"

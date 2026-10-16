@@ -8,10 +8,16 @@ for f in "$here"/harness/*.sh "$here"/skills/local-build/scripts/local-build.sh 
   [ -f "$f" ] || continue; bash -n "$f" || { echo "FAIL syntax: $f"; fail=1; }
 done
 t=$(mktemp -d)
-# the shipped registry is read-only for this script: every writer is pointed at a copy under $t. Its sha256 is
-# recorded here and compared again at the very end, so a check that published a row into config/registry/ fails
-# the run instead of quietly leaving the seat's own registry behind.
-ship_registry_sha=$(sha256sum "$here/config/registry/a770.display.json" 2>/dev/null || true)
+# the shipped registry is read-only for this script: every writer is pointed at a copy under $t. The directory
+# listing, including a dot-prefixed leftover, and the sha256 of every file are recorded here and compared again
+# at the very end, so a check that published a row into config/registry/ fails the run.
+registry_manifest(){
+  (cd "$here/config/registry" && ls -A1 | sort | while IFS= read -r name; do
+    printf '%s\n' "$name"
+    if [ -f "$name" ]; then sha256sum "$name"; fi
+  done)
+}
+ship_registry_manifest=$(registry_manifest)
 # isolation (I11): this machine's own ~/.config/a770-builder/builder(.<mode>).env must never reach the selftest's
 # baseline, whatever mode it selects and whatever the calling shell already exported — clear every exported A770B_*
 # this process carries, then set exactly the baseline the checks below assume: display mode, an empty XDG_CONFIG_HOME.
@@ -359,8 +365,11 @@ case "${1:-}" in
 esac
 FAKE
 chmod +x "$ku3/fake-local-build.sh"
+ku3_profiles="$t/ku3-profiles"
+mkdir -p "$ku3_profiles"
+cp "$here/config/registry/a770.display.json" "$ku3_profiles/a770.display.json"
 rm -f "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json
-out=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
+out=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat" --suite "$ku3/suite.json" 2>&1); rc=$?
 res=$(ls -t "$A770B_DATA"/results/qwen35-9b-q4km-vulkan-suite-*.json 2>/dev/null | head -1)
 if [ "$rc" = 0 ] && [ -n "$res" ] && python3 - "$res" <<'PY'
 import json, sys
@@ -430,7 +439,7 @@ fi
 # ref-cpp-example must run it alone (no main stage matches it), and both must be named in a line printed before
 # the first stage starts.
 rm -f "$ku3/argv.log"
-outF=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat-b" --suite "$ku3/suite.json" --stages s1-fail 2>&1); rcF=$?
+outF=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat-b" --suite "$ku3/suite.json" --stages s1-fail 2>&1); rcF=$?
 if [ "$rcF" = 0 ] && printf '%s\n' "$outF" | grep -q -- '--stages s1-fail selects: s1-fail' \
   && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] \
   && grep -q "$ku3/tasks/s1-fail.md" "$ku3/argv.log" && ! grep -q 'ref-cpp-example' "$ku3/argv.log"
@@ -438,7 +447,7 @@ then echo "ok   suite: --stages s1-fail filters the reference exercises exactly 
 else echo "FAIL suite: --stages s1-fail did not select exactly s1-fail (see $ku3/argv.log, output below)"; printf '%s\n' "$outF" | tail -10; fail=1
 fi
 rm -f "$ku3/argv.log"
-outF2=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat-c" --suite "$ku3/suite.json" --stages ref-cpp-example 2>&1); rcF2=$?
+outF2=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$t/ku3-seat-c" --suite "$ku3/suite.json" --stages ref-cpp-example 2>&1); rcF2=$?
 if [ "$rcF2" = 0 ] && printf '%s\n' "$outF2" | grep -q -- '--stages ref-cpp-example selects: ref-cpp-example' \
   && [ -f "$ku3/argv.log" ] && [ "$(grep -c '^run ' "$ku3/argv.log")" = 1 ] && grep -q 'ref-cpp-example' "$ku3/argv.log"
 then echo "ok   suite: --stages also selects a reference exercise on its own (ref-cpp-example alone, no main stage matched it)"
@@ -475,20 +484,20 @@ mkdir -p "$u8/proj/config/registry"
 cp "$here/config/registry/a770.display.json" "$u8/proj/config/registry/a770.display.json"
 cp "$here/config/cards.json" "$u8/proj/config/cards.json"
 # 1. a seat inside A770B_REFUSE, with --fresh
-u8a=$(A770B_REFUSE="$u8/refused" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+u8a=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_REFUSE="$u8/refused" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
       bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/refused/live" --suite "$ku3/suite.json" --fresh 2>&1); u8a_rc=$?
 if [ ! -f "$u8/refused/live/deep/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED a seat inside A770B_REFUSE before refusing it"; fail=1
 elif [ "$u8a_rc" != 2 ]; then echo "FAIL policy: a seat inside A770B_REFUSE was not refused (rc=$u8a_rc)"; printf '%s\n' "$u8a" | tail -5; fail=1
 else echo "ok   policy: a refused seat keeps its contents — --fresh deleted nothing"; fi
 # 2. a seat inside the harness's own project directory, with --fresh
-u8b=$(A770B_PROJECT="$u8/proj" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+u8b=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_PROJECT="$u8/proj" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
       bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/proj/inside" --suite "$ku3/suite.json" --fresh 2>&1); u8b_rc=$?
 if [ ! -f "$u8/proj/inside/deep/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED a seat inside the harness's own project directory before refusing it"; fail=1
 elif [ "$u8b_rc" != 2 ]; then echo "FAIL policy: a seat inside A770B_PROJECT was not refused (rc=$u8b_rc)"; printf '%s\n' "$u8b" | tail -5; fail=1
 else echo "ok   policy: a seat inside the harness's own project directory keeps its contents and is refused"; fi
 # 3. the control: a legitimate seat is still accepted, and --fresh still replaces what was there
 echo "stale" > "$u8/good/STALE.txt"
-u8c=$(A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+u8c=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
       bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/good" --suite "$ku3/suite.json" --fresh 2>&1); u8c_rc=$?
 if [ "$u8c_rc" = 0 ] && [ ! -e "$u8/good/STALE.txt" ] && [ -d "$u8/good/.git" ]; then
   echo "ok   policy: a legitimate seat is still accepted and still replaced by --fresh"
@@ -503,6 +512,54 @@ for u8site in check_seat_path export_kit_seat export_reference_seat; do
   then echo "ok   policy: $u8site runs the policy before it removes anything"
   else echo "FAIL $u8site removes a path before the policy runs"; fail=1; fi
 done
+# record_measured must land on the copy, including when the stage wall rounds to at least one second.
+# The shipped file keeps the fixture profile and stays byte-identical. The new key is the fixture id.
+meas="$t/measured-one"
+mkdir -p "$meas"
+cp "$here/config/registry/a770.display.json" "$meas/a770.display.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "qwen35-9b-q4km-vulkan" in d["profiles"]' "$here/config/registry/a770.display.json" \
+  || { echo "FAIL registry: the shipped display file has no qwen35-9b-q4km-vulkan row"; fail=1; }
+cat > "$meas/fake-local-build.sh" <<'FAKE'
+#!/usr/bin/env bash
+set -uo pipefail
+case "${1:-}" in
+  run)
+    sleep 1
+    shift; WT="$1"; BRIEF="$2"; shift 2
+    label="fake-$(basename "$BRIEF" .md)"
+    mkdir -p "$A770B_DATA/results"
+    { echo "# fake capture"; echo "## server-side timings during the run"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
+    { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line"; } > "$A770B_DATA/results/$label.patch"
+    echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
+    exit 0 ;;
+  verify) exit 0 ;;
+  *) exit 0 ;;
+esac
+FAKE
+chmod +x "$meas/fake-local-build.sh"
+meas_out=$(A770B_PROFILES_FILE="$meas/a770.display.json" A770B_LOCAL_BUILD="$meas/fake-local-build.sh" \
+  bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$meas/seat" --suite "$ku3/suite.json" --stages ref-cpp-example 2>&1); meas_rc=$?
+if [ "$meas_rc" = 0 ] && [ "$(registry_manifest)" = "$ship_registry_manifest" ] && python3 - "$meas/a770.display.json" "$here/harness/profiles.py" <<'PY'
+import json, subprocess, sys
+path, checker = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+tasks = row.get("measured_tasks") or {}
+assert set(tasks) == {"ref-cpp-example"}, sorted(tasks)
+entry = tasks["ref-cpp-example"]
+assert entry["quality"] == "pass", entry
+assert isinstance(entry["wall_s"], int) and entry["wall_s"] >= 1, entry
+assert entry["context_tokens"] == 100, entry
+assert entry["thinking"] == "on", entry
+for banned in ("s1-frontend", "s2-backend", "s3-optimise", "s0-design"):
+    assert banned not in tasks
+chk = subprocess.run([sys.executable, checker, "check", "--file", path], capture_output=True, text=True)
+assert chk.returncode == 0, chk.stderr
+PY
+then echo "ok   registry: a one-second ref-cpp-example stage is written on the copy and the shipped files stay byte-identical"
+else echo "FAIL registry: the forced measured_tasks write did not stay off the shipped files (rc=$meas_rc)"; printf '%s\n' "$meas_out" | tail -20; fail=1
+fi
+if grep -q 'ref-cpp-example' "$here"/config/registry/*.json; then echo "FAIL registry: ref-cpp-example was written onto a shipped row"; fail=1; fi
 # sandbox_run.sh is its own entry point: it bind-mounts the worktree read-write. Direct invocation must
 # apply the same path policy before that bind, and must refuse while A770B_REFUSE is empty. The command
 # writes into the seat: a bind-then-refuse mutant runs it and mutates the witness; refuse-first leaves
@@ -1459,7 +1516,7 @@ import json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
 
-def row(model, engine, backend, source="local", ctx=32768, weight_class="9b"):
+def row(model, engine, backend, source="https://example.com/fixture", ctx=32768, weight_class="9b"):
     return {
         "model": model, "source": source, "family": "qwen", "architecture": "dense",
         "quant": "Q4_K_M", "kv": "f16", "flash_attention": "off", "reasoning": "off",
@@ -2093,12 +2150,12 @@ if printf '%s\n' "$sl_out" | grep -q "$here"; then echo "ok   skill: a copy insi
 else echo "FAIL skill: self-location did not resolve to $here"; printf '%s\n' "$sl_out"; fail=1
 fi
 
-# the run is over: the shipped registry must be the file the run started with. Everything that writes a row or a
-# profile was pointed at a copy under $t, so a difference here means a check published into the seat's own registry.
-ship_registry_sha_end=$(sha256sum "$here/config/registry/a770.display.json" 2>/dev/null || true)
-if [ -n "$ship_registry_sha" ] && [ "$ship_registry_sha" = "$ship_registry_sha_end" ]
-then echo "ok   registry: config/registry/a770.display.json is byte for byte the file the run started with"
-else echo "FAIL registry: config/registry/a770.display.json is not what the run started with"; echo "start: $ship_registry_sha"; echo "end:   $ship_registry_sha_end"; fail=1
+# the run is over: every shipped registry file must be the bytes the run started with, and the directory listing
+# must be the same, including a dot-prefixed leftover. A difference means a check published into the seat's registry.
+ship_registry_manifest_end=$(registry_manifest)
+if [ -n "$ship_registry_manifest" ] && [ "$ship_registry_manifest" = "$ship_registry_manifest_end" ]
+then echo "ok   registry: every file under config/registry/ is byte for byte what the run started with"
+else echo "FAIL registry: config/registry/ is not what the run started with"; printf 'start:\n%s\nend:\n%s\n' "$ship_registry_manifest" "$ship_registry_manifest_end"; fail=1
 fi
 
 rm -rf "$t" "$A770B_DATA"
