@@ -177,6 +177,10 @@ _stage_counters(){ # <label> — engine_evidence.py diff over <label>.metrics-be
   # counters.json (engine_evidence.py diff itself already tolerates a missing before/after file with a note).
   local label="$1" engine
   engine="${A770B_SERVED_ENGINE:-}"
+  # An attached server's /metrics counts every client. This run's count is the tap or the container log.
+  if [ "${A770B_ATTACHED:-}" = 1 ]; then
+    return 0
+  fi
   if [ -z "$engine" ]; then
     echo "⚠ A770B_SERVED_ENGINE is empty — skipping stage counters for $label" >&2
     return 0
@@ -371,6 +375,34 @@ _attach_running_server(){
     2*) ;;
     *) die "server not healthy at $origin/health (HTTP ${code:-none})" ;;
   esac
+  # The engine is the one this server names. An unknown or missing name is empty,
+  # and the capture then does not read a container log.
+  local models_body="" owned=""
+  A770B_SERVED_ENGINE=""
+  if [ -s "$A770B_API_KEY_FILE" ]; then
+    models_body=$(curl -sS --max-time 5 -H @<(printf 'Authorization: Bearer %s' "$(a770b_api_key)") "$origin/v1/models" 2>/dev/null || true)
+    owned=$(printf '%s' "$models_body" | python3 -c 'import json,sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+rows = data.get("data") if isinstance(data, dict) else None
+if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+    raise SystemExit(0)
+name = rows[0].get("owned_by")
+if isinstance(name, str):
+    sys.stdout.write(name)
+')
+    case "$owned" in
+      sglang) A770B_SERVED_ENGINE=sglang ;;
+      vllm) A770B_SERVED_ENGINE=vllm ;;
+      llama.cpp|llamacpp|llama-cpp) A770B_SERVED_ENGINE=llama.cpp ;;
+    esac
+  fi
+  export A770B_SERVED_ENGINE
+  if [ -z "$A770B_SERVED_ENGINE" ]; then
+    echo "served engine was not named; this capture will not read a container log" >&2
+  fi
   ev_logs="$A770B_DATA/logs"
   ev_base="serve-evidence.path"
   if [ -f "$ev_logs/$ev_base" ] && [ ! -L "$ev_logs/$ev_base" ]; then

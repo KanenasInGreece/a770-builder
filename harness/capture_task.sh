@@ -12,7 +12,67 @@ set -euo pipefail
 LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log}"
 [ -f "$BLOG" ] || { echo "⛔ build log not found: $BLOG" >&2; exit 2; }
 OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; TMPLOG=$(mktemp)
-trap 'rm -f -- "$TMPLOG"' EXIT
+trap 'rm -f -- "$TMPLOG" "$TMPLOG.none"' EXIT
+# The engine is the one the host recorded. sglang and vllm read the usage file.
+# llama.cpp reads the container log. No recorded engine is unmeasured.
+# True when this project's container is running, publishes this run's port,
+# and that port is on this host: loopback, or the published address itself.
+container_is_attached_server(){
+  local container="$1" line host
+  host="${A770B_HOST:-}"
+  line=$("$A770B_DOCKER" inspect --format '{{.State.Running}} {{json .NetworkSettings.Ports}}' "$container" 2>/dev/null) || return 1
+  case "$line" in
+    true\ *) ;;
+    *) return 1 ;;
+  esac
+  # One binding. Docker prints HostIp before HostPort. A loopback host needs a
+  # binding that answers on this machine: an empty address, every interface, or loopback.
+  case "${host,,}" in
+    127.0.0.1|localhost|::1)
+      local ip
+      for ip in '' 0.0.0.0 :: 127.0.0.1 ::1; do
+        printf '%s\n' "$line" | grep -F -q "{\"HostIp\":\"${ip}\",\"HostPort\":\"${A770B_PORT}\"}" && return 0
+      done
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$line" | grep -F -q "{\"HostIp\":\"${host}\",\"HostPort\":\"${A770B_PORT}\"}"
+}
+capture_timings(){
+  local usage="$A770B_DATA/logs/usage.json"
+  local engine="${A770B_SERVED_ENGINE:-}"
+  local container="${A770B_COMPOSE_PROJECT}-llama-1"
+  local since_file="$A770B_DATA/logs/run-since"
+  local since=""
+  case "$engine" in
+    sglang|vllm)
+      python3 "$A770B_PROJECT/harness/engine_record.py" capture --usage "$usage"
+      ;;
+    llama.cpp)
+      # An attached server is this container only when the container is running,
+      # publishes this run's port, and that port is on this host. The stamp is
+      # written when the build starts. Without it the log is an older run.
+      if [ -f "$since_file" ]; then
+        since=$(tr -d '[:space:]' < "$since_file" || true)
+      fi
+      # No stamp: do not inspect and do not read the log. The log is an older run.
+      if [ -z "$since" ] || { [ "${A770B_ATTACHED:-}" = 1 ] && ! container_is_attached_server "$container"; }; then
+        python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
+      else
+        # llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
+        # Do not pass a colour-stripping flag: this docker does not accept one, and discarding
+        # stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
+        # The build log is not a count. An empty second file keeps the transcript unread.
+        "$A770B_DOCKER" logs --since "$since" "$container" > "$TMPLOG" 2>&1 || true
+        : > "$TMPLOG.none"
+        python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$TMPLOG.none"
+      fi
+      ;;
+    *)
+      python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
+      ;;
+  esac
+}
 # the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
 { safe_git_diff "$WT"
   safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
@@ -45,20 +105,7 @@ else
 fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
-# Dump container log to temp file and parse from there (not stale host log).
-# Do not pass a colour-stripping flag: this docker does not accept one, and discarding
-# stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
-CONTAINER="${A770B_COMPOSE_PROJECT}-llama-1"
-# llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
-if [ "${A770B_ATTACHED:-}" = 1 ]; then
-  # An attached server's compose container log may not answer at all; an empty log is judged by the module, not here
-  "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1 || true
-  python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
-else
-  # A reused server: the same two logs, the same one module — no second parser in this script
-  "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1 || true
-  python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
-fi
+capture_timings
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"
 rm -f -- "$DIFF"

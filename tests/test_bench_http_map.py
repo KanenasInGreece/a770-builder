@@ -404,23 +404,21 @@ def _capture_untimed(tmp_path, blog_text, label):
     return (tmp_path / "results" / f"{label}.task.md").read_text(encoding="utf-8")
 
 
-def test_a_log_with_no_llama_cpp_timings_does_not_print_a_zero_request_line(tmp_path):
+def test_an_unnamed_engine_does_not_print_a_zero_request_line(tmp_path):
     body = _capture_untimed(tmp_path, "ok\n", "notime")
-    assert "timings unavailable (log has no llama.cpp timing lines)" in body
+    assert "rates not measured" in body
     assert "context was not measured" in body
+    assert "timings unavailable (log has no llama.cpp timing lines)" not in body
     assert "requests=" not in body
     assert "prompt_tokens_total=" not in body
 
 
-def test_a_log_with_no_llama_cpp_timings_sums_one_prompt_tokens_number(tmp_path):
+def test_an_unnamed_engine_does_not_count_a_number_in_the_transcript(tmp_path):
     body = _capture_untimed(tmp_path, '{"usage":{"prompt_tokens":4321}}\n', "onetok")
-    assert "timings unavailable (log has no llama.cpp timing lines)" in body
-    assert body.index("timings unavailable (log has no llama.cpp timing lines)") < body.index(
-        "prompt_tokens_total=4321"
-    )
-    assert "prompt_tokens_total=4321" in body
+    assert "rates not measured" in body
+    assert "context was not measured" in body
+    assert "prompt_tokens_total=4321" not in body
     assert "requests=" not in body
-    assert "context was not measured" not in body
 
 
 def test_render_readme_skips_the_attribution_block(tmp_path):

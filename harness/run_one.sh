@@ -7,6 +7,25 @@
 # Leaves the server running for follow-up probes; the worktree is reset by capture_task.sh.
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 set -uo pipefail
+# The timings section is the only count. A line above that heading is not this row.
+read_server_timings(){
+  python3 - "$1" "$2" "$3" <<'PY'
+import json,sys,re
+j,t,wall=sys.argv[1],sys.argv[2],int(sys.argv[3]); r=json.load(open(j)); md=open(t,errors='ignore').read()
+lines=md.splitlines()
+marks=[i for i, line in enumerate(lines) if line == '## server-side timings during the run']
+section=lines[marks[-1] + 1:] if marks else []
+r['task']={'wall_s':wall,'test_file_written':'NO TEST FILE WRITTEN' not in md,
+ 'pytest_line':next((l for l in lines if re.search(r'\d+ (passed|failed|error)',l)),None),
+ 'server_timings':[l for l in section if l.startswith(('requests=','TTFT','TPOT','prefill'))]}
+json.dump(r,open(j,'w'),indent=1); print("TASK:",json.dumps(r['task']))
+PY
+}
+if [ "${1:-}" = "--timings-only" ]; then
+  shift
+  read_server_timings "${1:?json}" "${2:?task.md}" "${3:?wall seconds}"
+  exit $?
+fi
 LABEL="${1:?label}"; GGUF="${2:?gguf}"; CTX="${3:?ctx}"; shift 3 || shift $#
 # the seat is guarded HERE, before the AGENTS.md rename below touches it — not left to build_local.sh and
 # capture_task.sh further down, which guard their own argument only after this script has already moved a file
@@ -15,10 +34,13 @@ WT=$(guard_worktree "$A770B_SEAT") || exit 2; R=$A770B_DATA/results
 echo "═══ ROW $LABEL — $(date -Is)"
 if ! bash "$A770B_PROJECT/harness/bench_model.sh" "$LABEL" "$GGUF" "$CTX" "$@"; then echo "✗ bench failed for $LABEL"; bash "$A770B_SERVE_SCRIPT" stop; exit 1; fi
 python3 -c "import json,sys; r=json.load(open('$R/$LABEL.json')); sys.exit(0 if r.get('quality_ok') else 1)" || { echo "✗ quality gate failed for $LABEL — no coding task"; exit 1; }
+# bench_model.sh serves llama.cpp. Record that before anything in the seat moves.
+export LOCAL_TIMEOUT="${BUILD_TIMEOUT:-1500}"
+PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a card name from A770B_PROFILES}"
+export A770B_SERVED_ENGINE=llama.cpp
+if [ "${LEAN_AGENT:-1}" = 1 ]; then export LOCAL_AGENT=local-builder; fi
 # coding task
 [ "${AGENTS_ASIDE:-1}" = 1 ] && [ -f "$WT/AGENTS.md" ] && mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"
-export LOCAL_TIMEOUT="${BUILD_TIMEOUT:-1500}"; PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a card name from A770B_PROFILES}"
-if [ "${LEAN_AGENT:-1}" = 1 ]; then export LOCAL_AGENT=local-builder; fi
 t0=$(date +%s)
 bash "$A770B_PROJECT/harness/build_local.sh" "$WT" "$A770B_TASK_BRIEF" 2>&1 | grep -vE '^\s*$' | tail -12 | cut -c1-240
 t1=$(date +%s)
@@ -26,12 +48,5 @@ t1=$(date +%s)
 BL=$(cat "$A770B_DATA/logs/last-build.log.path")
 echo "build wall=$((t1-t0))s log=$BL"
 bash "$A770B_PROJECT/harness/capture_task.sh" "$LABEL" "$WT" "$BL" 2>&1 | tail -2
-python3 - "$R/$LABEL.json" "$R/$LABEL.task.md" "$((t1-t0))" <<'PY'
-import json,sys,re
-j,t,wall=sys.argv[1],sys.argv[2],int(sys.argv[3]); r=json.load(open(j)); md=open(t,errors='ignore').read()
-r['task']={'wall_s':wall,'test_file_written':'NO TEST FILE WRITTEN' not in md,
- 'pytest_line':next((l for l in md.splitlines() if re.search(r'\d+ (passed|failed|error)',l)),None),
- 'server_timings':[l for l in md.splitlines() if l.startswith(('requests=','TTFT','TPOT','prefill'))]}
-json.dump(r,open(j,'w'),indent=1); print("TASK:",json.dumps(r['task']))
-PY
+read_server_timings "$R/$LABEL.json" "$R/$LABEL.task.md" "$((t1-t0))"
 echo "═══ ROW $LABEL done — $(date -Is)"

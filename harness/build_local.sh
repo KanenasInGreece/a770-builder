@@ -9,6 +9,10 @@
 # Exit codes: 2 refused (worktree), 3 no model server; the opencode exit code is informational only.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
+# A previous run's usage file and log stamp are not this run's count.
+# Removed before any exit, so a refused run cannot leave them for the capture.
+# The tap writes a new usage file when it starts. The stamp is written when this run starts.
+rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
 WT=$(guard_worktree "${1:?worktree path}"); BRIEF="${2:?brief file or task text}"
 PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a name from A770B_PROFILES}"
 a770b_is_profile "$PROFILE" || { echo "⛔ PROFILE must be one of: $A770B_PROFILES" >&2; exit 2; }
@@ -34,6 +38,9 @@ LOG="$A770B_DATA/logs/build-$stamp.log"
 printf '%s\n' "$LOG" > "$A770B_DATA/logs/last-build.log.path"
 echo "▶ profile=$PROFILE ctx=$CTX model=$MODEL endpoint=$ENDPOINT worktree=$WT brief=Local_Documentation/briefs/brief-$stamp.md log=$LOG sandbox=${SANDBOX:-1}"
 before=$(safe_git "$WT" status --porcelain | wc -l)
+# The container log before this instant is not this run. Capture reads the stamp.
+# Whole seconds would keep a line written earlier in that same second.
+date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$A770B_DATA/logs/run-since"
 set +e
 AGENT_ARGS=(); [ -n "${LOCAL_AGENT:-}" ] && AGENT_ARGS=(--agent "$LOCAL_AGENT")
 PROMPT="Read Local_Documentation/briefs/brief-$stamp.md in this project and carry out the task it describes. Work only inside this project directory. Do not run git commit, push, merge or any docker/systemctl command."

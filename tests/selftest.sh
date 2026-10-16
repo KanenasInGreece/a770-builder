@@ -69,7 +69,12 @@ elif ! grep -q 'emit_llama_timings\|emit_prompt_tokens_from_build' "$here/harnes
 else echo "FAIL capture: an emit function survived or a capture path does not call engine_record.py capture"; fail=1; fi
 # a stub docker that prints a llama.cpp slot log: capture must report n_gen_max from it, not "timings unavailable"
 mkdir -p "$t/bin"
-printf '#!/bin/bash\ncat "$0.log" >&2\n' > "$t/bin/docker"; chmod +x "$t/bin/docker"
+cat > "$t/bin/docker" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$0.args"
+cat "$0.log" >&2
+EOF
+chmod +x "$t/bin/docker"
 cat > "$t/bin/docker.log" <<'LOG'
 print_timing: id  0 | task 7 | n_gen =    100, tg =   4.49 t/s
 print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s
@@ -78,9 +83,175 @@ prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.
 eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
 LOG
 r2="$t/capseat"; git init -q "$r2"; ( cd "$r2" && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init )
-A770B_REFUSE=/nonexistent A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
-if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md"; then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
-else echo "FAIL capture: stub llama log did not yield n_gen_max=10082"; fail=1; fi
+rm -f -- "$A770B_DATA/logs/run-since"
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen-open "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-n-gen-open.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-n-gen-open.task.md"
+then echo "ok   capture: a llama.cpp log with no start stamp is not this run"
+else echo "FAIL capture: a llama.cpp log with no start stamp was counted"; fail=1; fi
+if [ ! -s "$t/bin/docker.args" ]; then echo "ok   capture: a missing stamp does not read the container log"
+else echo "FAIL capture: a missing stamp still ran docker"; fail=1; fi
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md" \
+  && grep -F -q -x 'logs --since 2020-01-01T00:00:00Z a770-builder-llama-1' "$t/bin/docker.args"
+then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
+else echo "FAIL capture: stub llama log did not yield n_gen_max=10082 or was not limited to the stamp"; fail=1; fi
+: > "$t/bin/docker.args"
+printf '%s\n' '   ' > "$A770B_DATA/logs/run-since"
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen-blank "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-n-gen-blank.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-n-gen-blank.task.md" \
+  && [ ! -s "$t/bin/docker.args" ]
+then echo "ok   capture: a blank start stamp is not this run"
+else echo "FAIL capture: a blank start stamp was counted or still ran docker"; fail=1; fi
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
+printf '%s\n' '[{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13,"reasoning_tokens":0}]' > "$A770B_DATA/logs/usage.json"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=sglang A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-usage "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'requests=1 prompt_tokens_total=11 gen_tokens_total=2' "$A770B_DATA/results/selftest-usage.task.md" \
+  && grep -q 'rates not measured' "$A770B_DATA/results/selftest-usage.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-usage.task.md"
+then echo "ok   capture: an attached sglang run reads the usage file and not the container log"
+else echo "FAIL capture: attached sglang did not read the usage file"; fail=1; fi
+printf '%s\n' '[{"prompt_tokens":6,"completion_tokens":1,"total_tokens":7,"cached_tokens":4}]' > "$A770B_DATA/logs/usage.json"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=vllm A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-vllm "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'requests=1 prompt_tokens_total=6 gen_tokens_total=1' "$A770B_DATA/results/selftest-vllm.task.md" \
+  && grep -q 'cached_tokens_total=4' "$A770B_DATA/results/selftest-vllm.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-vllm.task.md"
+then echo "ok   capture: an attached vllm run reads the usage file, including cached tokens"
+else echo "FAIL capture: attached vllm did not read the usage file"; fail=1; fi
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE= A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-unnamed "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'rates not measured' "$A770B_DATA/results/selftest-unnamed.task.md" \
+  && grep -q 'context was not measured' "$A770B_DATA/results/selftest-unnamed.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-unnamed.task.md"
+then echo "ok   capture: an attached run with no recorded engine does not read the container log"
+else echo "FAIL capture: an unnamed attached engine fell through to the container log"; fail=1; fi
+A770B_REFUSE=/nonexistent A770B_ATTACHED= A770B_SERVED_ENGINE= A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-noengine "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-noengine.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-noengine.task.md"
+then echo "ok   capture: a run with no recorded engine does not read the container log"
+else echo "FAIL capture: an empty engine fell through to the container log"; fail=1; fi
+printf '%s\n' '{"usage":{"prompt_tokens":5},"choices":[]}' > "$t/build-fake.log"
+: > "$t/bin/docker.log"
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-transcript "$r2" "$t/build-fake.log" >/dev/null 2>&1
+transcript_section=$(awk 'BEGIN{p=0} /^## server-side timings during the run$/{p=1; buf=""; next} p{buf=buf $0 ORS} END{printf "%s", buf}' "$A770B_DATA/results/selftest-transcript.task.md")
+if printf '%s\n' "$transcript_section" | grep -q 'context was not measured' \
+  && ! printf '%s\n' "$transcript_section" | grep -q 'prompt_tokens_total=5'
+then echo "ok   capture: a llama.cpp run with no container timings does not count the transcript"
+else echo "FAIL capture: the transcript supplied a llama.cpp count"; fail=1; fi
+# The stub log has the timing lines again. The default docker prints them on stderr and
+# nothing for inspect, so deleting the attached check would count this log.
+cat > "$t/bin/docker.log" <<'LOG'
+print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s
+prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.80 tokens per second)
+eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
+LOG
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-attached-llama "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-attached-llama.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-attached-llama.task.md"
+then echo "ok   capture: an attached llama.cpp run whose container is not this server is unmeasured"
+else echo "FAIL capture: an attached llama.cpp run read a container that was not shown to be the server"; fail=1; fi
+cat > "$t/bin/docker-prove" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$0.args"
+case "$1" in
+  inspect) cat "$0.inspect" ;;
+  *) cat "$0.log" >&2 ;;
+esac
+EOF
+chmod +x "$t/bin/docker-prove"
+cp -- "$t/bin/docker.log" "$t/bin/docker-prove.log"
+attached_unmeasured(){
+  printf '%s\n' "$2" > "$t/bin/docker-prove.inspect"
+  A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST="$3" A770B_DOCKER="$t/bin/docker-prove" \
+    bash "$here/harness/capture_task.sh" "$1" "$r2" "$t/build.log" >/dev/null 2>&1
+  if grep -q 'context was not measured' "$A770B_DATA/results/$1.task.md" \
+    && ! grep -q 'n_gen_max=' "$A770B_DATA/results/$1.task.md"
+  then echo "ok   capture: $4"
+  else echo "FAIL capture: $4"; fail=1; fi
+}
+: > "$t/bin/docker-prove.args"
+rm -f -- "$A770B_DATA/logs/run-since"
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-nostamp "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-attached-nostamp.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-attached-nostamp.task.md" \
+  && [ ! -s "$t/bin/docker-prove.args" ]
+then echo "ok   capture: an attached llama.cpp run with no stamp does not run docker"
+else echo "FAIL capture: an attached llama.cpp run with no stamp ran docker or was counted"; fail=1; fi
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
+attached_unmeasured selftest-attached-stopped 'false {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' 127.0.0.1 "a stopped container that publishes this port is unmeasured"
+attached_unmeasured selftest-attached-otherport 'true {"9999/tcp":[{"HostIp":"127.0.0.1","HostPort":"9999"}]}' 127.0.0.1 "a running container on another port is unmeasured"
+attached_unmeasured selftest-attached-remote 'true {"30260/tcp":[{"HostIp":"0.0.0.0","HostPort":"30260"}]}' 10.9.8.7 "a remote host is not this machine's container"
+attached_unmeasured selftest-attached-split 'true {"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"},{"HostIp":"10.9.8.7","HostPort":"9999"}]}' 10.9.8.7 "a port and an address from two bindings are not one server"
+attached_unmeasured selftest-attached-lan 'true {"30260/tcp":[{"HostIp":"10.9.8.7","HostPort":"30260"}]}' 127.0.0.1 "a loopback host is not a container published on another address"
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-proven "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-proven.task.md"
+then echo "ok   capture: an attached llama.cpp run counts the container that publishes this port on this host"
+else echo "FAIL capture: a container shown to be the attached server did not yield its log"; fail=1; fi
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"10.9.8.7","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=10.9.8.7 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-samehost "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-samehost.task.md"
+then echo "ok   capture: an attached llama.cpp run counts the container whose published address is this host"
+else echo "FAIL capture: a container publishing this host and port was not counted"; fail=1; fi
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"0.0.0.0","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-any "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-any.task.md"
+then echo "ok   capture: a loopback host counts the container published on every interface"
+else echo "FAIL capture: a container published on every interface was not this host"; fail=1; fi
+printf '%s\n' '[{"prompt_tokens":99,"completion_tokens":1,"total_tokens":100}]' > "$A770B_DATA/logs/usage.json"
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
+bash "$here/harness/build_local.sh" >/dev/null 2>&1 || true
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=sglang A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-stale "$r2" "$t/build.log" >/dev/null 2>&1
+if [ ! -f "$A770B_DATA/logs/usage.json" ] && [ ! -f "$A770B_DATA/logs/run-since" ] \
+  && grep -q 'context was not measured' "$A770B_DATA/results/selftest-stale.task.md" \
+  && ! grep -q 'prompt_tokens_total=99' "$A770B_DATA/results/selftest-stale.task.md"
+then echo "ok   capture: a refused build drops a stale usage file and log stamp, and the capture does not read them"
+else echo "FAIL capture: a stale usage file or log stamp survived a refused build or was counted"; fail=1; fi
+printf '%s\n' '{}' > "$t/one.json"
+cat > "$t/one.md" <<'EOF'
+requests=9 prompt_tokens_total=9 gen_tokens_total=9
+## server-side timings during the run
+requests=2 prompt_tokens_total=100 gen_tokens_total=40
+EOF
+if bash "$here/harness/run_one.sh" --timings-only "$t/one.json" "$t/one.md" 7 >/dev/null \
+  && python3 - "$t/one.json" <<'PY'
+import json, sys
+got = json.load(open(sys.argv[1]))["task"]["server_timings"]
+want = ["requests=2 prompt_tokens_total=100 gen_tokens_total=40"]
+if got != want:
+    print("FAIL one-row: server_timings=%r" % got)
+    sys.exit(1)
+print("ok   one-row: a requests line above the timings heading is not a count")
+PY
+then :
+else echo "FAIL one-row: the reader was not run or kept the decoy"; fail=1; fi
+mkdir -p "$t/xdg/a770-builder" "$t/stubbin"
+printf '%s\n' 'k-selftest' > "$t/xdg/a770-builder/api.key"; chmod 600 "$t/xdg/a770-builder/api.key"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "$t/stubbin/curl"; chmod +x "$t/stubbin/curl"
+cat > "$t/stubbin/opencode" <<'EOF'
+#!/bin/bash
+if [ -f "$A770B_DATA/logs/run-since" ]; then cp -- "$A770B_DATA/logs/run-since" "$A770B_DATA/logs/run-since.at-opencode"; fi
+exit 0
+EOF
+chmod +x "$t/stubbin/opencode"
+stamp_profile=${A770B_PROFILES%% *}
+rm -f -- "$A770B_DATA/logs/run-since.at-opencode"
+SANDBOX=0 A770B_SPEC= PROFILE="$stamp_profile" PATH="$t/stubbin:$PATH" bash "$here/harness/build_local.sh" "$r2" "stamp" >/dev/null 2>&1
+if [ -f "$A770B_DATA/logs/run-since.at-opencode" ] \
+  && grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}Z$' "$A770B_DATA/logs/run-since.at-opencode"
+then echo "ok   build: the start stamp is written, with a fraction of a second, before opencode runs"
+else echo "FAIL build: the start stamp was missing or whole seconds when opencode started"; fail=1; fi
+bridge=$(awk '/SERVED_ENGINE/,/^  esac$/' "$here/harness/sandbox_run.sh")
+sglang_arm=$(printf '%s\n' "$bridge" | awk '/sglang\|vllm/,/;;/')
+other_arm=$(printf '%s\n' "$bridge" | awk '/^    \*)/,/;;/')
+if printf '%s\n' "$sglang_arm" | grep -q 'usage_tap.py' \
+  && printf '%s\n' "$sglang_arm" | grep -q -- '--out "$A770B_DATA/logs/usage.json"' \
+  && printf '%s\n' "$other_arm" | grep -q 'socat' \
+  && ! printf '%s\n' "$other_arm" | grep -q 'usage_tap.py'
+then echo "ok   sandbox: sglang and vllm start the usage tap, and any other engine keeps socat"
+else echo "FAIL sandbox: the bridge does not follow the recorded engine"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)
@@ -174,7 +345,7 @@ case "${1:-}" in
     label="fake-$(basename "$BRIEF" .md)"
     ls "$WT" > "$KU3_SEAT_LS_DIR/$label.ls" 2>/dev/null || true
     mkdir -p "$A770B_DATA/results"
-    { echo "# fake capture"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
+    { echo "# fake capture"; echo "requests=9 prompt_tokens_total=9 gen_tokens_total=9"; echo "## server-side timings during the run"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
     { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; echo "+line two"; } > "$A770B_DATA/results/$label.patch"
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
     exit 0 ;;
@@ -198,6 +369,7 @@ ids = [x["id"] for x in d["stages"]]
 assert ids == ["s0-pass", "s1-fail", "s2-note", "ref-cpp-example"], ids
 s = {x["id"]: x for x in d["stages"]}
 assert s["s0-pass"]["working"] is True, s["s0-pass"]
+assert s["s0-pass"]["requests"] == 2 and s["s0-pass"]["prompt_tokens"] == 100 and s["s0-pass"]["gen_tokens"] == 40, s["s0-pass"]
 assert s["s1-fail"]["working"] is False, s["s1-fail"]
 assert s["s2-note"]["working"] is True and s["s2-note"]["counts_toward_pass"] is False, s["s2-note"]
 assert s["ref-cpp-example"]["working"] is True, s["ref-cpp-example"]
@@ -401,7 +573,7 @@ case "${1:-}" in
     sleep 2   # wall_s is recorded; it must not turn the stage into a timeout
     label="fake-$(basename "$BRIEF" .md)"
     mkdir -p "$A770B_DATA/results"
-    echo "# fake capture — no server-side timings line at all (the run never got that far)" > "$A770B_DATA/results/$label.task.md"
+    { echo "# fake capture"; echo "requests=9 prompt_tokens_total=9 gen_tokens_total=9"; echo "gen_tokens_total=999"; echo "the run never reached the timings section"; } > "$A770B_DATA/results/$label.task.md"
     { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; } > "$A770B_DATA/results/$label.patch"
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
     exit 0 ;;
@@ -1847,6 +2019,22 @@ if [ -f "$evd/results/ev-label.metrics-before.prom" ] && [ -f "$evd/results/ev-l
        && ! grep -qF "$apikey" "$evd/results/ev-label.counters.json"; }; }
 then echo "ok   compose: a run's /metrics before/after snapshot diffs into <label>.counters.json, the api key never in a written file or curl's own argv"
 else echo "FAIL compose: the stage-counter snapshot/diff did not behave as expected"; cat "$evd/results/ev-label.counters.json" 2>/dev/null; fail=1
+fi
+cp -- "$evd/results/ev-label.metrics-before.prom" "$evd/results/ev-attached.metrics-before.prom"
+cp -- "$evd/results/ev-label.metrics-after.prom" "$evd/results/ev-attached.metrics-after.prom"
+rm -f -- "$evd/results/ev-attached.counters.json"
+( _iso; A770B_ATTACHED=1 A770B_SERVED_ENGINE=sglang cb_env bash -c '. "$1"; _stage_counters "$2"' \
+  _ "$LOCAL_BUILD_SCRIPT" "ev-attached" ) >/dev/null 2>&1
+if [ ! -f "$evd/results/ev-attached.counters.json" ]
+then echo "ok   compose: an attached run does not record the server's /metrics as this run's count"
+else echo "FAIL compose: an attached run wrote counters.json"; fail=1
+fi
+attach_fn=$(awk '/^_attach_running_server\(\)/,/^}/' "$LOCAL_BUILD_SCRIPT")
+if printf '%s\n' "$attach_fn" | grep -q 'Authorization: Bearer $(head' \
+  || ! printf '%s\n' "$attach_fn" | grep -q -- '-H @<(printf' \
+  || ! printf '%s\n' "$attach_fn" | grep -q 'a770b_api_key'
+then echo "FAIL attach: the models request puts the API key on the command line"
+else echo "ok   attach: the models request passes the API key through a header file"
 fi
 # a failed /metrics snapshot writes nothing and warns (E4); the run is not the one that fails here
 rm -f "$evd/results/ev-label2.metrics-before.prom"
