@@ -15,35 +15,48 @@ OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patc
 trap 'rm -f -- "$TMPLOG" "$TMPLOG.none"' EXIT
 # The engine is the one the host recorded. sglang and vllm read the usage file.
 # llama.cpp reads the container log. No recorded engine is unmeasured.
-# True when this project's container is running and publishes this run's port.
+# True when this project's container is running, publishes this run's port,
+# and that port is on this host: loopback, or the published address itself.
 container_is_attached_server(){
-  local container="$1" line
+  local container="$1" line host
+  host="${A770B_HOST:-}"
   line=$("$A770B_DOCKER" inspect --format '{{.State.Running}} {{json .NetworkSettings.Ports}}' "$container" 2>/dev/null) || return 1
   case "$line" in
     true\ *) ;;
     *) return 1 ;;
   esac
-  printf '%s\n' "$line" | grep -q "\"HostPort\":\"${A770B_PORT}\""
+  printf '%s\n' "$line" | grep -q "\"HostPort\":\"${A770B_PORT}\"" || return 1
+  case "${host,,}" in
+    127.0.0.1|localhost|::1) return 0 ;;
+  esac
+  # 0.0.0.0 is every interface on this machine, not a remote host's address.
+  printf '%s\n' "$line" | grep -F -q "\"HostIp\":\"${host}\""
 }
 capture_timings(){
   local usage="$A770B_DATA/logs/usage.json"
   local engine="${A770B_SERVED_ENGINE:-}"
   local container="${A770B_COMPOSE_PROJECT}-llama-1"
+  local since_file="$A770B_DATA/logs/run-since"
+  local since=""
   case "$engine" in
     sglang|vllm)
       python3 "$A770B_PROJECT/harness/engine_record.py" capture --usage "$usage"
       ;;
     llama.cpp)
-      # An attached server is this container only when the container is running and
-      # publishes this run's port. Otherwise the log is someone else's, or an old one.
-      if [ "${A770B_ATTACHED:-}" = 1 ] && ! container_is_attached_server "$container"; then
+      # An attached server is this container only when the container is running,
+      # publishes this run's port, and that port is on this host. The stamp is
+      # written when the build starts. Without it the log is an older run.
+      if [ -f "$since_file" ]; then
+        since=$(tr -d '[:space:]' < "$since_file" || true)
+      fi
+      if { [ "${A770B_ATTACHED:-}" = 1 ] && ! container_is_attached_server "$container"; } || [ -z "$since" ]; then
         python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
       else
         # llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
         # Do not pass a colour-stripping flag: this docker does not accept one, and discarding
         # stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
         # The build log is not a count. An empty second file keeps the transcript unread.
-        "$A770B_DOCKER" logs "$container" > "$TMPLOG" 2>&1 || true
+        "$A770B_DOCKER" logs --since "$since" "$container" > "$TMPLOG" 2>&1 || true
         : > "$TMPLOG.none"
         python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$TMPLOG.none"
       fi

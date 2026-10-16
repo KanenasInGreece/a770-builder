@@ -7,6 +7,25 @@
 # Leaves the server running for follow-up probes; the worktree is reset by capture_task.sh.
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 set -uo pipefail
+# The timings section is the only count. A line above that heading is not this row.
+read_server_timings(){
+  python3 - "$1" "$2" "$3" <<'PY'
+import json,sys,re
+j,t,wall=sys.argv[1],sys.argv[2],int(sys.argv[3]); r=json.load(open(j)); md=open(t,errors='ignore').read()
+lines=md.splitlines()
+marks=[i for i, line in enumerate(lines) if line == '## server-side timings during the run']
+section=lines[marks[-1] + 1:] if marks else []
+r['task']={'wall_s':wall,'test_file_written':'NO TEST FILE WRITTEN' not in md,
+ 'pytest_line':next((l for l in lines if re.search(r'\d+ (passed|failed|error)',l)),None),
+ 'server_timings':[l for l in section if l.startswith(('requests=','TTFT','TPOT','prefill'))]}
+json.dump(r,open(j,'w'),indent=1); print("TASK:",json.dumps(r['task']))
+PY
+}
+if [ "${1:-}" = "--timings-only" ]; then
+  shift
+  read_server_timings "${1:?json}" "${2:?task.md}" "${3:?wall seconds}"
+  exit $?
+fi
 LABEL="${1:?label}"; GGUF="${2:?gguf}"; CTX="${3:?ctx}"; shift 3 || shift $#
 # the seat is guarded HERE, before the AGENTS.md rename below touches it — not left to build_local.sh and
 # capture_task.sh further down, which guard their own argument only after this script has already moved a file
@@ -29,15 +48,5 @@ t1=$(date +%s)
 BL=$(cat "$A770B_DATA/logs/last-build.log.path")
 echo "build wall=$((t1-t0))s log=$BL"
 bash "$A770B_PROJECT/harness/capture_task.sh" "$LABEL" "$WT" "$BL" 2>&1 | tail -2
-python3 - "$R/$LABEL.json" "$R/$LABEL.task.md" "$((t1-t0))" <<'PY'
-import json,sys,re
-j,t,wall=sys.argv[1],sys.argv[2],int(sys.argv[3]); r=json.load(open(j)); md=open(t,errors='ignore').read()
-lines=md.splitlines()
-marks=[i for i, line in enumerate(lines) if line == '## server-side timings during the run']
-section=lines[marks[-1] + 1:] if marks else []
-r['task']={'wall_s':wall,'test_file_written':'NO TEST FILE WRITTEN' not in md,
- 'pytest_line':next((l for l in lines if re.search(r'\d+ (passed|failed|error)',l)),None),
- 'server_timings':[l for l in section if l.startswith(('requests=','TTFT','TPOT','prefill'))]}
-json.dump(r,open(j,'w'),indent=1); print("TASK:",json.dumps(r['task']))
-PY
+read_server_timings "$R/$LABEL.json" "$R/$LABEL.task.md" "$((t1-t0))"
 echo "═══ ROW $LABEL done — $(date -Is)"

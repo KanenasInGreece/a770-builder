@@ -15,7 +15,8 @@ import unittest
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, "harness"))
 
-from usage_tap import BridgeSession, handle_connection, record_from_body, serve  # noqa: E402
+import usage_tap  # noqa: E402
+from usage_tap import BridgeSession, UsageStore, handle_connection, record_from_body, serve  # noqa: E402
 
 
 def request(path, body, auth="Bearer supersecret"):
@@ -330,6 +331,33 @@ class SocketBridge(unittest.TestCase):
             got += chunk
         left.close()
         self.assertIn(reply, got)
+
+    def test_a_failed_write_removes_the_usage_file(self):
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "usage.json")
+        real_write = usage_tap.os.write
+        calls = {"n": 0}
+
+        def flaky(fd, data):
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                raise OSError("full")
+            return real_write(fd, data)
+
+        usage_tap.os.write = flaky
+        try:
+            store = UsageStore(path)
+            store.add({"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13})
+            with open(path, "rb") as handle:
+                self.assertIn(b"prompt_tokens", handle.read())
+            with self.assertRaises(OSError):
+                store.add({"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5})
+            self.assertFalse(os.path.exists(path))
+            self.assertFalse(os.path.exists(path + ".tmp"))
+            listed = os.listdir(directory)
+            self.assertEqual(listed, [])
+        finally:
+            usage_tap.os.write = real_write
 
 
 if __name__ == "__main__":

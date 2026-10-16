@@ -10,6 +10,8 @@ written. A chat request is an empty object as soon as it is parsed, and the
 response replaces that object when it finishes. A call that never
 finishes stays empty, so a later reader cannot treat the gap as zero.
 A response that carries no integer count stays empty too.
+A write that fails removes the usage file, so an older complete list
+cannot be read as this run.
 '''
 
 import argparse
@@ -337,16 +339,29 @@ class UsageStore:
             self._write(self.rows)
 
     def _write(self, rows):
+        '''Replace the file. On failure the previous file is removed.
+
+        The in-memory rows may already include the new one. Leaving the
+        previous file would let a reader sum a shorter complete list.
+        '''
         blob = json.dumps(rows, separators=(',', ':')).encode('ascii') + b'\n'
         tmp = self.path + '.tmp'
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.write(fd, blob)
-        finally:
-            os.close(fd)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
-        os.chmod(self.path, 0o600)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, blob)
+            finally:
+                os.close(fd)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.path)
+            os.chmod(self.path, 0o600)
+        except OSError:
+            for path in (self.path, tmp):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            raise
 
 
 class BridgeSession:

@@ -78,6 +78,13 @@ prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.
 eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
 LOG
 r2="$t/capseat"; git init -q "$r2"; ( cd "$r2" && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init )
+rm -f -- "$A770B_DATA/logs/run-since"
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen-open "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-n-gen-open.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-n-gen-open.task.md"
+then echo "ok   capture: a llama.cpp log with no start stamp is not this run"
+else echo "FAIL capture: a llama.cpp log with no start stamp was counted"; fail=1; fi
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
 A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md"; then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
 else echo "FAIL capture: stub llama log did not yield n_gen_max=10082"; fail=1; fi
@@ -114,6 +121,13 @@ if printf '%s\n' "$transcript_section" | grep -q 'context was not measured' \
   && ! printf '%s\n' "$transcript_section" | grep -q 'prompt_tokens_total=5'
 then echo "ok   capture: a llama.cpp run with no container timings does not count the transcript"
 else echo "FAIL capture: the transcript supplied a llama.cpp count"; fail=1; fi
+# The stub log has the timing lines again. The default docker prints them on stderr and
+# nothing for inspect, so deleting the attached check would count this log.
+cat > "$t/bin/docker.log" <<'LOG'
+print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s
+prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.80 tokens per second)
+eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
+LOG
 A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-attached-llama "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'context was not measured' "$A770B_DATA/results/selftest-attached-llama.task.md" \
   && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-attached-llama.task.md"
@@ -122,30 +136,61 @@ else echo "FAIL capture: an attached llama.cpp run read a container that was not
 cat > "$t/bin/docker-prove" <<'EOF'
 #!/bin/bash
 case "$1" in
-  inspect) printf '%s\n' "true {\"30260/tcp\":[{\"HostIp\":\"127.0.0.1\",\"HostPort\":\"30260\"}]}" ;;
+  inspect) cat "$0.inspect" ;;
   *) cat "$0.log" >&2 ;;
 esac
 EOF
 chmod +x "$t/bin/docker-prove"
 cp -- "$t/bin/docker.log" "$t/bin/docker-prove.log"
-# restore the slot log the proof container is allowed to contribute
-cat > "$t/bin/docker-prove.log" <<'LOG'
-print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s
-prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.80 tokens per second)
-eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
-LOG
-A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-proven "$r2" "$t/build.log" >/dev/null 2>&1
+attached_unmeasured(){
+  printf '%s\n' "$2" > "$t/bin/docker-prove.inspect"
+  A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST="$3" A770B_DOCKER="$t/bin/docker-prove" \
+    bash "$here/harness/capture_task.sh" "$1" "$r2" "$t/build.log" >/dev/null 2>&1
+  if grep -q 'context was not measured' "$A770B_DATA/results/$1.task.md" \
+    && ! grep -q 'n_gen_max=' "$A770B_DATA/results/$1.task.md"
+  then echo "ok   capture: $4"
+  else echo "FAIL capture: $4"; fail=1; fi
+}
+attached_unmeasured selftest-attached-stopped 'false {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' 127.0.0.1 "a stopped container that publishes this port is unmeasured"
+attached_unmeasured selftest-attached-otherport 'true {"9999/tcp":[{"HostIp":"127.0.0.1","HostPort":"9999"}]}' 127.0.0.1 "a running container on another port is unmeasured"
+attached_unmeasured selftest-attached-remote 'true {"30260/tcp":[{"HostIp":"0.0.0.0","HostPort":"30260"}]}' 10.9.8.7 "a remote host is not this machine's container"
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-proven "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-proven.task.md"
-then echo "ok   capture: an attached llama.cpp run counts the container that publishes this port"
+then echo "ok   capture: an attached llama.cpp run counts the container that publishes this port on this host"
 else echo "FAIL capture: a container shown to be the attached server did not yield its log"; fail=1; fi
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"10.9.8.7","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=10.9.8.7 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-samehost "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-samehost.task.md"
+then echo "ok   capture: an attached llama.cpp run counts the container whose published address is this host"
+else echo "FAIL capture: a container publishing this host and port was not counted"; fail=1; fi
 printf '%s\n' '[{"prompt_tokens":99,"completion_tokens":1,"total_tokens":100}]' > "$A770B_DATA/logs/usage.json"
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
 bash "$here/harness/build_local.sh" >/dev/null 2>&1 || true
 A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=sglang A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-stale "$r2" "$t/build.log" >/dev/null 2>&1
-if [ ! -f "$A770B_DATA/logs/usage.json" ] \
+if [ ! -f "$A770B_DATA/logs/usage.json" ] && [ ! -f "$A770B_DATA/logs/run-since" ] \
   && grep -q 'context was not measured' "$A770B_DATA/results/selftest-stale.task.md" \
   && ! grep -q 'prompt_tokens_total=99' "$A770B_DATA/results/selftest-stale.task.md"
-then echo "ok   capture: a refused build drops a stale usage file, and the capture does not read it"
-else echo "FAIL capture: a stale usage file survived a refused build or was counted"; fail=1; fi
+then echo "ok   capture: a refused build drops a stale usage file and log stamp, and the capture does not read them"
+else echo "FAIL capture: a stale usage file or log stamp survived a refused build or was counted"; fail=1; fi
+printf '%s\n' '{}' > "$t/one.json"
+cat > "$t/one.md" <<'EOF'
+requests=9 prompt_tokens_total=9 gen_tokens_total=9
+## server-side timings during the run
+requests=2 prompt_tokens_total=100 gen_tokens_total=40
+EOF
+if bash "$here/harness/run_one.sh" --timings-only "$t/one.json" "$t/one.md" 7 >/dev/null \
+  && python3 - "$t/one.json" <<'PY'
+import json, sys
+got = json.load(open(sys.argv[1]))["task"]["server_timings"]
+want = ["requests=2 prompt_tokens_total=100 gen_tokens_total=40"]
+if got != want:
+    print("FAIL one-row: server_timings=%r" % got)
+    sys.exit(1)
+print("ok   one-row: a requests line above the timings heading is not a count")
+PY
+then :
+else echo "FAIL one-row: the reader was not run or kept the decoy"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)
