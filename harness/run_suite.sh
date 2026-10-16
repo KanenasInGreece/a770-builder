@@ -736,7 +736,7 @@ process_task(){
     return 0
   fi
   local capfile="$A770B_DATA/results/$label.task.md" patchfile="$A770B_DATA/results/$label.patch"
-  local reqline requests prompt_tokens gen_tokens
+  local reqline requests prompt_tokens gen_tokens lone lone_gen
   # -a: a capture that dumped a build artefact's raw bytes into its "new files" section (the case Defect 3 above
   # closes off going forward, but an older or still-uncovered capture can still carry one) reads as binary to a
   # locale-aware grep, which then silently matches nothing anywhere past that point — including this timings line
@@ -745,11 +745,16 @@ process_task(){
   requests=$(printf '%s' "$reqline" | grep -oE '^requests=[0-9]+' | cut -d= -f2)
   prompt_tokens=$(printf '%s' "$reqline" | grep -oE 'prompt_tokens_total=[0-9]+' | cut -d= -f2)
   gen_tokens=$(printf '%s' "$reqline" | grep -oE 'gen_tokens_total=[0-9]+' | cut -d= -f2)
-  # A capture attached to a server with no llama.cpp timings prints one prompt_tokens_total= line and
-  # nothing else. An absent count stays empty (the JSON field stays null). A 0 is not a measurement.
+  # A usage capture prints the combined line when both counts are there, or one of the two
+  # lines when only that count was measured. An absent count stays empty (the JSON field
+  # stays null). A 0 is not a measurement.
   if [ -z "$prompt_tokens" ]; then
     lone=$(grep -a -oE 'prompt_tokens_total=[0-9]+' "$capfile" 2>/dev/null | tail -1 | cut -d= -f2 || true)
     if [ -n "$lone" ] && [ "$lone" -gt 0 ] 2>/dev/null; then prompt_tokens=$lone; fi
+  fi
+  if [ -z "$gen_tokens" ]; then
+    lone_gen=$(grep -a -oE 'gen_tokens_total=[0-9]+' "$capfile" 2>/dev/null | tail -1 | cut -d= -f2 || true)
+    if [ -n "$lone_gen" ] && [ "$lone_gen" -gt 0 ] 2>/dev/null; then gen_tokens=$lone_gen; fi
   fi
   local lines=0 added hdrs
   if [ -f "$patchfile" ]; then

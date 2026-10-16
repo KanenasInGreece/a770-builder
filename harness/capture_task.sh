@@ -13,6 +13,31 @@ LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log
 [ -f "$BLOG" ] || { echo "⛔ build log not found: $BLOG" >&2; exit 2; }
 OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; TMPLOG=$(mktemp)
 trap 'rm -f -- "$TMPLOG"' EXIT
+# The engine is the one the host recorded. sglang and vllm read the usage file.
+# An attached run with no recorded engine does not read the container log.
+# A run this harness started, with no recorded engine, keeps that log.
+capture_timings(){
+  local usage="$A770B_DATA/logs/usage.json"
+  local engine="${A770B_SERVED_ENGINE:-}"
+  case "$engine" in
+    sglang|vllm)
+      python3 "$A770B_PROJECT/harness/engine_record.py" capture --usage "$usage"
+      ;;
+    llama.cpp)
+      python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
+      ;;
+    "")
+      if [ "${A770B_ATTACHED:-}" = 1 ]; then
+        python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
+      else
+        python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
+      fi
+      ;;
+    *)
+      python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
+      ;;
+  esac
+}
 # the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
 { safe_git_diff "$WT"
   safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
@@ -53,11 +78,11 @@ CONTAINER="${A770B_COMPOSE_PROJECT}-llama-1"
 if [ "${A770B_ATTACHED:-}" = 1 ]; then
   # An attached server's compose container log may not answer at all; an empty log is judged by the module, not here
   "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1 || true
-  python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
+  capture_timings
 else
-  # A reused server: the same two logs, the same one module — no second parser in this script
+  # A server this harness started: the container log is the llama.cpp count, and only then
   "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1 || true
-  python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
+  capture_timings
 fi
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"

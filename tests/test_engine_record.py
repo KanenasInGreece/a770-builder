@@ -953,6 +953,94 @@ class HealthChecks(unittest.TestCase):
         self.assertNotIn("Traceback", err)
 
 
+class UsageFileCapture(TempTree):
+    """capture --usage reads integers the host wrote. It does not open a log."""
+
+    def lines_of(self, text):
+        path = self.write("usage.json", text)
+        code, out, err = invoke(["capture", "--usage", path])
+        self.assertEqual((code, err), (0, ""))
+        return out.splitlines()
+
+    def test_two_rows_sum_without_the_llama_sentence(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12,
+             "reasoning_tokens": 1},
+            {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7,
+             "reasoning_tokens": 0},
+        ]))
+        self.assertEqual(lines, [
+            "rates not measured",
+            "requests=2 prompt_tokens_total=14 gen_tokens_total=5",
+            "reasoning_tokens_total=1",
+        ])
+        self.assertNotIn("llama.cpp", "\n".join(lines))
+
+    def test_cached_tokens_sum_only_when_every_row_has_them(self):
+        both = self.lines_of(json.dumps([
+            {"prompt_tokens": 10, "completion_tokens": 1, "cached_tokens": 8},
+            {"prompt_tokens": 4, "completion_tokens": 1, "cached_tokens": 0},
+        ]))
+        self.assertIn("cached_tokens_total=8", both)
+        one = self.lines_of(json.dumps([
+            {"prompt_tokens": 10, "completion_tokens": 1, "cached_tokens": 8},
+            {"prompt_tokens": 4, "completion_tokens": 1},
+        ]))
+        self.assertNotIn("cached_tokens_total=", "\n".join(one))
+        self.assertIn("requests=2 prompt_tokens_total=14 gen_tokens_total=2", one)
+
+    def test_a_missing_generation_count_leaves_gen_off_the_line(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 10, "completion_tokens": 2},
+            {"prompt_tokens": 4},
+        ]))
+        self.assertEqual(lines, ["rates not measured", "prompt_tokens_total=14"])
+
+    def test_a_missing_prompt_count_is_unmeasured(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 4, "completion_tokens": 1},
+            {"completion_tokens": 3},
+        ]))
+        self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
+
+    def test_prose_and_a_string_that_holds_the_word_are_not_the_count(self):
+        prose = self.lines_of("prompt_tokens 99\n")
+        self.assertEqual(prose, ["rates not measured", NO_TOKEN_LINE])
+        nested = self.lines_of(json.dumps([
+            {"prompt_tokens": 3, "completion_tokens": 1, "note": "prompt_tokens 99"},
+        ]))
+        self.assertEqual(nested, [
+            "rates not measured",
+            "requests=1 prompt_tokens_total=3 gen_tokens_total=1",
+        ])
+
+    def test_a_boolean_and_a_float_are_not_counts(self):
+        for text in (json.dumps([{"prompt_tokens": True}]),
+                     json.dumps([{"prompt_tokens": 1.5}])):
+            lines = self.lines_of(text)
+            self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
+
+    def test_a_real_zero_is_kept(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 0, "completion_tokens": 0},
+        ]))
+        self.assertEqual(lines, [
+            "rates not measured",
+            "requests=1 prompt_tokens_total=0 gen_tokens_total=0",
+        ])
+
+    def test_an_empty_list_and_a_missing_file_are_unmeasured(self):
+        self.assertEqual(self.lines_of("[]\n"), ["rates not measured", NO_TOKEN_LINE])
+        code, out, err = invoke(["capture", "--usage", self.missing("none.json")])
+        self.assertEqual((code, err, out.splitlines()),
+                         (0, "", ["rates not measured", NO_TOKEN_LINE]))
+
+    def test_unmeasured_opens_no_log(self):
+        code, out, err = invoke(["capture", "--unmeasured"])
+        self.assertEqual((code, err, out.splitlines()),
+                         (0, "", ["rates not measured", NO_TOKEN_LINE]))
+
+
 class ModuleHygiene(unittest.TestCase):
     """Brief check 12's and 23's clause on the file itself: no engine, no clock."""
 

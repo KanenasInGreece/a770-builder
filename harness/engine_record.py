@@ -2,8 +2,9 @@
 '''Record one completion: text, token counts, and rates, for any backend.
 
 Commands that read stdin: completion, stream, log, window.  Commands that do
-not: capture (a container-log path and a build-log path) and health (one
-argument).  completion, stream, and log print one JSON object; capture and
+not: capture and health (one argument).  capture reads a container-log path
+and a build-log path, or --usage and a file of usage integers, or
+--unmeasured.  completion, stream, and log print one JSON object; capture and
 window print human lines; health prints ok or no.
 
 Absent is JSON null on stdout, never the digit 0.  A count is a JSON integer of
@@ -22,6 +23,7 @@ import sys
 
 TEXT_KEYS = ('content', 'reasoning_content', 'reasoning')
 NO_RATE_LINE = 'timings unavailable (log has no llama.cpp timing lines)'
+RATES_NOT_MEASURED = 'rates not measured'
 NO_TOKEN_LINE = 'context was not measured'
 MISSING = 'MISSING'
 STDIN_COMMANDS = ('completion', 'stream', 'log', 'window')
@@ -494,8 +496,77 @@ def completions_from_build_log(text):
     return completions
 
 
+def _optional_total(rows, key, label):
+    '''A summed line when every row carries that integer, else nothing.'''
+    values = []
+    for row in rows:
+        if key not in row or not is_count(row.get(key)):
+            return None
+        values.append(row[key])
+    if not values:
+        return None
+    return '{0}={1}'.format(label, sum(values))
+
+
+def cmd_capture_usage(path):
+    '''Human lines from a file of usage integers. No container log.'''
+    sys.stdout.write(RATES_NOT_MEASURED + '\n')
+    text = read_log_text(path)
+    if text is None or text.strip() == '':
+        sys.stdout.write(NO_TOKEN_LINE + '\n')
+        return 0
+    parsed, body = parse_json(text)
+    if not parsed or not isinstance(body, list) or not body:
+        sys.stdout.write(NO_TOKEN_LINE + '\n')
+        return 0
+    rows = []
+    for item in body:
+        if not isinstance(item, dict):
+            sys.stdout.write(NO_TOKEN_LINE + '\n')
+            return 0
+        rows.append(item)
+    prompts = []
+    for row in rows:
+        count = row.get('prompt_tokens')
+        if not is_count(count):
+            sys.stdout.write(NO_TOKEN_LINE + '\n')
+            return 0
+        prompts.append(count)
+    gens = []
+    gens_complete = True
+    for row in rows:
+        count = row.get('completion_tokens')
+        if not is_count(count):
+            gens_complete = False
+            break
+        gens.append(count)
+    if gens_complete:
+        sys.stdout.write(
+            'requests={0} prompt_tokens_total={1} gen_tokens_total={2}\n'.format(
+                len(rows), sum(prompts), sum(gens)))
+    else:
+        sys.stdout.write('prompt_tokens_total={0}\n'.format(sum(prompts)))
+    for key, label in (
+            ('reasoning_tokens', 'reasoning_tokens_total'),
+            ('cached_tokens', 'cached_tokens_total')):
+        line = _optional_total(rows, key, label)
+        if line is not None:
+            sys.stdout.write(line + '\n')
+    return 0
+
+
 def cmd_capture(paths):
-    '''Human lines only: the container log first, else the build log.'''
+    '''Human lines only: the container log first, else the build log.
+
+    --usage reads that file and does not open a log. --unmeasured prints the
+    unmeasured lines and does not open a log.
+    '''
+    if paths == ['--unmeasured']:
+        sys.stdout.write(RATES_NOT_MEASURED + '\n')
+        sys.stdout.write(NO_TOKEN_LINE + '\n')
+        return 0
+    if len(paths) == 2 and paths[0] == '--usage':
+        return cmd_capture_usage(paths[1])
     if len(paths) != 2:
         return 2
     container_text = read_log_text(paths[0])

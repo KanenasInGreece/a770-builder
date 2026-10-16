@@ -14,11 +14,13 @@
 #   ~/.local/share/opencode             PRIVATE tmpfs (fresh session db per run; auth.json never enters)
 #   uv + ~/.local/share/uv/python       read-only    (managed pythons only — never the whole uv dir, it holds credentials)
 #   $A770B_UV_CACHE                     read-ONLY    (pre-warmed by harness/warm_cache.sh; a run cannot poison later runs)
-# NETWORK: --unshare-net. The sandbox has loopback only; a socat pair bridges 127.0.0.1:$A770B_PORT inside to the host's
+# NETWORK: --unshare-net. The sandbox has loopback only; a bridge forwards 127.0.0.1:$A770B_PORT inside to the host's
 # model server through a unix socket, so the model reaches the server and nothing else — no LAN, no internet, no other
-# loopback service on the host. PID/UTS/IPC unshared; the sandbox dies with its parent. Both socat ends log to
-# $A770B_DATA/logs/llama-bridge.log / nowhere, so a closed connection never lands in the transcript. A770B_NO_BRIDGE=1 runs
-# without any bridge (verify: tests only, no model, no key).
+# loopback service on the host. PID/UTS/IPC unshared; the sandbox dies with its parent. When the host recorded
+# sglang or vllm, the host side is harness/usage_tap.py: it forwards the bytes and writes usage integers to
+# $A770B_DATA/logs/usage.json, and it does not write headers or bodies. llama.cpp keeps the socat bridge, and
+# that count stays in the container log. Bridge errors go to $A770B_DATA/logs/llama-bridge.log, so a closed
+# connection never lands in the transcript. A770B_NO_BRIDGE=1 runs without any bridge (verify: tests only, no model, no key).
 # The worktree is judged by guard_path_policy before any existence check and before it is bind-mounted.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
@@ -34,9 +36,18 @@ UV=$(readlink -f "$(command -v uv)")
 SOCK="$A770B_DATA/logs/llama-bridge.sock"; BRIDGE=""
 if [ "${A770B_NO_BRIDGE:-0}" != 1 ]; then
   # host side of the bridge: unix socket → the model server; lives only for this run
-  rm -f "$SOCK"; socat "UNIX-LISTEN:$SOCK,fork,unlink-early" "TCP:$A770B_HOST:$A770B_PORT" 9>&- 2>>"$A770B_DATA/logs/llama-bridge.log" & BRIDGE=$!
+  rm -f "$SOCK"
+  case "${A770B_SERVED_ENGINE:-}" in
+    sglang|vllm)
+      python3 "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" 9>&- >>"$A770B_DATA/logs/llama-bridge.log" 2>&1 & BRIDGE=$!
+      ;;
+    *)
+      socat "UNIX-LISTEN:$SOCK,fork,unlink-early" "TCP:$A770B_HOST:$A770B_PORT" 9>&- 2>>"$A770B_DATA/logs/llama-bridge.log" & BRIDGE=$!
+      ;;
+  esac
   trap 'kill $BRIDGE 2>/dev/null; rm -f "$SOCK"' EXIT
   for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.2; done
+  if [ ! -S "$SOCK" ]; then echo "⛔ sandbox: bridge socket did not appear" >&2; exit 2; fi
 fi
 ARGS=(
   --ro-bind /usr /usr --ro-bind /etc /etc

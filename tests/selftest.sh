@@ -81,6 +81,26 @@ r2="$t/capseat"; git init -q "$r2"; ( cd "$r2" && git -c user.name=t -c user.ema
 A770B_REFUSE=/nonexistent A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md"; then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
 else echo "FAIL capture: stub llama log did not yield n_gen_max=10082"; fail=1; fi
+printf '%s\n' '[{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13,"reasoning_tokens":0}]' > "$A770B_DATA/logs/usage.json"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=sglang A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-usage "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'requests=1 prompt_tokens_total=11 gen_tokens_total=2' "$A770B_DATA/results/selftest-usage.task.md" \
+  && grep -q 'rates not measured' "$A770B_DATA/results/selftest-usage.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-usage.task.md"
+then echo "ok   capture: an attached sglang run reads the usage file and not the container log"
+else echo "FAIL capture: attached sglang did not read the usage file"; fail=1; fi
+printf '%s\n' '[{"prompt_tokens":6,"completion_tokens":1,"total_tokens":7,"cached_tokens":4}]' > "$A770B_DATA/logs/usage.json"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=vllm A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-vllm "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'requests=1 prompt_tokens_total=6 gen_tokens_total=1' "$A770B_DATA/results/selftest-vllm.task.md" \
+  && grep -q 'cached_tokens_total=4' "$A770B_DATA/results/selftest-vllm.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-vllm.task.md"
+then echo "ok   capture: an attached vllm run reads the usage file, including cached tokens"
+else echo "FAIL capture: attached vllm did not read the usage file"; fail=1; fi
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE= A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-unnamed "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'rates not measured' "$A770B_DATA/results/selftest-unnamed.task.md" \
+  && grep -q 'context was not measured' "$A770B_DATA/results/selftest-unnamed.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-unnamed.task.md"
+then echo "ok   capture: an attached run with no recorded engine does not read the container log"
+else echo "FAIL capture: an unnamed attached engine fell through to the container log"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)
