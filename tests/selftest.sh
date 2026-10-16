@@ -2020,6 +2020,22 @@ if [ -f "$evd/results/ev-label.metrics-before.prom" ] && [ -f "$evd/results/ev-l
 then echo "ok   compose: a run's /metrics before/after snapshot diffs into <label>.counters.json, the api key never in a written file or curl's own argv"
 else echo "FAIL compose: the stage-counter snapshot/diff did not behave as expected"; cat "$evd/results/ev-label.counters.json" 2>/dev/null; fail=1
 fi
+cp -- "$evd/results/ev-label.metrics-before.prom" "$evd/results/ev-attached.metrics-before.prom"
+cp -- "$evd/results/ev-label.metrics-after.prom" "$evd/results/ev-attached.metrics-after.prom"
+rm -f -- "$evd/results/ev-attached.counters.json"
+( _iso; A770B_ATTACHED=1 A770B_SERVED_ENGINE=sglang cb_env bash -c '. "$1"; _stage_counters "$2"' \
+  _ "$LOCAL_BUILD_SCRIPT" "ev-attached" ) >/dev/null 2>&1
+if [ ! -f "$evd/results/ev-attached.counters.json" ]
+then echo "ok   compose: an attached run does not record the server's /metrics as this run's count"
+else echo "FAIL compose: an attached run wrote counters.json"; fail=1
+fi
+attach_fn=$(awk '/^_attach_running_server\(\)/,/^}/' "$LOCAL_BUILD_SCRIPT")
+if printf '%s\n' "$attach_fn" | grep -q 'Authorization: Bearer $(head' \
+  || ! printf '%s\n' "$attach_fn" | grep -q -- '-H @<(printf' \
+  || ! printf '%s\n' "$attach_fn" | grep -q 'a770b_api_key'
+then echo "FAIL attach: the models request puts the API key on the command line"
+else echo "ok   attach: the models request passes the API key through a header file"
+fi
 # a failed /metrics snapshot writes nothing and warns (E4); the run is not the one that fails here
 rm -f "$evd/results/ev-label2.metrics-before.prom"
 snap_fail=$( _iso; FAKE_CURL_METRICS_FAIL=1 cb_env bash -c \

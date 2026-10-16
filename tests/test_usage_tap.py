@@ -10,6 +10,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -392,6 +393,37 @@ class SocketBridge(unittest.TestCase):
         left.close()
         self.assertEqual(json.loads(seen["when_request_arrived"]), [{}])
         self.assertIn(b'"prompt_tokens"', got)
+
+    def test_a_poisoned_session_does_not_wait_on_the_next_response(self):
+        session = BridgeSession(Memory())
+        session.wait = 30
+        session._poison()
+        started = time.monotonic()
+        session._on_response(
+            "HTTP/1.1 200 OK",
+            {"content-type": "application/json"},
+            b'{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+        )
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_a_failed_placeholder_does_not_make_the_response_wait(self):
+        class Boom(Memory):
+            def add(self, row):
+                raise OSError("full")
+
+        session = BridgeSession(Boom())
+        session.wait = 30
+        try:
+            session._on_request("POST /v1/chat/completions HTTP/1.1", {}, b"{}")
+        except OSError:
+            pass
+        started = time.monotonic()
+        session._on_response(
+            "HTTP/1.1 200 OK",
+            {"content-type": "application/json"},
+            b'{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+        )
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_a_failed_write_removes_the_usage_file(self):
         directory = tempfile.mkdtemp()

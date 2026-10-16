@@ -418,10 +418,17 @@ class BridgeSession:
         if not chat or self.poisoned:
             self.flags.put(None)
             return
-        self.flags.put(self.store.add({}))
+        try:
+            index = self.store.add({})
+        except Exception:
+            self.flags.put(None)
+            raise
+        self.flags.put(index)
 
     def _on_response(self, start, headers, body):
         del start
+        if self.poisoned:
+            return
         try:
             index = self.flags.get(timeout=self.wait)
         except queue.Empty:
@@ -439,8 +446,9 @@ class BridgeSession:
 def handle_connection(client, upstream, store):
     '''Forward both ways. A parse error does not stop the bytes.
 
-    The request is recorded before it is forwarded. A stop in between
-    leaves the empty object, so the finished calls are not the whole run.
+    The chunk that completes a chat request is recorded before that chunk
+    is forwarded. A stop in between leaves the empty object, so the
+    finished calls are not the whole run.
     '''
     try:
         remote = socket.create_connection(upstream, timeout=10)

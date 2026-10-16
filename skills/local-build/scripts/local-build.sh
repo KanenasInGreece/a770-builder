@@ -177,6 +177,10 @@ _stage_counters(){ # <label> — engine_evidence.py diff over <label>.metrics-be
   # counters.json (engine_evidence.py diff itself already tolerates a missing before/after file with a note).
   local label="$1" engine
   engine="${A770B_SERVED_ENGINE:-}"
+  # An attached server's /metrics counts every client. This run's count is the tap or the container log.
+  if [ "${A770B_ATTACHED:-}" = 1 ]; then
+    return 0
+  fi
   if [ -z "$engine" ]; then
     echo "⚠ A770B_SERVED_ENGINE is empty — skipping stage counters for $label" >&2
     return 0
@@ -376,7 +380,7 @@ _attach_running_server(){
   local models_body="" owned=""
   A770B_SERVED_ENGINE=""
   if [ -s "$A770B_API_KEY_FILE" ]; then
-    models_body=$(curl -sS --max-time 5 -H "Authorization: Bearer $(head -n 1 "$A770B_API_KEY_FILE")" "$origin/v1/models" 2>/dev/null || true)
+    models_body=$(curl -sS --max-time 5 -H @<(printf 'Authorization: Bearer %s' "$(a770b_api_key)") "$origin/v1/models" 2>/dev/null || true)
     owned=$(printf '%s' "$models_body" | python3 -c 'import json,sys
 try:
     data = json.load(sys.stdin)
