@@ -333,6 +333,85 @@ class SocketBridge(unittest.TestCase):
         left.close()
         self.assertIn(reply, got)
 
+    def test_a_failed_response_write_still_forwards_the_next_response(self):
+        class ReplaceBoom(Memory):
+            def replace(self, index, row):
+                raise OSError("full")
+
+        def body_for(n):
+            return json.dumps({
+                "choices": [{"message": {"content": "part-{0}".format(n)}}],
+                "usage": {"prompt_tokens": n, "completion_tokens": 1, "total_tokens": n + 1},
+            }).encode("utf-8")
+
+        first = body_for(1)
+        second = body_for(2)
+        ready = []
+
+        def read_one(conn, pending):
+            # Both requests can arrive in one recv. Bytes after this request stay for the next.
+            while b"\r\n\r\n" not in pending:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return None, pending
+                pending += chunk
+            head, _, rest = pending.partition(b"\r\n\r\n")
+            length = 0
+            for line in head.split(b"\r\n"):
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":", 1)[1].strip())
+            while len(rest) < length:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                rest += chunk
+            return rest[length:], rest[:length]
+
+        def upstream():
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            ready.append(server.getsockname())
+            conn, _addr = server.accept()
+            try:
+                pending = b""
+                for body in (first, second):
+                    pending, _got = read_one(conn, pending)
+                    if pending is None:
+                        return
+                    conn.sendall((
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                        "Content-Length: {0}\r\nConnection: keep-alive\r\n\r\n"
+                    ).format(len(body)).encode("ascii") + body)
+            finally:
+                conn.close()
+                server.close()
+
+        threading.Thread(target=upstream, daemon=True).start()
+        for _ in range(50):
+            if ready:
+                break
+            threading.Event().wait(0.05)
+        self.assertTrue(ready)
+        left, right = socket.socketpair()
+        try:
+            threading.Thread(
+                target=handle_connection, args=(right, ready[0], ReplaceBoom()), daemon=True).start()
+            left.sendall(request("/v1/chat/completions", "{}"))
+            left.sendall(request("/v1/chat/completions", "{}"))
+            left.settimeout(2)
+            got = b""
+            while second not in got:
+                chunk = left.recv(4096)
+                if not chunk:
+                    break
+                got += chunk
+        finally:
+            left.close()
+        self.assertIn(first, got)
+        self.assertIn(second, got)
+
     def test_the_empty_record_is_written_before_the_server_has_the_request(self):
         directory = tempfile.mkdtemp()
         path = os.path.join(directory, "usage.json")
