@@ -2824,8 +2824,8 @@ def test_check_fails_measured_tasks_zero_context(tmp_path):
     assert "context_tokens must be a positive int or null" in result.stderr
 
 
-def test_check_rejects_source_that_is_the_word_local(tmp_path):
-    """source may name a URL that contains the letters local. The value that is only the word local is refused."""
+def test_check_accepts_source_that_is_the_word_local(tmp_path):
+    """A row may record source as the word local. The published flashnext row is still checked on its own."""
     data = load_base()
     row = data["profiles"]["qwen35-9b-q4km-vulkan"]
     row["source"] = "https://example.com/local-build"
@@ -2835,15 +2835,8 @@ def test_check_rejects_source_that_is_the_word_local(tmp_path):
 
     row["source"] = "local"
     path = write_json(tmp_path / "word.json", data)
-    bad = run("check", "--file", str(path))
-    assert bad.returncode == 2
-    assert "source must not be the word local" in bad.stderr
-
-    row["source"] = " local "
-    path = write_json(tmp_path / "padded.json", data)
-    padded = run("check", "--file", str(path))
-    assert padded.returncode == 2
-    assert "source must not be the word local" in padded.stderr
+    word = run("check", "--file", str(path))
+    assert word.returncode == 0, word.stderr
 
 
 B70_JSON = ROOT / "config" / "registry" / "b70.inference.json"

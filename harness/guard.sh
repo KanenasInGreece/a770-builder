@@ -166,10 +166,11 @@ health_status(){ local body word
   [ -n "$word" ] && echo "$word" || echo "answered, no status field"
 }
 
-# project_llama_ids — running containers in this compose project whose service is llama.
-# The four framework names are never selected, even when they carry the same project label.
+# project_llama_ids — containers in this compose project whose service is llama, including exited ones
+# (`docker ps -aq`). The four framework names are never selected, even when they carry the same project label.
 # A container whose compose files are another worktree is still this project, so it is listed here;
-# compose ps filtered by this checkout's files does not see it.
+# compose ps filtered by this checkout's files does not see it. A caller that needs a live container
+# skips an id when _pid_if_running prints nothing.
 project_llama_ids(){
   command -v "$A770B_DOCKER" >/dev/null 2>&1 || return 0
   local id name

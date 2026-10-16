@@ -1283,15 +1283,36 @@ if args and args[0] == "compose":
                 c["running"] = False
             save()
         sys.exit(0)
+    if cmd == "up":
+        started = False
+        for c in state["containers"]:
+            if c["project"] == project and c["files"] == joined:
+                c["running"] = True
+                c["pid"] = c.get("pid") or 4242
+                started = True
+        if not started:
+            state["containers"].append({
+                "id": "started",
+                "name": "a770-builder-llama-1",
+                "project": project or "",
+                "service": "llama",
+                "files": joined,
+                "running": True,
+                "pid": 4242,
+                "log": "started log",
+            })
+        save()
+        sys.exit(0)
     sys.exit(0)
 if args and args[0] == "ps":
+    show_all = any(a.startswith("-") and "a" in a for a in args)
     want = {}
     for a in args:
         if a.startswith("label="):
             key, value = a[len("label="):].split("=", 1)
             want[key] = value
     for c in state["containers"]:
-        if not c["running"]:
+        if not show_all and not c["running"]:
             continue
         if want.get("com.docker.compose.project") not in (None, c["project"]):
             continue
@@ -1391,16 +1412,93 @@ def test_stop_removes_the_override_container_and_another_worktree(tmp_path):
     calls = log.read_text(encoding="utf-8").splitlines()
     assert not any(c.split()[0] == "rm" for c in calls if c.split())
     assert any(" logs both" in f" {c} " for c in calls)
-    assert any(" logs otherwt" in f" {c} " for c in calls)
     assert not any(" logs otherproj" in f" {c} " or " logs fw" in f" {c} " for c in calls)
     kept = logs / "llamacpp-a770.log"
     assert kept.is_file()
-    assert "log" in kept.read_text(encoding="utf-8")
+    kept_text = kept.read_text(encoding="utf-8")
+    assert kept_text.strip() == "yaml-plus-override log"
+    assert "other-worktree log" not in kept_text
     logs_at = [i for i, c in enumerate(calls) if " logs " in f" {c} "]
     downs = [i for i, c in enumerate(calls) if c.endswith(" down") or " down" in f" {c} "]
     assert logs_at and downs and logs_at[0] < downs[0]
     assert any("other-a.yaml" in c and c.endswith(" down") or ("other-a.yaml" in c and " down" in f" {c} ") for c in calls)
     assert not any("someone-else" in c for c in calls)
+
+
+def test_stop_ignores_an_exited_container_whose_compose_file_is_gone(tmp_path):
+    """An exited container whose compose file is gone does not make stop exit 3, and does not delete a running container of another project."""
+    override = tmp_path / "data" / "logs" / "compose-argv.override.json"
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("{}\n", encoding="utf-8")
+    missing = tmp_path / "removed-worktree" / "compose.yaml"
+    foreign = tmp_path / "other-project.yaml"
+    foreign.write_text("services: {}\n", encoding="utf-8")
+    ours = f"{SGLANG_YAML},{override}"
+    containers = [
+        {"id": "ghost", "name": "a770-builder-llama-old", "project": "a770-builder", "service": "llama",
+         "files": str(missing), "running": False, "pid": 0, "log": "exited log"},
+        {"id": "live", "name": "a770-builder-llama-1", "project": "a770-builder", "service": "llama",
+         "files": ours, "running": True, "pid": 4242, "log": "yaml-plus-override log"},
+        {"id": "otherproj", "name": "someone-llama", "project": "someone-else", "service": "llama",
+         "files": str(foreign), "running": True, "pid": 4244, "log": "other-project log"},
+        {"id": "fw0", "name": FRAMEWORK_NAMES[0], "project": "a770-builder", "service": "llama",
+         "files": str(tmp_path / "framework.yaml"), "running": True, "pid": 5000, "log": "framework log"},
+    ]
+    bin_, log, state_path = _label_docker(tmp_path, {"containers": containers})
+    env = _env(
+        tmp_path, bin_,
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_PROJECT="a770-builder",
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing.env"),
+        FAKE_DOCKER_LOG=str(log),
+        FAKE_STATE=str(state_path),
+    )
+    logs = Path(env["A770B_DATA"]) / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "llamacpp-a770.pid").write_text("99999\n", encoding="utf-8")
+    (logs / "live-backend.json").write_text("{}\n", encoding="utf-8")
+    r = _run(env, "stop")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "compose file is not on disk" not in (r.stdout + r.stderr)
+    running = _running_ids(state_path)
+    assert "live" not in running
+    assert "otherproj" in running
+    assert "fw0" in running
+    assert "ghost" not in running
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert not any(c.split()[0] == "rm" for c in calls if c.split())
+    assert not any("removed-worktree" in c for c in calls)
+
+
+def test_start_takes_down_another_worktrees_running_container(tmp_path):
+    foreign = tmp_path / "other-a.yaml"
+    foreign.write_text("services: {}\n", encoding="utf-8")
+    elsewhere = tmp_path / "other-project.yaml"
+    elsewhere.write_text("services: {}\n", encoding="utf-8")
+    containers = [
+        {"id": "otherwt", "name": "a770-builder-llama-2", "project": "a770-builder", "service": "llama",
+         "files": str(foreign), "running": True, "pid": 4243, "log": "other-worktree log"},
+        {"id": "otherproj", "name": "someone-llama", "project": "someone-else", "service": "llama",
+         "files": str(elsewhere), "running": True, "pid": 4244, "log": "other-project log"},
+    ]
+    bin_, log, state_path = _label_docker(tmp_path, {"containers": containers})
+    env = _env(
+        tmp_path, bin_,
+        A770B_COMPOSE_FILE=str(ENVELOPE),
+        A770B_COMPOSE_PROJECT="a770-builder",
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing.env"),
+        FAKE_DOCKER_LOG=str(log),
+        FAKE_STATE=str(state_path),
+    )
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 0, r.stdout + r.stderr
+    running = _running_ids(state_path)
+    assert "otherwt" not in running
+    assert "otherproj" in running
+    calls = log.read_text(encoding="utf-8").splitlines()
+    foreign_downs = [i for i, c in enumerate(calls) if "other-a.yaml" in c and " down" in f" {c} "]
+    ups = [i for i, c in enumerate(calls) if " up " in f" {c} "]
+    assert foreign_downs and ups and foreign_downs[0] < ups[0]
 
 
 def test_stop_keeps_the_pidfile_when_down_leaves_the_container(tmp_path):

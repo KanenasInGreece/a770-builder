@@ -177,16 +177,19 @@ _container_host_pid(){
   return 0
 }
 # _serve_log_ids — this checkout's compose ps plus any other project llama container.
+# An id _pid_if_running does not print is skipped: an exited container is not a log to keep.
 # No id means there is no previous container. The caller stays quiet in that case.
 _serve_log_ids(){
   local id seen=" "
   while IFS= read -r id; do
     [ -n "$id" ] || continue
+    [ -n "$(_pid_if_running "$id" || true)" ] || continue
     seen="$seen$id "
     printf '%s\n' "$id"
   done < <(_compose ps --all -q "$CONTAINER" 2>/dev/null || true)
   while IFS= read -r id; do
     [ -n "$id" ] || continue
+    [ -n "$(_pid_if_running "$id" || true)" ] || continue
     case "$seen" in *" $id "*) continue ;; esac
     printf '%s\n' "$id"
   done < <(project_llama_ids)
@@ -194,11 +197,11 @@ _serve_log_ids(){
 
 # _keep_serve_log — compose down deletes the container log, so copy it to a
 # temp file in this directory and move that file onto the durable log only
-# after docker logs succeeds. ps --all includes an exited container. A
-# symlink is removed first; mv -T refuses a directory at the destination.
+# after docker logs succeeds. The first id that copies is the durable file.
+# A symlink is removed first; mv -T refuses a directory at the destination.
 # No previous container is not a failed log of the server about to start.
 _keep_serve_log(){
-  local dest="$A770B_DATA/logs/llamacpp-a770.log" cid tmp kept=0
+  local dest="$A770B_DATA/logs/llamacpp-a770.log" cid tmp
   local -a ids=()
   while IFS= read -r cid; do
     [ -n "$cid" ] || continue
@@ -220,16 +223,12 @@ _keep_serve_log(){
     if "$A770B_DOCKER" logs "$cid" >"$tmp" 2>&1; then
       if [ -L "$dest" ]; then rm -f "$dest"; fi
       if mv -fT "$tmp" "$dest"; then
-        kept=1
-        continue
+        echo "serve log kept: $dest" >&2
+        return 0
       fi
     fi
     rm -f "$tmp"
   done
-  if [ "$kept" = 1 ]; then
-    echo "serve log kept: $dest" >&2
-    return 0
-  fi
   echo "⚠ the previous container's log could not be kept" >&2
   return 0
 }
@@ -244,6 +243,8 @@ _down_other_worktree_llama(){
   [ -f "$OVERRIDE" ] && ours="$ours,$OVERRIDE"
   while IFS= read -r id; do
     [ -n "$id" ] || continue
+    # An exited container has no host pid. A missing compose file on that id must not refuse stop.
+    [ -n "$(_pid_if_running "$id" || true)" ] || continue
     files=$("$A770B_DOCKER" inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$id" 2>/dev/null || true)
     [ -n "$files" ] || continue
     [ "$files" = "$ours" ] && continue
@@ -402,6 +403,9 @@ fi
 # the profile just built — a profile switch must not silently keep the old model.
 _keep_serve_log
 _compose down >/dev/null 2>&1 || true
+# Another worktree's llama container is this project, so the stray-server gate counts it as ours.
+# Take it down before that gate, or start can leave it running beside the new server.
+if ! _down_other_worktree_llama; then exit 3; fi
 budget_gate || exit 1
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
 _ep_arg=()
