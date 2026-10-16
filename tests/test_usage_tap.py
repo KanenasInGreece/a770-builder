@@ -347,6 +347,9 @@ class SocketBridge(unittest.TestCase):
         first = body_for(1)
         second = body_for(2)
         ready = []
+        # The second response is withheld until the client has the first body.
+        # Otherwise both can share the read that is forwarded before replace runs.
+        seen_first = threading.Event()
 
         def read_one(conn, pending):
             # Both requests can arrive in one recv. Bytes after this request stay for the next.
@@ -376,14 +379,18 @@ class SocketBridge(unittest.TestCase):
             conn, _addr = server.accept()
             try:
                 pending = b""
+                sent_first = False
                 for body in (first, second):
                     pending, _got = read_one(conn, pending)
                     if pending is None:
+                        return
+                    if sent_first and not seen_first.wait(timeout=2):
                         return
                     conn.sendall((
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                         "Content-Length: {0}\r\nConnection: keep-alive\r\n\r\n"
                     ).format(len(body)).encode("ascii") + body)
+                    sent_first = True
             finally:
                 conn.close()
                 server.close()
@@ -400,13 +407,15 @@ class SocketBridge(unittest.TestCase):
                 target=handle_connection, args=(right, ready[0], ReplaceBoom()), daemon=True).start()
             left.sendall(request("/v1/chat/completions", "{}"))
             left.sendall(request("/v1/chat/completions", "{}"))
-            left.settimeout(2)
+            left.settimeout(3)
             got = b""
             while second not in got:
                 chunk = left.recv(4096)
                 if not chunk:
                     break
                 got += chunk
+                if first in got:
+                    seen_first.set()
         finally:
             left.close()
         self.assertIn(first, got)
