@@ -29,8 +29,9 @@ container_is_attached_server(){
   case "${host,,}" in
     127.0.0.1|localhost|::1) return 0 ;;
   esac
-  # 0.0.0.0 is every interface on this machine, not a remote host's address.
-  printf '%s\n' "$line" | grep -F -q "\"HostIp\":\"${host}\""
+  # One binding. A port on this machine and an address on another binding is not this server.
+  # Docker prints HostIp before HostPort in each binding.
+  printf '%s\n' "$line" | grep -F -q "{\"HostIp\":\"${host}\",\"HostPort\":\"${A770B_PORT}\"}"
 }
 capture_timings(){
   local usage="$A770B_DATA/logs/usage.json"

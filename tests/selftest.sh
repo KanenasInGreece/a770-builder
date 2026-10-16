@@ -69,7 +69,12 @@ elif ! grep -q 'emit_llama_timings\|emit_prompt_tokens_from_build' "$here/harnes
 else echo "FAIL capture: an emit function survived or a capture path does not call engine_record.py capture"; fail=1; fi
 # a stub docker that prints a llama.cpp slot log: capture must report n_gen_max from it, not "timings unavailable"
 mkdir -p "$t/bin"
-printf '#!/bin/bash\ncat "$0.log" >&2\n' > "$t/bin/docker"; chmod +x "$t/bin/docker"
+cat > "$t/bin/docker" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$0.args"
+cat "$0.log" >&2
+EOF
+chmod +x "$t/bin/docker"
 cat > "$t/bin/docker.log" <<'LOG'
 print_timing: id  0 | task 7 | n_gen =    100, tg =   4.49 t/s
 print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s
@@ -84,10 +89,23 @@ if grep -q 'context was not measured' "$A770B_DATA/results/selftest-n-gen-open.t
   && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-n-gen-open.task.md"
 then echo "ok   capture: a llama.cpp log with no start stamp is not this run"
 else echo "FAIL capture: a llama.cpp log with no start stamp was counted"; fail=1; fi
+if [ ! -s "$t/bin/docker.args" ]; then echo "ok   capture: a missing stamp does not read the container log"
+else echo "FAIL capture: a missing stamp still ran docker"; fail=1; fi
 printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
 A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
-if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md"; then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
-else echo "FAIL capture: stub llama log did not yield n_gen_max=10082"; fail=1; fi
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md" \
+  && grep -F -q -x 'logs --since 2020-01-01T00:00:00Z a770-builder-llama-1' "$t/bin/docker.args"
+then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
+else echo "FAIL capture: stub llama log did not yield n_gen_max=10082 or was not limited to the stamp"; fail=1; fi
+: > "$t/bin/docker.args"
+printf '%s\n' '   ' > "$A770B_DATA/logs/run-since"
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen-blank "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-n-gen-blank.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-n-gen-blank.task.md" \
+  && [ ! -s "$t/bin/docker.args" ]
+then echo "ok   capture: a blank start stamp is not this run"
+else echo "FAIL capture: a blank start stamp was counted or still ran docker"; fail=1; fi
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
 printf '%s\n' '[{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13,"reasoning_tokens":0}]' > "$A770B_DATA/logs/usage.json"
 A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=sglang A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-usage "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'requests=1 prompt_tokens_total=11 gen_tokens_total=2' "$A770B_DATA/results/selftest-usage.task.md" \
@@ -135,6 +153,7 @@ then echo "ok   capture: an attached llama.cpp run whose container is not this s
 else echo "FAIL capture: an attached llama.cpp run read a container that was not shown to be the server"; fail=1; fi
 cat > "$t/bin/docker-prove" <<'EOF'
 #!/bin/bash
+printf '%s\n' "$*" >> "$0.args"
 case "$1" in
   inspect) cat "$0.inspect" ;;
   *) cat "$0.log" >&2 ;;
@@ -154,6 +173,7 @@ attached_unmeasured(){
 attached_unmeasured selftest-attached-stopped 'false {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' 127.0.0.1 "a stopped container that publishes this port is unmeasured"
 attached_unmeasured selftest-attached-otherport 'true {"9999/tcp":[{"HostIp":"127.0.0.1","HostPort":"9999"}]}' 127.0.0.1 "a running container on another port is unmeasured"
 attached_unmeasured selftest-attached-remote 'true {"30260/tcp":[{"HostIp":"0.0.0.0","HostPort":"30260"}]}' 10.9.8.7 "a remote host is not this machine's container"
+attached_unmeasured selftest-attached-split 'true {"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"},{"HostIp":"10.9.8.7","HostPort":"9999"}]}' 10.9.8.7 "a port and an address from two bindings are not one server"
 printf '%s\n' 'true {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
 A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-proven "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-proven.task.md"

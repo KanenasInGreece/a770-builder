@@ -39,7 +39,8 @@ printf '%s\n' "$LOG" > "$A770B_DATA/logs/last-build.log.path"
 echo "▶ profile=$PROFILE ctx=$CTX model=$MODEL endpoint=$ENDPOINT worktree=$WT brief=Local_Documentation/briefs/brief-$stamp.md log=$LOG sandbox=${SANDBOX:-1}"
 before=$(safe_git "$WT" status --porcelain | wc -l)
 # The container log before this instant is not this run. Capture reads the stamp.
-date -u +%Y-%m-%dT%H:%M:%SZ > "$A770B_DATA/logs/run-since"
+# Whole seconds would keep a line written earlier in that same second.
+date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$A770B_DATA/logs/run-since"
 set +e
 AGENT_ARGS=(); [ -n "${LOCAL_AGENT:-}" ] && AGENT_ARGS=(--agent "$LOCAL_AGENT")
 PROMPT="Read Local_Documentation/briefs/brief-$stamp.md in this project and carry out the task it describes. Work only inside this project directory. Do not run git commit, push, merge or any docker/systemctl command."
