@@ -15,7 +15,7 @@ import unittest
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, "harness"))
 
-from usage_tap import BridgeSession, record_from_body, serve  # noqa: E402
+from usage_tap import BridgeSession, handle_connection, record_from_body, serve  # noqa: E402
 
 
 def request(path, body, auth="Bearer supersecret"):
@@ -59,6 +59,10 @@ class Memory:
 
     def add(self, row):
         self.rows.append(row)
+        return len(self.rows) - 1
+
+    def replace(self, index, row):
+        self.rows[index] = row
 
 
 class RecordShape(unittest.TestCase):
@@ -134,6 +138,12 @@ class SessionRecords(unittest.TestCase):
         session.close()
         self.assertEqual(store.rows, [{}])
 
+    def test_a_chat_request_with_no_response_is_an_empty_record(self):
+        store = Memory()
+        session = BridgeSession(store)
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        self.assertEqual(store.rows, [{}])
+
     def test_a_cut_off_response_is_an_empty_record(self):
         store = Memory()
         session = BridgeSession(store)
@@ -172,16 +182,6 @@ class SessionRecords(unittest.TestCase):
         session.feed_response(response(body))
         session.close()
         self.assertEqual(store.rows, [{}])
-
-    def test_a_usage_write_failure_does_not_escape(self):
-        class Boom(Memory):
-            def add(self, row):
-                raise OSError("full")
-
-        session = BridgeSession(Boom())
-        session._poison()
-        self.assertTrue(session.poisoned)
-
 
 class SocketBridge(unittest.TestCase):
     def test_the_client_gets_the_bytes_and_the_file_keeps_integers_only(self):
@@ -279,6 +279,57 @@ class SocketBridge(unittest.TestCase):
         self.assertNotIn("Authorization", text)
         rows = json.loads(text)
         self.assertEqual(rows, [usage])
+
+    def test_a_failing_usage_write_still_forwards_the_body(self):
+        class Boom(Memory):
+            def add(self, row):
+                raise OSError("full")
+
+            def replace(self, index, row):
+                raise OSError("full")
+
+        reply = json.dumps({
+            "choices": [{"message": {"content": "SECRET-ANSWER"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        }).encode("utf-8")
+        ready = []
+
+        def upstream():
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            ready.append(server.getsockname())
+            conn, _addr = server.accept()
+            data = b""
+            while b"\r\n\r\n" not in data:
+                data += conn.recv(4096)
+            conn.sendall((
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                "Content-Length: {0}\r\nConnection: close\r\n\r\n"
+            ).format(len(reply)).encode("ascii") + reply)
+            conn.close()
+            server.close()
+
+        threading.Thread(target=upstream, daemon=True).start()
+        for _ in range(50):
+            if ready:
+                break
+            threading.Event().wait(0.05)
+        self.assertTrue(ready)
+        left, right = socket.socketpair()
+        threading.Thread(
+            target=handle_connection, args=(right, ready[0], Boom()), daemon=True).start()
+        left.sendall(request("/v1/chat/completions", "{}"))
+        left.settimeout(2)
+        got = b""
+        while reply not in got:
+            chunk = left.recv(4096)
+            if not chunk:
+                break
+            got += chunk
+        left.close()
+        self.assertIn(reply, got)
 
 
 if __name__ == "__main__":

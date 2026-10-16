@@ -9,6 +9,9 @@
 # Exit codes: 2 refused (worktree), 3 no model server; the opencode exit code is informational only.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
+# A previous run's usage file is not this run's count. Removed before any exit,
+# so a refused run cannot leave it for the capture. The tap writes a new file when it starts.
+rm -f -- "$A770B_DATA/logs/usage.json"
 WT=$(guard_worktree "${1:?worktree path}"); BRIEF="${2:?brief file or task text}"
 PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a name from A770B_PROFILES}"
 a770b_is_profile "$PROFILE" || { echo "⛔ PROFILE must be one of: $A770B_PROFILES" >&2; exit 2; }
@@ -33,8 +36,6 @@ fi
 LOG="$A770B_DATA/logs/build-$stamp.log"
 printf '%s\n' "$LOG" > "$A770B_DATA/logs/last-build.log.path"
 echo "▶ profile=$PROFILE ctx=$CTX model=$MODEL endpoint=$ENDPOINT worktree=$WT brief=Local_Documentation/briefs/brief-$stamp.md log=$LOG sandbox=${SANDBOX:-1}"
-# A previous run's usage file is not this run's count. The tap writes a new file when it starts.
-rm -f -- "$A770B_DATA/logs/usage.json"
 before=$(safe_git "$WT" status --porcelain | wc -l)
 set +e
 AGENT_ARGS=(); [ -n "${LOCAL_AGENT:-}" ] && AGENT_ARGS=(--agent "$LOCAL_AGENT")

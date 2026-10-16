@@ -6,8 +6,10 @@ to the upstream TCP server. Bytes are written onward as they arrive. A copy
 of the server-to-client direction is scanned for one usage object per
 /v1/chat/completions or /v1/completions response. The output file is a JSON
 list of those integers. Headers, request bodies, and message text are not
-written. A response that is one of those calls and carries no integer count
-is an empty object, so a later reader cannot treat the gap as zero.
+written. A chat request is an empty object as soon as it is parsed, and the
+response replaces that object when it finishes. A call that never
+finishes stays empty, so a later reader cannot treat the gap as zero.
+A response that carries no integer count stays empty too.
 '''
 
 import argparse
@@ -307,7 +309,7 @@ class UsageStore:
         self.rows = []
         self._write([])
 
-    def add(self, row):
+    def _clean(self, row):
         if not isinstance(row, dict):
             row = {}
         clean = {}
@@ -315,8 +317,23 @@ class UsageStore:
             if key in _COUNT_KEYS or key == 'cached_tokens':
                 if is_count(value):
                     clean[key] = value
+        return clean
+
+    def add(self, row):
+        clean = self._clean(row)
         with self.lock:
             self.rows.append(clean)
+            self._write(self.rows)
+            return len(self.rows) - 1
+
+    def replace(self, index, row):
+        clean = self._clean(row)
+        with self.lock:
+            if not isinstance(index, int) or isinstance(index, bool):
+                return
+            if index < 0 or index >= len(self.rows):
+                return
+            self.rows[index] = clean
             self._write(self.rows)
 
     def _write(self, rows):
@@ -356,19 +373,11 @@ class BridgeSession:
         self.responses.close()
         self._note_abandon(self.requests)
         self._note_abandon(self.responses)
-        if self.poisoned:
-            return
         while True:
             try:
-                chat = self.flags.get_nowait()
+                self.flags.get_nowait()
             except queue.Empty:
                 return
-            if chat:
-                try:
-                    self.store.add({})
-                except Exception:
-                    self._poison()
-                    return
 
     def _note_abandon(self, parser):
         if parser.abandoned:
@@ -390,22 +399,26 @@ class BridgeSession:
         method = parts[0].upper() if parts else ''
         target = parts[1] if len(parts) > 1 else ''
         path = target.split('?', 1)[0]
-        self.flags.put(method == 'POST' and path in _CHAT_PATHS)
+        chat = method == 'POST' and path in _CHAT_PATHS
+        if not chat or self.poisoned:
+            self.flags.put(None)
+            return
+        self.flags.put(self.store.add({}))
 
     def _on_response(self, start, headers, body):
         del start
         try:
-            chat = self.flags.get(timeout=self.wait)
+            index = self.flags.get(timeout=self.wait)
         except queue.Empty:
             self._poison()
             return
-        if not chat or self.poisoned:
+        if index is None or self.poisoned:
             return
         if body is None:
-            self.store.add({})
-            return
-        ctype = headers.get('content-type', '')
-        self.store.add(record_from_body(body, ctype))
+            record = {}
+        else:
+            record = record_from_body(body, headers.get('content-type', ''))
+        self.store.replace(index, record)
 
 
 def handle_connection(client, upstream, store):

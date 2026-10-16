@@ -106,6 +106,46 @@ if grep -q 'context was not measured' "$A770B_DATA/results/selftest-noengine.tas
   && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-noengine.task.md"
 then echo "ok   capture: a run with no recorded engine does not read the container log"
 else echo "FAIL capture: an empty engine fell through to the container log"; fail=1; fi
+printf '%s\n' '{"usage":{"prompt_tokens":5},"choices":[]}' > "$t/build-fake.log"
+: > "$t/bin/docker.log"
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-transcript "$r2" "$t/build-fake.log" >/dev/null 2>&1
+transcript_section=$(awk 'BEGIN{p=0} /^## server-side timings during the run$/{p=1; buf=""; next} p{buf=buf $0 ORS} END{printf "%s", buf}' "$A770B_DATA/results/selftest-transcript.task.md")
+if printf '%s\n' "$transcript_section" | grep -q 'context was not measured' \
+  && ! printf '%s\n' "$transcript_section" | grep -q 'prompt_tokens_total=5'
+then echo "ok   capture: a llama.cpp run with no container timings does not count the transcript"
+else echo "FAIL capture: the transcript supplied a llama.cpp count"; fail=1; fi
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-attached-llama "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-attached-llama.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-attached-llama.task.md"
+then echo "ok   capture: an attached llama.cpp run whose container is not this server is unmeasured"
+else echo "FAIL capture: an attached llama.cpp run read a container that was not shown to be the server"; fail=1; fi
+cat > "$t/bin/docker-prove" <<'EOF'
+#!/bin/bash
+case "$1" in
+  inspect) printf '%s\n' "true {\"30260/tcp\":[{\"HostIp\":\"127.0.0.1\",\"HostPort\":\"30260\"}]}" ;;
+  *) cat "$0.log" >&2 ;;
+esac
+EOF
+chmod +x "$t/bin/docker-prove"
+cp -- "$t/bin/docker.log" "$t/bin/docker-prove.log"
+# restore the slot log the proof container is allowed to contribute
+cat > "$t/bin/docker-prove.log" <<'LOG'
+print_timing: id  0 | task 7 | n_gen =  10082, tg =   4.49 t/s
+prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.80 tokens per second)
+eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
+LOG
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-proven "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-proven.task.md"
+then echo "ok   capture: an attached llama.cpp run counts the container that publishes this port"
+else echo "FAIL capture: a container shown to be the attached server did not yield its log"; fail=1; fi
+printf '%s\n' '[{"prompt_tokens":99,"completion_tokens":1,"total_tokens":100}]' > "$A770B_DATA/logs/usage.json"
+bash "$here/harness/build_local.sh" >/dev/null 2>&1 || true
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=sglang A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-stale "$r2" "$t/build.log" >/dev/null 2>&1
+if [ ! -f "$A770B_DATA/logs/usage.json" ] \
+  && grep -q 'context was not measured' "$A770B_DATA/results/selftest-stale.task.md" \
+  && ! grep -q 'prompt_tokens_total=99' "$A770B_DATA/results/selftest-stale.task.md"
+then echo "ok   capture: a refused build drops a stale usage file, and the capture does not read it"
+else echo "FAIL capture: a stale usage file survived a refused build or was counted"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)
