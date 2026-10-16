@@ -39,7 +39,8 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
     """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path).
 
     The fake docker is stateful: `up` marks a container up, `down` clears it (unless down_clears is False), and
-    `ps -q`/`inspect` answer only while it is up, so a stop really stops and a recreate really recreates.
+    `ps -q` answers only while it is up, so a stop really stops and a recreate really recreates.
+    `exited=True` makes `inspect` print pid 0 while `ps --all` still lists the container.
     """
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
@@ -50,6 +51,7 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
     down_body = f': > "{state}"; exit 0;;' if down_clears else 'exit 0;;'
     up_body = 'echo "docker compose up failed" >&2; exit 1;;' if up_fails else f'printf up > "{state}"; exit 0;;'
     ps_body = 'exit 0;;' if exited else f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
+    inspect_pid = "0" if exited else host_pid
     ps_all_body = f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
     # logs succeeds only while the container state file is present, and only for
     # the id ps --all would have printed. A copy after down must not stay green.
@@ -65,7 +67,7 @@ case " $* " in
   *" up "*) {up_body}
   *" ps --all -q "*|*" ps -q --all "*|*" ps "*" --all "*) {ps_all_body}
   *" ps -q "*) {ps_body}
-  *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{host_pid}"; exit 0;;
+  *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{inspect_pid}"; exit 0;;
   *" logs "*) {logs_arm}
   *) exit 0;;
 esac''')

@@ -177,13 +177,13 @@ _container_host_pid(){
   return 0
 }
 # _serve_log_ids — this checkout's compose ps plus any other project llama container.
-# An id _pid_if_running does not print is skipped: an exited container is not a log to keep.
+# This checkout's exited container is a log to keep. Another worktree's exited container is not:
+# the second loop skips an id _pid_if_running does not print.
 # No id means there is no previous container. The caller stays quiet in that case.
 _serve_log_ids(){
   local id seen=" "
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    [ -n "$(_pid_if_running "$id" || true)" ] || continue
     seen="$seen$id "
     printf '%s\n' "$id"
   done < <(_compose ps --all -q "$CONTAINER" 2>/dev/null || true)
