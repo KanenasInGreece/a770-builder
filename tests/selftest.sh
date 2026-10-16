@@ -174,6 +174,7 @@ attached_unmeasured selftest-attached-stopped 'false {"30260/tcp":[{"HostIp":"12
 attached_unmeasured selftest-attached-otherport 'true {"9999/tcp":[{"HostIp":"127.0.0.1","HostPort":"9999"}]}' 127.0.0.1 "a running container on another port is unmeasured"
 attached_unmeasured selftest-attached-remote 'true {"30260/tcp":[{"HostIp":"0.0.0.0","HostPort":"30260"}]}' 10.9.8.7 "a remote host is not this machine's container"
 attached_unmeasured selftest-attached-split 'true {"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"},{"HostIp":"10.9.8.7","HostPort":"9999"}]}' 10.9.8.7 "a port and an address from two bindings are not one server"
+attached_unmeasured selftest-attached-lan 'true {"30260/tcp":[{"HostIp":"10.9.8.7","HostPort":"30260"}]}' 127.0.0.1 "a loopback host is not a container published on another address"
 printf '%s\n' 'true {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
 A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-proven "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-proven.task.md"
@@ -184,6 +185,11 @@ A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_P
 if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-samehost.task.md"
 then echo "ok   capture: an attached llama.cpp run counts the container whose published address is this host"
 else echo "FAIL capture: a container publishing this host and port was not counted"; fail=1; fi
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"0.0.0.0","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-any "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-attached-any.task.md"
+then echo "ok   capture: a loopback host counts the container published on every interface"
+else echo "FAIL capture: a container published on every interface was not this host"; fail=1; fi
 printf '%s\n' '[{"prompt_tokens":99,"completion_tokens":1,"total_tokens":100}]' > "$A770B_DATA/logs/usage.json"
 printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
 bash "$here/harness/build_local.sh" >/dev/null 2>&1 || true
@@ -211,6 +217,31 @@ print("ok   one-row: a requests line above the timings heading is not a count")
 PY
 then :
 else echo "FAIL one-row: the reader was not run or kept the decoy"; fail=1; fi
+mkdir -p "$t/xdg/a770-builder" "$t/stubbin"
+printf '%s\n' 'k-selftest' > "$t/xdg/a770-builder/api.key"; chmod 600 "$t/xdg/a770-builder/api.key"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "$t/stubbin/curl"; chmod +x "$t/stubbin/curl"
+cat > "$t/stubbin/opencode" <<'EOF'
+#!/bin/bash
+if [ -f "$A770B_DATA/logs/run-since" ]; then cp -- "$A770B_DATA/logs/run-since" "$A770B_DATA/logs/run-since.at-opencode"; fi
+exit 0
+EOF
+chmod +x "$t/stubbin/opencode"
+stamp_profile=${A770B_PROFILES%% *}
+rm -f -- "$A770B_DATA/logs/run-since.at-opencode"
+SANDBOX=0 A770B_SPEC= PROFILE="$stamp_profile" PATH="$t/stubbin:$PATH" bash "$here/harness/build_local.sh" "$r2" "stamp" >/dev/null 2>&1
+if [ -f "$A770B_DATA/logs/run-since.at-opencode" ] \
+  && grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}Z$' "$A770B_DATA/logs/run-since.at-opencode"
+then echo "ok   build: the start stamp is written, with a fraction of a second, before opencode runs"
+else echo "FAIL build: the start stamp was missing or whole seconds when opencode started"; fail=1; fi
+bridge=$(awk '/SERVED_ENGINE/,/^  esac$/' "$here/harness/sandbox_run.sh")
+sglang_arm=$(printf '%s\n' "$bridge" | awk '/sglang\|vllm/,/;;/')
+other_arm=$(printf '%s\n' "$bridge" | awk '/^    \*)/,/;;/')
+if printf '%s\n' "$sglang_arm" | grep -q 'usage_tap.py' \
+  && printf '%s\n' "$sglang_arm" | grep -q -- '--out "$A770B_DATA/logs/usage.json"' \
+  && printf '%s\n' "$other_arm" | grep -q 'socat' \
+  && ! printf '%s\n' "$other_arm" | grep -q 'usage_tap.py'
+then echo "ok   sandbox: sglang and vllm start the usage tap, and any other engine keeps socat"
+else echo "FAIL sandbox: the bridge does not follow the recorded engine"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)

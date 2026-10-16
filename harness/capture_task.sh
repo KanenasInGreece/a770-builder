@@ -25,12 +25,17 @@ container_is_attached_server(){
     true\ *) ;;
     *) return 1 ;;
   esac
-  printf '%s\n' "$line" | grep -q "\"HostPort\":\"${A770B_PORT}\"" || return 1
+  # One binding. Docker prints HostIp before HostPort. A loopback host needs a
+  # binding that answers on this machine: an empty address, every interface, or loopback.
   case "${host,,}" in
-    127.0.0.1|localhost|::1) return 0 ;;
+    127.0.0.1|localhost|::1)
+      local ip
+      for ip in '' 0.0.0.0 :: 127.0.0.1 ::1; do
+        printf '%s\n' "$line" | grep -F -q "{\"HostIp\":\"${ip}\",\"HostPort\":\"${A770B_PORT}\"}" && return 0
+      done
+      return 1
+      ;;
   esac
-  # One binding. A port on this machine and an address on another binding is not this server.
-  # Docker prints HostIp before HostPort in each binding.
   printf '%s\n' "$line" | grep -F -q "{\"HostIp\":\"${host}\",\"HostPort\":\"${A770B_PORT}\"}"
 }
 capture_timings(){
