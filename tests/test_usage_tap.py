@@ -332,6 +332,67 @@ class SocketBridge(unittest.TestCase):
         left.close()
         self.assertIn(reply, got)
 
+    def test_the_empty_record_is_written_before_the_server_has_the_request(self):
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "usage.json")
+        store = UsageStore(path)
+        ready = []
+        seen = {}
+
+        def upstream():
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            ready.append(server.getsockname())
+            conn, _addr = server.accept()
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            head, _, rest = data.partition(b"\r\n\r\n")
+            length = 0
+            for line in head.split(b"\r\n"):
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":", 1)[1].strip())
+            while len(rest) < length:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                rest += chunk
+            with open(path, "r", encoding="utf-8") as handle:
+                seen["when_request_arrived"] = handle.read()
+            body = b'{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            conn.sendall((
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                "Content-Length: {0}\r\nConnection: close\r\n\r\n"
+            ).format(len(body)).encode("ascii") + body)
+            conn.close()
+            server.close()
+
+        threading.Thread(target=upstream, daemon=True).start()
+        for _ in range(50):
+            if ready:
+                break
+            threading.Event().wait(0.05)
+        self.assertTrue(ready)
+        left, right = socket.socketpair()
+        threading.Thread(
+            target=handle_connection, args=(right, ready[0], store), daemon=True).start()
+        left.sendall(request("/v1/chat/completions", "{}"))
+        left.settimeout(2)
+        got = b""
+        while b'"prompt_tokens"' not in got:
+            chunk = left.recv(4096)
+            if not chunk:
+                break
+            got += chunk
+        left.close()
+        self.assertEqual(json.loads(seen["when_request_arrived"]), [{}])
+        self.assertIn(b'"prompt_tokens"', got)
+
     def test_a_failed_write_removes_the_usage_file(self):
         directory = tempfile.mkdtemp()
         path = os.path.join(directory, "usage.json")

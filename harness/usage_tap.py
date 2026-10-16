@@ -437,7 +437,11 @@ class BridgeSession:
 
 
 def handle_connection(client, upstream, store):
-    '''Forward both ways. A parse error does not stop the bytes.'''
+    '''Forward both ways. A parse error does not stop the bytes.
+
+    The request is recorded before it is forwarded. A stop in between
+    leaves the empty object, so the finished calls are not the whole run.
+    '''
     try:
         remote = socket.create_connection(upstream, timeout=10)
     except OSError:
@@ -447,17 +451,23 @@ def handle_connection(client, upstream, store):
     client.settimeout(None)
     session = BridgeSession(store)
 
-    def pump(src, dst, feed):
+    def pump(src, dst, feed, parse_first):
         try:
             while True:
                 data = src.recv(65536)
                 if not data:
                     break
+                if parse_first:
+                    try:
+                        feed(data)
+                    except Exception:
+                        session._poison()
                 dst.sendall(data)
-                try:
-                    feed(data)
-                except Exception:
-                    session._poison()
+                if not parse_first:
+                    try:
+                        feed(data)
+                    except Exception:
+                        session._poison()
         except Exception:
             pass
         finally:
@@ -467,9 +477,9 @@ def handle_connection(client, upstream, store):
                 pass
 
     client_to_server = threading.Thread(
-        target=pump, args=(client, remote, session.feed_request), daemon=True)
+        target=pump, args=(client, remote, session.feed_request, True), daemon=True)
     server_to_client = threading.Thread(
-        target=pump, args=(remote, client, session.feed_response), daemon=True)
+        target=pump, args=(remote, client, session.feed_response, False), daemon=True)
     client_to_server.start()
     server_to_client.start()
     client_to_server.join()

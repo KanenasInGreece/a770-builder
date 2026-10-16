@@ -170,6 +170,16 @@ attached_unmeasured(){
   then echo "ok   capture: $4"
   else echo "FAIL capture: $4"; fail=1; fi
 }
+: > "$t/bin/docker-prove.args"
+rm -f -- "$A770B_DATA/logs/run-since"
+printf '%s\n' 'true {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' > "$t/bin/docker-prove.inspect"
+A770B_REFUSE=/nonexistent A770B_ATTACHED=1 A770B_SERVED_ENGINE=llama.cpp A770B_PORT=30260 A770B_HOST=127.0.0.1 A770B_DOCKER="$t/bin/docker-prove" bash "$here/harness/capture_task.sh" selftest-attached-nostamp "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-attached-nostamp.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-attached-nostamp.task.md" \
+  && [ ! -s "$t/bin/docker-prove.args" ]
+then echo "ok   capture: an attached llama.cpp run with no stamp does not run docker"
+else echo "FAIL capture: an attached llama.cpp run with no stamp ran docker or was counted"; fail=1; fi
+printf '%s\n' '2020-01-01T00:00:00Z' > "$A770B_DATA/logs/run-since"
 attached_unmeasured selftest-attached-stopped 'false {"30260/tcp":[{"HostIp":"127.0.0.1","HostPort":"30260"}]}' 127.0.0.1 "a stopped container that publishes this port is unmeasured"
 attached_unmeasured selftest-attached-otherport 'true {"9999/tcp":[{"HostIp":"127.0.0.1","HostPort":"9999"}]}' 127.0.0.1 "a running container on another port is unmeasured"
 attached_unmeasured selftest-attached-remote 'true {"30260/tcp":[{"HostIp":"0.0.0.0","HostPort":"30260"}]}' 10.9.8.7 "a remote host is not this machine's container"

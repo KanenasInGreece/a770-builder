@@ -55,7 +55,8 @@ capture_timings(){
       if [ -f "$since_file" ]; then
         since=$(tr -d '[:space:]' < "$since_file" || true)
       fi
-      if { [ "${A770B_ATTACHED:-}" = 1 ] && ! container_is_attached_server "$container"; } || [ -z "$since" ]; then
+      # No stamp: do not inspect and do not read the log. The log is an older run.
+      if [ -z "$since" ] || { [ "${A770B_ATTACHED:-}" = 1 ] && ! container_is_attached_server "$container"; }; then
         python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
       else
         # llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
