@@ -83,9 +83,10 @@ class RecordShape(unittest.TestCase):
 
     def test_a_stream_keeps_the_last_usage_and_an_omitted_one_is_empty(self):
         first = 'data: {"choices":[{"delta":{"content":"prompt_tokens 999"}}]}\n\n'
+        early = 'data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
         second = 'data: {"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}\n\n'
         done = "data: [DONE]\n\n"
-        found = record_from_body((first + second + done).encode("utf-8"), "text/event-stream")
+        found = record_from_body((first + early + second + done).encode("utf-8"), "text/event-stream")
         self.assertEqual(found["prompt_tokens"], 11)
         self.assertEqual(found["completion_tokens"], 3)
         empty = record_from_body(first.encode("utf-8"), "text/event-stream")
@@ -132,6 +133,54 @@ class SessionRecords(unittest.TestCase):
         session.feed_response(chunked_response(body))
         session.close()
         self.assertEqual(store.rows, [{}])
+
+    def test_a_cut_off_response_is_an_empty_record(self):
+        store = Memory()
+        session = BridgeSession(store)
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello")
+        session.close()
+        self.assertEqual(store.rows, [{}])
+
+    def test_a_no_body_status_does_not_swallow_the_next_response(self):
+        store = Memory()
+        session = BridgeSession(store)
+        session.feed_request(request("/v1/models", "{}"))
+        session.feed_response(b"HTTP/1.1 204 No Content\r\nConnection: keep-alive\r\n\r\n")
+        body = json.dumps({
+            "choices": [],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5},
+        })
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(response(body))
+        session.close()
+        self.assertEqual(store.rows, [{
+            "prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5,
+        }])
+
+    def test_a_response_before_its_request_is_not_paired_later(self):
+        store = Memory()
+        session = BridgeSession(store)
+        session.wait = 0
+        body = json.dumps({
+            "choices": [],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5},
+        })
+        session.feed_response(response(body))
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(response(body))
+        session.close()
+        self.assertEqual(store.rows, [{}])
+
+    def test_a_usage_write_failure_does_not_escape(self):
+        class Boom(Memory):
+            def add(self, row):
+                raise OSError("full")
+
+        session = BridgeSession(Boom())
+        session._poison()
+        self.assertTrue(session.poisoned)
 
 
 class SocketBridge(unittest.TestCase):

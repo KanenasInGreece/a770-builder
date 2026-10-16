@@ -78,7 +78,7 @@ prompt eval time =     15880.00 ms /  1601 tokens (    9.92 ms per token,   100.
 eval time =     2245000.00 ms / 10082 tokens (  222.67 ms per token,     4.49 tokens per second)
 LOG
 r2="$t/capseat"; git init -q "$r2"; ( cd "$r2" && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init )
-A770B_REFUSE=/nonexistent A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
+A770B_REFUSE=/nonexistent A770B_SERVED_ENGINE=llama.cpp A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-n-gen "$r2" "$t/build.log" >/dev/null 2>&1
 if grep -q 'n_gen_max=10082' "$A770B_DATA/results/selftest-n-gen.task.md" && grep -q 'turns_n_gen_ge_10000=1' "$A770B_DATA/results/selftest-n-gen.task.md"; then echo "ok   capture: a container log's last n_gen per turn is recorded, including a turn at the 10000 budget"
 else echo "FAIL capture: stub llama log did not yield n_gen_max=10082"; fail=1; fi
 printf '%s\n' '[{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13,"reasoning_tokens":0}]' > "$A770B_DATA/logs/usage.json"
@@ -101,6 +101,11 @@ if grep -q 'rates not measured' "$A770B_DATA/results/selftest-unnamed.task.md" \
   && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-unnamed.task.md"
 then echo "ok   capture: an attached run with no recorded engine does not read the container log"
 else echo "FAIL capture: an unnamed attached engine fell through to the container log"; fail=1; fi
+A770B_REFUSE=/nonexistent A770B_ATTACHED= A770B_SERVED_ENGINE= A770B_DOCKER="$t/bin/docker" bash "$here/harness/capture_task.sh" selftest-noengine "$r2" "$t/build.log" >/dev/null 2>&1
+if grep -q 'context was not measured' "$A770B_DATA/results/selftest-noengine.task.md" \
+  && ! grep -q 'n_gen_max=' "$A770B_DATA/results/selftest-noengine.task.md"
+then echo "ok   capture: a run with no recorded engine does not read the container log"
+else echo "FAIL capture: an empty engine fell through to the container log"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)
@@ -194,7 +199,7 @@ case "${1:-}" in
     label="fake-$(basename "$BRIEF" .md)"
     ls "$WT" > "$KU3_SEAT_LS_DIR/$label.ls" 2>/dev/null || true
     mkdir -p "$A770B_DATA/results"
-    { echo "# fake capture"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
+    { echo "# fake capture"; echo "requests=9 prompt_tokens_total=9 gen_tokens_total=9"; echo "## server-side timings during the run"; echo "requests=2 prompt_tokens_total=100 gen_tokens_total=40"; } > "$A770B_DATA/results/$label.task.md"
     { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; echo "+line two"; } > "$A770B_DATA/results/$label.patch"
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
     exit 0 ;;
@@ -218,6 +223,7 @@ ids = [x["id"] for x in d["stages"]]
 assert ids == ["s0-pass", "s1-fail", "s2-note", "ref-cpp-example"], ids
 s = {x["id"]: x for x in d["stages"]}
 assert s["s0-pass"]["working"] is True, s["s0-pass"]
+assert s["s0-pass"]["requests"] == 2 and s["s0-pass"]["prompt_tokens"] == 100 and s["s0-pass"]["gen_tokens"] == 40, s["s0-pass"]
 assert s["s1-fail"]["working"] is False, s["s1-fail"]
 assert s["s2-note"]["working"] is True and s["s2-note"]["counts_toward_pass"] is False, s["s2-note"]
 assert s["ref-cpp-example"]["working"] is True, s["ref-cpp-example"]
@@ -421,7 +427,7 @@ case "${1:-}" in
     sleep 2   # wall_s is recorded; it must not turn the stage into a timeout
     label="fake-$(basename "$BRIEF" .md)"
     mkdir -p "$A770B_DATA/results"
-    echo "# fake capture — no server-side timings line at all (the run never got that far)" > "$A770B_DATA/results/$label.task.md"
+    { echo "# fake capture"; echo "requests=9 prompt_tokens_total=9 gen_tokens_total=9"; echo "gen_tokens_total=999"; echo "the run never reached the timings section"; } > "$A770B_DATA/results/$label.task.md"
     { echo "--- a/x.py"; echo "+++ b/x.py"; echo "+line one"; } > "$A770B_DATA/results/$label.patch"
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
     exit 0 ;;

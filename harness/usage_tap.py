@@ -192,9 +192,11 @@ class MessageParser:
             self.rest = int(length)
             self.state = 'length'
             return True
-        # A request with no length and no chunking has no body. A response with
-        # neither is delimited by the close, which HTTP/1.1 uses for that case.
-        if self.request:
+        # A request with no length and no chunking has no body. A 204 or 304
+        # has none either, so the next response on a keep-alive connection stays
+        # a separate message. Any other response with neither is delimited by
+        # the close, which HTTP/1.1 uses for that case.
+        if self.request or code in (204, 304):
             self._begin_body()
             self._finish()
             return True
@@ -336,6 +338,7 @@ class BridgeSession:
     def __init__(self, store):
         self.store = store
         self.flags = queue.Queue()
+        self.wait = 2
         self.requests = MessageParser(self._on_request, request=True)
         self.responses = MessageParser(self._on_response, request=False)
         self.poisoned = False
@@ -353,11 +356,33 @@ class BridgeSession:
         self.responses.close()
         self._note_abandon(self.requests)
         self._note_abandon(self.responses)
+        if self.poisoned:
+            return
+        while True:
+            try:
+                chat = self.flags.get_nowait()
+            except queue.Empty:
+                return
+            if chat:
+                try:
+                    self.store.add({})
+                except Exception:
+                    self._poison()
+                    return
 
     def _note_abandon(self, parser):
-        if parser.abandoned and not self.poisoned:
-            self.poisoned = True
+        if parser.abandoned:
+            self._poison()
+
+    def _poison(self):
+        '''One empty record. A failure to write it does not escape.'''
+        if self.poisoned:
+            return
+        self.poisoned = True
+        try:
             self.store.add({})
+        except Exception:
+            pass
 
     def _on_request(self, start, headers, body):
         del headers, body
@@ -370,8 +395,9 @@ class BridgeSession:
     def _on_response(self, start, headers, body):
         del start
         try:
-            chat = self.flags.get(timeout=2)
+            chat = self.flags.get(timeout=self.wait)
         except queue.Empty:
+            self._poison()
             return
         if not chat or self.poisoned:
             return
@@ -403,9 +429,7 @@ def handle_connection(client, upstream, store):
                 try:
                     feed(data)
                 except Exception:
-                    if not session.poisoned:
-                        session.poisoned = True
-                        store.add({})
+                    session._poison()
         except Exception:
             pass
         finally:
@@ -425,9 +449,7 @@ def handle_connection(client, upstream, store):
     try:
         session.close()
     except Exception:
-        if not session.poisoned:
-            session.poisoned = True
-            store.add({})
+        session._poison()
     client.close()
     remote.close()
 

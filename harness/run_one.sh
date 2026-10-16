@@ -19,6 +19,11 @@ python3 -c "import json,sys; r=json.load(open('$R/$LABEL.json')); sys.exit(0 if 
 [ "${AGENTS_ASIDE:-1}" = 1 ] && [ -f "$WT/AGENTS.md" ] && mv "$WT/AGENTS.md" "$WT/AGENTS.md.local-off"
 export LOCAL_TIMEOUT="${BUILD_TIMEOUT:-1500}"; PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a card name from A770B_PROFILES}"
 if [ "${LEAN_AGENT:-1}" = 1 ]; then export LOCAL_AGENT=local-builder; fi
+die(){ echo "⛔ $*" >&2; exit 2; }
+# shellcheck disable=SC1091
+. "$A770B_PROJECT/skills/local-build/scripts/profile_engine.sh"
+A770B_SERVED_ENGINE=$(_profile_engine "$PROFILE") || exit $?
+export A770B_SERVED_ENGINE
 t0=$(date +%s)
 bash "$A770B_PROJECT/harness/build_local.sh" "$WT" "$A770B_TASK_BRIEF" 2>&1 | grep -vE '^\s*$' | tail -12 | cut -c1-240
 t1=$(date +%s)

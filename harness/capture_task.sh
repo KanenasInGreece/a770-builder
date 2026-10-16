@@ -14,24 +14,21 @@ LABEL="${1:?label}"; WT=$(guard_worktree "${2:?worktree}"); BLOG="${3:?build log
 OUT="$A770B_DATA/results/$LABEL.task.md"; PATCH="$A770B_DATA/results/$LABEL.patch"; TMPLOG=$(mktemp)
 trap 'rm -f -- "$TMPLOG"' EXIT
 # The engine is the one the host recorded. sglang and vllm read the usage file.
-# An attached run with no recorded engine does not read the container log.
-# A run this harness started, with no recorded engine, keeps that log.
+# llama.cpp reads the container log. No recorded engine is unmeasured.
 capture_timings(){
   local usage="$A770B_DATA/logs/usage.json"
   local engine="${A770B_SERVED_ENGINE:-}"
+  local container="${A770B_COMPOSE_PROJECT}-llama-1"
   case "$engine" in
     sglang|vllm)
       python3 "$A770B_PROJECT/harness/engine_record.py" capture --usage "$usage"
       ;;
     llama.cpp)
+      # llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
+      # Do not pass a colour-stripping flag: this docker does not accept one, and discarding
+      # stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
+      "$A770B_DOCKER" logs "$container" > "$TMPLOG" 2>&1 || true
       python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
-      ;;
-    "")
-      if [ "${A770B_ATTACHED:-}" = 1 ]; then
-        python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
-      else
-        python3 "$A770B_PROJECT/harness/engine_record.py" capture "$TMPLOG" "$BLOG"
-      fi
       ;;
     *)
       python3 "$A770B_PROJECT/harness/engine_record.py" capture --unmeasured
@@ -70,20 +67,7 @@ else
 fi
 echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
-# Dump container log to temp file and parse from there (not stale host log).
-# Do not pass a colour-stripping flag: this docker does not accept one, and discarding
-# stderr made a refused flag look like an empty log (C9 s1-frontend, 2026-09-19).
-CONTAINER="${A770B_COMPOSE_PROJECT}-llama-1"
-# llama.cpp writes on the container's stderr; docker logs sends that to this process's stderr.
-if [ "${A770B_ATTACHED:-}" = 1 ]; then
-  # An attached server's compose container log may not answer at all; an empty log is judged by the module, not here
-  "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1 || true
-  capture_timings
-else
-  # A server this harness started: the container log is the llama.cpp count, and only then
-  "$A770B_DOCKER" logs "$CONTAINER" > "$TMPLOG" 2>&1 || true
-  capture_timings
-fi
+capture_timings
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"
 rm -f -- "$DIFF"

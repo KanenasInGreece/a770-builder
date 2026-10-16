@@ -33,6 +33,8 @@ fi
 LOG="$A770B_DATA/logs/build-$stamp.log"
 printf '%s\n' "$LOG" > "$A770B_DATA/logs/last-build.log.path"
 echo "▶ profile=$PROFILE ctx=$CTX model=$MODEL endpoint=$ENDPOINT worktree=$WT brief=Local_Documentation/briefs/brief-$stamp.md log=$LOG sandbox=${SANDBOX:-1}"
+# A previous run's usage file is not this run's count. The tap writes a new file when it starts.
+rm -f -- "$A770B_DATA/logs/usage.json"
 before=$(safe_git "$WT" status --porcelain | wc -l)
 set +e
 AGENT_ARGS=(); [ -n "${LOCAL_AGENT:-}" ] && AGENT_ARGS=(--agent "$LOCAL_AGENT")
