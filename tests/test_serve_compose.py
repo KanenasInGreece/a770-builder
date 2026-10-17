@@ -275,12 +275,13 @@ def test_stop_sglang_parses_when_the_model_dir_is_empty(tmp_path):
     log = tmp_path / "docker.log"
     bin_ = tmp_path / "bin"
     bin_.mkdir()
-    _make_bin(bin_, "docker", f'''printf '%s\\n' "$*" >> "{log}"
-case " $* " in
+    _make_bin(bin_, "docker", f'''case " $* " in
   *" compose "*)
     if [ -z "${{A770B_SGLANG_MODEL_DIR:-}}" ]; then exit 1; fi
+    printf '%s\\n' "$*" >> "{log}"
     exit 0;;
 esac
+printf '%s\\n' "$*" >> "{log}"
 exit 0''')
     _make_bin(bin_, "curl", "echo '{}'; exit 0")
     _make_bin(bin_, "pgrep", "exit 0")
