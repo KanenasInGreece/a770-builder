@@ -86,7 +86,7 @@ def test_check_fails_bad_kv_v(tmp_path):
 
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: qwen35-9b-q4km-vulkan: kv_v must be one of f16, bf16, q8_0, q4_0" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: kv_v must be one of f16, bf16, fp8_e4m3, q8_0, q4_0" in result.stderr
 
 
 def test_check_fails_bad_mode(tmp_path):
@@ -1250,8 +1250,45 @@ def test_check_fails_duplicate_category_weight_class(tmp_path):
     assert result.returncode == 2
     assert (
         "profiles: gemma4-8b-e4b-q4km-vulkan: task 'code-edit' + category 'dense' + weight_class '9b' + backend 'vulkan' on card "
-        "'a770' + engine 'llama.cpp' + weight_quant 'Q4_K_M' + activation_quant 'none' duplicates qwen35-9b-q4km-vulkan's -- "
-        "a registry keeps one best row per task per class per backend per card, and per engine, weight quant and activation quant"
+        "'a770' + engine 'llama.cpp' + weight_quant 'Q4_K_M' + activation_quant 'none' + ram_gb_extra 0 "
+        "duplicates qwen35-9b-q4km-vulkan's -- "
+        "a registry keeps one best row per task per class per backend per card, and per engine, weight quant, activation quant and ram_gb_extra"
+        in result.stderr
+    )
+
+
+def test_check_passes_same_class_when_only_ram_gb_extra_differs(tmp_path):
+    """Two rows that share the one-best key except ram_gb_extra are both kept."""
+    data = load_base()
+    twin = data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]
+    kept = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    twin["category"] = kept["category"]
+    twin["weight_class"] = kept["weight_class"]
+    twin["ram_gb_extra"] = kept["ram_gb_extra"] + 24
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_when_two_rows_both_lack_ram_gb_extra(tmp_path):
+    """A missing ram_gb_extra is "" on the one-best key, so two omissions still collide."""
+    data = load_base()
+    twin = data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]
+    kept = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    twin["category"] = kept["category"]
+    twin["weight_class"] = kept["weight_class"]
+    del twin["ram_gb_extra"]
+    del kept["ram_gb_extra"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert (
+        "profiles: gemma4-8b-e4b-q4km-vulkan: task 'code-edit' + category 'dense' + weight_class '9b' + backend 'vulkan' on card "
+        "'a770' + engine 'llama.cpp' + weight_quant 'Q4_K_M' + activation_quant 'none' + ram_gb_extra '' "
+        "duplicates qwen35-9b-q4km-vulkan's -- "
+        "a registry keeps one best row per task per class per backend per card, and per engine, weight quant, activation quant and ram_gb_extra"
         in result.stderr
     )
 
@@ -2426,6 +2463,47 @@ def test_check_fails_bf16_kv_on_a_non_vllm_row(tmp_path):
     assert "profiles: qwen35-9b-q4km-vulkan: kv bf16 is only recorded when backend is vllm" in result.stderr
 
 
+def _sglang_row(prof):
+    prof["backend"] = "sglang"
+    prof["engine"] = "sglang"
+    prof["tool_parser"] = "qwen3_coder"
+    prof["reasoning_parser"] = "qwen3"
+
+
+def test_check_passes_fp8_e4m3_kv_on_sglang_when_the_flag_matches(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    _sglang_row(prof)
+    prof["kv"] = "fp8_e4m3"
+    prof["extra"] = prof["extra"] + " --kv-cache-dtype fp8_e4m3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_fp8_e4m3_kv_when_backend_is_not_sglang(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["backend"] == "vulkan"
+    prof["kv"] = "fp8_e4m3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kv fp8_e4m3 is only recorded when backend is sglang" in result.stderr
+
+
+def test_check_fails_when_sglang_kv_disagrees_with_kv_cache_dtype(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    _sglang_row(prof)
+    prof["kv"] = "f16"
+    prof["extra"] = prof["extra"] + " --kv-cache-dtype fp8_e4m3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiles: qwen35-9b-q4km-vulkan: kv 'f16' disagrees with --kv-cache-dtype fp8_e4m3" in result.stderr
+
+
 def test_check_fails_vllm_image_on_a_non_vllm_row(tmp_path):
     data = load_base()
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
@@ -2864,7 +2942,7 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
     assert row["task"] == "code-edit"
     assert row["engine"] == "sglang" and row["backend"] == "sglang"
     assert row["card"] == "b70" and row["mode"] == "inference"
-    assert row["kv"] == "f16"
+    assert row["kv"] == "fp8_e4m3"
     assert "--kv-cache-dtype fp8_e4m3" in row["extra"]
     assert row["ctx"] == 131072 and row["useful_ctx"] == 100000
     assert row["timeout_s"] == 1500
@@ -2893,6 +2971,115 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
     assert "30260" in row["evidence"] and "7890" in row["evidence"]
     assert "62.69" in row["evidence"] and "27.31" in row["evidence"]
     assert RECIPE_URL in row["evidence"] and "Strata" in row["evidence"] and STRATA_URL in row["evidence"]
+    assert "flashnext-ram24" in names
+    ram24 = data["profiles"]["flashnext-ram24"]
+    for copied in (
+        "model", "source", "family", "architecture", "quant", "extra",
+        "tool_parser", "reasoning_parser", "checkpoint", "category", "weight_class",
+        "card", "backend", "engine", "placement", "mode", "capability_source",
+    ):
+        assert ram24[copied] == row[copied], copied
+    assert ram24["kv"] == "fp8_e4m3"
+    assert ram24["flash_attention"] == "off" and ram24["reasoning"] == "off"
+    assert ram24["capability"] == {}
+    assert "kernel" not in ram24 and "sampling" not in ram24
+    assert "delivered" not in ram24["speed"]
+    assert ram24["measured_on"] == "Arc Pro B70 32 GB, SGLang attached, 2026-10-17"
+    assert ram24["ctx"] == 131072 and ram24["useful_ctx"] == 100000
+    assert ram24["timeout_s"] == 2283
+    assert ram24["vram_gib_after_load"] == 31.19
+    assert ram24["ram_gb_extra"] == 24
+    assert ram24["params_b"] == {"total": 180, "active": 6}
+    assert ram24["depth_probe_100k"] == "pass (2/3)"
+    assert ram24["instrument"] == "SUITE-1@1" and ram24["task"] == "code-edit"
+    assert ram24["speed"]["decode_tps"] == {"8k": 10.7, "32k": 9.8, "64k": 10.5, "100k": 10.0}
+    assert ram24["speed"]["prefill_tps"] == {"8k": 4513.3, "32k": 1137.0, "64k": 1261.5, "100k": 1207.0}
+    assert ram24["speed"]["far_end"] == {"tokens": 99887, "decode_tps": 12.9, "prefill_tps": 894, "ttft_s": 111.7}
+    bench = ram24["speed"]["bench"]
+    assert bench["tool"] == "llama-benchy" and bench["prompt"] == 8192 and bench["gen"] == 128
+    assert bench["flags"] == row["speed"]["bench"]["flags"]
+    assert bench["source"].startswith("http-20261017-042235.json via http-20261017-042235.mapped.json")
+    assert "prefill 521" in bench["source"] and "decode 7.5" in bench["source"]
+    assert "8192 cell is the other instrument" in bench["source"]
+    assert bench["at_depth"] == {
+        "8192": {"pp": 4513.3, "tg": 10.7},
+        "32768": {"pp": 1137.0, "tg": 9.8},
+        "65536": {"pp": 1261.5, "tg": 10.5},
+        "100000": {"pp": 1207.0, "tg": 10.0},
+    }
+    use_for = ram24["use_for"]
+    for phrase in (
+        "131072", "100000", "7958", "7.5", "521", "99887", "12.9", "894",
+        "99789", "2/3", "10.7", "9.8", "10.5", "10.0", "4513.3", "1137.0",
+        "1261.5", "1207.0", "reference exercises failed",
+    ):
+        assert phrase in use_for, phrase
+    assert "counted" in use_for and "passed" in use_for
+    evidence = ram24["evidence"]
+    for phrase in (
+        "ghcr.io/0xsero/sglang-exl3-xpu-flashnext",
+        SERVED_DIGEST,
+        "7890",
+        "40g",
+        "shm 8g",
+        "cpuset 8-23",
+        "NV tier on",
+        "victim write-back on",
+        "RAM cap 24",
+        "48 layers",
+        "8000 MoE slots",
+        "n-gram tier nvme",
+        "KV bits 5",
+        "QSA sycl_row",
+        "62.69",
+        "32 GiB",
+        "27.31",
+        "31.19",
+        "2/3",
+        "not measured",
+        "flashnext-suite-20261017-015712-3927775.json",
+        "s1-frontend 1633",
+        "s2-backend 877",
+        "s3-optimise 2283",
+        "s0-design passed at 475",
+        "not in the counted mean",
+        "reference exercises failed",
+        "timeout_s is 2283",
+        "longest counted wall",
+        RECIPE_URL,
+        "(MIT)",
+        "Strata",
+        STRATA_URL,
+        "published speeds are not this card",
+    ):
+        assert phrase in evidence, phrase
+    assert "30260" not in evidence
+    assert ram24["fit"]["code"] == (
+        "SUITE-1@1: 3 of 3 counted stages passed, mean wall 1597.7 s. "
+        "All three reference exercises failed (2026-10-17, attached server)."
+    )
+    assert ram24["fit"]["write"] == "not measured"
+    assert ram24["suite"] == {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "mean_wall_s": 1597.7,
+        "source": "flashnext-suite-20261017-015712-3927775.json",
+        "instrument": "SUITE-1@1",
+    }
+    assert ram24["measured_tasks"] == {
+        "s0-design": {"quality": "pass", "wall_s": 475, "context_tokens": 58787, "thinking": "off"},
+        "s1-frontend": {"quality": "pass", "wall_s": 1633, "context_tokens": 263541, "thinking": "off"},
+        "s2-backend": {"quality": "pass", "wall_s": 877, "context_tokens": 123593, "thinking": "off"},
+        "s3-optimise": {"quality": "pass", "wall_s": 2283, "context_tokens": 662884, "thinking": "off"},
+        "ref-cpp-binary-search-tree": {"quality": "fail", "wall_s": 1222, "context_tokens": 53011, "thinking": "off"},
+        "ref-javascript-forth": {"quality": "fail", "wall_s": 45, "context_tokens": None, "thinking": "off"},
+        "ref-python-pov": {"quality": "fail", "wall_s": 1703, "context_tokens": 66127, "thinking": "off"},
+    }
+    ram_blob = json.dumps(ram24)
+    for stale in ("1665.2", "1013.6", "1340.2", "1219.6", "14.2", "1088", "91.8", "1831", "1500", "3/3"):
+        assert stale not in ram_blob
     for banned in (
         "d30d" + "f691",
         "/home" + "/",
@@ -2905,6 +3092,8 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
         "24" + "g",
     ):
         assert banned not in blob
+        assert banned not in ram_blob
     assert row["source"] != "local"
+    assert ram24["source"] != "local"
     result = run("check", "--file", str(B70_JSON))
     assert result.returncode == 0, result.stderr

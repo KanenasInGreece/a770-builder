@@ -10,6 +10,7 @@ one-shot /app/llama-bench in the same image.
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -267,6 +268,40 @@ def test_stop_runs_compose_down(tmp_path):
     r = _run(_env(tmp_path, bin_), "stop")
     assert r.returncode == 0, r.stderr
     assert any(" down" in f" {c} " for c in log.read_text(encoding="utf-8").splitlines())
+
+
+def test_stop_sglang_parses_when_the_model_dir_is_empty(tmp_path):
+    """compose ps and down both parse the volume. An empty model dir is not a spec, and stop still reaches both."""
+    log = tmp_path / "docker.log"
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    _make_bin(bin_, "docker", f'''case " $* " in
+  *" compose "*)
+    if [ -z "${{A770B_SGLANG_MODEL_DIR:-}}" ]; then exit 1; fi
+    printf '%s\\n' "$*" >> "{log}"
+    exit 0;;
+esac
+exit 0''')
+    _make_bin(bin_, "curl", "echo '{}'; exit 0")
+    _make_bin(bin_, "pgrep", "exit 0")
+    _make_bin(bin_, "nvtop", "echo '[]'")
+    yaml_before = SGLANG_YAML.read_text(encoding="utf-8")
+    example_before = SGLANG_ENV_EXAMPLE.read_text(encoding="utf-8")
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "no-sglang.env"),
+        A770B_SGLANG_MODEL_DIR="",
+        A770B_SGLANG_MODEL_NAME="model",
+    )
+    r = _run(env, "stop")
+    assert r.returncode == 0, r.stdout + r.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert any(c.startswith("compose ") and " ps " in f" {c} " for c in calls), calls
+    assert any(" down" in f" {c} " for c in calls), calls
+    assert SGLANG_YAML.read_text(encoding="utf-8") == yaml_before
+    assert SGLANG_ENV_EXAMPLE.read_text(encoding="utf-8") == example_before
 
 
 def test_stop_reports_still_running_when_down_leaves_a_container(tmp_path):
@@ -849,7 +884,7 @@ def _sglang_fixture(path: Path, model_name: str) -> Path:
                 "family": "qwen",
                 "architecture": "dense",
                 "quant": "exl3",
-                "kv": "f16",
+                "kv": "fp8_e4m3",
                 "flash_attention": "off",
                 "reasoning": "off",
                 "extra": SGLANG_EXTRA,
@@ -1542,3 +1577,44 @@ def test_start_with_a_previous_container_keeps_that_log_before_down(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "new server" not in r.stderr
     _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+
+
+def test_unattached_sglang_stage_counters_skip_diff_with_one_warning(tmp_path):
+    """sglang has no prometheus counter diff. An unattached run warns once and does not call diff."""
+    script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    data = tmp_path / "data"
+    log = tmp_path / "python-argv.log"
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    real = shutil.which("python3")
+    _make_bin(
+        bin_, "python3",
+        f'printf "%s\\n" "$*" >> "{log}"\n'
+        'case " $* " in\n'
+        '  *" diff "*) exit 99;;\n'
+        "esac\n"
+        f'exec "{real}" "$@"\n',
+    )
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    env = {
+        "PATH": f"{bin_}:{os.environ.get('PATH', '')}",
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "A770B_PROJECT": str(ROOT),
+        "A770B_DATA": str(data),
+        "A770B_REFUSE": "/nonexistent",
+        "A770B_CARD_MODE": "inference",
+        "A770B_SERVED_ENGINE": "sglang",
+        "XDG_CONFIG_HOME": str(xdg),
+        "TMPDIR": str(tmp_path),
+    }
+    r = subprocess.run(
+        ["bash", "-c", '. "$1"; _stage_counters "$2"', "_", str(script), "sg-label"],
+        capture_output=True, text=True, env=env, cwd=ROOT,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    warnings = [ln for ln in r.stderr.splitlines() if "⚠" in ln]
+    assert warnings == ["⚠ sglang has no prometheus counter diff"], warnings
+    called = log.read_text(encoding="utf-8") if log.exists() else ""
+    assert " diff " not in f" {called} "
+    assert not (data / "results" / "sg-label.counters.json").exists()
