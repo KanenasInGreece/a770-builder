@@ -188,7 +188,15 @@ if [ "$DRYRUN" = 1 ]; then
     echo "[dry-run] rung 1/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
     echo "[dry-run] rung 2/6: STOPPED before serve_compose.sh — bring is attach, so this ladder does not start a server"
   else
-    echo "[dry-run] rung 1/6: KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA} — MemAvailable sampled before and after; VRAM sampled after load"
+    _vllm_image=""
+    if [ -n "$PROFILE_NAME" ]; then
+      _vllm_image=$(a770b_profile_var "$PROFILE_NAME" VLLM_IMAGE)
+    fi
+    _image_prefix=""
+    if [ -n "$_vllm_image" ]; then
+      _image_prefix="A770B_VLLM_IMAGE=$_vllm_image "
+    fi
+    echo "[dry-run] rung 1/6: ${_image_prefix}KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA} — MemAvailable sampled before and after; VRAM sampled after load"
     _pp=$(initial_pp || true)
     if [ -z "$_pp" ]; then
       echo "[dry-run] rung 2/6: STOPPED — no standard prompt size fits the served window ($CTX, far end $FAR_END)"
@@ -213,11 +221,14 @@ if [ "$DRYRUN" = 1 ]; then
     echo "[dry-run] rung 3/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
   fi
   if tok=$(tokenizer_dir "$GGUF"); then
-    if [ "$ENGINE" = sglang ]; then
-      echo "[dry-run] rung 4/6: A770B_SWEEP_STREAM=1 bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
-    else
-      echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
-    fi
+    case "$ENGINE" in
+      vllm|sglang)
+        echo "[dry-run] rung 4/6: A770B_SWEEP_STREAM=1 bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+        ;;
+      *)
+        echo "[dry-run] rung 4/6: bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
+        ;;
+    esac
     if [ "$COUNT" = unmeasured ]; then
       echo "[dry-run]           both are sized in real tokens from the tokenizer directory; the deadline stays the unmeasured cap because rung 3 is not a llama-bench curve"
     fi
@@ -276,17 +287,22 @@ if [ -z "$FAIL_RUNG" ]; then
   if [ "$BRING" = attach ]; then
     echo "bring is attach — not starting a server" >&2
   else
-    _q=""; _tool=""; _reason=""
+    _q=""; _tool=""; _reason=""; _vllm_image=""
     if [ -n "$PROFILE_NAME" ]; then
       _q=$(a770b_profile_var "$PROFILE_NAME" QUANT)
       _tool=$(a770b_profile_var "$PROFILE_NAME" TOOL_PARSER)
       _reason=$(a770b_profile_var "$PROFILE_NAME" REASONING_PARSER)
+      _vllm_image=$(a770b_profile_var "$PROFILE_NAME" VLLM_IMAGE)
     fi
     _t0=$(date +%s.%N)
-    # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
-    if ! KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
+    # This start only. A vLLM row may name an image the pinned compose file does not hold.
+    if ! (
+      if [ -n "$_vllm_image" ]; then export A770B_VLLM_IMAGE="$_vllm_image"; fi
+      # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
+      KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
         QUANT="$_q" TOOL_PARSER="$_tool" REASONING_PARSER="$_reason" \
-        bash "$here/serve_compose.sh" start "$GGUF" "$CTX" $EXTRA; then
+        bash "$here/serve_compose.sh" start "$GGUF" "$CTX" $EXTRA
+    ); then
       FAIL_RUNG="load"; FAIL_MSG="serve_compose.sh failed"
     else
       _vram=$(gpu_used_gib)
@@ -363,8 +379,8 @@ if [ -z "$FAIL_RUNG" ]; then
   if tok=$(tokenizer_dir "$GGUF"); then
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
     SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
-    # SGLang has usage and no llama.cpp timings, so this rung asks for a stream. llama.cpp and vllm do not.
-    ( if [ "$ENGINE" = sglang ]; then export A770B_SWEEP_STREAM=1; fi
+    # Those streamed rates are a client clock, not llama.cpp timings.
+    ( case "$ENGINE" in vllm|sglang) export A770B_SWEEP_STREAM=1 ;; esac
       bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
   else

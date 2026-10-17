@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""live_backend.py — identity of the llama.cpp server that is up, as a JSON sidecar.
+"""live_backend.py — identity of the server that is up, as a JSON sidecar.
 
 `/health` proves a server answers. It does not prove which image is answering: the same
 port can be Vulkan or another backend, display or inference, one GGUF or another.

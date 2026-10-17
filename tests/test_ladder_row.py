@@ -321,3 +321,53 @@ def test_ladder_dry_run_mentions_evidence_step(tmp_path):
     assert "[dry-run] evidence:" in stdout
     assert "engine_evidence.py log" in stdout
     assert "qwen35-9b-q4km-vulkan.evidence.json" in stdout
+
+
+def _ladder_dry_run(tmp_path, profile, card, mode, models):
+    """One isolated ladder --dry-run. A770B_* and XDG_CONFIG_HOME do not come from the operator."""
+    data = tmp_path / "data"
+    data.mkdir(exist_ok=True)
+    res = subprocess.run(
+        ["bash", str(ROOT / "harness" / "ladder.sh"), profile, "--dry-run"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env={**{k: v for k, v in os.environ.items() if not k.startswith("A770B_")}, "A770B_PROJECT": str(ROOT),
+             "A770B_DATA": str(data), "A770B_REFUSE": "/nonexistent", "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+             "A770B_CARD": card, "A770B_CARD_MODE": mode, "A770B_MODELS": str(models)},
+    )
+    return res
+
+
+def test_ladder_dry_run_streams_vllm_and_sglang_and_names_the_vllm_image(tmp_path):
+    """vLLM and SGLang print A770B_SWEEP_STREAM=1. llama.cpp does not. The vLLM rung 1 line names the row's image."""
+    models = tmp_path / "models"
+    for name in ("Qwen3.8-27B-exl3-4.00bpw", "Qwen3.8-Flash-Next-exl3-3.05bpw"):
+        tokdir = models / name
+        tokdir.mkdir(parents=True)
+        (tokdir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (models / "tokenizer.json").write_text("{}", encoding="utf-8")
+    registry = json.loads(
+        (ROOT / "config" / "registry" / "b70.inference.json").read_text(encoding="utf-8")
+    )
+    image = registry["profiles"]["qwen38-27b-exl3-4bpw-vllm"]["vllm_image"]
+    assert image
+
+    vllm = _ladder_dry_run(tmp_path, "qwen38-27b-exl3-4bpw-vllm", "b70", "inference", models)
+    assert vllm.returncode == 0, vllm.stdout + vllm.stderr
+    rung1 = next(
+        line for line in vllm.stdout.splitlines()
+        if line.startswith("[dry-run] rung 1/6:") and "serve_compose.sh start" in line
+    )
+    assert f"A770B_VLLM_IMAGE={image}" in rung1
+    assert "A770B_SWEEP_STREAM=1" in vllm.stdout
+
+    sglang = _ladder_dry_run(tmp_path, "flashnext", "b70", "inference", models)
+    assert sglang.returncode == 0, sglang.stdout + sglang.stderr
+    assert "A770B_SWEEP_STREAM=1" in sglang.stdout
+    assert "A770B_VLLM_IMAGE" not in sglang.stdout
+
+    llama = _ladder_dry_run(tmp_path, "qwen35-9b-q4km-vulkan", "a770", "display", models)
+    assert llama.returncode == 0, llama.stdout + llama.stderr
+    assert "A770B_SWEEP_STREAM=1" not in llama.stdout
+    assert "ctx_sweep.sh" in llama.stdout
