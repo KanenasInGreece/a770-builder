@@ -71,17 +71,10 @@ _build_argv_vllm(){
       exit 2
       ;;
   esac
-  # THINKING_MODE wins when it is set, including an empty word. Else REASONING.
-  # Both unset is off, the same default as the llama.cpp argv. auto is not a
-  # third switch here, and an empty word is not that default.
-  local rmode
-  if [ -n "${THINKING_MODE+x}" ]; then
-    rmode=$THINKING_MODE
-  elif [ -n "${REASONING+x}" ]; then
-    rmode=$REASONING
-  else
-    rmode=off
-  fi
+  # A non-empty THINKING_MODE wins. Empty or unset falls through to
+  # REASONING. Both unset is off. Both set and empty is refused, as is
+  # auto or any other word.
+  local rmode="${THINKING_MODE:-${REASONING-off}}"
   local -a reasoning_argv=()
   case "$rmode" in
     off)

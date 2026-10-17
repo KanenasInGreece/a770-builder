@@ -212,7 +212,7 @@ def _check_parser_field(errors, name, prof, key, allowed, wrong_backend):
 
 
 def _reasoning_switch(prof) -> str:
-    """thinking.mode, else reasoning, else off. Same pair as the serve argv."""
+    """thinking.mode when it is a string, else reasoning, else off."""
     thinking = prof.get("thinking")
     if isinstance(thinking, dict) and isinstance(thinking.get("mode"), str):
         return thinking["mode"]

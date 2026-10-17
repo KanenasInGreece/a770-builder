@@ -710,9 +710,34 @@ def test_plan_vllm_reasoning_on_refuses_parser_auto(tmp_path):
     assert "--reasoning-parser" not in r.stdout
 
 
+def test_plan_vllm_empty_thinking_mode_falls_through_to_reasoning_on(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(
+        tmp_path, bin_, THINKING_MODE="", REASONING="on", REASONING_PARSER="qwen3",
+    )
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert argv[argv.index("--reasoning-parser") + 1] == "qwen3"
+    assert "enable_thinking" not in "\n".join(argv)
+
+
+def test_plan_vllm_empty_thinking_mode_falls_through_to_reasoning_off(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(tmp_path, bin_, THINKING_MODE="", REASONING="off")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    _assert_vllm_reasoning_off(_argv_lines(r.stdout))
+
+
 def test_plan_vllm_reasoning_auto_exits_nonzero(tmp_path):
     bin_, _ = _fake_runtime(tmp_path)
-    for overrides in ({"THINKING_MODE": "auto"}, {"REASONING": "auto"}, {"THINKING_MODE": ""}, {"THINKING_MODE": "low"}):
+    for overrides in (
+        {"THINKING_MODE": "auto"},
+        {"REASONING": "auto"},
+        {"THINKING_MODE": "", "REASONING": ""},
+        {"THINKING_MODE": "low"},
+    ):
         env = _vllm_plan_env(tmp_path, bin_, **overrides)
         r = _run(env, "plan", GGUF, "8192")
         assert r.returncode != 0, overrides
