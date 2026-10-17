@@ -213,7 +213,8 @@ without a task budget, so those kit numbers are not comparable with the four row
 | SIQ-1-35B Q5_K_M (Frosty40) | llama.cpp SYCL | 89.2 / 1047 | 23.55 GiB | 2/3 · 1/3 | 0.9 h | measured, not adopted |
 
 Kit runs of 2026-09-24: ctx 32,768, K/V q8_0, reasoning on without a task budget, a stage past 25 minutes counted
-as a timeout; vLLM stages record no token counts yet (the capture reads llama.cpp's log lines only).
+as a timeout. Those vLLM stages stored no token counts. The capture reads the usage file when the recorded
+engine is vllm or sglang, and reads the container log only for llama.cpp.
 Q6_K-OQ8's result in that run was 1/3 counted and 1/3 references, 22.0 / 1017 tok/s and 22.13 GiB. The adopted
 profile takes speed, window, VRAM and depth from the ladder of 2026-10-05
 (`qwen38-27b-q6k-oq8-sycl-ladder-20261005-173832.json`: ctx 100,000, task budget 2,048, K/V q8_0, 22.0 / 1012

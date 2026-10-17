@@ -1438,7 +1438,7 @@ def main() -> int:
         help="Print ready, also, or the cold full slice as JSON",
     )
     menu_parser.add_argument("--sidecar", help="Path to the live-backend sidecar JSON")
-    menu_parser.add_argument("--pidfile", help="Path to the llama-server pidfile")
+    menu_parser.add_argument("--pidfile", help="Path to the server pidfile")
     menu_parser.add_argument("--card", help="The installed card, for the empty menu when it has no registry")
     menu_parser.add_argument("--mode", help="The card mode, for the empty menu when the card has no registry")
 
