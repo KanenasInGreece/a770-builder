@@ -619,6 +619,109 @@ def test_plan_vllm_refuses_a_malformed_tool_parser(tmp_path):
     assert "needs a tool-call parser" in r.stderr
 
 
+def _vllm_plan_env(tmp_path, bin_, **overrides):
+    """The env the existing vLLM plan tests set, with the reasoning pair unset."""
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        A770B_QUANT="gptq",
+        TOOL_PARSER="qwen3_coder",
+    )
+    env.pop("THINKING_MODE", None)
+    env.pop("REASONING", None)
+    env.pop("REASONING_PARSER", None)
+    env.update(overrides)
+    return env
+
+
+_VLLM_OFF_JSON = r'\{\"enable_thinking\":\ false\}'
+
+
+def _assert_vllm_reasoning_off(argv):
+    assert "--default-chat-template-kwargs" in argv
+    flag = argv.index("--default-chat-template-kwargs")
+    assert argv[flag + 1] == _VLLM_OFF_JSON
+    assert "--reasoning-parser" not in argv
+    assert "--reasoning-config" not in argv
+    assert "--reasoning-budget" not in argv
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.9"
+    assert argv[argv.index("--port") + 1] == "8000"
+
+
+def test_plan_vllm_reasoning_off_sends_the_template_switch(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(tmp_path, bin_, THINKING_MODE="off", REASONING="on")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    _assert_vllm_reasoning_off(_argv_lines(r.stdout))
+
+
+def test_plan_vllm_reasoning_off_from_reasoning_when_thinking_mode_is_unset(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(tmp_path, bin_, REASONING="off")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    _assert_vllm_reasoning_off(_argv_lines(r.stdout))
+
+
+def test_plan_vllm_unset_reasoning_defaults_off(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(tmp_path, bin_)
+    assert "THINKING_MODE" not in env and "REASONING" not in env
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    _assert_vllm_reasoning_off(_argv_lines(r.stdout))
+
+
+def test_plan_vllm_reasoning_on_names_the_parser(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(tmp_path, bin_, THINKING_MODE="on", REASONING_PARSER="qwen3")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode == 0, r.stderr
+    argv = _argv_lines(r.stdout)
+    assert argv[argv.index("--reasoning-parser") + 1] == "qwen3"
+    assert "enable_thinking" not in "\n".join(argv)
+    assert "--default-chat-template-kwargs" not in argv
+    assert "--reasoning-config" not in argv
+    assert "--reasoning-budget" not in argv
+    assert argv[argv.index("--gpu-memory-utilization") + 1] == "0.9"
+    assert argv[argv.index("--port") + 1] == "8000"
+
+
+def test_plan_vllm_reasoning_on_refuses_an_empty_parser(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(tmp_path, bin_, THINKING_MODE="on", REASONING_PARSER="")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode != 0
+    assert "vLLM" in r.stderr
+    assert "sglang" not in r.stderr
+
+
+def test_plan_vllm_reasoning_on_refuses_parser_auto(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _vllm_plan_env(tmp_path, bin_, THINKING_MODE="on", REASONING_PARSER="auto")
+    r = _run(env, "plan", GGUF, "8192")
+    assert r.returncode != 0
+    assert "vLLM" in r.stderr
+    assert "sglang" not in r.stderr
+    assert "--reasoning-parser" not in r.stdout
+
+
+def test_plan_vllm_reasoning_auto_exits_nonzero(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    for overrides in ({"THINKING_MODE": "auto"}, {"REASONING": "auto"}, {"THINKING_MODE": ""}, {"THINKING_MODE": "low"}):
+        env = _vllm_plan_env(tmp_path, bin_, **overrides)
+        r = _run(env, "plan", GGUF, "8192")
+        assert r.returncode != 0, overrides
+        assert "vLLM" in r.stderr
+        assert "sglang" not in r.stderr
+        assert "enable_thinking" not in r.stdout
+        assert "--reasoning-parser" not in r.stdout
+
+
 def test_plan_llama_cpp_argv_never_carries_the_tool_choice_flags(tmp_path):
     bin_, _ = _fake_runtime(tmp_path)
     env = _env(tmp_path, bin_, A770B_SERVED_BACKEND="vulkan", TOOL_PARSER="qwen3_coder")

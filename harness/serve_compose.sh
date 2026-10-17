@@ -71,8 +71,47 @@ _build_argv_vllm(){
       exit 2
       ;;
   esac
+  # THINKING_MODE wins when it is set, including an empty word. Else REASONING.
+  # Both unset is off, the same default as the llama.cpp argv. auto is not a
+  # third switch here, and an empty word is not that default.
+  local rmode
+  if [ -n "${THINKING_MODE+x}" ]; then
+    rmode=$THINKING_MODE
+  elif [ -n "${REASONING+x}" ]; then
+    rmode=$REASONING
+  else
+    rmode=off
+  fi
+  local -a reasoning_argv=()
+  case "$rmode" in
+    off)
+      reasoning_argv+=(--default-chat-template-kwargs '{"enable_thinking": false}')
+      ;;
+    on)
+      local reasoning_parser="${REASONING_PARSER:-}"
+      if [ "$reasoning_parser" = "auto" ]; then
+        echo "⛔ vLLM refuses --reasoning-parser auto: the log line that names a parser does not turn it on" >&2
+        exit 2
+      fi
+      case "$reasoning_parser" in
+        ''|*[!a-z0-9_]*)
+          echo "⛔ vLLM needs --reasoning-parser set to a parser matching ^[a-z0-9_]+$ (empty and auto are refused)" >&2
+          exit 2
+          ;;
+      esac
+      reasoning_argv+=(--reasoning-parser "$reasoning_parser")
+      ;;
+    *)
+      echo "⛔ vLLM refuses reasoning switch '${rmode}': it must be on or off (auto is refused)" >&2
+      exit 2
+      ;;
+  esac
   # 0.9 is the engine target. Do not derive it from the llama.cpp cap: that cap is a
   # reserve for the GGUF serve, and shrinking this flag (0.875, 0.84) is a different run.
+  # These variables are applied only on the serve start. A client field with no
+  # engine gate would also be sent on llama.cpp rows. The client budget waits
+  # for a later cycle that knows the engine at the post. The pinned image has
+  # no server-wide token cap.
   local frac=0.9
   ARGV=(
     "$model"
@@ -84,6 +123,7 @@ _build_argv_vllm(){
     --port 8000
     --enable-auto-tool-choice
     --tool-call-parser "$tool_parser"
+    "${reasoning_argv[@]}"
     "$@"
   )
 }
