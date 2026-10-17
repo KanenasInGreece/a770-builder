@@ -10,6 +10,7 @@ one-shot /app/llama-bench in the same image.
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -1576,3 +1577,44 @@ def test_start_with_a_previous_container_keeps_that_log_before_down(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "new server" not in r.stderr
     _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+
+
+def test_unattached_sglang_stage_counters_skip_diff_with_one_warning(tmp_path):
+    """sglang has no prometheus counter diff. An unattached run warns once and does not call diff."""
+    script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    data = tmp_path / "data"
+    log = tmp_path / "python-argv.log"
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    real = shutil.which("python3")
+    _make_bin(
+        bin_, "python3",
+        f'printf "%s\\n" "$*" >> "{log}"\n'
+        'case " $* " in\n'
+        '  *" diff "*) exit 99;;\n'
+        "esac\n"
+        f'exec "{real}" "$@"\n',
+    )
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    env = {
+        "PATH": f"{bin_}:{os.environ.get('PATH', '')}",
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "A770B_PROJECT": str(ROOT),
+        "A770B_DATA": str(data),
+        "A770B_REFUSE": "/nonexistent",
+        "A770B_CARD_MODE": "inference",
+        "A770B_SERVED_ENGINE": "sglang",
+        "XDG_CONFIG_HOME": str(xdg),
+        "TMPDIR": str(tmp_path),
+    }
+    r = subprocess.run(
+        ["bash", "-c", '. "$1"; _stage_counters "$2"', "_", str(script), "sg-label"],
+        capture_output=True, text=True, env=env, cwd=ROOT,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    warnings = [ln for ln in r.stderr.splitlines() if "⚠" in ln]
+    assert warnings == ["⚠ sglang has no prometheus counter diff"], warnings
+    called = log.read_text(encoding="utf-8") if log.exists() else ""
+    assert " diff " not in f" {called} "
+    assert not (data / "results" / "sg-label.counters.json").exists()

@@ -181,6 +181,11 @@ _stage_counters(){ # <label> — engine_evidence.py diff over <label>.metrics-be
   if [ "${A770B_ATTACHED:-}" = 1 ]; then
     return 0
   fi
+  # engine_evidence.py diff does not accept sglang. Calling it is only the generic failure warning.
+  if [ "$engine" = sglang ]; then
+    echo "⚠ sglang has no prometheus counter diff" >&2
+    return 0
+  fi
   if [ -z "$engine" ]; then
     echo "⚠ A770B_SERVED_ENGINE is empty — skipping stage counters for $label" >&2
     return 0
