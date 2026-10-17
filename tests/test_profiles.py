@@ -2354,7 +2354,11 @@ def test_check_fails_parser_auto_by_name(tmp_path):
 def test_check_passes_tool_parser_on_a_vllm_row(tmp_path):
     data = load_base()
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["reasoning"] == "on"
+    assert prof["thinking"]["mode"] == "on"
     prof["backend"] = "vllm"
+    prof["reasoning"] = "off"
+    prof["thinking"]["mode"] = "off"
     prof["tool_parser"] = "qwen3_coder"
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
@@ -2398,6 +2402,8 @@ def test_env_exports_tool_parser(tmp_path):
     data = load_base()
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
     prof["backend"] = "vllm"
+    prof["reasoning"] = "off"
+    prof["thinking"]["mode"] = "off"
     prof["tool_parser"] = "qwen3_coder"
     path = write_json(tmp_path / "p.json", data)
     result = run("env", "--file", str(path))
@@ -2429,22 +2435,102 @@ def test_env_exports_reasoning_parser_and_quant_for_sglang(tmp_path):
     assert "A770B_QWEN35_9B_Q4KM_VULKAN_QUANT:=exl3" in result.stdout
 
 
+def test_check_fails_reasoning_parser_on_a_non_vllm_non_sglang_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["backend"] == "vulkan"
+    prof["reasoning_parser"] = "qwen3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert (
+        "profiles: qwen35-9b-q4km-vulkan: reasoning_parser is only meaningful when backend is vllm or sglang "
+        "(this row's backend is 'vulkan')" in result.stderr
+    )
+
+
 def test_check_fails_reasoning_parser_on_vllm(tmp_path):
     data = load_base()
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["reasoning"] == "on"
+    assert prof["thinking"]["mode"] == "on"
     prof["backend"] = "vllm"
+    prof["reasoning"] = "off"
+    prof["thinking"]["mode"] = "off"
     prof["tool_parser"] = "qwen3_coder"
     prof["reasoning_parser"] = "qwen3"
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "reasoning_parser is only meaningful when backend is sglang" in result.stderr
+    assert "reasoning_parser is refused when the vLLM reasoning switch is off" in result.stderr
+    assert "reasoning_parser is only meaningful when backend is sglang" not in result.stderr
+
+
+def test_check_passes_reasoning_parser_on_vllm_when_the_switch_is_on(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["thinking"]["mode"] == "on"
+    prof["backend"] = "vllm"
+    prof["tool_parser"] = "qwen3_coder"
+    prof["reasoning_parser"] = "qwen3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_fails_thinking_mode_auto_on_vllm(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["tool_parser"] = "qwen3_coder"
+    prof["thinking"]["mode"] = "auto"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "thinking.mode auto is refused when backend is vllm" in result.stderr
+    assert "reasoning_parser is only meaningful when backend is sglang" not in result.stderr
+
+
+def test_check_fails_vllm_reasoning_on_without_a_parser(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["thinking"]["mode"] == "on"
+    assert "reasoning_parser" not in prof
+    prof["backend"] = "vllm"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "reasoning_parser is required when the vLLM reasoning switch is on" in result.stderr
+    assert "reasoning_parser is required when backend is sglang" not in result.stderr
+
+
+def test_check_fails_vllm_reasoning_parser_auto_or_malformed(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    prof["backend"] = "vllm"
+    prof["tool_parser"] = "qwen3_coder"
+    prof["reasoning_parser"] = "auto"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "reasoning_parser must not be auto" in result.stderr
+    assert "must match ^[a-z0-9_]+$" not in result.stderr
+    assert "reasoning_parser is only meaningful when backend is sglang" not in result.stderr
+
+    prof["reasoning_parser"] = "bad;value"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "reasoning_parser must match ^[a-z0-9_]+$" in result.stderr
+    assert "reasoning_parser is only meaningful when backend is sglang" not in result.stderr
 
 
 def test_check_passes_bf16_kv_on_a_vllm_row(tmp_path):
     data = load_base()
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
     prof["backend"] = "vllm"
+    prof["reasoning"] = "off"
+    prof["thinking"]["mode"] = "off"
     prof["kv"] = "bf16"
     prof["kv_v"] = "bf16"
     path = write_json(tmp_path / "p.json", data)
@@ -2518,6 +2604,8 @@ def test_env_exports_quant_and_image_for_a_vllm_row(tmp_path):
     data = load_base()
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
     prof["backend"] = "vllm"
+    prof["reasoning"] = "off"
+    prof["thinking"]["mode"] = "off"
     prof["quant"] = "exl3"
     prof["checkpoint"]["weight_quant"] = "exl3"
     prof["vllm_image"] = "exl3xpu:b70-15ded2f"

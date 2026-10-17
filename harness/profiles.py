@@ -211,6 +211,17 @@ def _check_parser_field(errors, name, prof, key, allowed, wrong_backend):
         errors.append(f"{name}: {key} is required when backend is sglang")
 
 
+def _reasoning_switch(prof) -> str:
+    """thinking.mode when it is a string, else reasoning, else off."""
+    thinking = prof.get("thinking")
+    if isinstance(thinking, dict) and isinstance(thinking.get("mode"), str):
+        return thinking["mode"]
+    reasoning = prof.get("reasoning")
+    if isinstance(reasoning, str):
+        return reasoning
+    return "off"
+
+
 def validate(data) -> list[str]:
     """Return a list of problem strings (without the `profiles: ` prefix), empty if valid."""
     errors: list[str] = []
@@ -688,10 +699,23 @@ def validate(data) -> list[str]:
             "tools from its own chat template",
         )
         _check_parser_field(
-            errors, name, prof, "reasoning_parser", {"sglang"},
-            "reasoning_parser is only meaningful when backend is sglang "
+            errors, name, prof, "reasoning_parser", {"sglang", "vllm"},
+            "reasoning_parser is only meaningful when backend is vllm or sglang "
             f"(this row's backend is {prof.get('backend')!r})",
         )
+        # vLLM has on and off only. auto is a llama.cpp and SGLang mode.
+        if prof.get("backend") == "vllm":
+            switch = _reasoning_switch(prof)
+            if switch == "auto":
+                errors.append(f"{name}: thinking.mode auto is refused when backend is vllm")
+            elif switch == "off" and "reasoning_parser" in prof:
+                errors.append(
+                    f"{name}: reasoning_parser is refused when the vLLM reasoning switch is off"
+                )
+            elif switch == "on" and "reasoning_parser" not in prof:
+                errors.append(
+                    f"{name}: reasoning_parser is required when the vLLM reasoning switch is on"
+                )
 
         if "vllm_image" in prof:
             image = prof["vllm_image"]
