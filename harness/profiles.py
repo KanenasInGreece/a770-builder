@@ -700,7 +700,7 @@ def validate(data) -> list[str]:
         )
         _check_parser_field(
             errors, name, prof, "reasoning_parser", {"sglang", "vllm"},
-            "reasoning_parser is only meaningful when backend is sglang "
+            "reasoning_parser is only meaningful when backend is vllm or sglang "
             f"(this row's backend is {prof.get('backend')!r})",
         )
         # vLLM has on and off only. auto is a llama.cpp and SGLang mode.

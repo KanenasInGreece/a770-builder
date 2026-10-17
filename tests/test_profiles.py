@@ -2435,6 +2435,20 @@ def test_env_exports_reasoning_parser_and_quant_for_sglang(tmp_path):
     assert "A770B_QWEN35_9B_Q4KM_VULKAN_QUANT:=exl3" in result.stdout
 
 
+def test_check_fails_reasoning_parser_on_a_non_vllm_non_sglang_row(tmp_path):
+    data = load_base()
+    prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert prof["backend"] == "vulkan"
+    prof["reasoning_parser"] = "qwen3"
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert (
+        "profiles: qwen35-9b-q4km-vulkan: reasoning_parser is only meaningful when backend is vllm or sglang "
+        "(this row's backend is 'vulkan')" in result.stderr
+    )
+
+
 def test_check_fails_reasoning_parser_on_vllm(tmp_path):
     data = load_base()
     prof = data["profiles"]["qwen35-9b-q4km-vulkan"]
