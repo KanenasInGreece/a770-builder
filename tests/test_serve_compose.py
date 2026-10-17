@@ -281,7 +281,6 @@ def test_stop_sglang_parses_when_the_model_dir_is_empty(tmp_path):
     printf '%s\\n' "$*" >> "{log}"
     exit 0;;
 esac
-printf '%s\\n' "$*" >> "{log}"
 exit 0''')
     _make_bin(bin_, "curl", "echo '{}'; exit 0")
     _make_bin(bin_, "pgrep", "exit 0")
@@ -299,7 +298,7 @@ exit 0''')
     r = _run(env, "stop")
     assert r.returncode == 0, r.stdout + r.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert any(" ps " in f" {c} " for c in calls), calls
+    assert any(c.startswith("compose ") and " ps " in f" {c} " for c in calls), calls
     assert any(" down" in f" {c} " for c in calls), calls
     assert SGLANG_YAML.read_text(encoding="utf-8") == yaml_before
     assert SGLANG_ENV_EXAMPLE.read_text(encoding="utf-8") == example_before
