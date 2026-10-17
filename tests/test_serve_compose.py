@@ -849,7 +849,7 @@ def _sglang_fixture(path: Path, model_name: str) -> Path:
                 "family": "qwen",
                 "architecture": "dense",
                 "quant": "exl3",
-                "kv": "f16",
+                "kv": "fp8_e4m3",
                 "flash_attention": "off",
                 "reasoning": "off",
                 "extra": SGLANG_EXTRA,

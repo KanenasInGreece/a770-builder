@@ -94,8 +94,9 @@ def kit_instrument(suite_path: Optional[Path] = None) -> str:
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SPEED_KEYS = {"8k", "32k", "64k", "100k"}
 # bf16 records a vLLM log that says kv_cache_dtype=auto on dtype bfloat16.
+# fp8_e4m3 records an SGLang argv that sets --kv-cache-dtype fp8_e4m3.
 # llama.cpp rows stay on f16, q8_0, q4_0: that serve sends kv through as -ctk/-ctv.
-KV_ORDER = ("f16", "bf16", "q8_0", "q4_0")
+KV_ORDER = ("f16", "bf16", "fp8_e4m3", "q8_0", "q4_0")
 KV_VALUES = set(KV_ORDER)
 KV_LIST = ", ".join(KV_ORDER)
 VLLM_IMAGE_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
@@ -343,6 +344,16 @@ def validate(data) -> list[str]:
                 errors.append(f"{name}: {field} must be one of {KV_LIST}")
             elif prof[field] == "bf16" and prof.get("backend") != "vllm":
                 errors.append(f"{name}: {field} bf16 is only recorded when backend is vllm")
+            elif prof[field] == "fp8_e4m3" and prof.get("backend") != "sglang":
+                errors.append(f"{name}: {field} fp8_e4m3 is only recorded when backend is sglang")
+
+        extra = prof.get("extra")
+        if prof.get("backend") == "sglang" and isinstance(extra, str):
+            served_kv = re.search(r"(?:^|\s)--kv-cache-dtype(?:=|\s+)(\S+)", extra)
+            if served_kv and prof.get("kv") != served_kv.group(1):
+                errors.append(
+                    f"{name}: kv {prof.get('kv')!r} disagrees with --kv-cache-dtype {served_kv.group(1)}"
+                )
 
         for k in ("flash_attention", "reasoning"):
             if k in prof and isinstance(prof[k], str) and prof[k] not in ON_OFF_VALUES:
@@ -774,9 +785,10 @@ def validate(data) -> list[str]:
                     )
 
     # Registry-wide rules, over the whole `profiles` dict rather than one profile at a time.
-    # One best row per task, card, class and backend, and also per engine and per the
-    # checkpoint's weight quant and activation quant. Two Q6_K files of one 27B are not
-    # the same row when the weight encoding differs. A registry is one instrument.
+    # One best row per task, card, class, backend, engine, weight quant, activation quant,
+    # and ram_gb_extra. A missing or non-numeric ram_gb_extra is "" (same as a missing
+    # engine), so two rows that both omit it still collide. Two Q6_K files of one 27B
+    # are not the same row when the weight encoding differs. A registry is one instrument.
     category_class_seen: dict[tuple, str] = {}
     first_instrument = None
     first_instrument_owner = None
@@ -794,17 +806,20 @@ def validate(data) -> list[str]:
             checkpoint = prof.get("checkpoint") if isinstance(prof.get("checkpoint"), dict) else {}
             weight_quant = checkpoint.get("weight_quant") if isinstance(checkpoint.get("weight_quant"), str) else ""
             activation_quant = checkpoint.get("activation_quant") if isinstance(checkpoint.get("activation_quant"), str) else ""
+            ram = prof.get("ram_gb_extra")
+            ram_key = ram if _is_number(ram) else ""
             key = (
                 task if isinstance(task, str) else None, card, category, weight_class, backend,
-                engine, weight_quant, activation_quant,
+                engine, weight_quant, activation_quant, ram_key,
             )
             if key in category_class_seen:
                 errors.append(
                     f"{name}: task {task!r} + category {category!r} + weight_class {weight_class!r} + "
                     f"backend {backend!r} on card {card!r} + engine {engine!r} + "
-                    f"weight_quant {weight_quant!r} + activation_quant {activation_quant!r} "
+                    f"weight_quant {weight_quant!r} + activation_quant {activation_quant!r} + "
+                    f"ram_gb_extra {ram_key!r} "
                     f"duplicates {category_class_seen[key]}'s -- a registry keeps one best row per task "
-                    f"per class per backend per card, and per engine, weight quant and activation quant"
+                    f"per class per backend per card, and per engine, weight quant, activation quant and ram_gb_extra"
                 )
             else:
                 category_class_seen[key] = name

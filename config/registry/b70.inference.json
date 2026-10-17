@@ -457,7 +457,7 @@
       "family": "qwen3.8",
       "architecture": "qwen4_exp",
       "quant": "exl3",
-      "kv": "f16",
+      "kv": "fp8_e4m3",
       "flash_attention": "off",
       "reasoning": "off",
       "extra": "--trust-remote-code --device xpu --host 0.0.0.0 --disable-shared-experts-fusion --kv-cache-dtype fp8_e4m3 --mem-fraction-static 0.85 --chunked-prefill-size 8192 --max-total-tokens 131072 --max-running-requests 4 --dtype bfloat16 --max-mamba-cache-size 32 --cuda-graph-backend-decode full --cuda-graph-bs-decode 1 2 4",
@@ -592,6 +592,151 @@
           "quality": "pass",
           "wall_s": 916,
           "context_tokens": 138185,
+          "thinking": "off"
+        }
+      }
+    },
+    "flashnext-ram24": {
+      "model": "Qwen3.8-Flash-Next-exl3-3.05bpw",
+      "source": "https://github.com/sybil-solutions/qwen38-flash-next-b70-offload",
+      "family": "qwen3.8",
+      "architecture": "qwen4_exp",
+      "quant": "exl3",
+      "kv": "fp8_e4m3",
+      "flash_attention": "off",
+      "reasoning": "off",
+      "extra": "--trust-remote-code --device xpu --host 0.0.0.0 --disable-shared-experts-fusion --kv-cache-dtype fp8_e4m3 --mem-fraction-static 0.85 --chunked-prefill-size 8192 --max-total-tokens 131072 --max-running-requests 4 --dtype bfloat16 --max-mamba-cache-size 32 --cuda-graph-backend-decode full --cuda-graph-bs-decode 1 2 4",
+      "capability_source": "The serve recipe published its own speed and quality tables on a different image and a different machine. Those numbers are not this row. This card's kit numbers are in speed, suite, and evidence.",
+      "use_for": "SGLang launch of Qwen3.8-Flash-Next EXL3 3.05bpw on the B70 with a 24 GB RAM cap. Served context 131072. Useful window 100000. The window sweep decoded 7.5 tok/s and prefilled 521 tok/s at 7958 tokens, and decoded 12.9 tok/s and prefilled 894 tok/s at 99887 tokens. The depth probe scored 2/3 at 99789 tokens. llama-benchy generation, mean of 3, depth 0, 128 generated tokens: decode 10.7, 9.8, 10.5 and 10.0 tok/s at 8192, 32768, 65536 and 100000, with prefill 4513.3, 1137.0, 1261.5 and 1207.0 tok/s. The counted kit stages passed and the three reference exercises failed. Delivered suite rates were not measured.",
+      "depth_probe_100k": "pass (2/3)",
+      "category": "moe",
+      "weight_class": "180b-a6b",
+      "placement": "container",
+      "measured_on": "Arc Pro B70 32 GB, SGLang attached, 2026-10-17",
+      "card": "b70",
+      "backend": "sglang",
+      "mode": "inference",
+      "engine": "sglang",
+      "tool_parser": "qwen3_coder",
+      "reasoning_parser": "qwen3",
+      "checkpoint": {
+        "format": "safetensors",
+        "weight_quant": "EXL3-3.05bpw",
+        "activation_quant": "bf16",
+        "evidence": "quantization_config.json: quant_method exl3, version 1.4.4, bits 3.05, head_bits 5, codebook mul1, vision_bits 5, mtp_bits 3. The served argv sets dtype bfloat16."
+      },
+      "ctx": 131072,
+      "useful_ctx": 100000,
+      "timeout_s": 2283,
+      "vram_gib_after_load": 31.19,
+      "ram_gb_extra": 24,
+      "params_b": {
+        "total": 180,
+        "active": 6
+      },
+      "speed": {
+        "decode_tps": {
+          "8k": 10.7,
+          "32k": 9.8,
+          "64k": 10.5,
+          "100k": 10.0
+        },
+        "prefill_tps": {
+          "8k": 4513.3,
+          "32k": 1137.0,
+          "64k": 1261.5,
+          "100k": 1207.0
+        },
+        "far_end": {
+          "tokens": 99887,
+          "decode_tps": 12.9,
+          "prefill_tps": 894,
+          "ttft_s": 111.7
+        },
+        "bench": {
+          "tool": "llama-benchy",
+          "prompt": 8192,
+          "gen": 128,
+          "flags": "--pp 8192 32768 65536 100000 --tg 128 --depth 0 --runs 3 --concurrency 1 --no-cache --skip-coherence --latency-mode generation --extra-body return_token_ids=false",
+          "at_depth": {
+            "8192": {
+              "pp": 4513.3,
+              "tg": 10.7
+            },
+            "32768": {
+              "pp": 1137.0,
+              "tg": 9.8
+            },
+            "65536": {
+              "pp": 1261.5,
+              "tg": 10.5
+            },
+            "100000": {
+              "pp": 1207.0,
+              "tg": 10.0
+            }
+          },
+          "source": "http-20261017-042235.json via http-20261017-042235.mapped.json. The window sweep at 7958 tokens measured prefill 521 and decode 7.5; the 8192 cell is the other instrument."
+        }
+      },
+      "capability": {},
+      "instrument": "SUITE-1@1",
+      "task": "code-edit",
+      "evidence": "Image ghcr.io/0xsero/sglang-exl3-xpu-flashnext digest 24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f. This measurement used the skill port 7890. Container memory 40g, swap 40g, shm 8g, cpuset 8-23. NV tier on, victim write-back on, RAM cap 24, 48 layers, 8000 MoE slots, n-gram tier nvme, KV bits 5, QSA sycl_row. The host has 62.69 GiB of RAM. The weights do not fit on the 32 GiB card. The start-gate sample was 27.31 GiB. The sweep peak was 31.19 GiB. The depth probe scored 2/3 and its prefill and decode rates were not measured. Suite source flashnext-suite-20261017-015712-3927775.json. Counted walls s1-frontend 1633 s, s2-backend 877 s, s3-optimise 2283 s. s0-design passed at 475 s and is not in the counted mean. The three reference exercises failed. timeout_s is 2283, the longest counted wall. The recipe is https://github.com/sybil-solutions/qwen38-flash-next-b70-offload (MIT). Sparse attention follows Strata, https://github.com/Niko1221/Strata (MIT). Their published speeds are not this card.",
+      "fit": {
+        "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 1597.7 s. All three reference exercises failed (2026-10-17, attached server).",
+        "write": "not measured"
+      },
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "mean_wall_s": 1597.7,
+        "source": "flashnext-suite-20261017-015712-3927775.json",
+        "instrument": "SUITE-1@1"
+      },
+      "measured_tasks": {
+        "s0-design": {
+          "quality": "pass",
+          "wall_s": 475,
+          "context_tokens": 58787,
+          "thinking": "off"
+        },
+        "s1-frontend": {
+          "quality": "pass",
+          "wall_s": 1633,
+          "context_tokens": 263541,
+          "thinking": "off"
+        },
+        "s2-backend": {
+          "quality": "pass",
+          "wall_s": 877,
+          "context_tokens": 123593,
+          "thinking": "off"
+        },
+        "s3-optimise": {
+          "quality": "pass",
+          "wall_s": 2283,
+          "context_tokens": 662884,
+          "thinking": "off"
+        },
+        "ref-cpp-binary-search-tree": {
+          "quality": "fail",
+          "wall_s": 1222,
+          "context_tokens": 53011,
+          "thinking": "off"
+        },
+        "ref-javascript-forth": {
+          "quality": "fail",
+          "wall_s": 45,
+          "context_tokens": null,
+          "thinking": "off"
+        },
+        "ref-python-pov": {
+          "quality": "fail",
+          "wall_s": 1703,
+          "context_tokens": 66127,
           "thinking": "off"
         }
       }
