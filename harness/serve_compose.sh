@@ -281,6 +281,10 @@ _fail_started(){
 
 case "${1:-}" in
   stop)
+    # compose interpolates the sglang volume on ps and on down. An empty host side is `: /models/…:ro`.
+    if [ -z "${A770B_SGLANG_MODEL_DIR:-}" ]; then
+      export A770B_SGLANG_MODEL_DIR=.
+    fi
     _keep_serve_log
     # a compose error is not a stop: the pidfile and the sidecar stay while the container may still be up
     if ! _compose down >/dev/null; then

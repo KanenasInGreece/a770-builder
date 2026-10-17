@@ -269,6 +269,40 @@ def test_stop_runs_compose_down(tmp_path):
     assert any(" down" in f" {c} " for c in log.read_text(encoding="utf-8").splitlines())
 
 
+def test_stop_sglang_parses_when_the_model_dir_is_empty(tmp_path):
+    """compose ps and down both parse the volume. An empty model dir is not a spec, and stop still reaches both."""
+    log = tmp_path / "docker.log"
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    _make_bin(bin_, "docker", f'''printf '%s\\n' "$*" >> "{log}"
+case " $* " in
+  *" compose "*)
+    if [ -z "${{A770B_SGLANG_MODEL_DIR:-}}" ]; then exit 1; fi
+    exit 0;;
+esac
+exit 0''')
+    _make_bin(bin_, "curl", "echo '{}'; exit 0")
+    _make_bin(bin_, "pgrep", "exit 0")
+    _make_bin(bin_, "nvtop", "echo '[]'")
+    yaml_before = SGLANG_YAML.read_text(encoding="utf-8")
+    example_before = SGLANG_ENV_EXAMPLE.read_text(encoding="utf-8")
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="sglang",
+        A770B_COMPOSE_FILE=str(SGLANG_YAML),
+        A770B_COMPOSE_ENV_FILE=str(tmp_path / "no-sglang.env"),
+        A770B_SGLANG_MODEL_DIR="",
+        A770B_SGLANG_MODEL_NAME="model",
+    )
+    r = _run(env, "stop")
+    assert r.returncode == 0, r.stdout + r.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert any(" ps " in f" {c} " for c in calls), calls
+    assert any(" down" in f" {c} " for c in calls), calls
+    assert SGLANG_YAML.read_text(encoding="utf-8") == yaml_before
+    assert SGLANG_ENV_EXAMPLE.read_text(encoding="utf-8") == example_before
+
+
 def test_stop_reports_still_running_when_down_leaves_a_container(tmp_path):
     # a daemon that accepts `down` but leaves the container running must not be reported as a clean stop
     bin_, _ = _fake_runtime(tmp_path, down_clears=False)
