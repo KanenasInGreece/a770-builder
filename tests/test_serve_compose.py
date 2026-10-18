@@ -261,6 +261,7 @@ def test_start_recreates_never_no_recreate_and_writes_the_host_pid(tmp_path):
     assert cmd[0] == "-m" and f"/models/{GGUF}" in cmd and "/app/llama-server" not in cmd
     pidf = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid"
     assert pidf.read_text(encoding="utf-8").strip() == "4242"
+    _assert_start_line_names_cap_once(r.stdout, env["A770B_VRAM_CAP_GIB"])
 
 
 def test_stop_runs_compose_down(tmp_path):
@@ -842,11 +843,20 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
     r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "▶ started server container" in r.stdout
+    _assert_start_line_names_cap_once(r.stdout, env["A770B_VRAM_CAP_GIB"], also="0.9 of the card")
     ov = json.loads((Path(env["A770B_DATA"]) / "logs" / "compose-argv.override.json").read_text(encoding="utf-8"))
     assert "entrypoint" not in ov["services"]["llama"]
     assert ov["services"]["llama"]["command"][0] == "/models/Qwen/Qwen3-32B"
     pidf = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid"
     assert pidf.read_text(encoding="utf-8").strip() == "4242"
+
+
+def _assert_start_line_names_cap_once(stdout: str, cap: str, also: str | None = None) -> None:
+    line = next(row for row in stdout.splitlines() if row.startswith("▶ started"))
+    assert line.count(f"cap {cap} GiB") == 1
+    assert f"cap {cap} GiB · cap" not in line
+    if also is not None:
+        assert line.count(also) == 1
 
 
 def _assert_logs_before_a_later_down(log: Path, ps_id: str = "cid123"):
@@ -929,6 +939,7 @@ def test_start_ok_body_prints_health_ready_on_stderr(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "health: ready" in r.stderr
     assert "▶ started server container" in r.stdout
+    _assert_start_line_names_cap_once(r.stdout, env["A770B_VRAM_CAP_GIB"])
 
 
 def test_start_prints_an_unchanged_health_class_once(tmp_path):

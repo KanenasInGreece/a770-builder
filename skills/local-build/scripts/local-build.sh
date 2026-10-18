@@ -177,16 +177,12 @@ _write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4)
     echo "⚠ could not write serve evidence for $profile (the container log or engine_evidence.py failed) — continuing" >&2
   fi
 }
-_metrics_snapshot(){ # <out-file> — best-effort (E4) GET of /metrics; a failure writes nothing and warns, never
-  # fails the run. llama.cpp guards /metrics with the API key, vLLM does not; either way the key must never sit
-  # in argv (visible in a process listing) or in a file left on disk. Passing it to curl through process
-  # substitution (curl -H @<(…)) is a header FILE curl reads once — chosen over a temp file because there is then
-  # nothing to remove: the fd exists only for this one curl call and is gone the moment it returns.
+_metrics_snapshot(){ # <out-file> — best-effort GET of /metrics; a failure writes nothing and warns. a770b_curl sends the key.
   local out="$1" url="http://$A770B_HOST:$A770B_PORT/metrics" body rc=1
   if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
     body=$(curl -sf --max-time 5 "$url" 2>/dev/null) && rc=0
   else
-    body=$(curl -sf --max-time 5 -H @<(printf 'Authorization: Bearer %s' "$(a770b_api_key)") "$url" 2>/dev/null) && rc=0
+    body=$(a770b_curl -sf --max-time 5 "$url" 2>/dev/null) && rc=0
   fi
   if [ "$rc" = 0 ] && [ -n "$body" ]; then
     printf '%s\n' "$body" > "$out"
@@ -288,7 +284,7 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
     if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ]; then
       health_word=$(bash "$SERVE" health 2>/dev/null) || true
       if [ "$health_word" = ready ]; then
-        if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
+        if a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
         echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
       else
         echo "serve refused: $A770B_HOST:$A770B_PORT did not answer /health"
@@ -403,7 +399,7 @@ _attach_running_server(){
   local models_body="" owned=""
   A770B_SERVED_ENGINE=""
   if [ -s "$A770B_API_KEY_FILE" ]; then
-    models_body=$(curl -sS --max-time 5 -H @<(printf 'Authorization: Bearer %s' "$(a770b_api_key)") "$origin/v1/models" 2>/dev/null || true)
+    models_body=$(a770b_curl -sS --max-time 5 "$origin/v1/models" 2>/dev/null || true)
     owned=$(printf '%s' "$models_body" | python3 -c 'import json,sys
 try:
     data = json.load(sys.stdin)

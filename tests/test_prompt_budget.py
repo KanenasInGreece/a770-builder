@@ -280,6 +280,41 @@ def test_openai_import_error_reexecs_once_and_the_child_does_not(monkeypatch):
         os_mod.environ.pop(m._TOKENIZERS_CHILD, None)
 
 
+def test_fit_reads_the_key_file_when_key_is_absent_and_keeps_an_explicit_key(monkeypatch, tmp_path, capsys):
+    """An absent --key is the first line of A770B_API_KEY_FILE. A passed --key wins. Neither is printed."""
+    m = load()
+    corpus = tmp_path / "c.py"
+    corpus.write_text("def a():\n    return 1\n")
+    out = tmp_path / "out.txt"
+    keyfile = tmp_path / "api.key"
+    keyfile.write_text("from-file\nignored\n", encoding="utf-8")
+    seen = {}
+
+    def grab(url, key, text, tokenize="llama", model="", tokenizer=""):
+        seen["key"] = key
+        return max(1, len(text) // 3)
+
+    monkeypatch.setattr(m, "count_tokens", grab)
+    monkeypatch.setenv("A770B_API_KEY_FILE", str(keyfile))
+    absent = type("A", (), {
+        "corpus": str(corpus), "target": 8, "out": str(out), "plant_file": None, "plant_at": 0.85,
+        "overhead": 0, "url": "http://127.0.0.1:1", "key": None, "tokenize": "llama", "model": "",
+        "tokenizer": "",
+    })()
+    m.fit(absent)
+    assert seen["key"] == "from-file"
+    explicit = type("A", (), {
+        "corpus": str(corpus), "target": 8, "out": str(out), "plant_file": None, "plant_at": 0.85,
+        "overhead": 0, "url": "http://127.0.0.1:1", "key": "from-arg", "tokenize": "llama", "model": "",
+        "tokenizer": "",
+    })()
+    m.fit(explicit)
+    assert seen["key"] == "from-arg"
+    err = capsys.readouterr().err
+    assert "from-file" not in err
+    assert "from-arg" not in err
+
+
 def test_fit_openai_without_a_tokenizer_does_not_blame_the_server(monkeypatch, capsys):
     m = load()
 

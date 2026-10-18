@@ -216,6 +216,14 @@ a770b_api_key(){
   chmod 600 "$A770B_API_KEY_FILE" 2>/dev/null || true       # re-asserted on every read, not only at creation
   head -n 1 "$A770B_API_KEY_FILE"
 }
+# a770b_curl [curl args…] — the caller's curl, with the server key. The key stays local and is not printed.
+a770b_curl(){
+  local key rc
+  key=$(a770b_api_key) || return $?
+  rc=0
+  curl -H @<(printf 'Authorization: Bearer %s' "$key") "$@" || rc=$?
+  return "$rc"
+}
 # a770b_render_profile <profile> <ctx> <out> [nokey] — the ONLY opencode config a sandboxed run sees, rendered by
 # harness/render_profile.py from the template with the server URL, the key, the window and the output limit, and, when
 # A770B_SPEC names a run specification, with that specification applied against the seat in A770B_RENDER_SEAT; the
