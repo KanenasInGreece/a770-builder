@@ -1035,6 +1035,32 @@ class UsageFileCapture(TempTree):
         self.assertEqual((code, err, out.splitlines()),
                          (0, "", ["rates not measured", NO_TOKEN_LINE]))
 
+    def test_a_client_clock_on_every_row_is_a_rate(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 100, "completion_tokens": 4, "prefill_ms": 500, "decode_ms": 1500},
+            {"prompt_tokens": 50, "completion_tokens": 10, "prefill_ms": 1000, "decode_ms": 1000},
+        ]))
+        # 150 prompt tokens / 1.5 s, and the log reader's median of 4/1.5 and 10/1.
+        self.assertEqual(lines[0], "prefill_tps=100 decode_tps=2.7")
+        self.assertIn("requests=2 prompt_tokens_total=150 gen_tokens_total=14", lines)
+        self.assertNotIn("rates not measured", lines)
+
+    def test_a_clock_that_rounds_to_zero_is_not_stored_as_zero(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 1, "completion_tokens": 1, "prefill_ms": 10000, "decode_ms": 10000},
+        ]))
+        self.assertEqual(lines[0], "rates not measured")
+        self.assertNotIn("prefill_tps=0", "\n".join(lines))
+        self.assertNotIn("decode_tps=0.0", "\n".join(lines))
+
+    def test_one_row_without_a_clock_leaves_the_rate_unmeasured(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 100, "completion_tokens": 4, "prefill_ms": 500, "decode_ms": 1500},
+            {"prompt_tokens": 4, "completion_tokens": 1},
+        ]))
+        self.assertEqual(lines[0], "rates not measured")
+        self.assertNotIn("prefill_tps=", "\n".join(lines))
+
     def test_unmeasured_opens_no_log(self):
         code, out, err = invoke(["capture", "--unmeasured"])
         self.assertEqual((code, err, out.splitlines()),

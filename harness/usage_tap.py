@@ -10,6 +10,11 @@ written. A chat request is an empty object as soon as it is parsed, and the
 response replaces that object when it finishes. A call that never
 finishes stays empty, so a later reader cannot treat the gap as zero.
 A response that carries no integer count stays empty too.
+A streamed response may also keep prefill_ms and decode_ms: integer
+milliseconds from the first response byte to the first text delta, and
+from that delta to the last byte. Both have to land on later reads, and
+a gap that rounds to zero milliseconds is left out. One JSON body has no split,
+so it stays counts only. A missing clock is not a zero rate.
 A write that fails removes the usage file, so an older complete list
 cannot be read as this run.
 '''
@@ -21,11 +26,14 @@ import queue
 import socket
 import sys
 import threading
+import time
 
 _MAX_HEADERS = 65536
 _MAX_BODY = 32 * 1024 * 1024
 _CHAT_PATHS = ('/v1/chat/completions', '/v1/completions')
 _COUNT_KEYS = ('prompt_tokens', 'completion_tokens', 'total_tokens', 'reasoning_tokens')
+_CLOCK_KEYS = ('prefill_ms', 'decode_ms')
+_TEXT_DELTA_KEYS = ('content', 'reasoning_content', 'reasoning')
 
 
 def is_count(value):
@@ -50,6 +58,35 @@ def usage_fields(usage):
         if isinstance(details, dict) and is_count(details.get('reasoning_tokens')):
             found['reasoning_tokens'] = details['reasoning_tokens']
     return found
+
+
+def sse_text_delta(line):
+    '''True when one raw line is a data event with a non-blank text delta.'''
+    if not isinstance(line, (bytes, bytearray)):
+        return False
+    stripped = bytes(line).strip()
+    if not stripped.startswith(b'data:'):
+        return False
+    payload = stripped[5:].strip()
+    if payload == b'' or payload == b'[DONE]':
+        return False
+    try:
+        event = json.loads(payload.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(event, dict):
+        return False
+    choices = event.get('choices')
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return False
+    delta = choices[0].get('delta')
+    if not isinstance(delta, dict):
+        return False
+    for key in _TEXT_DELTA_KEYS:
+        value = delta.get(key)
+        if isinstance(value, str) and value.strip() != '':
+            return True
+    return False
 
 
 def record_from_body(body, content_type):
@@ -113,6 +150,7 @@ class MessageParser:
 
     def __init__(self, on_message, request=False):
         self.on_message = on_message
+        self.on_body = None
         self.request = request
         self.buf = bytearray()
         self.state = 'headers'
@@ -222,6 +260,8 @@ class MessageParser:
             self.body = bytearray()
             return
         self.body += data
+        if self.on_body is not None:
+            self.on_body(data)
 
     def _take_length(self):
         take = min(self.rest, len(self.buf))
@@ -316,7 +356,12 @@ class UsageStore:
             row = {}
         clean = {}
         for key, value in row.items():
-            if key in _COUNT_KEYS or key == 'cached_tokens':
+            if key in _CLOCK_KEYS:
+                # A zero millisecond gap was not observed. Leaving it out keeps
+                # a later reader from turning it into an infinite rate.
+                if is_count(value) and value > 0:
+                    clean[key] = value
+            elif key in _COUNT_KEYS or key == 'cached_tokens':
                 if is_count(value):
                     clean[key] = value
         return clean
@@ -373,15 +418,64 @@ class BridgeSession:
         self.wait = 2
         self.requests = MessageParser(self._on_request, request=True)
         self.responses = MessageParser(self._on_response, request=False)
+        self.responses.on_body = self._on_response_body
         self.poisoned = False
+        self._clock = time.perf_counter
+        self._body_now = None
+        self._origin = None
+        self._first = None
+        self._end = None
+        self._scan = b''
 
     def feed_request(self, data):
         self.requests.feed(data)
         self._note_abandon(self.requests)
 
     def feed_response(self, data):
+        now = self._clock()
+        self._body_now = now
+        if self._origin is None:
+            self._origin = now
+            self._first = None
+            self._scan = b''
+        self._end = now
         self.responses.feed(data)
         self._note_abandon(self.responses)
+
+    def _on_response_body(self, data):
+        '''Clock the first text delta on the bytes the parser accepted as body.'''
+        if self._first is not None or self._scan is None or not data:
+            return
+        now = self._body_now
+        if self._origin is None:
+            self._origin = now
+        self._scan += data
+        if len(self._scan) > 1024 * 1024:
+            self._scan = None
+            return
+        while b'\n' in self._scan:
+            line, self._scan = self._scan.split(b'\n', 1)
+            if sse_text_delta(line):
+                self._first = now
+                self._scan = None
+                return
+
+    def _take_clock(self):
+        '''(prefill_ms, decode_ms) when two later reads were observed, else None.'''
+        origin, first, end = self._origin, self._first, self._end
+        self._origin = None
+        self._first = None
+        self._end = None
+        self._scan = b''
+        if origin is None or first is None or end is None:
+            return None
+        if not (first > origin and end > first):
+            return None
+        prefill_ms = round((first - origin) * 1000)
+        decode_ms = round((end - first) * 1000)
+        if prefill_ms <= 0 or decode_ms <= 0:
+            return None
+        return prefill_ms, decode_ms
 
     def close(self):
         self.requests.close()
@@ -427,6 +521,7 @@ class BridgeSession:
 
     def _on_response(self, start, headers, body):
         del start
+        clock = self._take_clock()
         if self.poisoned:
             return
         try:
@@ -440,6 +535,10 @@ class BridgeSession:
             record = {}
         else:
             record = record_from_body(body, headers.get('content-type', ''))
+        if (clock is not None and is_count(record.get('prompt_tokens'))
+                and is_count(record.get('completion_tokens'))):
+            record['prefill_ms'] = clock[0]
+            record['decode_ms'] = clock[1]
         self.store.replace(index, record)
 
 

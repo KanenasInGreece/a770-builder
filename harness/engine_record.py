@@ -508,20 +508,53 @@ def _optional_total(rows, key, label):
     return '{0}={1}'.format(label, sum(values))
 
 
+def usage_clock_line(rows):
+    '''One rate line when every row carries a positive client clock.
+
+    Prefill is prompt tokens over the summed prefill milliseconds. Decode is
+    the same median the log reader uses, over each row's own completion rate.
+    A clock that rounds to zero is not a rate.
+    '''
+    prompt_tokens = 0
+    prefill_ms = 0
+    decode_rates = []
+    for row in rows:
+        prompt = row.get('prompt_tokens')
+        completion = row.get('completion_tokens')
+        prefill = row.get('prefill_ms')
+        decode = row.get('decode_ms')
+        if not (is_count(prompt) and is_count(completion) and is_count(prefill) and is_count(decode)):
+            return None
+        if prefill <= 0 or decode <= 0:
+            return None
+        prompt_tokens += prompt
+        prefill_ms += prefill
+        decode_rates.append(completion / (decode / 1000.0))
+    if prefill_ms <= 0 or not decode_rates:
+        return None
+    prefill_tps = prompt_tokens / (prefill_ms / 1000.0)
+    decode_tps = percentile(sorted(decode_rates), 0.5)
+    if round(prefill_tps) == 0 or round(decode_tps, 1) == 0:
+        return None
+    return human_rate_line(prefill_tps, decode_tps)
+
+
 def cmd_capture_usage(path):
     '''Human lines from a file of usage integers. No container log.'''
-    sys.stdout.write(RATES_NOT_MEASURED + '\n')
     text = read_log_text(path)
     if text is None or text.strip() == '':
+        sys.stdout.write(RATES_NOT_MEASURED + '\n')
         sys.stdout.write(NO_TOKEN_LINE + '\n')
         return 0
     parsed, body = parse_json(text)
     if not parsed or not isinstance(body, list) or not body:
+        sys.stdout.write(RATES_NOT_MEASURED + '\n')
         sys.stdout.write(NO_TOKEN_LINE + '\n')
         return 0
     rows = []
     for item in body:
         if not isinstance(item, dict):
+            sys.stdout.write(RATES_NOT_MEASURED + '\n')
             sys.stdout.write(NO_TOKEN_LINE + '\n')
             return 0
         rows.append(item)
@@ -529,9 +562,11 @@ def cmd_capture_usage(path):
     for row in rows:
         count = row.get('prompt_tokens')
         if not is_count(count):
+            sys.stdout.write(RATES_NOT_MEASURED + '\n')
             sys.stdout.write(NO_TOKEN_LINE + '\n')
             return 0
         prompts.append(count)
+    rate_line = usage_clock_line(rows)
     gens = []
     gens_complete = True
     for row in rows:
@@ -540,6 +575,7 @@ def cmd_capture_usage(path):
             gens_complete = False
             break
         gens.append(count)
+    sys.stdout.write((rate_line if rate_line is not None else RATES_NOT_MEASURED) + '\n')
     if gens_complete:
         sys.stdout.write(
             'requests={0} prompt_tokens_total={1} gen_tokens_total={2}\n'.format(
@@ -558,8 +594,10 @@ def cmd_capture_usage(path):
 def cmd_capture(paths):
     '''Human lines only: the container log first, else the build log.
 
-    --usage reads that file and does not open a log. --unmeasured prints the
-    unmeasured lines and does not open a log.
+    --usage reads that file and does not open a log. A prefill_ms and a
+    decode_ms on every row are a client clock already recorded, turned into
+    one rate line; a row without that clock leaves the rate unmeasured, not
+    zero. --unmeasured prints the unmeasured lines and does not open a log.
     '''
     if paths == ['--unmeasured']:
         sys.stdout.write(RATES_NOT_MEASURED + '\n')

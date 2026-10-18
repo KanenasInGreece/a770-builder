@@ -17,7 +17,9 @@ anything else), which is where harness/ladder.sh's printed row puts it. Nothing 
 line, if wanted, goes to stderr so it never lands in the JSON a caller parses).
 
 Delivered speed: a stage's capture file (harness/capture_task.sh's `<label>.task.md`) carries the server-side timing
-lines `prefill tok/s over all prompts=<x>` and `... decode tok/s median=<y>`. A results JSON stage that names its own
+lines `prefill tok/s over all prompts=<x>` and `... decode tok/s median=<y>`. When neither line is present, a line
+`prefill_tps=<x> decode_tps=<y>` is that stage's client clock (usage rows that recorded both spans). A capture with
+neither reading contributes nothing: the value stays absent, never zero. A results JSON stage that names its own
 capture path (a future runner extension) is read from that path directly; today's `run_suite.sh` records no such
 path, so the fallback is the stage's own `label`: `$A770B_DATA/results/<label>.task.md`, `A770B_DATA` defaulting the
 same way `harness/env.sh` does. The per-stage readings are printed and their MEDIANS across stages are what
@@ -43,6 +45,11 @@ import sys
 
 PREFILL_RE = re.compile(r"prefill tok/s over all prompts=([0-9]+(?:\.[0-9]+)?)")
 DECODE_RE = re.compile(r"decode tok/s median=([0-9]+(?:\.[0-9]+)?)")
+CLOCK_RE = re.compile(
+    r"^prefill_tps=([0-9]+(?:\.[0-9]+)?) decode_tps=([0-9]+(?:\.[0-9]+)?)$",
+    re.MULTILINE,
+)
+TIMINGS_MARK = "## server-side timings during the run"
 HIDDEN_TESTS_RE = re.compile(r"^hidden tests: (.*)$", re.MULTILINE)
 VERDICT_RE = re.compile(r"^verdict: (PASS \(exit 0\)|FAIL \(exit -?\d+\)|TIMEOUT after \d+s)", re.MULTILINE)
 REPORTED_RE = re.compile(r"^reported: (.*) \(quoted from output", re.MULTILINE)
@@ -66,9 +73,21 @@ def capture_path_for_stage(stage, a770b_data):
     return None
 
 
+def timings_text(text):
+    """The capture's timings section when it has one, otherwise the whole file.
+
+    A clock line is only a reading after that heading. The same words inside a
+    diff earlier in the capture are not a measurement."""
+    idx = text.rfind(TIMINGS_MARK)
+    if idx < 0:
+        return text
+    return text[idx:]
+
+
 def delivered_for_stage(stage, a770b_data):
     """(prefill_tps, decode_tps) read from a stage's own capture file, either value None when its capture is
-    missing or carries no matching line."""
+    missing or carries no matching line. The llama.cpp timing lines win when either is present. Otherwise a
+    client-clock line is the reading. Neither is a zero."""
     path = capture_path_for_stage(stage, a770b_data)
     if not path:
         return None, None
@@ -78,9 +97,14 @@ def delivered_for_stage(stage, a770b_data):
         return None, None
     pm = PREFILL_RE.search(text)
     dm = DECODE_RE.search(text)
-    prefill = float(pm.group(1)) if pm else None
-    decode = float(dm.group(1)) if dm else None
-    return prefill, decode
+    if pm or dm:
+        prefill = float(pm.group(1)) if pm else None
+        decode = float(dm.group(1)) if dm else None
+        return prefill, decode
+    clock = CLOCK_RE.search(timings_text(text))
+    if not clock:
+        return None, None
+    return float(clock.group(1)), float(clock.group(2))
 
 
 def verify_path_for_stage(stage, a770b_data):
