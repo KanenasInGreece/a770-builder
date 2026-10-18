@@ -48,8 +48,9 @@ fi
 # llama-benchy loads a file path with Tokenizer.from_file, which reads the whole file.
 # A weight file is not a tokenizer. A directory, or a tokenizer.json under 64 MiB, is.
 if [ -f "$tokenizer" ]; then
+  # -L: a tokenizer.json symlink is the usual cache layout, and from_file reads the target.
   tok_base=$(basename -- "$tokenizer")
-  tok_size=$(stat -c %s -- "$tokenizer")
+  tok_size=$(stat -L -c %s -- "$tokenizer")
   if [ "$tok_base" != "tokenizer.json" ] || [ "$tok_size" -gt 67108864 ]; then
     echo "⛔ --tokenizer must be a model directory or tokenizer.json, not a weight file" >&2
     exit 2
