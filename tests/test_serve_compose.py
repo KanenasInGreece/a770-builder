@@ -1047,6 +1047,104 @@ def test_status_says_down_when_no_pidfile_and_no_container(tmp_path):
     assert "server: UP" not in r.stdout
 
 
+_STATUS_MODEL = "NotARegistryModel.gguf"
+
+
+def _hold(argv):
+    return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _release(proc):
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait(timeout=5)
+
+
+def _mark_serve(data: Path, pid: int, model: str) -> None:
+    logs = data / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "llamacpp-a770.pid").write_text(f"{pid}\n", encoding="utf-8")
+    (logs / "llamacpp-a770.model").write_text(model + "\n", encoding="utf-8")
+
+
+def _status(env):
+    script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    return subprocess.run([str(script), "status"], capture_output=True, text=True, cwd=ROOT, env=env)
+
+
+def _status_env(tmp_path, bin_):
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    return _env(tmp_path, bin_, A770B_SEAT=str(seat))
+
+
+def test_status_names_the_model_when_the_recorded_pid_is_llama_server(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path, running=False)
+    _make_bin(bin_, "curl", "echo '{}'; exit 0")
+    live = tmp_path / "live"
+    live.mkdir()
+    shutil.copy(shutil.which("sleep"), live / "llama-server")
+    proc = _hold([str(live / "llama-server"), "60"])
+    try:
+        env = _status_env(tmp_path, bin_)
+        _mark_serve(Path(env["A770B_DATA"]), proc.pid, _STATUS_MODEL)
+        r = _status(env)
+    finally:
+        _release(proc)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"server: UP · {_STATUS_MODEL} · pid {proc.pid}" in r.stdout
+    assert "server: UP · container" not in r.stdout
+
+
+def test_status_names_the_model_when_the_recorded_pid_is_the_container_host(tmp_path):
+    proc = _hold(["sleep", "60"])
+    try:
+        bin_, log = _fake_runtime(tmp_path, running=True, host_pid=str(proc.pid))
+        _make_bin(bin_, "curl", "echo '{}'; exit 0")
+        env = _status_env(tmp_path, bin_)
+        _mark_serve(Path(env["A770B_DATA"]), proc.pid, _STATUS_MODEL)
+        r = _status(env)
+        text = log.read_text(encoding="utf-8")
+    finally:
+        _release(proc)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"server: UP · {_STATUS_MODEL} · pid {proc.pid}" in r.stdout
+    assert "server: UP · container" not in r.stdout
+    assert "inspect" in text
+    assert "pgrep" not in text
+
+
+def test_status_does_not_name_the_model_for_a_foreign_pid(tmp_path):
+    proc = _hold(["sleep", "60"])
+    try:
+        bin_, _ = _fake_runtime(tmp_path, running=True, host_pid="4242")
+        _make_bin(bin_, "curl", "echo '{}'; exit 0")
+        env = _status_env(tmp_path, bin_)
+        _mark_serve(Path(env["A770B_DATA"]), proc.pid, _STATUS_MODEL)
+        r = _status(env)
+    finally:
+        _release(proc)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "server: UP · container cid123" in r.stdout
+    assert _STATUS_MODEL not in r.stdout
+    assert f"pid {proc.pid}" not in r.stdout
+
+
+def test_status_does_not_treat_a_zero_container_pid_as_the_serve(tmp_path):
+    proc = _hold(["sleep", "60"])
+    try:
+        bin_, _ = _fake_runtime(tmp_path, running=True, host_pid="0")
+        _make_bin(bin_, "curl", "echo '{}'; exit 0")
+        env = _status_env(tmp_path, bin_)
+        _mark_serve(Path(env["A770B_DATA"]), proc.pid, _STATUS_MODEL)
+        r = _status(env)
+    finally:
+        _release(proc)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "server: UP · container cid123" in r.stdout
+    assert _STATUS_MODEL not in r.stdout
+
+
 SGLANG_DIGEST = (
     "ghcr.io/0xsero/sglang-exl3-xpu-flashnext@sha256:"
     "24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f"

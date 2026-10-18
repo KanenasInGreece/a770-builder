@@ -66,7 +66,29 @@ else
 fi
 BUILD="$A770B_PROJECT/harness/build_local.sh"; CAPTURE="$A770B_PROJECT/harness/capture_task.sh"
 PIDF="$A770B_DATA/logs/llamacpp-a770.pid"; MARK="$A770B_DATA/logs/llamacpp-a770.model"
-current(){ llama_pid_alive "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
+# _recorded_serve_pid <pidfile> — print the pid when it is alive and it is llama-server
+# or this project's container host pid. A foreign process does not count. Pid 0 is not
+# a process: kill -0 0 signals the caller. Do not search for a language runtime.
+_recorded_serve_pid(){
+  local pf="$1" pid comm cid host
+  [ -f "$pf" ] || return 1
+  pid=$(cat "$pf" 2>/dev/null || true)
+  case "$pid" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+  if [ "$comm" = "llama-server" ]; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  cid=$(_compose_container_id)
+  [ -n "$cid" ] || return 1
+  host=$("$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true)
+  [ -n "$host" ] && [ "$host" != 0 ] && [ "$pid" = "$host" ] || return 1
+  printf '%s\n' "$pid"
+}
+current(){ _recorded_serve_pid "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
 # The pidfile is a live llama-server. A vLLM container's host pid is not that name, and a failed start
 # removes the pidfile while the container can still be running. The project label is this seat's container.
 _compose_container_id(){
