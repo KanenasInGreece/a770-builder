@@ -630,7 +630,7 @@ print(json.dumps({"model": "local-builder", "max_tokens": 64, "temperature": 0,
                    "messages": [{"role": "user", "content": prompt}]}))
 PY
 )
-  resp=$(curl -s --max-time 120 -H "Authorization: Bearer $(a770b_api_key)" -H 'Content-Type: application/json' -d "$body" "http://$A770B_HOST:$A770B_PORT/v1/chat/completions")
+  resp=$(a770b_curl -s --max-time 120 -H 'Content-Type: application/json' -d "$body" "http://$A770B_HOST:$A770B_PORT/v1/chat/completions")
   python3 - "$resp" "$REVIEWER" "$(a770b_profile_var "$REVIEWER" MODEL)" "$ctx" "$sha" <<'PY'
 import json, re, sys
 resp, profile, model, ctx, sha = sys.argv[1:]

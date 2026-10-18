@@ -15,7 +15,7 @@ ALLOWED = {
     "_a770b_card_lines", "_a770b_cards_file", "_a770b_doctor_input", "_a770b_load", "_a770b_profile_lines",
     "_a770b_required_input", "_a770b_row_gpu", "_a770b_row_oneapi", "_a770b_row_vk", "_a770b_row_vram",
     "_a770b_selected_mode", "_a770b_snapshot",
-    "a770b", "a770b_api_key", "a770b_data", "a770b_ensure_corpus_file", "a770b_is_profile", "a770b_model_path",
+    "a770b", "a770b_api_key", "a770b_curl", "a770b_data", "a770b_ensure_corpus_file", "a770b_is_profile", "a770b_model_path",
     "a770b_opencode_bin", "a770b_profile_var", "a770b_render_profile",
     "nA770B_VRAM_CAP_GIB",
     "test_profile_key_checks_against_a770b_profiles_env",

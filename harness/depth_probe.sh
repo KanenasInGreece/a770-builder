@@ -23,7 +23,7 @@
 set -uo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
 here=$(cd "$(dirname "$0")" && pwd)
-URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key)
+URL="http://$A770B_HOST:$A770B_PORT"
 want=""; BENCH=""; GEN=320; BASE_URL=""; MODEL_NAME="local-builder"; TOKENIZE="llama"; TOKENIZER=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -69,7 +69,7 @@ PLANT
 fit_tok=()
 if [ "$TOKENIZE" = "openai" ]; then fit_tok=(--tokenizer "$TOKENIZER"); fi
 if ! toks_expected=$(python3 "$here/prompt_budget.py" fit --corpus "$A770B_CORPUS_FILE" --target "$want" \
-      --out "$T/prompt" --plant-file "$T/plant" --plant-at 0.85 --overhead 256 --url "$URL" --key "$KEY" \
+      --out "$T/prompt" --plant-file "$T/plant" --plant-at 0.85 --overhead 256 --url "$URL" \
       --tokenize "$TOKENIZE" --model "$MODEL_NAME" "${fit_tok[@]}"); then
   echo "⛔ could not size a $want-token prompt for the depth probe" >&2; rm -rf "$T"; exit 2
 fi
@@ -90,7 +90,7 @@ else
 fi
 b0=$(kernel_resets_since '-1min')
 ( while :; do gpu_used_gib; sleep 2; done ) > "$T/vram" & VP=$!
-t0=$(date +%s); R=$(curl -s --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions"); t1=$(date +%s)
+t0=$(date +%s); R=$(a770b_curl -s --max-time "$deadline" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions"); t1=$(date +%s)
 kill $VP 2>/dev/null; wait $VP 2>/dev/null
 # counts and rates come from the module, not from a parser in this script; an unreadable reply leaves it empty
 REC=$(printf '%s' "$R" | python3 "$A770B_PROJECT/harness/engine_record.py" completion 2>/dev/null || true)

@@ -527,6 +527,20 @@ def test_env_explicit_registry_file_must_exist(tmp_path):
     assert "does not exist" in r.stderr
 
 
+def test_bearer_is_not_on_the_curl_command_line():
+    """Keyed curls go through a770b_curl. The bearer is not an argv word in the harness or the skill."""
+    files = [ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"]
+    files.extend(sorted((ROOT / "harness").glob("*.sh")))
+    needles = (
+        "Authorization: Bearer $(a770b_api_key)",
+        "Authorization: Bearer $KEY",
+    )
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle not in text, f"{path} contains {needle}"
+
+
 def test_env_refuses_a_card_that_is_not_a_card_id(tmp_path):
     """F2 — the card becomes part of a path, so a value with a separator, a dot-dot, a space or a leading hyphen is
     refused before any path is built."""

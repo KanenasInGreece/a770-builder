@@ -65,7 +65,7 @@ fi
 if [ "$TOKENIZE" = "openai" ] && [ -z "$TOKENIZER" ]; then
   echo "⛔ --tokenize openai needs a tokenizer directory" >&2; exit 2
 fi
-URL="http://$A770B_HOST:$A770B_PORT"; KEY=$(a770b_api_key); SIZES=("${ARGS[@]}")
+URL="http://$A770B_HOST:$A770B_PORT"; SIZES=("${ARGS[@]}")
 # default: two points, 8k and the far end (the operator's rule: extrapolate the curve between them, not sweep every window)
 [ "${#SIZES[@]}" -gt 0 ] || SIZES=(8000 100000)
 T=$(mktemp -d)
@@ -99,7 +99,7 @@ for want in "${SIZES[@]}"; do
   tok_arg=()
   [ -n "$TOKENIZER" ] && tok_arg=(--tokenizer "$TOKENIZER")
   if ! toks_expected=$(python3 "$here/prompt_budget.py" fit --corpus "$A770B_CORPUS_FILE" --target "$want" \
-        --out "$T/prompt.$want" --overhead 64 --url "$URL" --key "$KEY" \
+        --out "$T/prompt.$want" --overhead 64 --url "$URL" \
         --tokenize "$TOKENIZE" --model "$MODEL_NAME" "${tok_arg[@]}"); then
     echo "⛔ could not size a $want-token prompt from the corpus: refusing the sweep before any point is served" >&2
     rm -rf "$T"; exit 1
@@ -242,7 +242,7 @@ for want in "${SIZES[@]}"; do
   vmax=0; ( while :; do u=$(gpu_used_gib); echo "$u"; sleep 2; done ) > "$T/vram" & VP=$!
   t0=$(date +%s.%N)
   # -sN so a streamed line is readable when it arrives, not when the body ends. The selftest's curl stub stays the client.
-  read -r toks pms pps dps <<<"$(curl -sN --max-time "$deadline" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions" | python3 "$T/read_point.py" "$T/raw" "$A770B_PROJECT/harness/engine_record.py")"
+  read -r toks pms pps dps <<<"$(a770b_curl -sN --max-time "$deadline" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions" | python3 "$T/read_point.py" "$T/raw" "$A770B_PROJECT/harness/engine_record.py")"
   t1=$(date +%s.%N); kill $VP 2>/dev/null; wait $VP 2>/dev/null
   vmax=$(sort -n "$T/vram" | tail -1)
   R=$(cat "$T/raw" 2>/dev/null || true)

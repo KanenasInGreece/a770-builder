@@ -2087,9 +2087,11 @@ then echo "ok   compose: an attached run does not record the server's /metrics a
 else echo "FAIL compose: an attached run wrote counters.json"; fail=1
 fi
 attach_fn=$(awk '/^_attach_running_server\(\)/,/^}/' "$LOCAL_BUILD_SCRIPT")
-if printf '%s\n' "$attach_fn" | grep -q 'Authorization: Bearer $(head' \
-  || ! printf '%s\n' "$attach_fn" | grep -q -- '-H @<(printf' \
-  || ! printf '%s\n' "$attach_fn" | grep -q 'a770b_api_key'
+curl_fn=$(awk '/^a770b_curl\(\)/,/^}/' "$here/harness/env.sh")
+if printf '%s\n' "$attach_fn" | grep -q 'Authorization: Bearer' \
+  || ! printf '%s\n' "$attach_fn" | grep -q 'a770b_curl' \
+  || ! printf '%s\n' "$curl_fn" | grep -q -- '-H @<(printf' \
+  || ! printf '%s\n' "$curl_fn" | grep -q 'a770b_api_key'
 then echo "FAIL attach: the models request puts the API key on the command line"
 else echo "ok   attach: the models request passes the API key through a header file"
 fi

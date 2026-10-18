@@ -370,7 +370,7 @@ case "${1:-}" in
     cid=$(_compose ps -q "$CONTAINER" 2>/dev/null || true)
     if [ -n "$cid" ]; then
       echo "running container $cid · $(cat "$MARK" 2>/dev/null)"
-      curl -s -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" | head -c 200; echo
+      a770b_curl -s "http://$A770B_HOST:$A770B_PORT/v1/models" | head -c 200; echo
     else
       echo "not running"
     fi
@@ -516,16 +516,13 @@ fi
 printf '%s\n' "$CPID" > "$PIDFILE"
 printf '%s\n' "$MODEL" > "$MARK"
 used=$(gpu_used_gib)
-# llama.cpp stays inside the measured cap. vLLM's target is 0.9 of the card, which on this
-# B70 is above that cap; stopping it at the cap would cancel the target.
+# llama.cpp stops at the mode cap. vLLM stops at 0.9 of the card; sglang stops at the card total.
 limit="$A770B_VRAM_CAP_GIB"
 limit_why="cap"
 if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
   limit=$(python3 -c "import sys; print(f'{0.9 * float(sys.argv[1]):.3f}')" "$A770B_CARD_VRAM_TOTAL")
   limit_why="0.9 of the card"
 elif [ "${A770B_SERVED_BACKEND:-}" = "sglang" ]; then
-  # The measured Flash-Next load sat near 31.9 GiB. That is above the llama.cpp
-  # cap and above 0.9 of this card, and it was kept. Stop only above the card.
   limit="$A770B_CARD_VRAM_TOTAL"
   limit_why="the card total"
 fi
@@ -535,5 +532,9 @@ fi
 if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ] && [ -n "$CPID" ]; then
   python3 "$(dirname "$0")/live_backend.py" write --path "$SIDECAR" --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" --model "$(basename "$MODEL")" --profile "$A770B_LIVE_PROFILE" --pid "$CPID"
 fi
-echo "▶ started server container ($A770B_COMPOSE_PROJECT) on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB · ${limit_why} ${limit} GiB — host pid $CPID"
+limit_note=""
+if [ "$limit_why" != cap ] || [ "$limit" != "$A770B_VRAM_CAP_GIB" ]; then
+  limit_note=" · ${limit_why} ${limit} GiB"
+fi
+echo "▶ started server container ($A770B_COMPOSE_PROJECT) on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB${limit_note} — host pid $CPID"
 echo "✓ VRAM after load: ${used} GiB ≤ ${limit_why} ${limit} GiB"

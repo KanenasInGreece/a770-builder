@@ -101,6 +101,25 @@ def _load_tokenizer(tokenizer_json):
     return loaded
 
 
+def _api_key(passed):
+    """--key wins. Otherwise the first line of A770B_API_KEY_FILE. The key is not printed."""
+    if passed:
+        return passed
+    path = os.environ.get("A770B_API_KEY_FILE") or ""
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            line = handle.readline()
+    except OSError:
+        return ""
+    if line.endswith("\n"):
+        line = line[:-1]
+    if line.endswith("\r"):
+        line = line[:-1]
+    return line
+
+
 def count_tokens(url, key, text, tokenize="llama", model="", tokenizer=""):
     """llama.cpp posts {"content": text}. openai counts from the tokenizer directory and does not post /tokenize."""
     if tokenize == "openai":
@@ -122,7 +141,7 @@ def build_prompt(corpus, chars, plant, plant_at):
 
 def fit(args):
     url = args.url or f"http://{os.environ.get('A770B_HOST', '127.0.0.1')}:{os.environ.get('A770B_PORT', '7890')}"
-    key = args.key or ""
+    key = _api_key(args.key)
     tokenize = getattr(args, "tokenize", None) or "llama"
     model = getattr(args, "model", None) or ""
     tokenizer = getattr(args, "tokenizer", None) or ""
