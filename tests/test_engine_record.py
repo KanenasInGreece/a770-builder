@@ -1017,6 +1017,16 @@ class UsageFileCapture(TempTree):
         only = self.lines_of(json.dumps([{}]))
         self.assertEqual(only, ["rates not measured", NO_TOKEN_LINE])
 
+    def test_a_reasoning_only_row_is_not_skipped(self):
+        later = {"prompt_tokens": 11, "completion_tokens": 2}
+        for row in (
+            {"reasoning_tokens": 3},
+            {"total_tokens": 3},
+            {"cached_tokens": 3},
+        ):
+            lines = self.lines_of(json.dumps([row, later]))
+            self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE], row)
+
     def test_a_prompt_value_that_is_not_a_count_stays_unmeasured(self):
         lines = self.lines_of(json.dumps([
             {},

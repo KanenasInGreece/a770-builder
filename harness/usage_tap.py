@@ -9,6 +9,8 @@ list of those integers. Headers, request bodies, and message text are not
 written. A chat request is an empty object as soon as it is parsed, and the
 response replaces that object when it finishes. A call that never
 finishes stays empty, so a later reader cannot treat the gap as zero.
+A parser that gives up writes one object that is not empty and not a
+usage row, so the file cannot be read as a complete list of counts.
 A response that carries no integer count stays empty too.
 A streamed response may also keep prefill_ms and decode_ms: integer
 milliseconds from the first response byte to the first text delta, and
@@ -33,6 +35,7 @@ _MAX_BODY = 32 * 1024 * 1024
 _CHAT_PATHS = ('/v1/chat/completions', '/v1/completions')
 _COUNT_KEYS = ('prompt_tokens', 'completion_tokens', 'total_tokens', 'reasoning_tokens')
 _CLOCK_KEYS = ('prefill_ms', 'decode_ms')
+_POISON_KEY = 'poison'
 _TEXT_DELTA_KEYS = ('content', 'reasoning_content', 'reasoning')
 
 
@@ -354,6 +357,11 @@ class UsageStore:
     def _clean(self, row):
         if not isinstance(row, dict):
             row = {}
+        # The poison marker is not a usage row. Keeping only that key stops
+        # a later clean from turning it back into the empty placeholder.
+        marker = row.get(_POISON_KEY)
+        if is_count(marker) and marker > 0:
+            return {_POISON_KEY: marker}
         clean = {}
         for key, value in row.items():
             if key in _CLOCK_KEYS:
@@ -493,12 +501,17 @@ class BridgeSession:
             self._poison()
 
     def _poison(self):
-        '''One empty record. A failure to write it does not escape.'''
+        '''One marker that is not a usage row. A failure to write it does not escape.
+
+        An empty object is the placeholder a request writes when it starts.
+        This marker has a key, so a reader that skips only that placeholder
+        still leaves the file unmeasured.
+        '''
         if self.poisoned:
             return
         self.poisoned = True
         try:
-            self.store.add({})
+            self.store.add({_POISON_KEY: 1})
         except Exception:
             pass
 

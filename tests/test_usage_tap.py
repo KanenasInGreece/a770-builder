@@ -7,6 +7,7 @@ the response text must not appear in the usage file.
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -183,7 +184,7 @@ class SessionRecords(unittest.TestCase):
         session.feed_request(request("/v1/chat/completions", "{}"))
         session.feed_response(response(body))
         session.close()
-        self.assertEqual(store.rows, [{}])
+        self.assertEqual(store.rows, [{"poison": 1}])
 
     def test_a_stream_split_across_later_reads_keeps_a_client_clock(self):
         store = Memory()
@@ -546,6 +547,36 @@ class SocketBridge(unittest.TestCase):
         left.close()
         self.assertEqual(json.loads(seen["when_request_arrived"]), [{}])
         self.assertIn(b'"prompt_tokens"', got)
+
+    def test_poison_is_not_an_empty_object(self):
+        tmp = tempfile.TemporaryDirectory(prefix=".a770b-usage-tap-")
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "usage.json")
+        store = UsageStore(path)
+        store.add({"prompt_tokens": 11, "completion_tokens": 2})
+        session = BridgeSession(store)
+        session._poison()
+        with open(path, "r", encoding="utf-8") as handle:
+            rows = json.loads(handle.read())
+        self.assertEqual(rows[0], {"prompt_tokens": 11, "completion_tokens": 2})
+        marker = rows[1]
+        self.assertNotEqual(marker, {})
+        self.assertTrue(marker)
+        usage_keys = {
+            "prompt_tokens", "completion_tokens", "total_tokens",
+            "reasoning_tokens", "cached_tokens", "prefill_ms", "decode_ms",
+        }
+        self.assertTrue(usage_keys.isdisjoint(marker))
+        result = subprocess.run(
+            [sys.executable, os.path.join(PROJECT, "harness", "engine_record.py"),
+             "capture", "--usage", path],
+            capture_output=True, text=True,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["rates not measured", "context was not measured"],
+        )
 
     def test_a_poisoned_session_does_not_wait_on_the_next_response(self):
         session = BridgeSession(Memory())
