@@ -194,6 +194,39 @@ def test_dry_run_v1_base_is_not_doubled(tmp_path):
     assert "/v1/v1" not in line
 
 
+def test_dry_run_sends_the_key_flag_and_hides_the_value(tmp_path):
+    secret = "a770b-dry-run-secret"
+    keyfile = tmp_path / "api.key"
+    keyfile.write_text(secret + "\n", encoding="utf-8")
+    keyfile.chmod(0o600)
+    env = _isolated(tmp_path)
+    env["A770B_API_KEY_FILE"] = str(keyfile)
+    result = subprocess.run(
+        ["bash", str(HTTP), "--dry-run", "--base-url", "http://127.0.0.1:9",
+         "--served-model-name", "local-builder", "--tokenizer", "/models/Qwen"],
+        cwd=ROOT, capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--api-key" in result.stdout
+    assert "from-key-file" in result.stdout
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+
+
+def test_a_weight_file_is_not_a_tokenizer(tmp_path):
+    weight = tmp_path / "model.gguf"
+    weight.write_bytes(b"not-a-tokenizer")
+    env = _isolated(tmp_path)
+    result = subprocess.run(
+        ["bash", str(HTTP), "--dry-run", "--base-url", "http://127.0.0.1:9",
+         "--served-model-name", "local-builder", "--tokenizer", str(weight)],
+        cwd=ROOT, capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 2
+    assert "weight" in result.stderr
+    assert "uvx" not in result.stdout
+
+
 def test_tokenizer_equal_to_the_served_name_is_refused(tmp_path):
     env = _isolated(tmp_path)
     result = subprocess.run(

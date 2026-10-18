@@ -66,11 +66,15 @@ fi
 
 [ "${#sizes[@]}" -gt 0 ] || sizes=(8192 32768 65536 100000)
 
+# llama.cpp and vLLM start with this file. The client's default bearer is the word EMPTY,
+# which those servers reject. The printed line is stored beside the result, so the value stays out of it.
+key=$(a770b_api_key) || { echo "⛔ cannot read the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
 cmd=(uvx llama-benchy
   --base-url "$bench_base"
   --served-model-name "$served"
   --model "$served"
   --tokenizer "$tokenizer"
+  --api-key "$key"
   --pp "${sizes[@]}"
   --tg 128
   --depth 0
@@ -82,7 +86,19 @@ cmd=(uvx llama-benchy
   --extra-body return_token_ids=false
   --format json
   --save-result "$save")
-flagline=$(printf '%q ' "${cmd[@]}")
+flag_cmd=()
+skip_key=0
+for arg in "${cmd[@]}"; do
+  if [ "$skip_key" = 1 ]; then
+    flag_cmd+=(from-key-file)
+    skip_key=0
+    continue
+  fi
+  flag_cmd+=("$arg")
+  if [ "$arg" = "--api-key" ]; then skip_key=1; fi
+done
+flagline=$(printf '%q ' "${flag_cmd[@]}")
+unset key skip_key
 
 if [ "$dry" = 1 ]; then
   printf '%s\n' "$flagline"
