@@ -45,6 +45,16 @@ if [ "$tokenizer" = "$served" ]; then
   echo "⛔ --tokenizer must be a path or a Hugging Face id, not the served name '$served'" >&2
   exit 2
 fi
+# llama-benchy loads a file path with Tokenizer.from_file, which reads the whole file.
+# A weight file is not a tokenizer. A directory, or a tokenizer.json under 64 MiB, is.
+if [ -f "$tokenizer" ]; then
+  tok_base=$(basename -- "$tokenizer")
+  tok_size=$(stat -c %s -- "$tokenizer")
+  if [ "$tok_base" != "tokenizer.json" ] || [ "$tok_size" -gt 67108864 ]; then
+    echo "⛔ --tokenizer must be a model directory or tokenizer.json, not a weight file" >&2
+    exit 2
+  fi
+fi
 if [ -z "$save" ]; then
   if [ "$dry" = 1 ]; then
     save="result.json"
