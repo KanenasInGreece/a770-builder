@@ -194,6 +194,79 @@ def test_dry_run_v1_base_is_not_doubled(tmp_path):
     assert "/v1/v1" not in line
 
 
+def test_dry_run_sends_the_key_flag_and_hides_the_value(tmp_path):
+    secret = "a770b-dry-run-secret"
+    keyfile = tmp_path / "api.key"
+    keyfile.write_text(secret + "\n", encoding="utf-8")
+    keyfile.chmod(0o600)
+    env = _isolated(tmp_path)
+    env["A770B_API_KEY_FILE"] = str(keyfile)
+    result = subprocess.run(
+        ["bash", str(HTTP), "--dry-run", "--base-url", "http://127.0.0.1:9",
+         "--served-model-name", "local-builder", "--tokenizer", "/models/Qwen"],
+        cwd=ROOT, capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--api-key" in result.stdout
+    assert "from-key-file" in result.stdout
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+
+
+def _dry(tmp_path, tokenizer):
+    env = _isolated(tmp_path)
+    return subprocess.run(
+        ["bash", str(HTTP), "--dry-run", "--base-url", "http://127.0.0.1:9",
+         "--served-model-name", "local-builder", "--tokenizer", str(tokenizer)],
+        cwd=ROOT, capture_output=True, text=True, env=env,
+    )
+
+
+def test_a_weight_file_is_not_a_tokenizer(tmp_path):
+    weight = tmp_path / "model.gguf"
+    weight.write_bytes(b"not-a-tokenizer")
+    result = _dry(tmp_path, weight)
+    assert result.returncode == 2
+    assert "weight" in result.stderr
+    assert "uvx" not in result.stdout
+
+
+def test_an_oversize_tokenizer_symlink_is_refused(tmp_path):
+    small = tmp_path / "real.json"
+    small.write_text("{}", encoding="utf-8")
+    ok_link = tmp_path / "ok" / "tokenizer.json"
+    ok_link.parent.mkdir()
+    ok_link.symlink_to(small)
+    allowed = _dry(tmp_path, ok_link)
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
+    target = tmp_path / "blob"
+    with open(target, "wb") as fh:
+        fh.truncate(67108865)
+    link = tmp_path / "tokenizer.json"
+    link.symlink_to(target)
+    result = _dry(tmp_path, link)
+    assert result.returncode == 2
+    assert "weight" in result.stderr
+    assert "uvx" not in result.stdout
+
+
+def test_tokenizer_json_at_the_cap_is_allowed_and_one_byte_over_is_refused(tmp_path):
+    at_cap = tmp_path / "at" / "tokenizer.json"
+    at_cap.parent.mkdir()
+    with open(at_cap, "wb") as fh:
+        fh.truncate(67108864)
+    allowed = _dry(tmp_path, at_cap)
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
+    assert "uvx" in allowed.stdout
+    over = tmp_path / "over" / "tokenizer.json"
+    over.parent.mkdir()
+    with open(over, "wb") as fh:
+        fh.truncate(67108865)
+    refused = _dry(tmp_path, over)
+    assert refused.returncode == 2
+    assert "uvx" not in refused.stdout
+
+
 def test_tokenizer_equal_to_the_served_name_is_refused(tmp_path):
     env = _isolated(tmp_path)
     result = subprocess.run(

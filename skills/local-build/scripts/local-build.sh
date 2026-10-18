@@ -353,11 +353,18 @@ bench_profile(){
     esac
   done
   profile_vars "$p"
+  # The ladder passes the directory that holds tokenizer.json. The weight file itself
+  # is not that directory: llama-benchy would read the whole file into RAM.
+  local tok_dir
+  if [ -d "$gguf" ]; then tok_dir="$gguf"; else tok_dir=$(dirname -- "$gguf"); fi
+  if [ ! -f "$tok_dir/tokenizer.json" ] && [ ! -f "$tok_dir/tokenizer_config.json" ]; then
+    die "bench refused: $gguf has no tokenizer.json or tokenizer_config.json"
+  fi
   if [ "$dry" != 1 ]; then
     run_lock
     serve "$p" || return $?
   fi
-  http_args=(--base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$gguf")
+  http_args=(--base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok_dir")
   [ "$dry" = 1 ] && http_args+=(--dry-run)
   [ "${#pp[@]}" -gt 0 ] && http_args+=(--pp "${pp[@]}")
   bash "$A770B_PROJECT/harness/bench_http.sh" "${http_args[@]}"
