@@ -3,7 +3,7 @@
 # The one way the containerized server starts; skills/local-build/scripts/local-build.sh's serve() drives it:
 #   serve_compose.sh plan  <gguf> <ctx> [extra…]   print the llama-server argv and the compose invocation; no docker
 #   serve_compose.sh start <gguf> <ctx> [extra…]   recreate the container, wait for /health, enforce the cap, sidecar
-#   serve_compose.sh stop | status
+#   serve_compose.sh stop | status | health
 #   serve_compose.sh bench [--dry-run] -- <llama-bench args…>   one-shot llama-bench in the same image (speed rung)
 #
 # The profile row (model, ctx, kv, extra, thinking) reaches this script through env.sh exactly as it reaches the
@@ -312,6 +312,37 @@ _fail_started(){
   exit "$code"
 }
 
+# _health_class — one word on stdout: down, loading, or ready. Exit 0 only for ready.
+# vllm and sglang: HTTP success is ready, and the body is not read. Any other backend
+# is ready only when that success also contains "ok"; success without it is loading.
+# A failed request is down.
+_health_class(){
+  local body="" rc=0
+  case "${A770B_SERVED_BACKEND:-}" in
+    vllm|sglang)
+      if curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1; then
+        printf '%s\n' ready
+        return 0
+      fi
+      printf '%s\n' down
+      return 1
+      ;;
+    *)
+      body=$(curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null) || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf '%s\n' down
+        return 1
+      fi
+      if printf '%s\n' "$body" | grep -q '"ok"'; then
+        printf '%s\n' ready
+        return 0
+      fi
+      printf '%s\n' loading
+      return 1
+      ;;
+  esac
+}
+
 case "${1:-}" in
   stop)
     # compose interpolates the sglang volume on ps and on down. An empty host side is `: /models/…:ro`.
@@ -344,6 +375,9 @@ case "${1:-}" in
       echo "not running"
     fi
     exit 0;;
+  health)
+    _health_class && exit 0
+    exit 1;;
   plan|start) ;;
   bench)
     shift
@@ -357,7 +391,7 @@ case "${1:-}" in
     fi
     _compose run --rm --no-deps --entrypoint /app/llama-bench "$CONTAINER" "$@"
     exit 0;;
-  *) echo "usage: serve_compose.sh plan|start <gguf> [ctx] [extra…] | stop | status | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
+  *) echo "usage: serve_compose.sh plan|start <gguf> [ctx] [extra…] | stop | status | health | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
 esac
 MODE="$1"
 MODEL=$(a770b_model_path "${2:?gguf}"); CTX="${3:-32768}"; shift 3 2>/dev/null || shift $#
@@ -455,18 +489,22 @@ if ! _compose up -d --force-recreate; then
   exit 1
 fi
 # 150 tries, 2s apart, is the wait a load is given. A test may shorten it; an unset value does not.
+# The cap is the try count, not timeout_s. A class is printed only when it changes.
 _health_tries="${A770B_HEALTH_TRIES:-150}"
 _health_pause="${A770B_HEALTH_PAUSE:-2}"
-case "${A770B_SERVED_BACKEND:-}" in
-  vllm|sglang)
-    # HTTP success is enough. SGLang's /health body is not the llama.cpp "ok".
-    for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1 && break; sleep "$_health_pause"; done
-    ;;
-  *)
-    for _ in $(seq 1 "$_health_tries"); do curl -sf --max-time 2 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | grep -q '"ok"' && break; sleep "$_health_pause"; done
-    ;;
-esac
-if ! curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null 2>&1; then
+_health_prev=""
+_health_now=""
+for _ in $(seq 1 "$_health_tries"); do
+  _health_now=$(_health_class) || true
+  if [ "$_health_now" != "$_health_prev" ]; then
+    printf 'health: %s\n' "$_health_now" >&2
+    _health_prev="$_health_now"
+  fi
+  [ "$_health_now" = ready ] && break
+  sleep "$_health_pause"
+done
+_health_after=$(_health_class) || true
+if [ "$_health_now" != ready ] || [ "$_health_after" != ready ]; then
   _fail_started 3 "⛔ the container did not answer /health"
 fi
 CPID=$(_container_host_pid)
