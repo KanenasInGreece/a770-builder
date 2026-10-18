@@ -2129,17 +2129,25 @@ if ! grep -q 'budget gate or VRAM cap refused' "$here/skills/local-build/scripts
 then echo "ok   skill: local-build.sh has dropped the old cause-claiming wording"
 else echo "FAIL skill: local-build.sh's failure wording is not the hedged replacement (old claim present, or 'see the error above' missing)"; fail=1
 fi
-# the health wait, scoped to the wait itself: it decides on the HTTP status code through the module and survives a
-# connection the engine refuses. The two absences are checked inside that function only, and the update check's own
-# `curl -fsS` further down the file is a different request that stays exactly as it is.
+# _serve_start does not wait. The already-up check calls "$SERVE" health. That check has no body
+# grep and no vllm|sglang pattern. The update check's curl -fsS is a different request and stays.
 lb_sh="$here/skills/local-build/scripts/local-build.sh"
-lb_wait=$(sed -n '/^_serve_start(){/,/^}$/p' "$lb_sh")
+lb_start=$(sed -n '/^_serve_start(){/,/^}$/p' "$lb_sh")
+lb_up=$(awk '
+  /\$live_backend" = "\$req_backend/ {p=1}
+  p {print}
+  p && /did not answer \/health/ {exit}
+' "$lb_sh")
 lb_body_grep="grep -q '\"ok\"'"
-if printf '%s\n' "$lb_wait" | grep -q 'engine_record.py" health' && printf '%s\n' "$lb_wait" | grep -q '|| true' \
-  && ! printf '%s\n' "$lb_wait" | grep -qF "$lb_body_grep" && ! printf '%s\n' "$lb_wait" | grep -qF 'curl -f' \
+if ! printf '%s\n' "$lb_start" | grep -q '/health' \
+  && ! printf '%s\n' "$lb_start" | grep -q 'engine_record.py' \
+  && ! printf '%s\n' "$lb_start" | grep -q 'seq ' \
+  && printf '%s\n' "$lb_up" | grep -qF '"$SERVE" health' \
+  && ! printf '%s\n' "$lb_up" | grep -qF "$lb_body_grep" \
+  && ! printf '%s\n' "$lb_up" | grep -qF 'vllm|sglang' \
   && grep -qF 'curl -fsS' "$lb_sh"
-then echo "ok   skill: the health wait decides through engine_record.py health with || true, reads no body and takes no -f flag inside the wait, and the update check's curl -fsS is still there"
-else echo "FAIL skill: the health wait is not the module-decided wait (want engine_record.py\" health and || true, no $lb_body_grep and no curl -f inside it), or the update check lost its curl -fsS"; printf '%s\n' "$lb_wait"; fail=1
+then echo "ok   skill: _serve_start does not run a health loop, the already-up check calls \"\$SERVE\" health with no body grep and no vllm|sglang pattern, and the update check's curl -fsS is still there"
+else echo "FAIL skill: _serve_start still waits, or the already-up check does not call \"\$SERVE\" health, or that check has a body grep or a vllm|sglang pattern, or the update check lost its curl -fsS"; printf '%s\n' "$lb_start"; printf '%s\n' "$lb_up"; fail=1
 fi
 
 # the skill copy finds its own checkout: with A770B_PROJECT unset and no builder.env, a copy that sits inside a

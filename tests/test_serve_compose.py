@@ -872,8 +872,73 @@ def test_health_failure_keeps_the_container_log_before_down(tmp_path):
     r = _run(env, "start", GGUF, "8192")
     assert r.returncode == 3, r.stdout + r.stderr
     assert "did not answer /health" in r.stderr
+    assert "health: down" in r.stderr
+    assert "▶ started server container" not in r.stdout
     _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
     assert not (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid").exists()
+
+
+def test_health_loading_when_http_succeeds_without_ok(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "echo '{\"status\":\"loading\"}'; exit 0")
+    r = _run(_env(tmp_path, bin_, A770B_SERVED_BACKEND="vulkan"), "health")
+    assert r.returncode != 0
+    assert r.stdout == "loading\n"
+
+
+def test_health_ready_when_the_body_contains_ok(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    r = _run(_env(tmp_path, bin_, A770B_SERVED_BACKEND="vulkan"), "health")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "ready\n"
+
+
+def test_health_down_when_curl_fails(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "exit 1")
+    r = _run(_env(tmp_path, bin_, A770B_SERVED_BACKEND="sycl"), "health")
+    assert r.returncode != 0
+    assert r.stdout == "down\n"
+
+
+def test_health_vllm_or_sglang_http_success_is_ready(tmp_path):
+    # Harness contract: HTTP success is ready and the body is not read. Not an image reading.
+    bin_, _ = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "exit 0")
+    for backend in ("vllm", "sglang"):
+        r = _run(_env(tmp_path, bin_, A770B_SERVED_BACKEND=backend), "health")
+        assert r.returncode == 0, backend + r.stdout + r.stderr
+        assert r.stdout == "ready\n"
+
+
+def test_start_loading_body_fails_without_the_started_line(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "echo '{\"status\":\"loading\"}'; exit 0")
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="1", A770B_HEALTH_PAUSE="0")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode != 0
+    assert "health: loading" in r.stderr
+    assert "▶ started server container" not in r.stdout
+    assert "did not answer /health" in r.stderr
+
+
+def test_start_ok_body_prints_health_ready_on_stderr(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="2", A770B_HEALTH_PAUSE="0")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "health: ready" in r.stderr
+    assert "▶ started server container" in r.stdout
+
+
+def test_start_prints_an_unchanged_health_class_once(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    _make_bin(bin_, "curl", "echo '{\"status\":\"loading\"}'; exit 0")
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="2", A770B_HEALTH_PAUSE="0")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode != 0
+    assert r.stderr.count("health: loading") == 1
+    assert "▶ started server container" not in r.stdout
 
 
 def test_exited_container_log_is_kept_before_down(tmp_path):

@@ -197,7 +197,7 @@ _stage_counters(){ # <label> — engine_evidence.py diff over <label>.metrics-be
     echo "⚠ could not compute stage counters for $label — continuing" >&2
   fi
 }
-_serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
+_serve_start(){ # start; the serve script owns the ready wait. 1 = start failed
   # extra is a deliberate word list from the env, expanded unquoted on purpose so each word is an argument
   # shellcheck disable=SC2086
   local quant; quant=$(a770b_profile_var "$p" QUANT)
@@ -213,17 +213,6 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
       THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
       bash "$SERVE" start "$gguf" "$ctx" $extra
   ) || return 1
-  # One wait for every backend: engine_record.py health decides on the HTTP code alone — a 2xx is healthy on any
-  # engine, a 3xx is not, and the body is never read. The quotes keep an empty code one argument, and `|| true`
-  # keeps a refused connection from ending the wait early.
-  local code=""
-  for _ in $(seq 1 90); do
-    code=$(curl -sS -o /dev/null --max-time 2 -w '%{http_code}' "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null || true)
-    python3 "$A770B_PROJECT/harness/engine_record.py" health "$code" >/dev/null 2>&1 && break
-    sleep 2
-  done
-  code=$(curl -sS -o /dev/null --max-time 2 -w '%{http_code}' "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null || true)
-  python3 "$A770B_PROJECT/harness/engine_record.py" health "$code" >/dev/null 2>&1 || return 2
   _write_serve_evidence "$p" "${A770B_SERVED_BACKEND:-}" "$gguf"
   local thinking_desc="mode ${thinking_mode:-$reasoning}"
   [ -n "$thinking_effort" ] && thinking_desc="$thinking_desc · effort $thinking_effort"
@@ -236,7 +225,6 @@ _serve_start(){ # start then wait for /health; 1 = start failed, 2 = not healthy
 _serve_start_or_die(){
   local rc=0; _serve_start || rc=$?
   [ "$rc" = 0 ] && return 0
-  [ "$rc" = 2 ] && die "server not healthy after 180 s"
   die "server did not start — see the error above (a budget-gate or VRAM-cap refusal, or the server's own failure)"
 }
 _override_warn(){ # a card the operator marked operator_override: say so, so it is never a surprise
@@ -246,7 +234,7 @@ _override_warn(){ # a card the operator marked operator_override: say so, so it 
 serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
   local live_json live_backend live_model live_profile req_backend req_model
-  local lock_held run_alive msg old_profile LIVE_PY
+  local lock_held run_alive msg old_profile LIVE_PY health_word
   local -a rb_args
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
@@ -276,7 +264,8 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
     live_model=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
     live_profile=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])')
     if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ]; then
-      if curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" >/dev/null; then
+      health_word=$(bash "$SERVE" health 2>/dev/null) || true
+      if [ "$health_word" = ready ]; then
         if curl -sf --max-time 3 -H "Authorization: Bearer $(a770b_api_key)" "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
         echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
       else

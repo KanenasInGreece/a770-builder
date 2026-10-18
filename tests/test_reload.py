@@ -49,6 +49,9 @@ case "$1" in
     if [ "${SERVE_FAIL_START:-0}" = 1 ]; then exit 1; fi
     exit 0
     ;;
+  health)
+    exec bash "${A770B_PROJECT:?}/harness/serve_compose.sh" health
+    ;;
   *) exit 2 ;;
 esac
 """
