@@ -539,8 +539,20 @@ def usage_clock_line(rows):
     return human_rate_line(prefill_tps, decode_tps)
 
 
+def _counted_usage_row(item):
+    '''False for a placeholder that names none of the summed fields.'''
+    return any(key in item for key in (
+        'prompt_tokens', 'completion_tokens', 'prefill_ms', 'decode_ms'))
+
+
 def cmd_capture_usage(path):
-    '''Human lines from a file of usage integers. No container log.'''
+    '''Human lines from a file of usage integers. No container log.
+
+    A dict with none of those four keys is the placeholder written when a
+    request starts and is never replaced. It is not a row. A remaining row
+    with no clock is still counted. A prompt_tokens value that is present
+    and not a count leaves the token line unmeasured.
+    '''
     text = read_log_text(path)
     if text is None or text.strip() == '':
         sys.stdout.write(RATES_NOT_MEASURED + '\n')
@@ -557,7 +569,12 @@ def cmd_capture_usage(path):
             sys.stdout.write(RATES_NOT_MEASURED + '\n')
             sys.stdout.write(NO_TOKEN_LINE + '\n')
             return 0
-        rows.append(item)
+        if _counted_usage_row(item):
+            rows.append(item)
+    if not rows:
+        sys.stdout.write(RATES_NOT_MEASURED + '\n')
+        sys.stdout.write(NO_TOKEN_LINE + '\n')
+        return 0
     prompts = []
     for row in rows:
         count = row.get('prompt_tokens')

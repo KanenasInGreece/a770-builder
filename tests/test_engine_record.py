@@ -1003,6 +1003,27 @@ class UsageFileCapture(TempTree):
         ]))
         self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
 
+    def test_an_empty_placeholder_is_not_a_row(self):
+        lines = self.lines_of(json.dumps([
+            {},
+            {"prompt_tokens": 11, "completion_tokens": 2},
+        ]))
+        self.assertEqual(lines, [
+            "rates not measured",
+            "requests=1 prompt_tokens_total=11 gen_tokens_total=2",
+        ])
+        self.assertNotIn("prefill_tps=", "\n".join(lines))
+        self.assertNotIn("decode_tps=0", "\n".join(lines))
+        only = self.lines_of(json.dumps([{}]))
+        self.assertEqual(only, ["rates not measured", NO_TOKEN_LINE])
+
+    def test_a_prompt_value_that_is_not_a_count_stays_unmeasured(self):
+        lines = self.lines_of(json.dumps([
+            {},
+            {"prompt_tokens": 1.5, "completion_tokens": 2},
+        ]))
+        self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
+
     def test_prose_and_a_string_that_holds_the_word_are_not_the_count(self):
         prose = self.lines_of("prompt_tokens 99\n")
         self.assertEqual(prose, ["rates not measured", NO_TOKEN_LINE])
