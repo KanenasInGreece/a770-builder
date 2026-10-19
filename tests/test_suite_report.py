@@ -97,6 +97,25 @@ def test_a_capture_without_the_timings_heading_is_not_a_speed(tmp_path):
     assert "delivered" not in out
 
 
+def test_a_heading_inside_a_diff_line_is_not_the_timings_section(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "```diff\n"
+        '+        "## server-side timings during the run\\n"\n'
+        '+        "decode tok/s median=45.5\\n"\n'
+        '+        "prefill tok/s over all prompts=612\\n"\n'
+        "```\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert "delivered" not in out
+
+
 def test_json_reads_a_client_clock_when_the_llama_lines_are_absent(tmp_path):
     data = tmp_path / "data"
     (data / "results").mkdir(parents=True)

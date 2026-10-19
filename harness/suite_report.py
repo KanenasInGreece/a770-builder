@@ -78,13 +78,17 @@ def capture_path_for_stage(stage, a770b_data):
 def timings_text(text):
     """The capture's timings section, or nothing when that heading is absent.
 
-    Prefill, decode, and the client clock are readings only inside that span.
-    The same words earlier in the capture, and a file that never reached the
-    heading, are not a measurement."""
-    idx = text.rfind(TIMINGS_MARK)
-    if idx < 0:
+    The heading counts only as a whole line, and the last such line starts
+    the span. The same words inside a diff, and a file that never reached
+    the heading, are not a measurement."""
+    lines = text.splitlines(keepends=True)
+    last = None
+    for index, line in enumerate(lines):
+        if line.rstrip("\r\n") == TIMINGS_MARK:
+            last = index
+    if last is None:
         return ""
-    return text[idx:]
+    return "".join(lines[last:])
 
 
 def delivered_for_stage(stage, a770b_data):
