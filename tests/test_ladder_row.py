@@ -371,3 +371,38 @@ def test_ladder_dry_run_streams_vllm_and_sglang_and_names_the_vllm_image(tmp_pat
     assert llama.returncode == 0, llama.stdout + llama.stderr
     assert "A770B_SWEEP_STREAM=1" not in llama.stdout
     assert "ctx_sweep.sh" in llama.stdout
+
+
+def _rung1(res):
+    assert res.returncode == 0, res.stdout + res.stderr
+    return next(
+        line for line in res.stdout.splitlines()
+        if line.startswith("[dry-run] rung 1/6:") and "serve_compose.sh start" in line
+    )
+
+
+def test_ladder_dry_run_names_the_profile_backend_and_its_envelope(tmp_path):
+    """The load rung exports the backend the profile names, and the envelope that matches it."""
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "tokenizer.json").write_text("{}", encoding="utf-8")
+    sycl = _ladder_dry_run(tmp_path, "qwen38-27b-udq6k-sycl", "b70", "inference", models)
+    rung1 = _rung1(sycl)
+    assert "A770B_SERVED_BACKEND=sycl" in rung1
+    assert "compose/a770-sycl.yaml" in rung1
+    assert "compose/a770-vulkan.yaml" not in rung1
+
+    vllm = _ladder_dry_run(tmp_path, "qwen38-27b-exl3-4bpw-vllm", "b70", "inference", models)
+    rung1 = _rung1(vllm)
+    assert "A770B_SERVED_BACKEND=vllm" in rung1
+    assert "compose/vllm.yaml" in rung1
+
+    sglang = _ladder_dry_run(tmp_path, "flashnext", "b70", "inference", models)
+    rung1 = _rung1(sglang)
+    assert "A770B_SERVED_BACKEND=sglang" in rung1
+    assert "compose/b70-sglang.yaml" in rung1
+
+    vulkan = _ladder_dry_run(tmp_path, "qwen35-9b-q4km-vulkan", "a770", "display", models)
+    rung1 = _rung1(vulkan)
+    assert "A770B_SERVED_BACKEND=vulkan" in rung1
+    assert "compose/a770-vulkan.yaml" in rung1

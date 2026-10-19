@@ -49,6 +49,20 @@ here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
+# The backend the ladder already resolved selects the container envelope.
+# serve_compose.sh refuses an empty A770B_SERVED_BACKEND, and the env file
+# is derived from the same yaml so a SYCL start cannot keep the Vulkan envelope.
+select_serve_envelope() {
+  case "$BACKEND" in
+    vulkan|sycl) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-$BACKEND.yaml" ;;
+    vllm) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/vllm.yaml" ;;
+    sglang) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml" ;;
+    *) die "backend '$BACKEND' is not one this harness serves (vulkan, sycl, vllm, sglang)" ;;
+  esac
+  A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
+  A770B_SERVED_BACKEND="$BACKEND"
+  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_SERVED_BACKEND
+}
 # tokenizer_dir <model> — directory containing tokenizer.json or tokenizer_config.json.
 # Prints that directory. Returns 1 when neither file is there.
 tokenizer_dir() {
@@ -127,6 +141,7 @@ if [ -z "$ENGINE" ]; then
 fi
 # bring, speed, and count are roles.py's answers. The ladder does not keep a second copy.
 BRING=$(python3 "$here/roles.py" bring "$ENGINE") || die "roles.py bring refused engine '$ENGINE'"
+select_serve_envelope
 SPEED=$(python3 "$here/roles.py" speed "$ENGINE") || die "roles.py speed refused engine '$ENGINE'"
 COUNT=$(python3 "$here/roles.py" count "$ENGINE") || die "roles.py count refused engine '$ENGINE'"
 KIT=$(python3 "$here/roles.py" kit) || die "roles.py kit failed"
@@ -196,7 +211,7 @@ if [ "$DRYRUN" = 1 ]; then
     if [ -n "$_vllm_image" ]; then
       _image_prefix="A770B_VLLM_IMAGE=$_vllm_image "
     fi
-    echo "[dry-run] rung 1/6: ${_image_prefix}KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA} — MemAvailable sampled before and after; VRAM sampled after load"
+    echo "[dry-run] rung 1/6: A770B_SERVED_BACKEND=$A770B_SERVED_BACKEND A770B_COMPOSE_FILE=$A770B_COMPOSE_FILE ${_image_prefix}KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA} — MemAvailable sampled before and after; VRAM sampled after load"
     _pp=$(initial_pp || true)
     if [ -z "$_pp" ]; then
       echo "[dry-run] rung 2/6: STOPPED — no standard prompt size fits the served window ($CTX, far end $FAR_END)"
@@ -260,10 +275,6 @@ fi
 # SGLang starts on its own envelope. A missing env file is refused here, before
 # serve_compose.sh, which is a container command.
 if [ "$ENGINE" = sglang ]; then
-  A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml"
-  A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
-  A770B_SERVED_BACKEND=sglang
-  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_SERVED_BACKEND
   if [ ! -f "$A770B_COMPOSE_ENV_FILE" ]; then
     _sglang_env_ok=1
     for _v in A770B_SGLANG_IMAGE A770B_DRM_CARD A770B_DRM_RENDER \
