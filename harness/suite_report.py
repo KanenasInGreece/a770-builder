@@ -19,9 +19,9 @@ line, if wanted, goes to stderr so it never lands in the JSON a caller parses).
 Delivered speed: a stage's capture file (harness/capture_task.sh's `<label>.task.md`) carries the server-side timing
 lines `prefill tok/s over all prompts=<x>` and `... decode tok/s median=<y>`. When neither line is present, a line
 `prefill_tps=<x> decode_tps=<y>` is that stage's client clock (usage rows that recorded both spans). Both readings
-are taken from the timings section when that heading is present, and from the whole file when it is not. The same
-words in an earlier diff are not a reading, and a decode line there does not pair with a missing prefill. A capture
-with neither reading contributes nothing: the value stays absent, never zero. A results JSON stage that names its own
+are taken only from the timings section. That heading counts only as its own line, and a capture without it
+contributes nothing. The same words in an earlier diff are not a reading, and a decode line there does not pair
+with a missing prefill. A capture with neither reading contributes nothing: the value stays absent, never zero. A results JSON stage that names its own
 capture path (a future runner extension) is read from that path directly; today's `run_suite.sh` records no such
 path, so the fallback is the stage's own `label`: `$A770B_DATA/results/<label>.task.md`, `A770B_DATA` defaulting the
 same way `harness/env.sh` does. The per-stage readings are printed and their MEDIANS across stages are what
