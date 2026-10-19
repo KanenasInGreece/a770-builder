@@ -17,7 +17,11 @@ anything else), which is where harness/ladder.sh's printed row puts it. Nothing 
 line, if wanted, goes to stderr so it never lands in the JSON a caller parses).
 
 Delivered speed: a stage's capture file (harness/capture_task.sh's `<label>.task.md`) carries the server-side timing
-lines `prefill tok/s over all prompts=<x>` and `... decode tok/s median=<y>`. A results JSON stage that names its own
+lines `prefill tok/s over all prompts=<x>` and `... decode tok/s median=<y>`. When neither line is present, a line
+`prefill_tps=<x> decode_tps=<y>` is that stage's client clock (usage rows that recorded both spans). Both readings come from the timings section when its heading is its own line: the last such line starts the
+span, and the same words earlier in the capture are not a reading. A capture that never has that line still
+counts a timing line, and does not count a diff line. A decode line in the diff does not pair with a missing
+prefill. A capture with neither reading contributes nothing: the value stays absent, never zero. A results JSON stage that names its own
 capture path (a future runner extension) is read from that path directly; today's `run_suite.sh` records no such
 path, so the fallback is the stage's own `label`: `$A770B_DATA/results/<label>.task.md`, `A770B_DATA` defaulting the
 same way `harness/env.sh` does. The per-stage readings are printed and their MEDIANS across stages are what
@@ -43,6 +47,11 @@ import sys
 
 PREFILL_RE = re.compile(r"prefill tok/s over all prompts=([0-9]+(?:\.[0-9]+)?)")
 DECODE_RE = re.compile(r"decode tok/s median=([0-9]+(?:\.[0-9]+)?)")
+CLOCK_RE = re.compile(
+    r"^prefill_tps=([0-9]+(?:\.[0-9]+)?) decode_tps=([0-9]+(?:\.[0-9]+)?)$",
+    re.MULTILINE,
+)
+TIMINGS_MARK = "## server-side timings during the run"
 HIDDEN_TESTS_RE = re.compile(r"^hidden tests: (.*)$", re.MULTILINE)
 VERDICT_RE = re.compile(r"^verdict: (PASS \(exit 0\)|FAIL \(exit -?\d+\)|TIMEOUT after \d+s)", re.MULTILINE)
 REPORTED_RE = re.compile(r"^reported: (.*) \(quoted from output", re.MULTILINE)
@@ -66,9 +75,26 @@ def capture_path_for_stage(stage, a770b_data):
     return None
 
 
+def timings_text(text):
+    """The timings span, or the file's own timing lines when the heading is absent.
+
+    The heading counts only as a whole line, and the last such line starts
+    the span. With no such line, a diff line is left out and a timing line
+    stays. The same words inside a diff are not a measurement."""
+    lines = text.splitlines(keepends=True)
+    last = None
+    for index, line in enumerate(lines):
+        if line.rstrip("\r\n") == TIMINGS_MARK:
+            last = index
+    if last is None:
+        return "".join(line for line in lines if not line.startswith(("+", "-")))
+    return "".join(lines[last:])
+
+
 def delivered_for_stage(stage, a770b_data):
     """(prefill_tps, decode_tps) read from a stage's own capture file, either value None when its capture is
-    missing or carries no matching line."""
+    missing or carries no matching line in the timings section. The llama.cpp timing lines win when either is
+    present in that same span. Otherwise a client-clock line is the reading. Neither is a zero."""
     path = capture_path_for_stage(stage, a770b_data)
     if not path:
         return None, None
@@ -76,11 +102,17 @@ def delivered_for_stage(stage, a770b_data):
         text = open(path, encoding="utf-8", errors="ignore").read()
     except OSError:
         return None, None
-    pm = PREFILL_RE.search(text)
-    dm = DECODE_RE.search(text)
-    prefill = float(pm.group(1)) if pm else None
-    decode = float(dm.group(1)) if dm else None
-    return prefill, decode
+    section = timings_text(text)
+    pm = PREFILL_RE.search(section)
+    dm = DECODE_RE.search(section)
+    if pm or dm:
+        prefill = float(pm.group(1)) if pm else None
+        decode = float(dm.group(1)) if dm else None
+        return prefill, decode
+    clock = CLOCK_RE.search(section)
+    if not clock:
+        return None, None
+    return float(clock.group(1)), float(clock.group(2))
 
 
 def verify_path_for_stage(stage, a770b_data):

@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SUITE_REPORT_PY = ROOT / "harness" / "suite_report.py"
 
 CAPTURE = """\
+## server-side timings during the run
 requests=3 prompt_tokens_total=9000 gen_tokens_total=300
 TTFT ms (prompt eval): median=210 p90=260 max=300   largest prompt=3200 tokens
 TPOT ms: median=22.0 p90=26.0   decode tok/s median=45.5
@@ -76,3 +77,159 @@ def test_json_omits_delivered_when_no_capture_was_read(tmp_path):
     results, env = make_run(tmp_path, with_capture=False)
     out = json.loads(run_json(results, env).stdout)
     assert "delivered" not in out
+
+
+def test_a_timings_body_without_the_heading_still_parses(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "requests=3 prompt_tokens_total=9000 gen_tokens_total=300\n"
+        "TTFT ms (prompt eval): median=210 p90=260 max=300   largest prompt=3200 tokens\n"
+        "TPOT ms: median=22.0 p90=26.0   decode tok/s median=45.5\n"
+        "prefill tok/s over all prompts=612\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert out["delivered"] == {"prefill_tps": 612.0, "decode_tps": 45.5, "source": "results.json"}
+
+
+def test_a_diff_without_the_timings_heading_is_not_a_speed(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "```diff\n"
+        "+decode tok/s median=45.5\n"
+        "+prefill tok/s over all prompts=612\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert "delivered" not in out
+
+
+def test_a_heading_inside_a_diff_line_is_not_the_timings_section(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "```diff\n"
+        '+        "## server-side timings during the run\\n"\n'
+        '+        "decode tok/s median=45.5\\n"\n'
+        '+        "prefill tok/s over all prompts=612\\n"\n'
+        "```\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert "delivered" not in out
+
+
+def test_json_reads_a_client_clock_when_the_llama_lines_are_absent(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "## server-side timings during the run\n"
+        "prefill_tps=100 decode_tps=2.7\n"
+        "requests=2 prompt_tokens_total=150 gen_tokens_total=14\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "instrument": "SUITE-TEST",
+        "stages": [{"id": "s1", "label": "s1", "working": True, "outcome": "pass", "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert out["delivered"] == {"prefill_tps": 100.0, "decode_tps": 2.7, "source": "results.json"}
+
+
+def test_json_ignores_a_clock_line_outside_the_timings_section(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "prefill_tps=100 decode_tps=2.7\n"
+        "## server-side timings during the run\n"
+        "rates not measured\n"
+        "requests=1 prompt_tokens_total=3 gen_tokens_total=1\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert "delivered" not in out
+
+
+def test_a_decode_line_in_the_diff_does_not_beat_the_clock(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    env = dict(os.environ, A770B_DATA=str(data))
+    (data / "results" / "s1.task.md").write_text(
+        CAPTURE
+        + "## server-side timings during the run\n"
+        + "prefill_tps=100 decode_tps=2.7\n",
+        encoding="utf-8",
+    )
+    out = json.loads(run_json(results, env).stdout)
+    assert out["delivered"] == {"prefill_tps": 100.0, "decode_tps": 2.7, "source": "results.json"}
+    (data / "results" / "s1.task.md").write_text(
+        "decode tok/s median=45.5\n"
+        "## server-side timings during the run\n"
+        "prefill_tps=100 decode_tps=2.7\n",
+        encoding="utf-8",
+    )
+    out = json.loads(run_json(results, env).stdout)
+    assert out["delivered"] == {"prefill_tps": 100.0, "decode_tps": 2.7, "source": "results.json"}
+    (data / "results" / "s1.task.md").write_text(
+        "decode tok/s median=45.5\n"
+        "## server-side timings during the run\n"
+        "rates not measured\n",
+        encoding="utf-8",
+    )
+    out = json.loads(run_json(results, env).stdout)
+    assert "delivered" not in out
+
+
+def test_json_keeps_the_llama_lines_when_a_clock_line_is_also_present(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        CAPTURE + "prefill_tps=1 decode_tps=1.0\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert out["delivered"] == {"prefill_tps": 612.0, "decode_tps": 45.5, "source": "results.json"}
+
+
+def test_token_counts_without_a_clock_are_not_a_delivered_speed(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "rates not measured\nrequests=1 prompt_tokens_total=100 gen_tokens_total=10\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert "delivered" not in out
+    assert "0" not in json.dumps(out.get("delivered", ""))

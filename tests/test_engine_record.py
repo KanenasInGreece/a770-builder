@@ -1003,6 +1003,44 @@ class UsageFileCapture(TempTree):
         ]))
         self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
 
+    def test_an_empty_placeholder_is_not_a_row(self):
+        lines = self.lines_of(json.dumps([
+            {},
+            {"prompt_tokens": 11, "completion_tokens": 2},
+        ]))
+        self.assertEqual(lines, [
+            "rates not measured",
+            "requests=1 prompt_tokens_total=11 gen_tokens_total=2",
+        ])
+        self.assertNotIn("prefill_tps=", "\n".join(lines))
+        self.assertNotIn("decode_tps=0", "\n".join(lines))
+        only = self.lines_of(json.dumps([{}]))
+        self.assertEqual(only, ["rates not measured", NO_TOKEN_LINE])
+
+    def test_a_poison_marker_beside_a_count_is_not_a_complete_total(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 11, "completion_tokens": 2},
+            {"poison": 1},
+        ]))
+        self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
+
+    def test_a_reasoning_only_row_is_not_skipped(self):
+        later = {"prompt_tokens": 11, "completion_tokens": 2}
+        for row in (
+            {"reasoning_tokens": 3},
+            {"total_tokens": 3},
+            {"cached_tokens": 3},
+        ):
+            lines = self.lines_of(json.dumps([row, later]))
+            self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE], row)
+
+    def test_a_prompt_value_that_is_not_a_count_stays_unmeasured(self):
+        lines = self.lines_of(json.dumps([
+            {},
+            {"prompt_tokens": 1.5, "completion_tokens": 2},
+        ]))
+        self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
+
     def test_prose_and_a_string_that_holds_the_word_are_not_the_count(self):
         prose = self.lines_of("prompt_tokens 99\n")
         self.assertEqual(prose, ["rates not measured", NO_TOKEN_LINE])
@@ -1034,6 +1072,52 @@ class UsageFileCapture(TempTree):
         code, out, err = invoke(["capture", "--usage", self.missing("none.json")])
         self.assertEqual((code, err, out.splitlines()),
                          (0, "", ["rates not measured", NO_TOKEN_LINE]))
+
+    def test_a_client_clock_on_every_row_is_a_rate(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 100, "completion_tokens": 4, "prefill_ms": 500, "decode_ms": 1500},
+            {"prompt_tokens": 50, "completion_tokens": 10, "prefill_ms": 1000, "decode_ms": 1000},
+        ]))
+        # 150 prompt tokens / 1.5 s, and the log reader's median of 4/1.5 and 10/1.
+        self.assertEqual(lines[0], "prefill_tps=100 decode_tps=2.7")
+        self.assertIn("requests=2 prompt_tokens_total=150 gen_tokens_total=14", lines)
+        self.assertNotIn("rates not measured", lines)
+
+    def test_a_client_clock_prefill_omits_a_reported_cache(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 100, "completion_tokens": 4, "prefill_ms": 500,
+             "decode_ms": 1500, "cached_tokens": 80},
+            {"prompt_tokens": 50, "completion_tokens": 10, "prefill_ms": 1000,
+             "decode_ms": 1000, "cached_tokens": 0},
+        ]))
+        # (20 + 50) prompt tokens / 1.5 s. The decode median is unchanged.
+        self.assertEqual(lines[0], "prefill_tps=47 decode_tps=2.7")
+        self.assertIn("requests=2 prompt_tokens_total=150 gen_tokens_total=14", lines)
+
+    def test_a_cache_larger_than_the_prompt_is_not_a_rate(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 10, "completion_tokens": 4, "prefill_ms": 500,
+             "decode_ms": 1500, "cached_tokens": 11},
+        ]))
+        self.assertEqual(lines[0], "rates not measured")
+        self.assertNotIn("prefill_tps=", "\n".join(lines))
+        self.assertIn("prompt_tokens_total=10", "\n".join(lines))
+
+    def test_a_clock_that_rounds_to_zero_is_not_stored_as_zero(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 1, "completion_tokens": 1, "prefill_ms": 10000, "decode_ms": 10000},
+        ]))
+        self.assertEqual(lines[0], "rates not measured")
+        self.assertNotIn("prefill_tps=0", "\n".join(lines))
+        self.assertNotIn("decode_tps=0.0", "\n".join(lines))
+
+    def test_one_row_without_a_clock_leaves_the_rate_unmeasured(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 100, "completion_tokens": 4, "prefill_ms": 500, "decode_ms": 1500},
+            {"prompt_tokens": 4, "completion_tokens": 1},
+        ]))
+        self.assertEqual(lines[0], "rates not measured")
+        self.assertNotIn("prefill_tps=", "\n".join(lines))
 
     def test_unmeasured_opens_no_log(self):
         code, out, err = invoke(["capture", "--unmeasured"])

@@ -7,6 +7,7 @@ the response text must not appear in the usage file.
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,7 +18,7 @@ PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, "harness"))
 
 import usage_tap  # noqa: E402
-from usage_tap import BridgeSession, UsageStore, handle_connection, record_from_body, serve  # noqa: E402
+from usage_tap import BridgeSession, UsageStore, handle_connection, record_from_body, serve, sse_text_delta  # noqa: E402
 
 
 def request(path, body, auth="Bearer supersecret"):
@@ -131,14 +132,56 @@ class SessionRecords(unittest.TestCase):
              "reasoning_tokens": 0},
         ])
 
-    def test_a_chunked_stream_without_usage_is_an_empty_record(self):
+    def test_a_finished_stream_without_usage_is_the_poison_marker(self):
         store = Memory()
         session = BridgeSession(store)
         body = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
         session.feed_request(request("/v1/chat/completions", "{}"))
         session.feed_response(chunked_response(body))
         session.close()
-        self.assertEqual(store.rows, [{}])
+        self.assertEqual(store.rows, [{"poison": 1}])
+
+    def test_a_body_too_large_to_keep_is_the_poison_marker(self):
+        store = Memory()
+        session = BridgeSession(store)
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session._on_response(
+            "HTTP/1.1 200 OK", {"content-type": "application/json"}, None)
+        session.close()
+        self.assertEqual(store.rows, [{"poison": 1}])
+
+    def test_a_finished_call_with_no_count_does_not_look_complete(self):
+        tmp = tempfile.TemporaryDirectory(prefix=".a770b-usage-tap-")
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "usage.json")
+        store = UsageStore(path)
+        session = BridgeSession(store)
+        counted = json.dumps({
+            "choices": [],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13},
+        })
+        empty = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(response(counted))
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(response(empty))
+        session.close()
+        with open(path, encoding="utf-8") as handle:
+            rows = json.loads(handle.read())
+        self.assertEqual(rows, [
+            {"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13},
+            {"poison": 1},
+        ])
+        result = subprocess.run(
+            [sys.executable, os.path.join(PROJECT, "harness", "engine_record.py"),
+             "capture", "--usage", path],
+            capture_output=True, text=True,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["rates not measured", "context was not measured"],
+        )
 
     def test_a_chat_request_with_no_response_is_an_empty_record(self):
         store = Memory()
@@ -183,7 +226,72 @@ class SessionRecords(unittest.TestCase):
         session.feed_request(request("/v1/chat/completions", "{}"))
         session.feed_response(response(body))
         session.close()
-        self.assertEqual(store.rows, [{}])
+        self.assertEqual(store.rows, [{"poison": 1}])
+
+    def test_a_stream_split_across_later_reads_keeps_a_client_clock(self):
+        store = Memory()
+        session = BridgeSession(store)
+        ticks = iter([10.0, 10.4, 11.6])
+        session._clock = lambda: next(ticks)
+        first = 'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+        rest = (
+            'data: {"choices":[{"delta":{"content":"b"}}],"usage":'
+            '{"prompt_tokens":100,"completion_tokens":4,"total_tokens":104}}\n\n'
+            'data: [DONE]\n\n'
+        )
+        body = (first + rest).encode("utf-8")
+        head = (
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+            "Content-Length: {0}\r\nConnection: close\r\n\r\n"
+        ).format(len(body)).encode("ascii")
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(head)
+        session.feed_response(first.encode("utf-8"))
+        session.feed_response(rest.encode("utf-8"))
+        session.close()
+        self.assertEqual(store.rows, [{
+            "prompt_tokens": 100,
+            "completion_tokens": 4,
+            "total_tokens": 104,
+            "prefill_ms": 400,
+            "decode_ms": 1200,
+        }])
+
+    def test_one_read_has_no_clock_and_a_json_body_does_not_either(self):
+        self.assertFalse(sse_text_delta(b'{"choices":[{"message":{"content":"a"}}]}'))
+        store = Memory()
+        session = BridgeSession(store)
+        session._clock = lambda: 5.0
+        body = (
+            'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+            'data: {"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}\n\n'
+            'data: [DONE]\n\n'
+        )
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(response(body, content_type="text/event-stream"))
+        session.close()
+        self.assertEqual(store.rows, [{
+            "prompt_tokens": 8, "completion_tokens": 1, "total_tokens": 9,
+        }])
+
+    def test_the_store_keeps_a_positive_clock_and_drops_zero(self):
+        tmp = tempfile.TemporaryDirectory(prefix=".a770b-usage-tap-")
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "usage.json")
+        store = UsageStore(path)
+        store.replace(store.add({
+            "prompt_tokens": 3, "completion_tokens": 1,
+            "prefill_ms": 0, "decode_ms": 40, "note": "no",
+        }), {
+            "prompt_tokens": 3, "completion_tokens": 1,
+            "prefill_ms": 20, "decode_ms": 40,
+        })
+        with open(path, "r", encoding="utf-8") as handle:
+            rows = json.loads(handle.read())
+        self.assertEqual(rows, [{
+            "prompt_tokens": 3, "completion_tokens": 1,
+            "prefill_ms": 20, "decode_ms": 40,
+        }])
 
 class SocketBridge(unittest.TestCase):
     def test_the_client_gets_the_bytes_and_the_file_keeps_integers_only(self):
@@ -481,6 +589,36 @@ class SocketBridge(unittest.TestCase):
         left.close()
         self.assertEqual(json.loads(seen["when_request_arrived"]), [{}])
         self.assertIn(b'"prompt_tokens"', got)
+
+    def test_poison_is_not_an_empty_object(self):
+        tmp = tempfile.TemporaryDirectory(prefix=".a770b-usage-tap-")
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "usage.json")
+        store = UsageStore(path)
+        store.add({"prompt_tokens": 11, "completion_tokens": 2})
+        session = BridgeSession(store)
+        session._poison()
+        with open(path, "r", encoding="utf-8") as handle:
+            rows = json.loads(handle.read())
+        self.assertEqual(rows[0], {"prompt_tokens": 11, "completion_tokens": 2})
+        marker = rows[1]
+        self.assertNotEqual(marker, {})
+        self.assertTrue(marker)
+        usage_keys = {
+            "prompt_tokens", "completion_tokens", "total_tokens",
+            "reasoning_tokens", "cached_tokens", "prefill_ms", "decode_ms",
+        }
+        self.assertTrue(usage_keys.isdisjoint(marker))
+        result = subprocess.run(
+            [sys.executable, os.path.join(PROJECT, "harness", "engine_record.py"),
+             "capture", "--usage", path],
+            capture_output=True, text=True,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["rates not measured", "context was not measured"],
+        )
 
     def test_a_poisoned_session_does_not_wait_on_the_next_response(self):
         session = BridgeSession(Memory())
