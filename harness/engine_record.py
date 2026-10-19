@@ -550,8 +550,10 @@ def usage_clock_line(rows):
 def _counted_usage_row(item):
     '''False only for the placeholder a request writes and never replaces.
 
-    That placeholder has no keys. Any other object is a row, including one
-    that holds only a side count or a marker that is not a usage field.
+    That placeholder has no keys. A finished call with no count is a poison
+    marker, which has a key, so it stays a row and the file stays
+    unmeasured. Any other object is a row, including one that holds only
+    a side count.
     '''
     return len(item) > 0
 
@@ -561,7 +563,8 @@ def cmd_capture_usage(path):
 
     A dict with no keys is the placeholder written when a request starts
     and is never replaced. It is not a row, and later counted rows still
-    sum. Any other object is a row. A row whose prompt_tokens is absent
+    sum. A finished call with no count is the poison marker, not that
+    placeholder. Any other object is a row. A row whose prompt_tokens is absent
     or not a count leaves both lines unmeasured. A missing clock leaves
     the rate unmeasured, never zero, and does not drop the token total.
     '''

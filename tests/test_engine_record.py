@@ -1017,6 +1017,13 @@ class UsageFileCapture(TempTree):
         only = self.lines_of(json.dumps([{}]))
         self.assertEqual(only, ["rates not measured", NO_TOKEN_LINE])
 
+    def test_a_poison_marker_beside_a_count_is_not_a_complete_total(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 11, "completion_tokens": 2},
+            {"poison": 1},
+        ]))
+        self.assertEqual(lines, ["rates not measured", NO_TOKEN_LINE])
+
     def test_a_reasoning_only_row_is_not_skipped(self):
         later = {"prompt_tokens": 11, "completion_tokens": 2}
         for row in (

@@ -132,14 +132,56 @@ class SessionRecords(unittest.TestCase):
              "reasoning_tokens": 0},
         ])
 
-    def test_a_chunked_stream_without_usage_is_an_empty_record(self):
+    def test_a_finished_stream_without_usage_is_the_poison_marker(self):
         store = Memory()
         session = BridgeSession(store)
         body = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
         session.feed_request(request("/v1/chat/completions", "{}"))
         session.feed_response(chunked_response(body))
         session.close()
-        self.assertEqual(store.rows, [{}])
+        self.assertEqual(store.rows, [{"poison": 1}])
+
+    def test_a_body_too_large_to_keep_is_the_poison_marker(self):
+        store = Memory()
+        session = BridgeSession(store)
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session._on_response(
+            "HTTP/1.1 200 OK", {"content-type": "application/json"}, None)
+        session.close()
+        self.assertEqual(store.rows, [{"poison": 1}])
+
+    def test_a_finished_call_with_no_count_does_not_look_complete(self):
+        tmp = tempfile.TemporaryDirectory(prefix=".a770b-usage-tap-")
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "usage.json")
+        store = UsageStore(path)
+        session = BridgeSession(store)
+        counted = json.dumps({
+            "choices": [],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13},
+        })
+        empty = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(response(counted))
+        session.feed_request(request("/v1/chat/completions", "{}"))
+        session.feed_response(response(empty))
+        session.close()
+        with open(path, encoding="utf-8") as handle:
+            rows = json.loads(handle.read())
+        self.assertEqual(rows, [
+            {"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13},
+            {"poison": 1},
+        ])
+        result = subprocess.run(
+            [sys.executable, os.path.join(PROJECT, "harness", "engine_record.py"),
+             "capture", "--usage", path],
+            capture_output=True, text=True,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["rates not measured", "context was not measured"],
+        )
 
     def test_a_chat_request_with_no_response_is_an_empty_record(self):
         store = Memory()

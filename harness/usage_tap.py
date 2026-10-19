@@ -12,7 +12,8 @@ finishes stays an empty object. That object is not a row: it adds nothing,
 and a later counted row still sums. It is not stored as zero.
 A parser that gives up writes one object that is not empty and not a
 usage row, so the file cannot be read as a complete list of counts.
-A response that carries no integer count stays empty too.
+A finished response with no integer count, and a body too large to keep,
+are that same marker. They are not left as the empty object.
 A streamed response may also keep prefill_ms and decode_ms: integer
 milliseconds from the first response byte to the first text delta, and
 from that delta to the last byte. Both have to land on later reads, and
@@ -549,6 +550,16 @@ class BridgeSession:
             record = {}
         else:
             record = record_from_body(body, headers.get('content-type', ''))
+        if not record:
+            # A finished call with no count is not the placeholder. The
+            # placeholder is only a request the response never replaces.
+            try:
+                self.store.replace(index, {_POISON_KEY: 1})
+            except Exception:
+                self._poison()
+                return
+            self.poisoned = True
+            return
         if (clock is not None and is_count(record.get('prompt_tokens'))
                 and is_count(record.get('completion_tokens'))):
             record['prefill_ms'] = clock[0]
@@ -560,8 +571,8 @@ def handle_connection(client, upstream, store):
     '''Forward both ways. A parse error does not stop the bytes.
 
     The chunk that completes a chat request is recorded before that chunk
-    is forwarded. A stop in between leaves the empty object, so the
-    finished calls are not the whole run.
+    is forwarded. A stop in between leaves the empty object. The reader
+    skips that object.
     '''
     try:
         remote = socket.create_connection(upstream, timeout=10)
