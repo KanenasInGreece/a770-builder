@@ -8,7 +8,8 @@ of the server-to-client direction is scanned for one usage object per
 list of those integers. Headers, request bodies, and message text are not
 written. A chat request is an empty object as soon as it is parsed, and the
 response replaces that object when it finishes. A call that never
-finishes stays empty, so a later reader cannot treat the gap as zero.
+finishes stays an empty object. That object is not a row: it adds nothing,
+and a later counted row still sums. It is not stored as zero.
 A parser that gives up writes one object that is not empty and not a
 usage row, so the file cannot be read as a complete list of counts.
 A response that carries no integer count stays empty too.
