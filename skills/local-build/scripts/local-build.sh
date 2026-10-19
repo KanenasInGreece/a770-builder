@@ -57,6 +57,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 fi
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
 . "$A770B_PROJECT/harness/env.sh" || { [ "${1:-}" = "doctor" ] || exit 2; }; . "$A770B_PROJECT/harness/guard.sh"
+# shellcheck disable=SC1091
+. "$A770B_PROJECT/harness/serve_envelope.sh"
 # shellcheck source=profile_engine.sh
 . "$(dirname "${BASH_SOURCE[0]}")/profile_engine.sh"
 if [ "${1:-}" = "doctor" ]; then
@@ -120,17 +122,6 @@ _export_live(){ # A770B_LIVE_* for the sidecar write on start; empty values mean
   A770B_LIVE_PROFILE="$1"
   export A770B_LIVE_CARD A770B_LIVE_BACKEND A770B_LIVE_MODE A770B_LIVE_PROFILE
 }
-_envelope_for_backend_name(){ # select the container envelope for a backend name; refuse one this harness cannot serve
-  case "$1" in
-    vulkan|sycl) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/a770-$1.yaml";;
-    vllm) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/vllm.yaml";;
-    sglang) A770B_COMPOSE_FILE="$A770B_PROJECT/compose/b70-sglang.yaml";;
-    *) die "backend '$1' is not one this harness serves (vulkan, sycl, vllm, sglang)";;
-  esac
-  A770B_SERVED_BACKEND="$1"
-  A770B_COMPOSE_ENV_FILE="${A770B_COMPOSE_FILE%.yaml}.env"
-  export A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_SERVED_BACKEND
-}
 _envelope_for_backend(){ # the row's backend selects the container envelope. An unknown backend is refused, never
   # defaulted onto the Vulkan envelope (a silent wrong-backend serve).
   local be; be=$(a770b_profile_var "$1" BACKEND)
@@ -139,12 +130,12 @@ _envelope_for_backend(){ # the row's backend selects the container envelope. An 
     export A770B_SERVED_BACKEND
     return 0
   fi
-  _envelope_for_backend_name "$be"
+  select_serve_envelope "$be"
 }
 _envelope_from_sidecar(){ # the running container's backend selects the envelope, so `stop` ends it whatever it is
   local be; be=$(python3 "$A770B_PROJECT/harness/live_backend.py" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend") or "")' 2>/dev/null) || be=""
-  case "$be" in vulkan|sycl|vllm|sglang) _envelope_for_backend_name "$be";; esac
+  case "$be" in vulkan|sycl|vllm|sglang) select_serve_envelope "$be";; esac
   return 0
 }
 _reload_lock_held(){ # true when another process holds the run lock; this shell's own fd 9 does not count
