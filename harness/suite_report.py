@@ -18,10 +18,10 @@ line, if wanted, goes to stderr so it never lands in the JSON a caller parses).
 
 Delivered speed: a stage's capture file (harness/capture_task.sh's `<label>.task.md`) carries the server-side timing
 lines `prefill tok/s over all prompts=<x>` and `... decode tok/s median=<y>`. When neither line is present, a line
-`prefill_tps=<x> decode_tps=<y>` is that stage's client clock (usage rows that recorded both spans). Both readings
-are taken only from the timings section. That heading counts only as its own line, and a capture without it
-contributes nothing. The same words in an earlier diff are not a reading, and a decode line there does not pair
-with a missing prefill. A capture with neither reading contributes nothing: the value stays absent, never zero. A results JSON stage that names its own
+`prefill_tps=<x> decode_tps=<y>` is that stage's client clock (usage rows that recorded both spans). Both readings come from the timings section when its heading is its own line: the last such line starts the
+span, and the same words earlier in the capture are not a reading. A capture that never has that line still
+counts a timing line, and does not count a diff line. A decode line in the diff does not pair with a missing
+prefill. A capture with neither reading contributes nothing: the value stays absent, never zero. A results JSON stage that names its own
 capture path (a future runner extension) is read from that path directly; today's `run_suite.sh` records no such
 path, so the fallback is the stage's own `label`: `$A770B_DATA/results/<label>.task.md`, `A770B_DATA` defaulting the
 same way `harness/env.sh` does. The per-stage readings are printed and their MEDIANS across stages are what
@@ -76,18 +76,18 @@ def capture_path_for_stage(stage, a770b_data):
 
 
 def timings_text(text):
-    """The capture's timings section, or nothing when that heading is absent.
+    """The timings span, or the file's own timing lines when the heading is absent.
 
     The heading counts only as a whole line, and the last such line starts
-    the span. The same words inside a diff, and a file that never reached
-    the heading, are not a measurement."""
+    the span. With no such line, a diff line is left out and a timing line
+    stays. The same words inside a diff are not a measurement."""
     lines = text.splitlines(keepends=True)
     last = None
     for index, line in enumerate(lines):
         if line.rstrip("\r\n") == TIMINGS_MARK:
             last = index
     if last is None:
-        return ""
+        return "".join(line for line in lines if not line.startswith(("+", "-")))
     return "".join(lines[last:])
 
 

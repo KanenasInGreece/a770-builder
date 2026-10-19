@@ -79,7 +79,25 @@ def test_json_omits_delivered_when_no_capture_was_read(tmp_path):
     assert "delivered" not in out
 
 
-def test_a_capture_without_the_timings_heading_is_not_a_speed(tmp_path):
+def test_a_timings_body_without_the_heading_still_parses(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "requests=3 prompt_tokens_total=9000 gen_tokens_total=300\n"
+        "TTFT ms (prompt eval): median=210 p90=260 max=300   largest prompt=3200 tokens\n"
+        "TPOT ms: median=22.0 p90=26.0   decode tok/s median=45.5\n"
+        "prefill tok/s over all prompts=612\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "stages": [{"id": "s1", "label": "s1", "working": True, "wall_s": 9.0}],
+    }), encoding="utf-8")
+    out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
+    assert out["delivered"] == {"prefill_tps": 612.0, "decode_tps": 45.5, "source": "results.json"}
+
+
+def test_a_diff_without_the_timings_heading_is_not_a_speed(tmp_path):
     data = tmp_path / "data"
     (data / "results").mkdir(parents=True)
     (data / "results" / "s1.task.md").write_text(
