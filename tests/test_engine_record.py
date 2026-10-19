@@ -1076,6 +1076,26 @@ class UsageFileCapture(TempTree):
         self.assertIn("requests=2 prompt_tokens_total=150 gen_tokens_total=14", lines)
         self.assertNotIn("rates not measured", lines)
 
+    def test_a_client_clock_prefill_omits_a_reported_cache(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 100, "completion_tokens": 4, "prefill_ms": 500,
+             "decode_ms": 1500, "cached_tokens": 80},
+            {"prompt_tokens": 50, "completion_tokens": 10, "prefill_ms": 1000,
+             "decode_ms": 1000, "cached_tokens": 0},
+        ]))
+        # (20 + 50) prompt tokens / 1.5 s. The decode median is unchanged.
+        self.assertEqual(lines[0], "prefill_tps=47 decode_tps=2.7")
+        self.assertIn("requests=2 prompt_tokens_total=150 gen_tokens_total=14", lines)
+
+    def test_a_cache_larger_than_the_prompt_is_not_a_rate(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 10, "completion_tokens": 4, "prefill_ms": 500,
+             "decode_ms": 1500, "cached_tokens": 11},
+        ]))
+        self.assertEqual(lines[0], "rates not measured")
+        self.assertNotIn("prefill_tps=", "\n".join(lines))
+        self.assertIn("prompt_tokens_total=10", "\n".join(lines))
+
     def test_a_clock_that_rounds_to_zero_is_not_stored_as_zero(self):
         lines = self.lines_of(json.dumps([
             {"prompt_tokens": 1, "completion_tokens": 1, "prefill_ms": 10000, "decode_ms": 10000},

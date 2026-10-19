@@ -76,13 +76,14 @@ def capture_path_for_stage(stage, a770b_data):
 
 
 def timings_text(text):
-    """The capture's timings section when it has one, otherwise the whole file.
+    """The capture's timings section, or nothing when that heading is absent.
 
     Prefill, decode, and the client clock are readings only inside that span.
-    The same words inside a diff earlier in the capture are not a measurement."""
+    The same words earlier in the capture, and a file that never reached the
+    heading, are not a measurement."""
     idx = text.rfind(TIMINGS_MARK)
     if idx < 0:
-        return text
+        return ""
     return text[idx:]
 
 

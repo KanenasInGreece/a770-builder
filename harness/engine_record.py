@@ -511,9 +511,11 @@ def _optional_total(rows, key, label):
 def usage_clock_line(rows):
     '''One rate line when every row carries a positive client clock.
 
-    Prefill is prompt tokens over the summed prefill milliseconds. Decode is
-    the same median the log reader uses, over each row's own completion rate.
-    A clock that rounds to zero is not a rate.
+    Prefill is the prompt tokens that were not reported as cached, over the
+    summed prefill milliseconds. A row that does not report a cache count
+    keeps its prompt count. Decode is the same median the log reader uses,
+    over each row's own completion rate. A clock that rounds to zero is not
+    a rate.
     '''
     prompt_tokens = 0
     prefill_ms = 0
@@ -527,7 +529,13 @@ def usage_clock_line(rows):
             return None
         if prefill <= 0 or decode <= 0:
             return None
-        prompt_tokens += prompt
+        cached = row.get('cached_tokens')
+        evaluated = prompt
+        if cached is not None:
+            if not is_count(cached) or cached > prompt:
+                return None
+            evaluated = prompt - cached
+        prompt_tokens += evaluated
         prefill_ms += prefill
         decode_rates.append(completion / (decode / 1000.0))
     if prefill_ms <= 0 or not decode_rates:
