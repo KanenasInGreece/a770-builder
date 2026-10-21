@@ -3033,7 +3033,7 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
     assert row["kv"] == "fp8_e4m3"
     assert "--kv-cache-dtype fp8_e4m3" in row["extra"]
     assert row["ctx"] == 131072 and row["useful_ctx"] == 100000
-    assert row["timeout_s"] == 1500
+    assert row["timeout_s"] == 3739
     assert row["vram_gib_after_load"] == 27.31
     assert row["ram_gb_extra"] == 20
     assert row["depth_probe_100k"] == "pass (2/3)"

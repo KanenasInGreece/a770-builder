@@ -482,7 +482,7 @@
       },
       "ctx": 131072,
       "useful_ctx": 100000,
-      "timeout_s": 1500,
+      "timeout_s": 3739,
       "vram_gib_after_load": 27.31,
       "ram_gb_extra": 20,
       "params_b": {
@@ -537,7 +537,7 @@
       "capability": {},
       "instrument": "SUITE-1@1",
       "task": "code-edit",
-      "evidence": "SUITE-1@1: 3/3 counted stages passed, mean wall 2785.3 s. Counted stages s1-frontend 3739 s, s2-backend 1790 s, s3-optimise 2827 s. Not counted toward pass: s0-design 675 s, ref-cpp-binary-search-tree 2037 s, ref-javascript-forth 1474 s, ref-python-pov 2136 s. All three references passed. Thinking off. The load read 27.31 GiB. The window peaked at 31.86 GiB, with decode 9.7 tok/s at 7958 tokens and 11.0 tok/s at 99887 tokens. The depth probe passed 2/3 at 99887 tokens. llama-benchy generation mode, mean of 3, depth 0, 128 generated tokens: 8192 is 1418.3/9.9, 32768 is 1174.1/8.7, 65536 is 1256.7/9.9, 100000 is 1129.5/9.6. Those cells are not the sweep. timeout_s stays 1500; the counted walls exceed it. ram_gb_extra 20 remains the tier RAM cap; host-buffer RAM was not remeasured. The envelope default image is ghcr.io/0xsero/sglang-exl3-xpu-flashnext digest 24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f. The recipe is https://github.com/sybil-solutions/qwen38-flash-next-b70-offload (MIT, archived 2026-10-12). Sparse attention follows Strata, https://github.com/Niko1221/Strata (MIT). Their published speeds are not this card, and this row does not copy their image.",
+      "evidence": "SUITE-1@1: 3/3 counted stages passed, mean wall 2785.3 s. Counted stages s1-frontend 3739 s, s2-backend 1790 s, s3-optimise 2827 s. Not counted toward pass: s0-design 675 s, ref-cpp-binary-search-tree 2037 s, ref-javascript-forth 1474 s, ref-python-pov 2136 s. All three references passed. Thinking off. The load read 27.31 GiB. The window peaked at 31.86 GiB, with decode 9.7 tok/s at 7958 tokens and 11.0 tok/s at 99887 tokens. The depth probe passed 2/3 at 99887 tokens. llama-benchy generation mode, mean of 3, depth 0, 128 generated tokens: 8192 is 1418.3/9.9, 32768 is 1174.1/8.7, 65536 is 1256.7/9.9, 100000 is 1129.5/9.6. Those cells are not the sweep. timeout_s is 3739, the longest counted wall. ram_gb_extra 20 remains the tier RAM cap; host-buffer RAM was not remeasured. The envelope default image is ghcr.io/0xsero/sglang-exl3-xpu-flashnext digest 24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f. The recipe is https://github.com/sybil-solutions/qwen38-flash-next-b70-offload (MIT, archived 2026-10-12). Sparse attention follows Strata, https://github.com/Niko1221/Strata (MIT). Their published speeds are not this card, and this row does not copy their image.",
       "fit": {
         "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 2785.3 s, all three reference exercises passed (2026-10-21, server the load left up).",
         "write": "not measured"
