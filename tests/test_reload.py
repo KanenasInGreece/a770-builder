@@ -128,6 +128,14 @@ def _write_docker_stub(path: Path) -> None:
         "  *\" ps -q \"*)\n"
         "    if [ \"${SERVE_CONTAINER_UP:-0}\" = 1 ]; then printf '%s\\n' cid123; fi\n"
         "    exit 0 ;;\n"
+        "  *\" inspect \"*)\n"
+        "    case \" $* \" in\n"
+        "      *State.Pid*) printf '%s\\n' \"${SERVE_INSPECT_PID:-}\" ;;\n"
+        "      *config_files*)\n"
+        "        if [ -n \"${SERVE_CONFIG_FILES+x}\" ]; then printf '%s\\n' \"$SERVE_CONFIG_FILES\"\n"
+        "        else printf '%s\\n' \"$A770B_COMPOSE_FILE\"; fi ;;\n"
+        "    esac\n"
+        "    exit 0 ;;\n"
         "  *) exit 0 ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -386,6 +394,97 @@ def test_serve_with_no_container_and_no_pidfile_still_starts(tmp_path, live_pid)
         thread.join(timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr
     assert sidecar.is_file()
+    lines = _log_lines(env)
+    assert "stop" in lines
+    assert any(line.startswith("start ") for line in lines)
+
+
+def _ready_marked_server(env: dict, live_pid: int):
+    """Pidfile, mark, and a container inspect, with no claim that the sidecar names this pid."""
+    logs = Path(env["A770B_DATA"]) / "logs"
+    (logs / "llamacpp-a770.pid").write_text(f"{live_pid}\n", encoding="utf-8")
+    (logs / "llamacpp-a770.model").write_text(
+        str(Path(env["A770B_MODELS"]) / QWEN) + "\n", encoding="utf-8"
+    )
+    env["SERVE_CONTAINER_UP"] = "1"
+    env["SERVE_INSPECT_PID"] = str(live_pid)
+    httpd = HTTPServer(("127.0.0.1", 0), _Health)
+    env["A770B_PORT"] = str(httpd.server_address[1])
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, thread
+
+
+def test_serve_keeps_a_ready_server_when_the_sidecar_is_missing(tmp_path, live_pid):
+    """The ladder's load leaves a pidfile and a mark and no sidecar. serve() must not start again."""
+    env = _serve_env(tmp_path)
+    httpd, thread = _ready_marked_server(env, live_pid)
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" in result.stdout
+    lines = _log_lines(env)
+    assert "stop" not in lines
+    assert not any(line.startswith("start ") for line in lines)
+    sidecar = json.loads(
+        (Path(env["A770B_DATA"]) / "logs" / "live-backend.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["model"] == QWEN
+    assert sidecar["backend"] == "vulkan"
+    assert sidecar["profile"] == "qwen35-9b-q4km-vulkan"
+    assert sidecar["pid"] == live_pid
+
+
+def test_serve_keeps_a_ready_server_when_the_sidecar_names_an_older_pid(tmp_path, live_pid):
+    """A sidecar from the previous server must not reload the container the pidfile names now."""
+    env = _serve_env(tmp_path)
+    live_backend.write(
+        str(Path(env["A770B_DATA"]) / "logs" / "live-backend.json"),
+        {
+            "card": "a770",
+            "backend": "vulkan",
+            "mode": "display",
+            "model": "not-this.gguf",
+            "profile": "qwen35-9b-q4km-vulkan",
+            "pid": 1,
+        },
+    )
+    httpd, thread = _ready_marked_server(env, live_pid)
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" in result.stdout
+    assert "reload:" not in result.stdout
+    lines = _log_lines(env)
+    assert "stop" not in lines
+    assert not any(line.startswith("start ") for line in lines)
+    sidecar = json.loads(
+        (Path(env["A770B_DATA"]) / "logs" / "live-backend.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["model"] == QWEN
+    assert sidecar["pid"] == live_pid
+
+
+def test_serve_restarts_when_the_mark_matches_but_the_envelope_does_not(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    httpd, thread = _ready_marked_server(env, live_pid)
+    env["SERVE_CONFIG_FILES"] = "/not/the/envelope.yaml"
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" not in result.stdout
     lines = _log_lines(env)
     assert "stop" in lines
     assert any(line.startswith("start ") for line in lines)

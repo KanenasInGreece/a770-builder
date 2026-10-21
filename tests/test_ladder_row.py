@@ -401,6 +401,10 @@ def test_ladder_dry_run_names_the_profile_backend_and_its_envelope(tmp_path):
     rung1 = _rung1(sglang)
     assert "A770B_SERVED_BACKEND=sglang" in rung1
     assert "compose/b70-sglang.yaml" in rung1
+    assert "A770B_LIVE_PROFILE=flashnext" in rung1
+    assert "A770B_LIVE_BACKEND=sglang" in rung1
+    assert "A770B_LIVE_CARD=b70" in rung1
+    assert "A770B_LIVE_MODE=inference" in rung1
 
     vulkan = _ladder_dry_run(tmp_path, "qwen35-9b-q4km-vulkan", "a770", "display", models)
     rung1 = _rung1(vulkan)

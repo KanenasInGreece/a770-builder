@@ -84,6 +84,17 @@ def test_read_with_a_dead_pid_returns_none_and_the_sidecar_file_is_gone(tmp_path
     assert not sidecar.exists()
 
 
+def test_read_with_a_different_pid_returns_none_and_removes_the_sidecar(tmp_path, live_pid):
+    """A pidfile from a newer start does not make an older sidecar the live identity."""
+    sidecar = tmp_path / "live-backend.json"
+    pidfile = tmp_path / "llamacpp-a770.pid"
+    live_backend.write(str(sidecar), _record(pid=1))
+    pidfile.write_text(f"{live_pid}\n", encoding="utf-8")
+    assert live_pid != 1
+    assert live_backend.read(str(sidecar), str(pidfile)) is None
+    assert not sidecar.exists()
+
+
 def test_read_with_a_missing_pidfile_returns_none_and_the_sidecar_file_is_gone(tmp_path):
     sidecar = tmp_path / "live-backend.json"
     live_backend.write(str(sidecar), _record())

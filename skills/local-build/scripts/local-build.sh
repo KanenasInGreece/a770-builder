@@ -236,6 +236,38 @@ _serve_start_or_die(){
   [ "$rc" = 0 ] && return 0
   die "server did not start — see the error above (a budget-gate or VRAM-cap refusal, or the server's own failure)"
 }
+# The sidecar does not name this pid. Keep the container when the mark is this model,
+# the compose file is this envelope, and /health is ready. A ladder start writes the
+# pidfile and the mark, and writes the sidecar only when A770B_LIVE_* is set.
+_serve_keep_unmarked(){
+  local pid mark_model cid files part found=0
+  pid=$(_recorded_serve_pid "$PIDF") || return 1
+  [ -f "$MARK" ] || return 1
+  mark_model=$(head -n 1 "$MARK" 2>/dev/null || true)
+  [ -n "$mark_model" ] && [ "$(basename -- "$mark_model")" = "$req_model" ] || return 1
+  cid=$(_compose_container_id) || true
+  [ -n "$cid" ] || return 1
+  files=$("$A770B_DOCKER" inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null || true)
+  [ -n "$files" ] || return 1
+  while IFS= read -r part; do
+    [ "$part" = "$A770B_COMPOSE_FILE" ] && found=1
+  done < <(printf '%s\n' "$files" | tr ',' '\n')
+  [ "$found" = 1 ] || return 1
+  health_word=$(bash "$SERVE" health 2>/dev/null) || true
+  [ "$health_word" = ready ] || return 1
+  if ! a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then
+    echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+    return 1
+  fi
+  if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ]; then
+    python3 "$LIVE_PY" write --path "$A770B_DATA/logs/live-backend.json" \
+      --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" \
+      --model "$req_model" --profile "$A770B_LIVE_PROFILE" --pid "$pid" || true
+  fi
+  echo "✓ $p already up ($(basename -- "$gguf"))"
+  _override_warn "$p"
+  return 0
+}
 _override_warn(){ # a card the operator marked operator_override: say so, so it is never a surprise
   local p="$1" v; v=$(a770b_profile_var "$p" OPERATOR_OVERRIDE)
   case "${v,,}" in true|1|yes) echo "⚠ $p is presented by operator override — set on the card (operator_override) or in A770B_${p^^}_OPERATOR_OVERRIDE; unset it to choose from all cards";; esac
@@ -314,6 +346,9 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       return 1
     fi
   fi
+  # Empty or stale sidecar. The container from a direct serve_compose.sh start can
+  # already be this profile; stopping it starts a second load.
+  if _serve_keep_unmarked; then return 0; fi
   bash "$SERVE" stop >/dev/null 2>&1
   _serve_start_or_die
 }
