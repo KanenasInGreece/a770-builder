@@ -462,12 +462,12 @@
       "reasoning": "off",
       "extra": "--trust-remote-code --device xpu --host 0.0.0.0 --disable-shared-experts-fusion --kv-cache-dtype fp8_e4m3 --mem-fraction-static 0.85 --chunked-prefill-size 8192 --max-total-tokens 131072 --max-running-requests 4 --dtype bfloat16 --max-mamba-cache-size 32 --cuda-graph-backend-decode full --cuda-graph-bs-decode 1 2 4",
       "capability_source": "The serve recipe published its own speed and quality tables on a different image and a different machine. Those numbers are not this row. This card's kit numbers are in speed, suite, and evidence.",
-      "use_for": "SGLang launch of Qwen3.8-Flash-Next EXL3 3.05bpw on the B70. Served context 131072. Useful window 100000: the sweep decoded 10.1 tok/s at 7958 tokens and 14.2 tok/s at 99887 tokens, both faster than 4 tok/s, and the 100000-token depth probe passed 3/3 at 99789 tokens. llama-benchy generation mode, mean of 3, decodes about 10.5, 10.0, 10.5 and 10.3 tok/s at 8192, 32768, 65536 and 100000, with prefill 1665.2, 1013.6, 1340.2 and 1219.6 tok/s. Those bench cells are not the sweep. The kit passed 3 of 3 counted stages, mean wall 1831 s, and all three references, on the server that was already up. Host-buffer RAM was not remeasured. Delivered suite rates were not measured.",
-      "depth_probe_100k": "pass (3/3)",
+      "use_for": "SGLang launch of Qwen3.8-Flash-Next EXL3 3.05bpw on the B70. Served context 131072. Useful window 100000: the sweep decoded 9.7 tok/s at 7958 tokens and 11.0 tok/s at 99887 tokens, both faster than 4 tok/s, and the 100000-token depth probe passed 2/3 at 99887 tokens. llama-benchy generation mode, mean of 3, decodes 9.9, 8.7, 9.9 and 9.6 tok/s at 8192, 32768, 65536 and 100000, with prefill 1418.3, 1174.1, 1256.7 and 1129.5 tok/s. Those bench cells are not the sweep. The kit passed 3 of 3 counted stages, mean wall 2785.3 s, and all three references, on the server the load left up. Host-buffer RAM was not remeasured. Delivered suite rates were not measured.",
+      "depth_probe_100k": "pass (2/3)",
       "category": "moe",
       "weight_class": "180b-a6b",
       "placement": "container",
-      "measured_on": "Arc Pro B70 32 GB, SGLang attached, 2026-10-16",
+      "measured_on": "Arc Pro B70 32 GB, SGLang attached, 2026-10-21",
       "card": "b70",
       "backend": "sglang",
       "mode": "inference",
@@ -483,7 +483,7 @@
       "ctx": 131072,
       "useful_ctx": 100000,
       "timeout_s": 1500,
-      "vram_gib_after_load": 31.52,
+      "vram_gib_after_load": 27.31,
       "ram_gb_extra": 20,
       "params_b": {
         "total": 180,
@@ -491,22 +491,22 @@
       },
       "speed": {
         "decode_tps": {
-          "8k": 10.5,
-          "32k": 10.0,
-          "64k": 10.5,
-          "100k": 10.3
+          "8k": 9.9,
+          "32k": 8.7,
+          "64k": 9.9,
+          "100k": 9.6
         },
         "prefill_tps": {
-          "8k": 1665.2,
-          "32k": 1013.6,
-          "64k": 1340.2,
-          "100k": 1219.6
+          "8k": 1418.3,
+          "32k": 1174.1,
+          "64k": 1256.7,
+          "100k": 1129.5
         },
         "far_end": {
           "tokens": 99887,
-          "decode_tps": 14.2,
-          "prefill_tps": 1088,
-          "ttft_s": 91.8
+          "decode_tps": 11.0,
+          "prefill_tps": 891,
+          "ttft_s": 112.1
         },
         "bench": {
           "tool": "llama-benchy",
@@ -515,31 +515,31 @@
           "flags": "--pp 8192 32768 65536 100000 --tg 128 --depth 0 --runs 3 --concurrency 1 --no-cache --skip-coherence --latency-mode generation --extra-body return_token_ids=false",
           "at_depth": {
             "8192": {
-              "pp": 1665.2,
-              "tg": 10.5
+              "pp": 1418.3,
+              "tg": 9.9
             },
             "32768": {
-              "pp": 1013.6,
-              "tg": 10.0
+              "pp": 1174.1,
+              "tg": 8.7
             },
             "65536": {
-              "pp": 1340.2,
-              "tg": 10.5
+              "pp": 1256.7,
+              "tg": 9.9
             },
             "100000": {
-              "pp": 1219.6,
-              "tg": 10.3
+              "pp": 1129.5,
+              "tg": 9.6
             }
           },
-          "source": "http-20261016-120918.json via http-20261016-120918.mapped.json. llama-benchy generation latency, mean of 3, depth 0, concurrency 1, response 128. The window sweep at 7958 tokens measured prefill 750 and decode 10.1; the 8192 cell is that other instrument. Full means stay in the mapped file."
+          "source": "flashnext-http-20261021-110248.mapped.json. llama-benchy generation latency, mean of 3, depth 0, concurrency 1, response 128. The window sweep at 7958 tokens measured prefill 613 and decode 9.7; the 8192 cell is that other instrument. Full means stay in the mapped file."
         }
       },
       "capability": {},
       "instrument": "SUITE-1@1",
       "task": "code-edit",
-      "evidence": "Image ghcr.io/0xsero/sglang-exl3-xpu-flashnext digest 24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f. The measurement exported A770B_PORT=30260; the skill default stays 7890. Container memory 40g, swap 40g, shm 8g, cpuset 8-23. NV tier on, victim write-back on (NO_VICTIM=0), RAM cap 20 on the stored run, 48 layers, 8000 MoE slots, n-gram tier nvme, KV bits 5, QSA sycl_row. The host has 62.69 GiB of RAM. The weights do not fit on the 32 GiB card. This host's env asks for 24 without a run at 24. The start-gate sample was 27.31 GiB. The kit load that fitted was 31.52 GiB. The device bind is that card's by-path node. Sweep decode 10.1 tok/s at 7958 tokens and 14.2 tok/s at 99887 tokens. Depth probe 3/3 at 99789 prompt tokens. llama-benchy generation mode, mean of 3, depth 0, 128 generated tokens: 8192 is 1665.2/10.5, 32768 is 1013.6/10.0, 65536 is 1340.2/10.5, 100000 is 1219.6/10.3. Those cells are not the sweep. Suite source candidate-suite-20261016-122801-3122074.json. Counted stages s1-frontend 2224 s / 503734 tokens, s2-backend 1039 s / 219758 tokens, s3-optimise 2230 s / 670707 tokens. Not counted toward pass: s0-design 738 s, ref-cpp-binary-search-tree 1235 s, ref-javascript-forth 1428 s, ref-python-pov 916 s. Thinking off. timeout_s stays 1500; the counted walls 2224 s and 2230 s exceed it. The recipe is https://github.com/sybil-solutions/qwen38-flash-next-b70-offload (MIT, archived 2026-10-12). Sparse attention follows Strata, https://github.com/Niko1221/Strata (MIT). Their published speeds are not this card, and this row does not copy their image.",
+      "evidence": "SUITE-1@1: 3/3 counted stages passed, mean wall 2785.3 s. Counted stages s1-frontend 3739 s, s2-backend 1790 s, s3-optimise 2827 s. Not counted toward pass: s0-design 675 s, ref-cpp-binary-search-tree 2037 s, ref-javascript-forth 1474 s, ref-python-pov 2136 s. All three references passed. Thinking off. The load read 27.31 GiB. The window peaked at 31.86 GiB, with decode 9.7 tok/s at 7958 tokens and 11.0 tok/s at 99887 tokens. The depth probe passed 2/3 at 99887 tokens. llama-benchy generation mode, mean of 3, depth 0, 128 generated tokens: 8192 is 1418.3/9.9, 32768 is 1174.1/8.7, 65536 is 1256.7/9.9, 100000 is 1129.5/9.6. Those cells are not the sweep. timeout_s stays 1500; the counted walls exceed it. ram_gb_extra 20 remains the tier RAM cap; host-buffer RAM was not remeasured. The envelope default image is ghcr.io/0xsero/sglang-exl3-xpu-flashnext digest 24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f. The recipe is https://github.com/sybil-solutions/qwen38-flash-next-b70-offload (MIT, archived 2026-10-12). Sparse attention follows Strata, https://github.com/Niko1221/Strata (MIT). Their published speeds are not this card, and this row does not copy their image.",
       "fit": {
-        "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 1831.0 s, all three reference exercises passed (2026-10-16, first run, attached server).",
+        "code": "SUITE-1@1: 3 of 3 counted stages passed, mean wall 2785.3 s, all three reference exercises passed (2026-10-21, server the load left up).",
         "write": "not measured"
       },
       "suite": {
@@ -547,51 +547,51 @@
         "runs": 3,
         "passed": 3,
         "timeouts": 0,
-        "mean_wall_s": 1831.0,
-        "source": "candidate-suite-20261016-122801-3122074.json",
+        "mean_wall_s": 2785.3,
+        "source": "flashnext-suite-20261021-112442-1367576.json",
         "instrument": "SUITE-1@1"
       },
       "measured_tasks": {
         "s0-design": {
           "quality": "pass",
-          "wall_s": 738,
-          "context_tokens": 113291,
+          "wall_s": 675,
+          "context_tokens": 53368,
           "thinking": "off"
         },
         "s1-frontend": {
           "quality": "pass",
-          "wall_s": 2224,
-          "context_tokens": 503734,
+          "wall_s": 3739,
+          "context_tokens": 850607,
           "thinking": "off"
         },
         "s2-backend": {
           "quality": "pass",
-          "wall_s": 1039,
-          "context_tokens": 219758,
+          "wall_s": 1790,
+          "context_tokens": 174987,
           "thinking": "off"
         },
         "s3-optimise": {
           "quality": "pass",
-          "wall_s": 2230,
-          "context_tokens": 670707,
+          "wall_s": 2827,
+          "context_tokens": 693846,
           "thinking": "off"
         },
         "ref-cpp-binary-search-tree": {
           "quality": "pass",
-          "wall_s": 1235,
-          "context_tokens": 151712,
+          "wall_s": 2037,
+          "context_tokens": 212147,
           "thinking": "off"
         },
         "ref-javascript-forth": {
           "quality": "pass",
-          "wall_s": 1428,
-          "context_tokens": 504215,
+          "wall_s": 1474,
+          "context_tokens": 177194,
           "thinking": "off"
         },
         "ref-python-pov": {
           "quality": "pass",
-          "wall_s": 916,
-          "context_tokens": 138185,
+          "wall_s": 2136,
+          "context_tokens": 347367,
           "thinking": "off"
         }
       }

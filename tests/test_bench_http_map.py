@@ -501,7 +501,7 @@ def test_render_readme_leads_with_the_attribution(tmp_path):
     html = (ROOT / "README.html").read_text(encoding="utf-8")
     title_at = html.index("<h1>")
     after_title = html[html.index("</h1>", title_at) + len("</h1>"):]
-    first, description = after_title.split("a770-builder is a harness around a local GPU", 1)
+    first, description = after_title.split("a770-builder qualifies a local coding model", 1)
     assert "llama-benchy" in first
     assert "https://github.com/sybil-solutions/qwen38-flash-next-b70-offload" in first
     assert "Strata" in first
