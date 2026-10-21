@@ -24,6 +24,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_BACKEND_PY = ROOT / "harness" / "live_backend.py"
 LOCAL_BUILD_SH = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+SERVE_COMPOSE_SH = ROOT / "harness" / "serve_compose.sh"
+OVERRIDE_PY = ROOT / "harness" / "compose_override.py"
 PROFILES_JSON = ROOT / "config" / "registry" / "a770.display.json"
 
 BUSY = "reload refused: the server is busy"
@@ -399,13 +401,91 @@ def test_serve_with_no_container_and_no_pidfile_still_starts(tmp_path, live_pid)
     assert any(line.startswith("start ") for line in lines)
 
 
+def _bash_unquote(word: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", 'eval "v=$1"; printf %s "$v"', "bash", word],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
+def _signature_call(env: dict, profile: str = "qwen35-9b-q4km-vulkan"):
+    """The env and argv serve() passes to serve_compose.sh signature for this profile."""
+    row = json.loads(Path(env["A770B_PROFILES_FILE"]).read_text(encoding="utf-8"))["profiles"][profile]
+    thinking = row.get("thinking") or {}
+    preserve = thinking.get("preserve")
+    gguf = str(Path(env["A770B_MODELS"]) / row["model"])
+    ctx = str(row["ctx"])
+    extra = str(row.get("extra") or "").split()
+    sig_env = dict(env)
+    sig_env.update(
+        A770B_SERVED_BACKEND=str(row.get("backend") or "vulkan"),
+        KV_K=str(row.get("kv") or ""),
+        KV_V=str(row.get("kv_v", row.get("kv") or "")),
+        REASONING=str(row.get("reasoning") or ""),
+        QUANT=str(row.get("quant") or "") if row.get("backend") in ("vllm", "sglang") else "",
+        TOOL_PARSER=str(row.get("tool_parser") or ""),
+        REASONING_PARSER=str(row.get("reasoning_parser") or ""),
+        THINKING_MODE=str(thinking.get("mode") or ""),
+        THINKING_EFFORT=str(thinking.get("effort") or ""),
+        THINKING_BUDGET="" if thinking.get("budget") is None else str(thinking.get("budget")),
+        THINKING_BUDGET_MESSAGE=str(thinking.get("budget_message") or ""),
+        THINKING_PRESERVE=("true" if preserve else "false") if isinstance(preserve, bool) else "",
+    )
+    return sig_env, gguf, ctx, extra
+
+
+def _run_serve_compose(env: dict, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(SERVE_COMPOSE_SH), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        env=env,
+    )
+
+
 def _ready_marked_server(env: dict, live_pid: int):
-    """Pidfile, mark, and a container inspect, with no claim that the sidecar names this pid."""
+    """Pidfile, mark, and override matching signature, plus a container inspect.
+
+    The sidecar is not claimed to name this pid.
+    """
     logs = Path(env["A770B_DATA"]) / "logs"
     (logs / "llamacpp-a770.pid").write_text(f"{live_pid}\n", encoding="utf-8")
+    sig_env, gguf, ctx, extra = _signature_call(env)
+    signature = _run_serve_compose(sig_env, "signature", gguf, ctx, *extra)
+    assert signature.returncode == 0, signature.stdout + signature.stderr
+    sig_lines = signature.stdout.splitlines()
+    assert sig_lines == [ctx, sig_lines[1]]
+    assert len(sig_lines) == 2 and sig_lines[1]
     (logs / "llamacpp-a770.model").write_text(
-        str(Path(env["A770B_MODELS"]) / QWEN) + "\n", encoding="utf-8"
+        gguf + "\n" + sig_lines[0] + "\n" + sig_lines[1] + "\n",
+        encoding="utf-8",
     )
+    plan = _run_serve_compose(sig_env, "plan", gguf, ctx, *extra)
+    assert plan.returncode == 0, plan.stdout + plan.stderr
+    entrypoint = ""
+    argv = []
+    for line in plan.stdout.splitlines():
+        if line.startswith("entrypoint: "):
+            entrypoint = line[len("entrypoint: "):]
+        elif line.startswith("argv: "):
+            argv.append(_bash_unquote(line[len("argv: "):]))
+    override = logs / "compose-argv.override.json"
+    cmd = [sys.executable, str(OVERRIDE_PY), "--out", str(override)]
+    if entrypoint:
+        cmd.extend(["--entrypoint", entrypoint])
+    cmd.append("--")
+    cmd.extend(argv)
+    written = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert written.returncode == 0, written.stderr
+    spec = importlib.util.spec_from_file_location("compose_override", OVERRIDE_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    document = json.loads(override.read_text(encoding="utf-8"))
+    assert mod.llama_service_signature(document["services"]["llama"]) == sig_lines[1]
     env["SERVE_CONTAINER_UP"] = "1"
     env["SERVE_INSPECT_PID"] = str(live_pid)
     httpd = HTTPServer(("127.0.0.1", 0), _Health)
@@ -477,6 +557,48 @@ def test_serve_restarts_when_the_mark_matches_but_the_envelope_does_not(tmp_path
     env = _serve_env(tmp_path)
     httpd, thread = _ready_marked_server(env, live_pid)
     env["SERVE_CONFIG_FILES"] = "/not/the/envelope.yaml"
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" not in result.stdout
+    lines = _log_lines(env)
+    assert "stop" in lines
+    assert any(line.startswith("start ") for line in lines)
+
+
+def test_serve_restarts_when_the_mark_context_differs(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    httpd, thread = _ready_marked_server(env, live_pid)
+    mark = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.model"
+    mark_lines = mark.read_text(encoding="utf-8").splitlines()
+    assert len(mark_lines) == 3
+    mark_lines[1] = "1"
+    mark.write_text("\n".join(mark_lines) + "\n", encoding="utf-8")
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" not in result.stdout
+    lines = _log_lines(env)
+    assert "stop" in lines
+    assert any(line.startswith("start ") for line in lines)
+
+
+def test_serve_restarts_when_the_mark_hash_differs(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    httpd, thread = _ready_marked_server(env, live_pid)
+    mark = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.model"
+    mark_lines = mark.read_text(encoding="utf-8").splitlines()
+    assert len(mark_lines) == 3
+    mark_lines[2] = "0" * 64
+    mark.write_text("\n".join(mark_lines) + "\n", encoding="utf-8")
     try:
         result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
     finally:

@@ -90,7 +90,7 @@ _recorded_serve_pid(){
   [ -n "$host" ] && [ "$host" != 0 ] && [ "$pid" = "$host" ] || return 1
   printf '%s\n' "$pid"
 }
-current(){ _recorded_serve_pid "$PIDF" >/dev/null && cat "$MARK" 2>/dev/null || echo ""; }
+current(){ _recorded_serve_pid "$PIDF" >/dev/null && head -n 1 "$MARK" 2>/dev/null || echo ""; }
 # The pidfile is a live llama-server. A vLLM container's host pid is not that name, and a failed start
 # removes the pidfile while the container can still be running. The project label is this seat's container.
 _compose_container_id(){
@@ -237,14 +237,54 @@ _serve_start_or_die(){
   die "server did not start — see the error above (a budget-gate or VRAM-cap refusal, or the server's own failure)"
 }
 # The sidecar does not name this pid. Keep the container when the mark is this model,
-# the compose file is this envelope, and /health is ready. A ladder start writes the
-# pidfile and the mark, and writes the sidecar only when A770B_LIVE_* is set.
+# this context, and this argv signature, the override file hashes the same, the compose
+# file is this envelope, and /health is ready. A missing mark line or a missing override
+# does not keep. A ladder start writes the pidfile and the mark, and writes the sidecar
+# only when A770B_LIVE_* is set.
 _serve_keep_unmarked(){
-  local pid mark_model cid files part found=0
+  local pid mark_model mark_ctx mark_hash cid files part found=0
+  local quant tool_parser reasoning_parser sig_out sig_ctx sig_hash ov ov_hash
   pid=$(_recorded_serve_pid "$PIDF") || return 1
   [ -f "$MARK" ] || return 1
-  mark_model=$(head -n 1 "$MARK" 2>/dev/null || true)
+  mark_model=""; mark_ctx=""; mark_hash=""
+  {
+    IFS= read -r mark_model || true
+    IFS= read -r mark_ctx || true
+    IFS= read -r mark_hash || true
+  } < "$MARK"
   [ -n "$mark_model" ] && [ "$(basename -- "$mark_model")" = "$req_model" ] || return 1
+  [ -n "$mark_ctx" ] && [ "$mark_ctx" = "$ctx" ] || return 1
+  [ -n "$mark_hash" ] || return 1
+  quant=$(a770b_profile_var "$p" QUANT)
+  tool_parser=$(a770b_profile_var "$p" TOOL_PARSER)
+  reasoning_parser=$(a770b_profile_var "$p" REASONING_PARSER)
+  # extra is a deliberate word list, expanded unquoted on purpose so each word is an argument
+  # shellcheck disable=SC2086
+  sig_out=$(
+    QUANT=$quant TOOL_PARSER=$tool_parser REASONING_PARSER=$reasoning_parser \
+      KV_K=$kv KV_V=${kv_v:-$kv} REASONING=$reasoning \
+      THINKING_MODE=$thinking_mode THINKING_EFFORT=$thinking_effort THINKING_BUDGET=$thinking_budget \
+      THINKING_BUDGET_MESSAGE=$thinking_budget_message THINKING_PRESERVE=$thinking_preserve \
+      bash "$A770B_PROJECT/harness/serve_compose.sh" signature "$gguf" "$ctx" $extra
+  ) || return 1
+  sig_ctx=$(printf '%s\n' "$sig_out" | sed -n '1p')
+  sig_hash=$(printf '%s\n' "$sig_out" | sed -n '2p')
+  [ -n "$sig_ctx" ] && [ -n "$sig_hash" ] || return 1
+  [ -z "$(printf '%s\n' "$sig_out" | sed -n '3p')" ] || return 1
+  [ "$mark_ctx" = "$sig_ctx" ] && [ "$mark_hash" = "$sig_hash" ] || return 1
+  ov="$A770B_DATA/logs/compose-argv.override.json"
+  [ -f "$ov" ] || return 1
+  ov_hash=$(python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from compose_override import llama_service_signature
+try:
+    doc = json.load(open(sys.argv[2], encoding="utf-8"))
+    print(llama_service_signature(doc["services"]["llama"]))
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    sys.exit(1)
+' "$A770B_PROJECT/harness" "$ov") || return 1
+  [ "$ov_hash" = "$sig_hash" ] || return 1
   cid=$(_compose_container_id) || true
   [ -n "$cid" ] || return 1
   files=$("$A770B_DOCKER" inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null || true)
@@ -275,7 +315,7 @@ _override_warn(){ # a card the operator marked operator_override: say so, so it 
 serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
   local live_json live_backend live_model live_profile req_backend req_model
-  local lock_held run_alive msg old_profile LIVE_PY health_word
+  local lock_held run_alive msg old_profile LIVE_PY health_word skip_unmarked_keep=0
   local -a rb_args
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
@@ -309,6 +349,8 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       if [ "$health_word" = ready ]; then
         if a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
         echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+        # One restart line, then stop and start. Do not fall through into the unmarked keep.
+        skip_unmarked_keep=1
       else
         echo "serve refused: $A770B_HOST:$A770B_PORT did not answer /health"
         return 1
@@ -348,7 +390,10 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   fi
   # Empty or stale sidecar. The container from a direct serve_compose.sh start can
   # already be this profile; stopping it starts a second load.
-  if _serve_keep_unmarked; then return 0; fi
+  # A key-rotation restart has already said so. Do not keep, and do not say it again.
+  if [ "$skip_unmarked_keep" != 1 ]; then
+    if _serve_keep_unmarked; then return 0; fi
+  fi
   bash "$SERVE" stop >/dev/null 2>&1
   _serve_start_or_die
 }
