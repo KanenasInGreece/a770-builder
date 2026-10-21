@@ -148,6 +148,17 @@ if [ "$REAS" = "on" ]; then
 fi
 SEAT_IS_OURS=0; [ -n "$SEAT" ] || SEAT_IS_OURS=1
 SEAT="${SEAT:-$A770B_DATA/kit-seat}"
+# serve_compose.sh writes the sidecar only when all four are set. This script calls
+# it directly, so rung 6's serve() would otherwise see no identity and recreate the load.
+if [ -n "$PROFILE_NAME" ]; then
+  A770B_LIVE_CARD=$(a770b_profile_var "$PROFILE_NAME" CARD)
+  A770B_LIVE_BACKEND=$(a770b_profile_var "$PROFILE_NAME" BACKEND)
+  A770B_LIVE_MODE=$(a770b_profile_var "$PROFILE_NAME" MODE)
+  A770B_LIVE_PROFILE=$PROFILE_NAME
+else
+  A770B_LIVE_CARD=""; A770B_LIVE_BACKEND=""; A770B_LIVE_MODE=""; A770B_LIVE_PROFILE=""
+fi
+export A770B_LIVE_CARD A770B_LIVE_BACKEND A770B_LIVE_MODE A770B_LIVE_PROFILE
 # a seat is a path, never a flag: '--seat --fresh' would otherwise make the seat the string '--fresh'
 case "$SEAT" in -*) die "the seat path looks like an option ('$SEAT') — pass --seat <path>";; esac
 # and the data directory a seat is replaced under has to be a real one, never empty and never the root
@@ -199,8 +210,12 @@ if [ "$DRYRUN" = 1 ]; then
     if [ -n "$_vllm_image" ]; then
       _image_prefix="A770B_VLLM_IMAGE=$_vllm_image "
     fi
+    _live_prefix=""
+    if [ -n "$A770B_LIVE_PROFILE" ]; then
+      _live_prefix="A770B_LIVE_CARD=$A770B_LIVE_CARD A770B_LIVE_BACKEND=$A770B_LIVE_BACKEND A770B_LIVE_MODE=$A770B_LIVE_MODE A770B_LIVE_PROFILE=$A770B_LIVE_PROFILE "
+    fi
     load_preview="A770B_SERVED_BACKEND=$A770B_SERVED_BACKEND A770B_COMPOSE_FILE=$A770B_COMPOSE_FILE"
-    load_preview+=" ${_image_prefix}KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS"
+    load_preview+=" ${_image_prefix}${_live_prefix}KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS"
     load_preview+=" THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA}"
     echo "[dry-run] rung 1/6: $load_preview — MemAvailable sampled before and after; VRAM sampled after load"
     _pp=$(initial_pp || true)
@@ -301,7 +316,9 @@ if [ -z "$FAIL_RUNG" ]; then
     if ! (
       if [ -n "$_vllm_image" ]; then export A770B_VLLM_IMAGE="$_vllm_image"; fi
       # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
-      KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
+      A770B_LIVE_CARD="$A770B_LIVE_CARD" A770B_LIVE_BACKEND="$A770B_LIVE_BACKEND" \
+        A770B_LIVE_MODE="$A770B_LIVE_MODE" A770B_LIVE_PROFILE="$A770B_LIVE_PROFILE" \
+        KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
         QUANT="$_q" TOOL_PARSER="$_tool" REASONING_PARSER="$_reason" \
         bash "$here/serve_compose.sh" start "$GGUF" "$CTX" $EXTRA
     ); then

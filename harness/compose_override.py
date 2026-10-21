@@ -15,8 +15,41 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import sys
+
+
+def argv_signature(entrypoint, argv):
+    """sha256 hex of the entrypoint string, then each argv word, joined by NUL.
+
+    An empty entrypoint is an empty first field. It is not omitted.
+    """
+    fields = ["" if entrypoint is None else str(entrypoint)]
+    fields.extend(str(word) for word in argv)
+    return hashlib.sha256(b"\0".join(field.encode() for field in fields)).hexdigest()
+
+
+def llama_service_signature(service):
+    """The argv signature of one compose services.llama object.
+
+    A missing entrypoint is empty. command is the argv word list.
+    """
+    if not isinstance(service, dict):
+        raise ValueError("services.llama is not an object")
+    entrypoint = service.get("entrypoint", None)
+    if entrypoint is None:
+        entrypoint_s = ""
+    elif isinstance(entrypoint, list):
+        entrypoint_s = " ".join(str(part) for part in entrypoint)
+    elif isinstance(entrypoint, str):
+        entrypoint_s = entrypoint
+    else:
+        raise ValueError("services.llama.entrypoint is not a string or a list")
+    command = service.get("command")
+    if not isinstance(command, list):
+        raise ValueError("services.llama.command is not a list")
+    return argv_signature(entrypoint_s, command)
 
 
 def override(argv, entrypoint=None):

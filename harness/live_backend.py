@@ -8,8 +8,9 @@ starts and removed when it stops.
 
 The file is `$A770B_DATA/logs/live-backend.json`. This module takes the path as an
 argument; it never reads `/health` and never calls curl. A read is the object only
-when the file is valid JSON of the contract and the pidfile names a live pid;
-otherwise it returns None and unlinks the sidecar, so a stale identity cannot linger.
+when the file is valid JSON of the contract and the pidfile names the same live pid
+the sidecar records. A newer pidfile with an older sidecar is not this server.
+Otherwise it returns None and unlinks the sidecar, so a stale identity cannot linger.
 
 Usage:
   live_backend.py write  --path P --card C --backend B --mode M --model F --profile N --pid PID
@@ -88,7 +89,11 @@ def clear(path):
 
 
 def read(path, pidfile):
-    """The sidecar object, or None (and the sidecar gone) when identity is not live."""
+    """The sidecar object, or None (and the sidecar gone) when identity is not live.
+
+    The pidfile pid must be alive and equal the sidecar pid. A ladder start rewrites
+    the pidfile without this file; that older sidecar is not the server now running.
+    """
     try:
         with open(path, encoding="utf-8") as fh:
             record = json.load(fh)
@@ -98,7 +103,7 @@ def read(path, pidfile):
     except (OSError, ValueError, TypeError):
         clear(path)
         return None
-    if not _alive(live):
+    if record["pid"] != live or not _alive(live):
         clear(path)
         return None
     return {k: record[k] for k in KEYS}

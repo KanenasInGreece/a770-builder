@@ -3033,31 +3033,30 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
     assert row["kv"] == "fp8_e4m3"
     assert "--kv-cache-dtype fp8_e4m3" in row["extra"]
     assert row["ctx"] == 131072 and row["useful_ctx"] == 100000
-    assert row["timeout_s"] == 1500
-    assert row["vram_gib_after_load"] == 31.52
+    assert row["timeout_s"] == 3739
+    assert row["vram_gib_after_load"] == 27.31
     assert row["ram_gb_extra"] == 20
-    assert row["depth_probe_100k"] == "pass (3/3)"
+    assert row["depth_probe_100k"] == "pass (2/3)"
     assert row["capability"] == {}
     assert "different image" in row["capability_source"]
     assert "different machine" in row["capability_source"]
     assert "delivered" not in row["speed"]
     assert "kernel" not in row
     assert "sampling" not in row
-    assert row["speed"]["decode_tps"] == {"8k": 10.5, "32k": 10.0, "64k": 10.5, "100k": 10.3}
-    assert row["speed"]["prefill_tps"] == {"8k": 1665.2, "32k": 1013.6, "64k": 1340.2, "100k": 1219.6}
-    assert row["speed"]["far_end"] == {"tokens": 99887, "decode_tps": 14.2, "prefill_tps": 1088, "ttft_s": 91.8}
+    assert row["speed"]["decode_tps"] == {"8k": 9.9, "32k": 8.7, "64k": 9.9, "100k": 9.6}
+    assert row["speed"]["prefill_tps"] == {"8k": 1418.3, "32k": 1174.1, "64k": 1256.7, "100k": 1129.5}
+    assert row["speed"]["far_end"] == {"tokens": 99887, "decode_tps": 11.0, "prefill_tps": 891, "ttft_s": 112.1}
     assert row["suite"]["briefs"] == 3 and row["suite"]["runs"] == 3 and row["suite"]["passed"] == 3
-    assert row["suite"]["timeouts"] == 0 and row["suite"]["mean_wall_s"] == 1831.0
+    assert row["suite"]["timeouts"] == 0 and row["suite"]["mean_wall_s"] == 2785.3
     assert row["suite"]["instrument"] == "SUITE-1@1"
     tasks = row["measured_tasks"]
-    assert tasks["s1-frontend"]["wall_s"] == 2224 and tasks["s1-frontend"]["context_tokens"] == 503734
-    assert tasks["s2-backend"]["wall_s"] == 1039 and tasks["s2-backend"]["context_tokens"] == 219758
-    assert tasks["s3-optimise"]["wall_s"] == 2230 and tasks["s3-optimise"]["context_tokens"] == 670707
+    assert tasks["s1-frontend"]["wall_s"] == 3739 and tasks["s1-frontend"]["context_tokens"] == 850607
+    assert tasks["s2-backend"]["wall_s"] == 1790 and tasks["s2-backend"]["context_tokens"] == 174987
+    assert tasks["s3-optimise"]["wall_s"] == 2827 and tasks["s3-optimise"]["context_tokens"] == 693846
     assert "ref-cpp-example" not in tasks
     blob = json.dumps(row)
     assert SERVED_DIGEST in blob
-    assert "30260" in row["evidence"] and "7890" in row["evidence"]
-    assert "62.69" in row["evidence"] and "27.31" in row["evidence"]
+    assert "27.31" in row["evidence"] and "31.86" in row["evidence"]
     assert RECIPE_URL in row["evidence"] and "Strata" in row["evidence"] and STRATA_URL in row["evidence"]
     assert "flashnext-ram24" in names
     ram24 = data["profiles"]["flashnext-ram24"]

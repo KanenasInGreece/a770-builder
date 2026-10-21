@@ -2,6 +2,7 @@
 # serve_compose.sh — the ONE way the containerized server starts on the builder card (A770B_SERVE=compose).
 # The one way the containerized server starts; skills/local-build/scripts/local-build.sh's serve() drives it:
 #   serve_compose.sh plan  <gguf> <ctx> [extra…]   print the llama-server argv and the compose invocation; no docker
+#   serve_compose.sh signature <gguf> <ctx> [extra…]  print the context and the argv signature; no docker, no env file, no health wait
 #   serve_compose.sh start <gguf> <ctx> [extra…]   recreate the container, wait for /health, enforce the cap, sidecar
 #   serve_compose.sh stop | status | health
 #   serve_compose.sh bench [--dry-run] -- <llama-bench args…>   one-shot llama-bench in the same image (speed rung)
@@ -312,6 +313,18 @@ _fail_started(){
   exit "$code"
 }
 
+# _argv_signature <entrypoint> [argv…] — sha256 hex of the entrypoint string and the argv words.
+# Empty entrypoint is an empty first field. One function for the mark and for `signature`.
+_argv_signature(){
+  local ep="$1"; shift
+  python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from compose_override import argv_signature
+print(argv_signature(sys.argv[2], sys.argv[3:]))
+' "$(dirname "$0")" "$ep" "$@"
+}
+
 # _health_class — one word on stdout: down, loading, or ready. Exit 0 only for ready.
 # vllm and sglang: HTTP success is ready, and the body is not read. Any other backend
 # is ready only when that success also contains "ok"; success without it is loading.
@@ -369,7 +382,7 @@ case "${1:-}" in
   status)
     cid=$(_compose ps -q "$CONTAINER" 2>/dev/null || true)
     if [ -n "$cid" ]; then
-      echo "running container $cid · $(cat "$MARK" 2>/dev/null)"
+      echo "running container $cid · $(head -n 1 "$MARK" 2>/dev/null)"
       a770b_curl -s "http://$A770B_HOST:$A770B_PORT/v1/models" | head -c 200; echo
     else
       echo "not running"
@@ -378,7 +391,7 @@ case "${1:-}" in
   health)
     _health_class && exit 0
     exit 1;;
-  plan|start) ;;
+  plan|start|signature) ;;
   bench)
     shift
     DRY=0; [ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
@@ -391,7 +404,7 @@ case "${1:-}" in
     fi
     _compose run --rm --no-deps --entrypoint /app/llama-bench "$CONTAINER" "$@"
     exit 0;;
-  *) echo "usage: serve_compose.sh plan|start <gguf> [ctx] [extra…] | stop | status | health | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
+  *) echo "usage: serve_compose.sh plan|start|signature <gguf> [ctx] [extra…] | stop | status | health | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
 esac
 MODE="$1"
 MODEL=$(a770b_model_path "${2:?gguf}"); CTX="${3:-32768}"; shift 3 2>/dev/null || shift $#
@@ -434,6 +447,13 @@ case "${A770B_SERVED_BACKEND:-}" in
     exit 2
     ;;
 esac
+
+# signature is the context and the hash of the argv this start would build. No docker, no env file, no health wait.
+if [ "$MODE" = signature ]; then
+  printf '%s\n' "$CTX"
+  _argv_signature "$ENTRYPOINT" "${ARGV[@]}"
+  exit 0
+fi
 
 if [ "$MODE" = plan ]; then
   echo "entrypoint: $ENTRYPOINT"
@@ -514,7 +534,11 @@ if [ -z "$CPID" ] || [ "$CPID" = 0 ]; then
   _fail_started 3 "⛔ the container answers /health but reports no live host pid — tearing it down"
 fi
 printf '%s\n' "$CPID" > "$PIDFILE"
-printf '%s\n' "$MODEL" > "$MARK"
+{
+  printf '%s\n' "$MODEL"
+  printf '%s\n' "$CTX"
+  _argv_signature "$ENTRYPOINT" "${ARGV[@]}"
+} > "$MARK"
 used=$(gpu_used_gib)
 # llama.cpp stops at the mode cap. vLLM stops at 0.9 of the card; sglang stops at the card total.
 limit="$A770B_VRAM_CAP_GIB"
