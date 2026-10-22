@@ -259,6 +259,12 @@ if printf '%s\n' "$sglang_arm" | grep -q 'usage_tap.py' \
 then echo "ok   sandbox: sglang and vllm start the usage tap, and any other engine keeps socat"
 else echo "FAIL sandbox: the bridge does not follow the recorded engine"; fail=1; fi
 grep -q 'run lock:' "$here/skills/local-build/scripts/local-build.sh" && grep -q '"seat: ' "$here/skills/local-build/scripts/local-build.sh" || { echo "FAIL status does not report the lock and the seat"; fail=1; }
+# verify used to substitute 1500s whenever --timeout was omitted, so a slow grader became a timeout.
+if grep -q 'verify $label · timeout=none' "$here/skills/local-build/scripts/local-build.sh" \
+  && grep -q 'FAIL (exit 124)' "$here/skills/local-build/scripts/local-build.sh" \
+  && ! grep -q 'timeout:-1500' "$here/skills/local-build/scripts/local-build.sh"
+then echo "ok   verify: an omitted --timeout is not a clock"
+else echo "FAIL verify still defaults a clock"; fail=1; fi
 # the run specification: the renderer refuses what the floor must not admit (I2), renders the floor after every addition
 # (I1, I9), the build script accepts the long profile (I10), and the capture keeps the snapshot and the echo (I8)
 RP="$here/harness/render_profile.py"; TPL="$here/config/opencode.profile.template.jsonc"; sd="$t/specseat"; mkdir -p "$sd"; echo "card text" > "$sd/card.md"

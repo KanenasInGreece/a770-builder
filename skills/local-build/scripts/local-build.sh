@@ -840,17 +840,32 @@ PY
     elif [ -n "$TEST" ]; then CMD=(bash -c "$TEST"); else CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}"); fi
     label=$(basename "${PATCH%.patch}"); OUT="$A770B_DATA/results/$label.verify.md"
     CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify 32768 "$CFG" nokey || exit 2
-    t=${timeout:-1500}
-    echo "▶ verify $label · seat $WT · inside the sandbox: ${CMD[*]}"
+    # An omitted --timeout is not a clock, the same rule run already uses.
+    # A number here is only the caller's fence, and 124 is that fence firing.
+    if [ -n "$timeout" ]; then
+      echo "▶ verify $label · timeout=${timeout}s · seat $WT · inside the sandbox: ${CMD[*]}"
+    else
+      echo "▶ verify $label · timeout=none · seat $WT · inside the sandbox: ${CMD[*]}"
+    fi
     { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "hidden tests: ${HIDDEN[*]:-none}"; echo "command, inside the sandbox (no model, no bridge, no key): ${CMD[*]}"; echo; echo '```'; } > "$OUT"
-    ( A770B_NO_BRIDGE=1 timeout "$t" bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
+    if [ -n "$timeout" ]; then
+      ( A770B_NO_BRIDGE=1 timeout "$timeout" bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
+    else
+      ( A770B_NO_BRIDGE=1 bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
+    fi
     vrc=${PIPESTATUS[0]}
     summary=$(grep -E '[0-9]+ (passed|failed|error)' "$OUT" | tail -1)
-    case "$vrc" in 0) verdict="PASS (exit 0)";; 124) verdict="TIMEOUT after ${t}s";; *) verdict="FAIL (exit $vrc)";; esac
+    case "$vrc" in
+      0) verdict="PASS (exit 0)";;
+      124)
+        if [ -n "$timeout" ]; then verdict="TIMEOUT after ${timeout}s"
+        else verdict="FAIL (exit 124)"; fi;;
+      *) verdict="FAIL (exit $vrc)";;
+    esac
     { echo '```'; echo; echo "verdict: $verdict — the exit code of the command is the verdict"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] [--timeout S] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
 fi
