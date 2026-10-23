@@ -46,6 +46,7 @@ inputs the ladder would hand the step, and the ladder JSON and printed row it wr
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -410,3 +411,97 @@ def test_ladder_dry_run_names_the_profile_backend_and_its_envelope(tmp_path):
     rung1 = _rung1(vulkan)
     assert "A770B_SERVED_BACKEND=vulkan" in rung1
     assert "compose/a770-vulkan.yaml" in rung1
+
+
+def _run_bare_ladder(tmp_path, *, dry_run=False, start_code=0):
+    """A bare weight, no tokenizer beside it, and a suite file that is not JSON.
+
+    The serve script is a fake. It appends its first argument to a log and exits
+    with start_code. A sentinel stands in for the container runtime so a real
+    compose command cannot run.
+    """
+    weight_dir = tmp_path / "weights"
+    weight_dir.mkdir()
+    weight = weight_dir / "bare-weight.gguf"
+    weight.write_bytes(b"not-a-weight")
+    suite = tmp_path / "not-a-suite.json"
+    suite.write_text("this is not json\n", encoding="utf-8")
+    log = tmp_path / "serve.log"
+    fake = tmp_path / "fake-serve.sh"
+    fake.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$1\" >> {shlex.quote(str(log))}\n"
+        f"exit {int(start_code)}\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    docker = tmp_path / "fake-docker.sh"
+    docker.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' docker >> {shlex.quote(str(log))}\n"
+        "exit 99\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    data = tmp_path / "data"
+    data.mkdir()
+    args = [
+        "bash", str(ROOT / "harness" / "ladder.sh"),
+        str(weight), "--ctx", "16384", "--suite", str(suite),
+    ]
+    if dry_run:
+        args.append("--dry-run")
+    res = subprocess.run(
+        args,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **{k: v for k, v in os.environ.items() if not k.startswith("A770B_")},
+            "A770B_PROJECT": str(ROOT),
+            "A770B_DATA": str(data),
+            "A770B_REFUSE": "/nonexistent",
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+            "A770B_CARD": "a770",
+            "A770B_CARD_MODE": "display",
+            "A770B_SERVE_SCRIPT": str(fake),
+            "A770B_DOCKER": str(docker),
+        },
+    )
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return res, lines
+
+
+def test_ladder_stops_a_started_server_when_suite_json_cannot_be_read(tmp_path):
+    """A successful start is stopped on the way out, including the suite.json refusal.
+
+    No tokenizer means the ladder never reaches a bench. The suite file is not JSON,
+    so the ladder exits non-zero before the results file. The fake records start then stop.
+    """
+    res, lines = _run_bare_ladder(tmp_path, start_code=0)
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert lines == ["start", "stop"]
+    assert "▶ rung 1/6" in res.stdout
+    for n in (2, 3, 4, 5, 6):
+        assert f"▶ rung {n}/6" not in res.stdout
+    assert "not valid JSON" in res.stderr
+    assert "docker" not in lines
+
+
+def test_ladder_dry_run_does_not_stop_or_call_the_serve_script(tmp_path):
+    """Dry-run exits before a server exists, so the fake serve script is never called."""
+    res, lines = _run_bare_ladder(tmp_path, dry_run=True, start_code=0)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert lines == []
+    assert "harness/serve_compose.sh" in res.stdout
+    assert "[dry-run] nothing written" in res.stdout
+
+
+def test_ladder_does_not_stop_when_start_fails(tmp_path):
+    """A non-zero start did not leave a server. The fake must not record stop."""
+    res, lines = _run_bare_ladder(tmp_path, start_code=7)
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert lines == ["start"]
+    for n in (2, 3, 4, 5, 6):
+        assert f"▶ rung {n}/6" not in res.stdout
+
