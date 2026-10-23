@@ -269,6 +269,21 @@ if [ "$DRYRUN" = 1 ]; then
   exit 0
 fi
 
+# Stop on the way out once this process has started a server. The next engine
+# uses a different compose file, so this start's container would stay up.
+_serve="${A770B_SERVE_SCRIPT:-$here/serve_compose.sh}"
+_ladder_started=0
+_ladder_stop() {
+  local rc=$?
+  [ "$_ladder_started" = 1 ] || return 0
+  _ladder_started=0
+  if ! bash "$_serve" stop; then
+    echo "⚠ could not stop the server this ladder started" >&2
+  fi
+  exit "$rc"
+}
+trap _ladder_stop EXIT
+
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
 LOGDIR="$A770B_DATA/logs"
 FAIL_RUNG=""; FAIL_MSG=""
@@ -320,10 +335,11 @@ if [ -z "$FAIL_RUNG" ]; then
         A770B_LIVE_MODE="$A770B_LIVE_MODE" A770B_LIVE_PROFILE="$A770B_LIVE_PROFILE" \
         KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
         QUANT="$_q" TOOL_PARSER="$_tool" REASONING_PARSER="$_reason" \
-        bash "$here/serve_compose.sh" start "$GGUF" "$CTX" $EXTRA
+        bash "$_serve" start "$GGUF" "$CTX" $EXTRA
     ); then
       FAIL_RUNG="load"; FAIL_MSG="serve_compose.sh failed"
     else
+      _ladder_started=1
       _vram=$(gpu_used_gib)
       _load=$(T0="$_t0" T1="$(date +%s.%N)" python3 -c 'import os; print(round(float(os.environ["T1"]) - float(os.environ["T0"]), 1))')
       python3 - "$A770B_DATA/results/$NAME.json" "$NAME" "$GGUF" "$CTX" "$_load" "$_vram" <<'PY'
