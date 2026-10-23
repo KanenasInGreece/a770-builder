@@ -521,6 +521,11 @@ for _ in $(seq 1 "$_health_tries"); do
     _health_prev="$_health_now"
   fi
   [ "$_health_now" = ready ] && break
+  # The try cap is only for a container that is still up. An id absent from
+  # the running list ends the wait.
+  if _health_cid=$(_compose ps -q "$CONTAINER" 2>/dev/null); then
+    [ -n "$_health_cid" ] || break
+  fi
   sleep "$_health_pause"
 done
 _health_after=$(_health_class) || true
