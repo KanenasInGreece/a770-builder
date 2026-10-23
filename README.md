@@ -64,7 +64,7 @@ Online seats go down, rate-limit, or spend credits on bounded work: a change to 
 
 ## Install
 
-Clone the repository. Copy `config/builder.env.example` to the builder env file named in [`docs/OPERATING.md`](docs/OPERATING.md), and put the profile's weights in `A770B_MODELS`. Install the skill with `npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy`, or copy `skills/local-build/` into the agent's skill directory. The skill needs this project at `A770B_PROJECT`, plus bubblewrap, uv, and opencode on the host.
+Clone the repository. Copy `config/builder.env.example` to the builder env file named in [`docs/OPERATING.md`](docs/OPERATING.md), and put the profile's weights in `A770B_MODELS`. Install the skill with `npx skills add KanenasInGreece/a770-builder --skill local-build -g --copy`, or copy `skills/local-build/` into the agent's skill directory. The skill needs this project at `A770B_PROJECT`, plus bubblewrap, uv 0.13.4 or newer, and opencode on the host.
 
 ```
 bash <skill-dir>/scripts/local-build.sh run <brief.md> --profile <profile>
@@ -74,4 +74,4 @@ Day-to-day running, the knobs, and where the weights come from are in [`docs/OPE
 
 ## Security
 
-The worker runs in bubblewrap, with the seat as its only writable tree, no credentials, and no network except the model server on loopback, which requires a key. The guard refuses every live checkout you list, and every linked worktree, symlink, and agent home. Capture executes nothing the model wrote, and `verify` re-runs a capture's tests in a fresh sandbox. The project needs that container, opencode, bubblewrap, socat, uv, and the profile's weights. It needs no database and no account. The seat has no route to any other service on the host. The harness knows of such a service only through two optional knobs, both empty by default: ports the model server must never bind, and a health URL read once before a start. [`SECURITY.md`](SECURITY.md) lists what the harness touches and what you still set yourself.
+The worker runs in bubblewrap, with the seat as its only writable tree, no credentials, and no network except the model server on loopback, which requires a key. The guard refuses every live checkout you list, and every linked worktree, symlink, and agent home. Capture executes nothing the model wrote, and `verify` re-runs a capture's tests in a fresh sandbox. The project needs that container, opencode, bubblewrap, socat, uv 0.13.4 or newer, and the profile's weights. It needs no database and no account. The seat has no route to any other service on the host. The harness knows of such a service only through two optional knobs, both empty by default: ports the model server must never bind, and a health URL read once before a start. [`SECURITY.md`](SECURITY.md) lists what the harness touches and what you still set yourself.
