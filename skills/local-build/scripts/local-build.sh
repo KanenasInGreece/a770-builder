@@ -236,6 +236,39 @@ _serve_start_or_die(){
   [ "$rc" = 0 ] && return 0
   die "server did not start — see the error above (a budget-gate or VRAM-cap refusal, or the server's own failure)"
 }
+# The container's image id has to be the id serve would start. A retag of the
+# same name does not keep the previous bytes.
+_running_image_matches(){
+  local cid running wanted name vllm_image var
+  cid=$(_compose_container_id) || return 1
+  [ -n "$cid" ] || return 1
+  running=$("$A770B_DOCKER" inspect -f '{{.Image}}' "$cid" 2>/dev/null) || return 1
+  [ -n "$running" ] || return 1
+  var=A770B_LLAMA_IMAGE
+  name=""
+  case "${A770B_SERVED_BACKEND:-}" in
+    vllm)
+      var=A770B_VLLM_IMAGE
+      vllm_image=$(a770b_profile_var "$p" VLLM_IMAGE 2>/dev/null || true)
+      [ -n "$vllm_image" ] && name=$vllm_image
+      ;;
+    sglang) var=A770B_SGLANG_IMAGE ;;
+  esac
+  if [ -z "$name" ]; then
+    name=${!var:-}
+    if [ -z "$name" ] && [ -f "${A770B_COMPOSE_ENV_FILE:-}" ]; then
+      name=$(grep -E "^[[:space:]]*${var}=" "$A770B_COMPOSE_ENV_FILE" | tail -n 1 | cut -d= -f2-)
+      name=${name%\"}; name=${name#\"}; name=${name%\'}; name=${name#\'}
+    fi
+  fi
+  [ -n "$name" ] || return 1
+  case "$name" in
+    *@sha256:*) wanted="sha256:${name##*@sha256:}" ;;
+    *) wanted=$("$A770B_DOCKER" image inspect -f '{{.Id}}' "$name" 2>/dev/null) || return 1 ;;
+  esac
+  [ -n "$wanted" ] || return 1
+  [ "$running" = "$wanted" ]
+}
 # The sidecar does not name this pid. Keep the container when the mark is this model,
 # this context, and this argv signature, the override file hashes the same, the compose
 # file is this envelope, and /health is ready. A missing mark line or a missing override
@@ -299,6 +332,10 @@ except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
     echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
     return 1
   fi
+  if ! _running_image_matches; then
+    echo "↻ the running server is not the pinned image — restarting it"
+    return 1
+  fi
   if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ]; then
     python3 "$LIVE_PY" write --path "$A770B_DATA/logs/live-backend.json" \
       --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" \
@@ -347,10 +384,18 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
     if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ]; then
       health_word=$(bash "$SERVE" health 2>/dev/null) || true
       if [ "$health_word" = ready ]; then
-        if a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
-        echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
-        # One restart line, then stop and start. Do not fall through into the unmarked keep.
-        skip_unmarked_keep=1
+        if a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then
+          cid=$(_compose_container_id) || true
+          if [ -z "$cid" ] || _running_image_matches; then
+            echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0
+          fi
+          echo "↻ the running server is not the pinned image — restarting it"
+          skip_unmarked_keep=1
+        else
+          echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+          # One restart line, then stop and start. Do not fall through into the unmarked keep.
+          skip_unmarked_keep=1
+        fi
       else
         echo "serve refused: $A770B_HOST:$A770B_PORT did not answer /health"
         return 1

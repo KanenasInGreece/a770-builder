@@ -199,7 +199,7 @@ _scan_named_vllm_image() {
     *) return 0 ;;
   esac
   local found
-  if ! found=$("$A770B_DOCKER" run --rm --network=none --entrypoint bash "$1" -c '
+  if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never --entrypoint bash "$1" -c '
     set +e
     err=0
     if find /etc/ssl/certs /usr/share/ca-certificates -name "emSign_ECC_Root_CA_-_G3*" 2>/dev/null | grep -q .; then
@@ -223,14 +223,18 @@ _scan_named_vllm_image() {
       base=$(basename "$dir")
       case "$base" in proc|sys|dev|run) continue;; esac
       [ -d "$dir" ] || continue
-      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
+      find "$dir" -type f \( -name "*.pem" -o -name "*.crt" -o -name "*.cer" -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
       if [ "$?" -ne 0 ]; then err=1; fi
       while read -r f; do
         [ -n "$f" ] || continue
         grep -a -q "emSign ECC Root CA - G3" "$f"
         grc=$?
         if [ "$grc" -eq 0 ]; then printf "%s\n" "$f"
-        elif [ "$grc" -ne 1 ]; then err=1; fi
+        elif [ "$grc" -ne 1 ]; then err=1
+        elif openssl crl2pkcs7 -nocrl -certfile "$f" -out /tmp/ca-one.p7 2>/dev/null \
+          && openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout 2>/dev/null \
+          | grep -q "emSign ECC Root CA - G3"; then printf "%s\n" "$f"
+        fi
       done < /tmp/ca-scan-list
     done
     rm -f /tmp/ca-scan-list
@@ -245,11 +249,37 @@ _scan_named_vllm_image() {
   fi
 }
 
+# A tag can move between the scan and compose up. Pin the id the scan just saw.
+# An empty inspect result is a test double; a real docker prints an id or fails.
+_pin_compose_image() {
+  local var="$1" name id
+  name=$(_value_for "$var")
+  [ -n "$name" ] || return 0
+  case "$name" in
+    *@sha256:*) return 0 ;;
+  esac
+  if ! id=$("$A770B_DOCKER" image inspect -f '{{.Id}}' "$name" 2>/dev/null); then
+    echo "⛔ could not resolve $name to an image id" >&2
+    exit 2
+  fi
+  [ -n "$id" ] || return 0
+  case "$id" in
+    sha256:*) ;;
+    *) echo "⛔ $name resolved to '$id', not an image id" >&2; exit 2 ;;
+  esac
+  export "$var=${name}@${id}"
+}
+
 _trust_gate() {
   _refuse_old_trust "$(_value_for A770B_LLAMA_IMAGE)"
   _refuse_old_trust "$(_value_for A770B_VLLM_IMAGE)"
   _refuse_old_trust "$(_value_for A770B_SGLANG_IMAGE)"
   _scan_named_vllm_image "$(_value_for A770B_VLLM_IMAGE)"
+  case "${A770B_SERVED_BACKEND:-}" in
+    vllm) _pin_compose_image A770B_VLLM_IMAGE ;;
+    sglang) _pin_compose_image A770B_SGLANG_IMAGE ;;
+    *) _pin_compose_image A770B_LLAMA_IMAGE ;;
+  esac
 }
 
 # _sglang_preflight — before any docker call. Victim write-back stays on, and

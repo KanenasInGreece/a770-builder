@@ -18,8 +18,20 @@ USER root
 COPY --from=ghcr.io/astral-sh/uv@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /tmp/uv-0.13.5
 COPY --from=ghcr.io/astral-sh/uv@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uvx /tmp/uvx-0.13.5
 RUN set -eu; \
+    bundle_has_root() { \
+      if grep -q "emSign ECC Root CA - G3" "$1"; then return 0; \
+      else rc=$?; if [ "$rc" -ne 1 ]; then return 2; fi; fi; \
+      if openssl crl2pkcs7 -nocrl -certfile "$1" -out /tmp/ca-one.p7 2>/dev/null; then \
+        if openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout > /tmp/ca-one.subj 2>/dev/null; then \
+          if grep -q "emSign ECC Root CA - G3" /tmp/ca-one.subj; then return 0; fi; \
+        fi; \
+      fi; \
+      return 1; \
+    }; \
     : > /tmp/ca-tools; \
-    for dir in /opt /usr /root /usr/local /home /app /workspace /srv /var /tmp; do \
+    for dir in /*; do \
+      base=$(basename "$dir"); \
+      case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
       find "$dir" -type f \( -name uv -o -name uvx \) >> /tmp/ca-tools || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
@@ -100,35 +112,38 @@ RUN set -eu; \
       base=$(basename "$dir"); \
       case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
-      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' \) >> /tmp/ca-pems || { echo "could not list $dir" >&2; exit 1; }; \
+      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name '*.cer' \) >> /tmp/ca-pems || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
     while read -r bundle; do \
       [ -n "$bundle" ] || continue; \
       if [ -L "$bundle" ]; then continue; fi; \
       if [ "$bundle" = "$clean" ]; then continue; fi; \
       if [ "$bundle" = /etc/ssl/certs/ca-certificates.crt ]; then continue; fi; \
-      if grep -q "emSign ECC Root CA - G3" "$bundle"; then cp "$clean" "$bundle"; fi; \
+      if bundle_has_root "$bundle"; then cp "$clean" "$bundle"; \
+      else rc=$?; if [ "$rc" -eq 2 ]; then echo "could not read $bundle" >&2; exit 1; fi; fi; \
     done < /tmp/ca-pems; \
     : > /tmp/ca-bundles; \
     for dir in /*; do \
       base=$(basename "$dir"); \
       case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
-      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name ca-certificates.crt \) >> /tmp/ca-bundles || { echo "could not list $dir" >&2; exit 1; }; \
+      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name '*.cer' -o -name ca-certificates.crt \) >> /tmp/ca-bundles || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
     bad=0; \
     while read -r bundle; do \
       [ -n "$bundle" ] || continue; \
-      if grep -q "emSign ECC Root CA - G3" "$bundle"; then \
+      if bundle_has_root "$bundle"; then \
         echo "$bundle" >&2; bad=1; \
       else \
         rc=$?; \
-        if [ "$rc" -ne 1 ]; then echo "could not read $bundle" >&2; exit 1; fi; \
+        if [ "$rc" -eq 2 ]; then echo "could not read $bundle" >&2; exit 1; fi; \
       fi; \
     done < /tmp/ca-bundles; \
     if [ "$bad" = 1 ]; then echo "emSign ECC Root CA - G3 is still in a trust bundle" >&2; exit 1; fi; \
     : > /tmp/ca-uv; \
-    for dir in /opt /usr /root /usr/local /home /app /workspace /srv /var /tmp; do \
+    for dir in /*; do \
+      base=$(basename "$dir"); \
+      case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
       find "$dir" -type f \( -name uv -o -name uvx \) >> /tmp/ca-uv || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
@@ -142,4 +157,4 @@ RUN set -eu; \
       fi; \
     done < /tmp/ca-uv; \
     if [ "$bad" = 1 ]; then echo "a uv binary still trusts emSign ECC Root CA - G3" >&2; exit 1; fi; \
-    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-uv
+    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-uv /tmp/ca-one.p7 /tmp/ca-one.subj
