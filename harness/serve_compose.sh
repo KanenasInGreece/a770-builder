@@ -202,9 +202,28 @@ _scan_named_vllm_image() {
   if ! found=$("$A770B_DOCKER" run --rm --network=none --entrypoint bash "$1" -c '
     set +e
     err=0
-    for dir in /opt /usr /root /etc /app /workspace /home /srv /var /usr/local /tmp; do
+    if find /etc/ssl/certs /usr/share/ca-certificates -name "emSign_ECC_Root_CA_-_G3*" 2>/dev/null | grep -q .; then
+      echo "emSign_ECC_Root_CA_-_G3"
+    fi
+    if find /etc/ssl/certs -type l -lname "*emSign_ECC_Root_CA_-_G3*" 2>/dev/null | grep -q .; then
+      echo "emSign_ECC_Root_CA_-_G3-link"
+    fi
+    if [ -f /etc/ca-certificates.conf ] && grep -q "emSign_ECC_Root_CA_-_G3" /etc/ca-certificates.conf; then
+      echo "/etc/ca-certificates.conf"
+    fi
+    if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+      if ! command -v openssl >/dev/null 2>&1; then err=1
+      elif ! openssl crl2pkcs7 -nocrl -certfile /etc/ssl/certs/ca-certificates.crt -out /tmp/ca-system.p7; then err=1
+      elif ! openssl pkcs7 -in /tmp/ca-system.p7 -print_certs -noout > /tmp/ca-system.subj; then err=1
+      elif grep -q "emSign ECC Root CA - G3" /tmp/ca-system.subj; then echo "/etc/ssl/certs/ca-certificates.crt"
+      fi
+      rm -f /tmp/ca-system.p7 /tmp/ca-system.subj
+    fi
+    for dir in /*; do
+      base=$(basename "$dir")
+      case "$base" in proc|sys|dev|run) continue;; esac
       [ -d "$dir" ] || continue
-      find "$dir" -type f \( -name cacert.pem -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
+      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
       if [ "$?" -ne 0 ]; then err=1; fi
       while read -r f; do
         [ -n "$f" ] || continue

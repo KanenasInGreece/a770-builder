@@ -153,7 +153,12 @@ def test_dry_run_prints_the_uvx_command_and_does_not_call_uvx(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     uvx = bindir / "uvx"
-    uvx.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n", encoding="utf-8")
+    uvx.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in --version) printf "%s\\n" "uvx 0.13.5"; exit 0;; esac\n'
+        f"touch {marker}\nexit 99\n",
+        encoding="utf-8",
+    )
     uvx.chmod(0o755)
     curl = bindir / "curl"
     curl.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n", encoding="utf-8")
@@ -367,7 +372,15 @@ def _sglang_dry_run(tmp_path, with_tokenizer, attached=False):
     bindir.mkdir()
     for name in ("uvx", "docker", "curl"):
         stub = bindir / name
-        stub.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n", encoding="utf-8")
+        if name == "uvx":
+            stub.write_text(
+                "#!/bin/sh\n"
+                'case "$1" in --version) printf "%s\\n" "uvx 0.13.5"; exit 0;; esac\n'
+                f"touch {marker}\nexit 99\n",
+                encoding="utf-8",
+            )
+        else:
+            stub.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n", encoding="utf-8")
         stub.chmod(0o755)
     env = _isolated(tmp_path)
     env["PATH"] = f"{bindir}:{env['PATH']}"

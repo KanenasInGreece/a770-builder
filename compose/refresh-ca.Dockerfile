@@ -5,10 +5,13 @@
 # keeps its package and receives that same bundle in place of the compromised
 # file. Every file named uv is replaced with the uv 0.13.5 binary, and every
 # file named uvx with the uvx binary, both copied by digest. The build
-# refuses to finish while emSign ECC Root CA - G3 remains in a cacert.pem,
-# in ca-certificates.crt, or in a uv or uvx binary, and it refuses if a
-# directory cannot be listed or a bundle cannot be read. The system store
-# is not overwritten: a copy of the root there fails the build.
+# refuses to finish while emSign ECC Root CA - G3 remains in a bundle,
+# in a uv or uvx binary, or in the system store. update-ca-certificates
+# drops a certificate only when its conf line starts with !. The line is
+# marked, the store is rebuilt, then the certificate file and the line are
+# removed. The certifi bundle is not copied onto the system store, and a
+# symlink is not followed while another bundle is replaced. A directory
+# that cannot be listed, or a bundle that cannot be read, fails the build.
 ARG BASE
 FROM ${BASE}
 USER root
@@ -59,19 +62,59 @@ RUN set -eu; \
       fi; \
     done; \
     if [ -z "$clean" ]; then echo "no patched certifi bundle was found" >&2; exit 1; fi; \
+    if [ -f /etc/ca-certificates.conf ]; then \
+      sed 's|^mozilla/emSign_ECC_Root_CA_-_G3\.crt$|!mozilla/emSign_ECC_Root_CA_-_G3.crt|' /etc/ca-certificates.conf > /tmp/ca-conf; \
+      cat /tmp/ca-conf > /etc/ca-certificates.conf; \
+      rm -f /tmp/ca-conf; \
+    fi; \
+    if [ -x /usr/sbin/update-ca-certificates ]; then update-ca-certificates || { echo "could not rebuild the system trust store" >&2; exit 1; }; fi; \
+    rm -f /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt /etc/ssl/certs/emSign_ECC_Root_CA_-_G3.pem; \
+    if [ -d /etc/ssl/certs ]; then find /etc/ssl/certs -type l -lname '*emSign_ECC_Root_CA_-_G3*' -exec rm -f {} \;; fi; \
+    if [ -f /etc/ca-certificates.conf ]; then \
+      grep -v 'emSign_ECC_Root_CA_-_G3' /etc/ca-certificates.conf > /tmp/ca-conf || true; \
+      cat /tmp/ca-conf > /etc/ca-certificates.conf; \
+      rm -f /tmp/ca-conf; \
+    fi; \
+    if [ -x /usr/sbin/update-ca-certificates ]; then update-ca-certificates || { echo "could not rebuild the system trust store" >&2; exit 1; }; fi; \
+    rm -f /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt /etc/ssl/certs/emSign_ECC_Root_CA_-_G3.pem; \
+    if [ -d /etc/ssl/certs ]; then find /etc/ssl/certs -type l -lname '*emSign_ECC_Root_CA_-_G3*' -exec rm -f {} \;; fi; \
+    left=$(find /etc/ssl/certs /usr/share/ca-certificates -name 'emSign_ECC_Root_CA_-_G3*' 2>/dev/null || true); \
+    links=$(find /etc/ssl/certs -type l -lname '*emSign_ECC_Root_CA_-_G3*' 2>/dev/null || true); \
+    if [ -n "$left" ] || [ -n "$links" ]; then \
+      printf '%s\n' "$left" "$links" >&2; \
+      echo "the system store still has emSign ECC Root CA - G3" >&2; exit 1; \
+    fi; \
+    if [ -f /etc/ca-certificates.conf ] && grep -q 'emSign_ECC_Root_CA_-_G3' /etc/ca-certificates.conf; then \
+      echo "ca-certificates.conf still names emSign ECC Root CA - G3" >&2; exit 1; \
+    fi; \
+    if [ -f /etc/ssl/certs/ca-certificates.crt ]; then \
+      if ! command -v openssl >/dev/null 2>&1; then echo "openssl is missing; cannot read the system bundle" >&2; exit 1; fi; \
+      if ! openssl crl2pkcs7 -nocrl -certfile /etc/ssl/certs/ca-certificates.crt -out /tmp/ca-system.p7; then echo "could not read the system bundle" >&2; exit 1; fi; \
+      if ! openssl pkcs7 -in /tmp/ca-system.p7 -print_certs -noout > /tmp/ca-system.subj; then echo "could not read the system bundle" >&2; exit 1; fi; \
+      if grep -q "emSign ECC Root CA - G3" /tmp/ca-system.subj; then echo "the system bundle still trusts emSign ECC Root CA - G3" >&2; exit 1; \
+      else rc=$?; if [ "$rc" -ne 1 ]; then echo "could not read the system bundle" >&2; exit 1; fi; fi; \
+      rm -f /tmp/ca-system.p7 /tmp/ca-system.subj; \
+    fi; \
     : > /tmp/ca-pems; \
-    for dir in /opt /usr /root /etc /app /workspace /home /srv /var /tmp; do \
+    for dir in /*; do \
+      base=$(basename "$dir"); \
+      case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
-      find "$dir" -name cacert.pem >> /tmp/ca-pems || { echo "could not list $dir" >&2; exit 1; }; \
+      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' \) >> /tmp/ca-pems || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
     while read -r bundle; do \
       [ -n "$bundle" ] || continue; \
-      if [ "$bundle" != "$clean" ] && grep -q "emSign ECC Root CA - G3" "$bundle"; then cp "$clean" "$bundle"; fi; \
+      if [ -L "$bundle" ]; then continue; fi; \
+      if [ "$bundle" = "$clean" ]; then continue; fi; \
+      if [ "$bundle" = /etc/ssl/certs/ca-certificates.crt ]; then continue; fi; \
+      if grep -q "emSign ECC Root CA - G3" "$bundle"; then cp "$clean" "$bundle"; fi; \
     done < /tmp/ca-pems; \
     : > /tmp/ca-bundles; \
-    for dir in /opt /usr /root /etc /app /workspace /home /srv /var /tmp; do \
+    for dir in /*; do \
+      base=$(basename "$dir"); \
+      case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
-      find "$dir" -type f \( -name cacert.pem -o -name ca-certificates.crt \) >> /tmp/ca-bundles || { echo "could not list $dir" >&2; exit 1; }; \
+      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name ca-certificates.crt \) >> /tmp/ca-bundles || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
     bad=0; \
     while read -r bundle; do \
