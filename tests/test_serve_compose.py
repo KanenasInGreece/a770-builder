@@ -68,6 +68,7 @@ case " $* " in
   *" up "*) {up_body}
   *" ps --all -q "*|*" ps -q --all "*|*" ps "*" --all "*) {ps_all_body}
   *" ps -q "*) {ps_body}
+  *" image inspect "*) printf '%s\\n' "sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0;;
   *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{inspect_pid}"; exit 0;;
   *" logs "*) {logs_arm}
   *) exit 0;;
