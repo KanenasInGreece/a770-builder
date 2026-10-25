@@ -367,6 +367,19 @@ def test_bench_is_a_one_shot_llama_bench_in_the_same_image(tmp_path):
     assert "--rm" in run[0] and "--no-deps" in run[0]
 
 
+def test_bench_refuses_an_image_that_still_trusts_the_compromised_root(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp@sha256:33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4",
+    )
+    r = _run(env, "bench", "--", "-m", "/models/x.gguf")
+    assert r.returncode == 2
+    assert "emSign ECC Root CA - G3" in r.stderr
+    assert not log.exists()
+
+
 def _budget_gate(env):
     return subprocess.run(["bash", "-c", '. harness/env.sh; . harness/guard.sh; budget_gate'],
                           capture_output=True, text=True, cwd=ROOT, env=env)
@@ -873,6 +886,71 @@ def test_start_refuses_an_image_that_still_trusts_the_compromised_root(tmp_path)
     )
     r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
     assert r.returncode == 2
+    assert "emSign ECC Root CA - G3" in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_refuses_a_compromised_digest_named_only_in_the_env_file(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env_file = tmp_path / "vllm.env"
+    env_file.write_text(
+        "A770B_VLLM_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:"
+        "b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f\n",
+        encoding="utf-8",
+    )
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_COMPOSE_ENV_FILE=str(env_file),
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    env.pop("A770B_VLLM_IMAGE", None)
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2
+    assert "b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f" in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_scans_the_measured_vllm_name_before_starting_it(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(
+        bin_,
+        "docker",
+        f'printf \'%s\\n\' "$*" >> "{log}"\n'
+        'case " $* " in\n'
+        '  *" run "*) printf \'%s\\n\' "/opt/venv/lib/python3.12/site-packages/certifi/cacert.pem"; exit 0;;\n'
+        '  *) exit 0;;\n'
+        'esac\n',
+    )
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="exl3xpu:b70-15ded2f",
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "exl3xpu:b70-15ded2f" in r.stderr
     assert "emSign ECC Root CA - G3" in r.stderr
     assert "started server container" not in r.stdout
 
@@ -1505,6 +1583,10 @@ def test_start_sglang_keeps_a_load_above_the_llama_cap_and_below_the_card(tmp_pa
         f"\"mem_used\": {used}, \"mem_free\": 0}}]'",
     )
     nodes = _sglang_nodes(tmp_path)
+    nodes["A770B_SGLANG_IMAGE"] = (
+        "example.invalid/sglang@sha256:"
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
     env = _env(
         tmp_path, bin_,
         A770B_SERVED_BACKEND="sglang",
@@ -1540,6 +1622,10 @@ def test_start_sglang_stops_when_used_vram_exceeds_the_card(tmp_path):
         f"\"mem_used\": {used}, \"mem_free\": 0}}]'",
     )
     nodes = _sglang_nodes(tmp_path)
+    nodes["A770B_SGLANG_IMAGE"] = (
+        "example.invalid/sglang@sha256:"
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
     env = _env(
         tmp_path, bin_,
         A770B_SERVED_BACKEND="sglang",

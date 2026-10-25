@@ -64,18 +64,20 @@ examples and edit the two DRM nodes and the two group ids for THIS host.
 
 ```bash
 docker pull ghcr.io/ggml-org/llama.cpp@sha256:f0be303ba81eafe6abd5d4a7aef4eaa64a6b394b5c5878280598b3fbcb790ba6   # Vulkan
-docker pull ghcr.io/ggml-org/llama.cpp@sha256:b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f   # SYCL
-# paste each repo@sha256:… into A770B_LLAMA_IMAGE in the matching compose/a770-*.env
+# paste that repo@sha256:… into A770B_LLAMA_IMAGE in compose/a770-vulkan.env
 ```
 
 Use `full-*`, never `server-*`: `server-*` does not ship `llama-bench`, which a one-shot bench in that image still
 runs. The ladder's speed rung does not: it leaves the server up and calls `harness/bench_http.sh`.
 
 The Vulkan digest above is llama.cpp build 11870. Its certifi is 2026.10.23 and its uv is 0.13.5, so it does
-not trust the compromised emSign ECC Root CA - G3 root. The SYCL digest's virtualenv is the same, but Ubuntu's
-pip bundle in that image still has the root. vLLM `0.26.0-b2` (and tag `1.5`, the same bytes) and the Flash-Next
-SGLang digest `24c872759256` still vendor certifi 2026.07.22. Build `compose/refresh-ca.Dockerfile` from each of
-those three digests before serving them. The command is in the matching `compose/*.env.example`.
+not trust the compromised emSign ECC Root CA - G3 root. The SYCL base
+`sha256:b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f` is a build input only. Its virtualenv
+is already clean, but Ubuntu's pip bundle in that image still has the root. Do not put that digest in
+`A770B_LLAMA_IMAGE`. vLLM `0.26.0-b2` (and tag `1.5`, the same bytes) and the Flash-Next SGLang digest
+`24c872759256` still vendor certifi 2026.07.22. Build `compose/refresh-ca.Dockerfile` from each of those three
+digests and pin the image that build prints. The command is in the matching `compose/*.env.example`. Serve
+refuses the base digests.
 
 ## 5. Bring the server up
 

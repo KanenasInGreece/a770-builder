@@ -74,10 +74,25 @@ def test_env_sh_refuses_a_missing_uv(tmp_path):
     assert "not on PATH" in r.stderr
 
 
+def test_env_sh_refuses_uvx_older_than_0_13_4(tmp_path):
+    # uvx fetches on its own. A new uv does not fix an old uvx earlier on PATH.
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    _make_bin(fake, "uv", 'printf "%s\\n" "uv 0.13.5 (test)"')
+    _make_bin(fake, "uvx", 'printf "%s\\n" "uvx 0.12.24 (test)"')
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"))
+    env["PATH"] = f"{fake}:/bin"
+    r = run_bash(f'. "{ENV_SH}"', env=env)
+    assert r.returncode == 2
+    assert "uvx 0.12.24" in r.stderr
+    assert "emSign ECC Root CA - G3" in r.stderr
+
+
 def test_env_sh_accepts_uv_0_13_4(tmp_path):
     fake = tmp_path / "bin"
     fake.mkdir()
     _make_bin(fake, "uv", 'printf "%s\\n" "uv 0.13.4 (test)"')
+    _make_bin(fake, "uvx", 'printf "%s\\n" "uvx 0.13.4 (test)"')
     env = dict(os.environ, A770B_DATA=str(tmp_path / "data"))
     env["PATH"] = f"{fake}:/bin"
     r = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_RESET_PATTERN"', env=env)

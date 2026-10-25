@@ -176,6 +176,63 @@ _value_for(){
   printf '%s\n' "$val"
 }
 
+# Published images that still trust emSign ECC Root CA - G3. The value is the
+# one compose will interpolate: an export wins, then the gitignored env file.
+_refuse_old_trust() {
+  case "$1" in
+    *33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4*|\
+    *7b4905e41d2720bfccf390e78e938e8148329b3da9467d3f1b008f0efc44cd97*|\
+    *52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b*|\
+    *24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f*|\
+    *b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f*)
+      echo "⛔ $1 still trusts the compromised emSign ECC Root CA - G3 root. Rebuild it with compose/refresh-ca.Dockerfile and pin that image." >&2
+      exit 2
+      ;;
+  esac
+}
+
+# The measured row keeps the name exl3xpu:b70-15ded2f. The bytes behind that
+# name are local, so a digest list cannot see them. Scan before start.
+_scan_named_vllm_image() {
+  case "$1" in
+    exl3xpu:b70-15ded2f|exl3xpu:b70-15ded2f-ca) ;;
+    *) return 0 ;;
+  esac
+  local found
+  if ! found=$("$A770B_DOCKER" run --rm --network=none --entrypoint bash "$1" -c '
+    set +e
+    err=0
+    for dir in /opt /usr /root /etc /app /workspace /home /srv /var /usr/local /tmp; do
+      [ -d "$dir" ] || continue
+      find "$dir" -type f \( -name cacert.pem -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
+      if [ "$?" -ne 0 ]; then err=1; fi
+      while read -r f; do
+        [ -n "$f" ] || continue
+        grep -a -q "emSign ECC Root CA - G3" "$f"
+        grc=$?
+        if [ "$grc" -eq 0 ]; then printf "%s\n" "$f"
+        elif [ "$grc" -ne 1 ]; then err=1; fi
+      done < /tmp/ca-scan-list
+    done
+    rm -f /tmp/ca-scan-list
+    [ "$err" -eq 0 ]
+  '); then
+    echo "⛔ could not scan $1 for the compromised emSign ECC Root CA - G3 root" >&2
+    exit 2
+  fi
+  if [ -n "$found" ]; then
+    echo "⛔ $1 still trusts the compromised emSign ECC Root CA - G3 root ($found). Rebuild it with compose/refresh-ca.Dockerfile and keep this name." >&2
+    exit 2
+  fi
+}
+
+_trust_gate() {
+  _refuse_old_trust "$(_value_for A770B_LLAMA_IMAGE)"
+  _refuse_old_trust "$(_value_for A770B_VLLM_IMAGE)"
+  _refuse_old_trust "$(_value_for A770B_SGLANG_IMAGE)"
+  _scan_named_vllm_image "$(_value_for A770B_VLLM_IMAGE)"
+}
+
 # _sglang_preflight — before any docker call. Victim write-back stays on, and
 # the by-path node must be the container target (no remap onto card0).
 _sglang_preflight(){
@@ -397,6 +454,7 @@ case "${1:-}" in
     DRY=0; [ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
     [ "${1:-}" = "--" ] && shift
     [ $# -gt 0 ] || { echo "usage: serve_compose.sh bench [--dry-run] -- <llama-bench args…>" >&2; exit 2; }
+    _trust_gate
     if [ "$DRY" = 1 ]; then
       DRY_ENVF=""; [ -f "$A770B_COMPOSE_ENV_FILE" ] && DRY_ENVF="--env-file $A770B_COMPOSE_ENV_FILE"
       printf '%s\n' "$A770B_DOCKER compose $DRY_ENVF -p $A770B_COMPOSE_PROJECT -f $A770B_COMPOSE_FILE run --rm --no-deps --entrypoint /app/llama-bench $CONTAINER $*"
@@ -503,22 +561,7 @@ _ep_arg=()
 [ -n "$ENTRYPOINT" ] && _ep_arg=(--entrypoint "$ENTRYPOINT")
 python3 "$(dirname "$0")/compose_override.py" "${_ep_arg[@]}" --out "$OVERRIDE" -- "${ARGV[@]}"
 # recreate, never --no-recreate: a profile change must replace the container
-# These published digests still trust emSign ECC Root CA - G3. A tag is a
-# doctor warning. These names do not start.
-_refuse_old_trust() {
-  case "$1" in
-    *33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4*|\
-    *7b4905e41d2720bfccf390e78e938e8148329b3da9467d3f1b008f0efc44cd97*|\
-    *52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b*|\
-    *24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f*)
-      echo "⛔ $1 still trusts the compromised emSign ECC Root CA - G3 root. Rebuild it with compose/refresh-ca.Dockerfile and pin that image." >&2
-      exit 2
-      ;;
-  esac
-}
-_refuse_old_trust "${A770B_LLAMA_IMAGE:-}"
-_refuse_old_trust "${A770B_VLLM_IMAGE:-}"
-_refuse_old_trust "${A770B_SGLANG_IMAGE:-}"
+_trust_gate
 if ! _compose up -d --force-recreate; then
   echo "⛔ docker compose up failed — the container did not start (docker's error is above); nothing was left running" >&2
   rm -f "$PIDFILE" "$MARK" "$SIDECAR"
