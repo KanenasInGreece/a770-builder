@@ -1874,6 +1874,7 @@ case " $* " in
     [ "${FAKE_CONTAINER_UP:-}" = 1 ] && printf '%s\n' cid
     exit 0;;
   *" ps -q "*) printf '%s\n' cid; exit 0;;
+  *" image inspect "*) printf '%s\n' "sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0;;
   *" inspect "*) printf '%s\n' 4242; exit 0;;
   *" logs "*)
     [ -z "${FAKE_DOCKER_LOGS_FAIL:-}" ] || exit 1
