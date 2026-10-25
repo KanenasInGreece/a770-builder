@@ -929,6 +929,7 @@ def test_start_scans_the_measured_vllm_name_before_starting_it(tmp_path):
         "docker",
         f'printf \'%s\\n\' "$*" >> "{log}"\n'
         'case " $* " in\n'
+        '  *" image inspect "*) printf \'%s\\n\' "sha256:1111111111111111111111111111111111111111111111111111111111111111"; exit 0;;\n'
         '  *" run "*) printf \'%s\\n\' "/opt/venv/lib/python3.12/site-packages/certifi/cacert.pem"; exit 0;;\n'
         '  *) exit 0;;\n'
         'esac\n',
@@ -953,6 +954,8 @@ def test_start_scans_the_measured_vllm_name_before_starting_it(tmp_path):
     assert r.returncode == 2, r.stdout + r.stderr
     assert "exl3xpu:b70-15ded2f" in r.stderr
     assert "emSign ECC Root CA - G3" in r.stderr
+    assert "sha256:1111111111111111111111111111111111111111111111111111111111111111" in log.read_text(encoding="utf-8")
+    assert "--pull=never" in log.read_text(encoding="utf-8")
     assert "started server container" not in r.stdout
 
 
@@ -1706,6 +1709,9 @@ def split_compose(rest):
         break
     return project, files, rest[i:], i
 
+if args[:3] == ["image", "inspect", "-f"]:
+    print("sha256:" + "0" * 64)
+    sys.exit(0)
 if args[:2] == ["compose", "version"]:
     print("Docker Compose version v2.30.0")
     sys.exit(0)

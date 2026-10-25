@@ -128,6 +128,7 @@ def _write_docker_stub(path: Path) -> None:
         "#!/usr/bin/env bash\n"
         "case \" $* \" in\n"
         "  *\" ps -q \"*)\n"
+        "    if [ \"${SERVE_PS_FAIL:-0}\" = 1 ]; then exit 1; fi\n"
         "    if [ \"${SERVE_CONTAINER_UP:-0}\" = 1 ]; then printf '%s\\n' cid123; fi\n"
         "    exit 0 ;;\n"
         "  *\" image inspect \"*)\n"
@@ -409,6 +410,74 @@ def test_serve_restarts_when_the_running_image_is_not_the_pinned_one(tmp_path, l
     lines = _log_lines(env)
     assert "stop" in lines
     assert any(line.startswith("start ") for line in lines)
+
+
+def test_serve_keeps_a_container_whose_image_is_the_one_the_gate_resolved(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    env["SERVE_CONTAINER_UP"] = "1"
+    env["SERVE_CONTAINER_IMAGE"] = "sha256:same"
+    env["SERVE_IMAGE_ID"] = "sha256:same"
+    httpd = HTTPServer(("127.0.0.1", 0), _Health)
+    env["A770B_PORT"] = str(httpd.server_address[1])
+    _write_live_sidecar(env, live_pid)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" in result.stdout
+    lines = _log_lines(env)
+    assert "stop" not in lines
+
+
+def test_serve_does_not_keep_a_container_when_docker_ps_fails(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    env["SERVE_CONTAINER_UP"] = "1"
+    env["SERVE_PS_FAIL"] = "1"
+    httpd = HTTPServer(("127.0.0.1", 0), _Health)
+    env["A770B_PORT"] = str(httpd.server_address[1])
+    _write_live_sidecar(env, live_pid)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert "already up" not in result.stdout
+    assert "could not be read" in result.stdout
+
+
+def test_serve_does_not_keep_a_refused_trust_image(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    refused = (
+        "ghcr.io/ggml-org/llama.cpp@sha256:"
+        "33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4"
+    )
+    env["A770B_LLAMA_IMAGE"] = refused
+    env["SERVE_CONTAINER_UP"] = "1"
+    env["SERVE_CONTAINER_IMAGE"] = (
+        "sha256:33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4"
+    )
+    env["SERVE_IMAGE_ID"] = env["SERVE_CONTAINER_IMAGE"]
+    httpd = HTTPServer(("127.0.0.1", 0), _Health)
+    env["A770B_PORT"] = str(httpd.server_address[1])
+    _write_live_sidecar(env, live_pid)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert "already up" not in result.stdout
+    assert "emSign ECC Root CA - G3" in result.stderr
 
 
 def test_serve_with_no_container_and_no_pidfile_still_starts(tmp_path, live_pid):

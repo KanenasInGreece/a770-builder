@@ -5,6 +5,7 @@
 #   serve_compose.sh signature <gguf> <ctx> [extra…]  print the context and the argv signature; no docker, no env file, no health wait
 #   serve_compose.sh start <gguf> <ctx> [extra…]   recreate the container, wait for /health, enforce the cap, sidecar
 #   serve_compose.sh stop | status | health
+#   serve_compose.sh gate                                   the trust check start and bench run; no server
 #   serve_compose.sh bench [--dry-run] -- <llama-bench args…>   one-shot llama-bench in the same image (speed rung)
 #
 # The profile row (model, ctx, kv, extra, thinking) reaches this script through env.sh exactly as it reaches the
@@ -195,11 +196,14 @@ _refuse_old_trust() {
 # name are local, so a digest list cannot see them. Scan before start.
 _scan_named_vllm_image() {
   case "$1" in
-    exl3xpu:b70-15ded2f|exl3xpu:b70-15ded2f-ca) ;;
+    exl3xpu:b70-15ded2f|exl3xpu:b70-15ded2f-ca|\
+    exl3xpu:b70-15ded2f@sha256:*|exl3xpu:b70-15ded2f-ca@sha256:*) ;;
     *) return 0 ;;
   esac
-  local found
-  if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never --entrypoint bash "$1" -c '
+  local found id
+  id=$(_image_id "$1") || exit 2
+  _resolved_vllm_id=$id
+  if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never --entrypoint bash "$id" -c '
     set +e
     err=0
     if find /etc/ssl/certs /usr/share/ca-certificates -name "emSign_ECC_Root_CA_-_G3*" 2>/dev/null | grep -q .; then
@@ -231,9 +235,15 @@ _scan_named_vllm_image() {
         grc=$?
         if [ "$grc" -eq 0 ]; then printf "%s\n" "$f"
         elif [ "$grc" -ne 1 ]; then err=1
-        elif openssl crl2pkcs7 -nocrl -certfile "$f" -out /tmp/ca-one.p7 2>/dev/null \
-          && openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout 2>/dev/null \
-          | grep -q "emSign ECC Root CA - G3"; then printf "%s\n" "$f"
+        elif grep -q "BEGIN CERTIFICATE" "$f"; then
+          if openssl crl2pkcs7 -nocrl -certfile "$f" -out /tmp/ca-one.p7 2>/dev/null; then
+            if openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout > /tmp/ca-one.subj 2>/dev/null; then
+              if grep -q "emSign ECC Root CA - G3" /tmp/ca-one.subj; then printf "%s\n" "$f"; fi
+            else err=1
+            fi
+          else err=1
+          fi
+          rm -f /tmp/ca-one.p7 /tmp/ca-one.subj
         fi
       done < /tmp/ca-scan-list
     done
@@ -249,28 +259,34 @@ _scan_named_vllm_image() {
   fi
 }
 
-# A tag can move between the scan and compose up. Pin the id the scan just saw.
-# An empty inspect result is a test double; a real docker prints an id or fails.
-_pin_compose_image() {
-  local var="$1" name id
-  name=$(_value_for "$var")
-  [ -n "$name" ] || return 0
-  case "$name" in
-    *@sha256:*) return 0 ;;
-  esac
+# One id for the scan and for compose. An empty inspect is a refusal: a real
+# docker prints an id or fails, and a blank success must not keep the tag.
+_image_id() {
+  local name="$1" id
   if ! id=$("$A770B_DOCKER" image inspect -f '{{.Id}}' "$name" 2>/dev/null); then
     echo "⛔ could not resolve $name to an image id" >&2
-    exit 2
+    return 1
   fi
-  [ -n "$id" ] || return 0
   case "$id" in
-    sha256:*) ;;
-    *) echo "⛔ $name resolved to '$id', not an image id" >&2; exit 2 ;;
+    sha256:*) printf '%s\n' "$id" ;;
+    *) echo "⛔ $name resolved to '${id:-empty}', not an image id" >&2; return 1 ;;
   esac
-  export "$var=${name}@${id}"
+}
+_pin_compose_image() {
+  local var="$1" name id base
+  name=$(_value_for "$var")
+  [ -n "$name" ] || return 0
+  if [ "$var" = A770B_VLLM_IMAGE ] && [ -n "${_resolved_vllm_id:-}" ]; then
+    id=$_resolved_vllm_id
+  else
+    id=$(_image_id "$name") || exit 2
+  fi
+  base=${name%%@sha256:*}
+  export "$var=${base}@${id}"
 }
 
 _trust_gate() {
+  _resolved_vllm_id=""
   _refuse_old_trust "$(_value_for A770B_LLAMA_IMAGE)"
   _refuse_old_trust "$(_value_for A770B_VLLM_IMAGE)"
   _refuse_old_trust "$(_value_for A770B_SGLANG_IMAGE)"
@@ -497,6 +513,14 @@ case "${1:-}" in
   health)
     _health_class && exit 0
     exit 1;;
+  gate)
+    _trust_gate
+    case "${A770B_SERVED_BACKEND:-}" in
+      vllm) printf '%s\n' "${A770B_VLLM_IMAGE:-}" ;;
+      sglang) printf '%s\n' "${A770B_SGLANG_IMAGE:-}" ;;
+      *) printf '%s\n' "${A770B_LLAMA_IMAGE:-}" ;;
+    esac
+    exit 0;;
   plan|start|signature) ;;
   bench)
     shift
@@ -511,7 +535,7 @@ case "${1:-}" in
     fi
     _compose run --rm --no-deps --entrypoint /app/llama-bench "$CONTAINER" "$@"
     exit 0;;
-  *) echo "usage: serve_compose.sh plan|start|signature <gguf> [ctx] [extra…] | stop | status | health | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
+  *) echo "usage: serve_compose.sh plan|start|signature <gguf> [ctx] [extra…] | gate | stop | status | health | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
 esac
 MODE="$1"
 MODEL=$(a770b_model_path "${2:?gguf}"); CTX="${3:-32768}"; shift 3 2>/dev/null || shift $#
