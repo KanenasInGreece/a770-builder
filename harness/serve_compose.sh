@@ -192,17 +192,10 @@ _refuse_old_trust() {
   esac
 }
 
-# The measured row keeps the name exl3xpu:b70-15ded2f. The bytes behind that
-# name are local, so a digest list cannot see them. Scan before start.
-_scan_named_vllm_image() {
-  case "$1" in
-    exl3xpu:b70-15ded2f|exl3xpu:b70-15ded2f-ca|\
-    exl3xpu:b70-15ded2f@sha256:*|exl3xpu:b70-15ded2f-ca@sha256:*) ;;
-    *) return 0 ;;
-  esac
-  local found id
-  id=$(_image_id "$1") || exit 2
-  _resolved_vllm_id=$id
+# Scan the id serve will start. The measured name is not the only tag that
+# can point at old bytes, so the name is not what decides whether to scan.
+_scan_image() {
+  local id="$1" shown="$2" found
   if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never --entrypoint bash "$id" -c '
     set +e
     err=0
@@ -235,7 +228,7 @@ _scan_named_vllm_image() {
         grc=$?
         if [ "$grc" -eq 0 ]; then printf "%s\n" "$f"
         elif [ "$grc" -ne 1 ]; then err=1
-        elif grep -q "BEGIN CERTIFICATE" "$f"; then
+        elif grep -E -q "BEGIN (TRUSTED )?CERTIFICATE" "$f"; then
           if openssl crl2pkcs7 -nocrl -certfile "$f" -out /tmp/ca-one.p7 2>/dev/null; then
             if openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout > /tmp/ca-one.subj 2>/dev/null; then
               if grep -q "emSign ECC Root CA - G3" /tmp/ca-one.subj; then printf "%s\n" "$f"; fi
@@ -250,11 +243,11 @@ _scan_named_vllm_image() {
     rm -f /tmp/ca-scan-list
     [ "$err" -eq 0 ]
   '); then
-    echo "⛔ could not scan $1 for the compromised emSign ECC Root CA - G3 root" >&2
+    echo "⛔ could not scan $shown for the compromised emSign ECC Root CA - G3 root" >&2
     exit 2
   fi
   if [ -n "$found" ]; then
-    echo "⛔ $1 still trusts the compromised emSign ECC Root CA - G3 root ($found). Rebuild it with compose/refresh-ca.Dockerfile and keep this name." >&2
+    echo "⛔ $shown still trusts the compromised emSign ECC Root CA - G3 root ($found). Rebuild it with compose/refresh-ca.Dockerfile and keep this name." >&2
     exit 2
   fi
 }
@@ -272,12 +265,22 @@ _image_id() {
     *) echo "⛔ $name resolved to '${id:-empty}', not an image id" >&2; return 1 ;;
   esac
 }
+# The configured name can be a tag of a refused image. Refuse the resolved id
+# and every repo digest, which is where those bytes are named.
+_refuse_resolved_bytes() {
+  local name="$1" id digests
+  id=$(_image_id "$name") || exit 2
+  _refuse_old_trust "$id"
+  digests=$("$A770B_DOCKER" image inspect -f '{{range .RepoDigests}}{{.}} {{end}}' "$name" 2>/dev/null || true)
+  _refuse_old_trust "$digests"
+  printf '%s\n' "$id"
+}
 _pin_compose_image() {
   local var="$1" name id base
   name=$(_value_for "$var")
   [ -n "$name" ] || return 0
-  if [ "$var" = A770B_VLLM_IMAGE ] && [ -n "${_resolved_vllm_id:-}" ]; then
-    id=$_resolved_vllm_id
+  if [ -n "${_resolved_id:-}" ]; then
+    id=$_resolved_id
   else
     id=$(_image_id "$name") || exit 2
   fi
@@ -286,16 +289,23 @@ _pin_compose_image() {
 }
 
 _trust_gate() {
-  _resolved_vllm_id=""
+  local name id var
+  _resolved_id=""
   _refuse_old_trust "$(_value_for A770B_LLAMA_IMAGE)"
   _refuse_old_trust "$(_value_for A770B_VLLM_IMAGE)"
   _refuse_old_trust "$(_value_for A770B_SGLANG_IMAGE)"
-  _scan_named_vllm_image "$(_value_for A770B_VLLM_IMAGE)"
   case "${A770B_SERVED_BACKEND:-}" in
-    vllm) _pin_compose_image A770B_VLLM_IMAGE ;;
-    sglang) _pin_compose_image A770B_SGLANG_IMAGE ;;
-    *) _pin_compose_image A770B_LLAMA_IMAGE ;;
+    vllm) var=A770B_VLLM_IMAGE ;;
+    sglang) var=A770B_SGLANG_IMAGE ;;
+    *) var=A770B_LLAMA_IMAGE ;;
   esac
+  name=$(_value_for "$var")
+  if [ -n "$name" ]; then
+    id=$(_refuse_resolved_bytes "$name") || exit 2
+    _resolved_id=$id
+    _scan_image "$id" "$name"
+  fi
+  _pin_compose_image "$var"
 }
 
 # _sglang_preflight — before any docker call. Victim write-back stays on, and

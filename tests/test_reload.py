@@ -129,6 +129,7 @@ def _write_docker_stub(path: Path) -> None:
         "case \" $* \" in\n"
         "  *\" ps -q \"*)\n"
         "    if [ \"${SERVE_PS_FAIL:-0}\" = 1 ]; then exit 1; fi\n"
+        "    if [ \"${SERVE_PS_TWO:-0}\" = 1 ]; then printf '%s\\n' cid123; printf '%s\\n' cid456; exit 0; fi\n"
         "    if [ \"${SERVE_CONTAINER_UP:-0}\" = 1 ]; then printf '%s\\n' cid123; fi\n"
         "    exit 0 ;;\n"
         "  *\" image inspect \"*)\n"
@@ -367,7 +368,7 @@ def test_serve_refuses_when_the_matching_server_does_not_answer_health(tmp_path,
     assert not any(line.startswith("start ") for line in lines)
 
 
-def test_serve_matching_health_and_models_stays_up(tmp_path, live_pid):
+def test_serve_does_not_keep_a_health_answer_with_no_project_container(tmp_path, live_pid):
     env = _serve_env(tmp_path)
     httpd = HTTPServer(("127.0.0.1", 0), _Health)
     env["A770B_PORT"] = str(httpd.server_address[1])
@@ -380,11 +381,27 @@ def test_serve_matching_health_and_models_stays_up(tmp_path, live_pid):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "already up" in result.stdout
-    lines = _log_lines(env)
-    assert "stop" not in lines
-    assert not any(line.startswith("start ") for line in lines)
+    assert "already up" not in result.stdout
+    assert "not this project's container" in result.stdout
+
+
+def test_serve_does_not_keep_when_two_project_containers_are_up(tmp_path, live_pid):
+    env = _serve_env(tmp_path)
+    env["SERVE_CONTAINER_UP"] = "1"
+    env["SERVE_PS_TWO"] = "1"
+    httpd = HTTPServer(("127.0.0.1", 0), _Health)
+    env["A770B_PORT"] = str(httpd.server_address[1])
+    _write_live_sidecar(env, live_pid)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_serve(env, "qwen35-9b-q4km-vulkan", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert "already up" not in result.stdout
+    assert "could not be read" in result.stdout
 
 
 def test_serve_restarts_when_the_running_image_is_not_the_pinned_one(tmp_path, live_pid):

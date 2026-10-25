@@ -96,9 +96,12 @@ current(){ _recorded_serve_pid "$PIDF" >/dev/null && head -n 1 "$MARK" 2>/dev/nu
 _compose_container_id(){
   local out
   [ "${A770B_SERVE:-}" = compose ] || return 0
+  local lines
   out=$("$A770B_DOCKER" ps -q \
     --filter "label=com.docker.compose.project=${A770B_COMPOSE_PROJECT}" \
     --filter "label=com.docker.compose.service=llama" 2>/dev/null) || return 2
+  lines=$(printf '%s\n' "$out" | grep -c '[^[:space:]]' || true)
+  [ "$lines" -le 1 ] || return 2
   printf '%s\n' "$out" | head -n 1
 }
 # the one line for a card with no measured rows, produced in ONE place (profiles.py empty-line) and quoted verbatim
@@ -380,7 +383,10 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
           if [ "$crc" -ne 0 ]; then
             echo "↻ the running container could not be read — restarting it"
             skip_unmarked_keep=1
-          elif [ -z "$cid" ] || _running_image_matches; then
+          elif [ -z "$cid" ]; then
+            echo "↻ the running server is not this project's container — restarting it"
+            skip_unmarked_keep=1
+          elif _running_image_matches; then
             echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0
           else
             echo "↻ the running server is not the pinned image — restarting it"

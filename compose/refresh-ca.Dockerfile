@@ -21,7 +21,7 @@ RUN set -eu; \
     bundle_has_root() { \
       if grep -q "emSign ECC Root CA - G3" "$1"; then return 0; \
       else rc=$?; if [ "$rc" -ne 1 ]; then return 2; fi; fi; \
-      if grep -q "BEGIN CERTIFICATE" "$1"; then \
+      if grep -E -q "BEGIN (TRUSTED )?CERTIFICATE" "$1"; then \
         if openssl crl2pkcs7 -nocrl -certfile "$1" -out /tmp/ca-one.p7 2>/dev/null; then \
           if openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout > /tmp/ca-one.subj 2>/dev/null; then \
             if grep -q "emSign ECC Root CA - G3" /tmp/ca-one.subj; then return 0; fi; \

@@ -362,7 +362,7 @@ def test_bench_is_a_one_shot_llama_bench_in_the_same_image(tmp_path):
     r = _run(_env(tmp_path, bin_), "bench", "--", "-m", "/models/x.gguf", "-ngl", "99", "-o", "json")
     assert r.returncode == 0, r.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    run = [c for c in calls if " run " in f" {c} "]
+    run = [c for c in calls if " run " in f" {c} " and "llama-bench" in c]
     assert run, calls
     assert "--entrypoint /app/llama-bench" in run[0]
     assert "--rm" in run[0] and "--no-deps" in run[0]
@@ -919,6 +919,67 @@ def test_start_refuses_a_compromised_digest_named_only_in_the_env_file(tmp_path)
     r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
     assert r.returncode == 2
     assert "b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f" in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_refuses_a_tag_whose_resolved_id_is_a_compromised_digest(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    bad = "52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b"
+    _make_bin(
+        bin_,
+        "docker",
+        "case \" $* \" in\n"
+        "  *\" image inspect \"*)\n"
+        "    case \" $* \" in\n"
+        "      *RepoDigests*) printf '%s\\n' \"intel/llm-scaler-vllm@sha256:" + bad + "\" ;;\n"
+        "      *) printf '%s\\n' \"sha256:" + bad + "\" ;;\n"
+        "    esac\n"
+        "    exit 0;;\n"
+        "  *) exit 0;;\n"
+        "esac\n",
+    )
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="intel/llm-scaler-vllm:0.26.0-b2",
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert bad in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_scans_the_image_it_will_start_even_when_the_name_is_not_measured(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(
+        bin_,
+        "docker",
+        f'printf \'%s\\n\' "$*" >> "{log}"\n'
+        'case " $* " in\n'
+        '  *" image inspect "*) printf \'%s\\n\' "sha256:2222222222222222222222222222222222222222222222222222222222222222"; exit 0;;\n'
+        '  *" run "*) printf \'%s\\n\' "/etc/ssl/certs/ca-certificates.crt"; exit 0;;\n'
+        '  *) exit 0;;\n'
+        'esac\n',
+    )
+    env = _env(tmp_path, bin_, A770B_LLAMA_IMAGE="example.invalid/llama:local-ca")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "example.invalid/llama:local-ca" in r.stderr
+    assert "emSign ECC Root CA - G3" in r.stderr
+    text = log.read_text(encoding="utf-8")
+    assert "sha256:2222222222222222222222222222222222222222222222222222222222222222" in text
+    assert "--pull=never" in text
     assert "started server container" not in r.stdout
 
 
