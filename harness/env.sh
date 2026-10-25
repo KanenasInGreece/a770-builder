@@ -5,6 +5,18 @@
 #                          →  variables already in the environment. The mode naming the per-mode files is the mode
 #                          after the two builder.env files and the environment have been read.
 # Copy config/builder.env.example to one of those two places and edit. Nothing else needs touching.
+# uv older than 0.13.4 still trusts the compromised emSign ECC Root CA - G3 root from the bundle it ships.
+_a770b_uv=$(command -v uv || true)
+if [ -z "$_a770b_uv" ]; then
+  echo "⛔ uv is not on PATH (need 0.13.4 or newer; that release drops the compromised emSign ECC Root CA - G3 root)" >&2
+  return 2 2>/dev/null || exit 2
+fi
+_a770b_uv_ver=$("$_a770b_uv" --version 2>/dev/null | awk '{print $2}')
+if [ "$(printf '%s\n%s\n' "0.13.4" "$_a770b_uv_ver" | sort -V | head -1)" != "0.13.4" ]; then
+  echo "⛔ uv $_a770b_uv_ver at $_a770b_uv is older than 0.13.4 and still trusts the compromised emSign ECC Root CA - G3 root" >&2
+  return 2 2>/dev/null || exit 2
+fi
+unset _a770b_uv _a770b_uv_ver
 A770B_PROJECT="${A770B_PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck disable=SC1090 # builder.env is named at run time; the linter cannot follow it and need not
 _a770b_load(){ [ -f "$1" ] && { set -a; . "$1"; set +a; }; return 0; }

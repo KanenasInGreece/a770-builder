@@ -6,16 +6,21 @@
 # NO context and NO vLLM argv: the profile row is turned into argv at serve time by
 # harness/serve_compose.sh from config/profiles*.json, so the registry stays the single source.
 #
-# The image is intel/llm-scaler-vllm:0.26.0-b2, pinned by digest. The default below is that
-# digest. compose/vllm.env carries the same pin; a tag there is a floating name and doctor warns.
-# The repository tag latest is an older image.
+# The server bytes are intel/llm-scaler-vllm:0.26.0-b2
+# (sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b). Tag 1.5 is that
+# same digest. It vendors certifi 2026.07.22, which still trusts the compromised emSign ECC
+# Root CA - G3 root. The default image is the refresh of that digest (compose/refresh-ca.Dockerfile):
+# the same server, with pip 26.2.2 and certifi 2026.10.23. That base has no uv
+# binary. A tag is a floating name
+# and doctor warns until the env file pins the built image by digest. The repository tag latest
+# is an older image.
 #
 # The ruled start path is `local-build.sh serve` with A770B_SERVE=compose and A770B_COMPOSE_FILE
 # pointing here, NOT a bare `docker compose up`: that skips the profile argv, the budget gate,
 # the VRAM cap and the live-backend sidecar.
 services:
   llama:
-    image: ${A770B_VLLM_IMAGE:-intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b}
+    image: ${A770B_VLLM_IMAGE:-a770-builder/llm-scaler-vllm-ca:2026-10-25}
     restart: "no"
     ipc: host
     shm_size: 32g

@@ -1,0 +1,39 @@
+# Changelog
+
+This file records security changes that are not yet a release. The published cut stays v0.5.8. The version number does not move in this change.
+
+## Unreleased
+
+### Compromised emSign root in TLS trust bundles
+
+In October 2026, eMudhra intermediate keys that chain to the root named `emSign ECC Root CA - G3` were compromised. A client that still has that root in its own bundle will accept a certificate an attacker signs with those keys. Three roots with similar names, `emSign Root CA - G1`, `emSign Root CA - C1`, and `emSign ECC Root CA - C3`, were not part of that incident and are not what this change removes.
+
+The packages that still trusted the compromised root, and the versions that stop trusting it:
+
+- certifi below 2026.10.19 (GHSA-6q48-6c7w-9gw2). This tree uses certifi 2026.10.23. The 2026.10.18 upload was the first removal; 2026.10.19 put back the unaffected emSign roots and is the floor.
+- uv below 0.13.4 (GHSA-hq85-5cpj-mr62). uv carries its own copy of the bundle, so an updated operating-system store does not fix an old uv. This tree uses the uv 0.13.5 static binary.
+- pip below 26.2.2. Older pip vendors its own certifi and keeps trusting the root after the operating system has dropped it. A distribution pip that reads only the system trust store follows that store.
+
+What the review found on the host, and what was not bumped:
+
+- The `uv` on `PATH` was already 0.13.5, and its binary does not contain the root.
+- The tool set this project installs with `uv run --with` and `uvx --from` resolves to pytest 9.1.1, pytest-asyncio 1.4.0, tokenizers 0.23.3, huggingface-hub 2.3.0, certifi 2026.10.23, and shellcheck-py 0.11.0.1. An OSV query of that set reported no known vulnerabilities. There is no project lockfile to retarget.
+- No `cacert.pem` under the seat cache or the uv cache still named the root.
+
+What was still exposed, and what changed:
+
+- `harness/env.sh` now refuses to load when `uv` is missing or older than 0.13.4. The sandbox bind-mounts whichever `uv` is on `PATH`. An older binary would make package fetches from the host trust the compromised root. The check runs before any path or knob is read.
+- Vulkan llama.cpp. The previous pin was build 10902 (`sha256:33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4`). That image had certifi 2026.07.22 and uv 0.12.13, and the root was present. It is also inside the window for CVE-2026-107183, a use-after-free in llama.cpp's chat-template mapper, fixed before build 11393 and reachable through `POST /completion` when a chat parser is in use. The tracked example and this host's `compose/a770-vulkan.env` now pin `ghcr.io/ggml-org/llama.cpp@sha256:f0be303ba81eafe6abd5d4a7aef4eaa64a6b394b5c5878280598b3fbcb790ba6` (build 11870). Inside that image: Python 3.13.17, certifi 2026.10.23, uv 0.13.5, and the root is absent from the bundles and from the uv binary. No local rebuild was required.
+- Intel SYCL llama.cpp. The previous local pin was `sha256:7b4905e41d2720bfccf390e78e938e8148329b3da9467d3f1b008f0efc44cd97`. The current upstream full image is build 11870, `sha256:b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f`. Its virtualenv already had pip 26.2.2 and certifi 2026.10.23. Ubuntu's pip under `/usr/lib/python3/dist-packages` still had the root, and that pip cannot be uninstalled (Debian shipped it without a RECORD file). `compose/refresh-ca.Dockerfile` keeps the server binary, copies the virtualenv's clean bundle over every `cacert.pem` that still contains the root, and refuses to finish if the root remains. This host's built image is `a770-builder/llama-intel-ca@sha256:185382f2c5d214cee7e20ec347a52b95a14b76b9d1a34dbebf221ac4ab87f324`. A scan of its trust bundles found zero copies of the root. The entrypoint is still `/app/tools.sh`.
+- vLLM. `intel/llm-scaler-vllm:0.26.0-b2` and the tag `1.5` are the same image, `sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b`, published before the incident, with certifi 2026.07.22. No newer published tag of that engine is past the incident. The experimental `0.31.0-b1` tag is also older than the incident and was not used. The same Dockerfile upgraded the virtualenv to pip 26.2.2 and certifi 2026.10.23 and replaced the Ubuntu pip bundle. This image has no uv binary. This host's built image is `a770-builder/llm-scaler-vllm-ca@sha256:10498fc3766aa02663c3b89710d2b5e3490f9dee23b23729271475cd83bdcb84`. The entrypoint is still the oneAPI `setvars` line followed by `vllm serve`. The root count in the scanned bundles is zero.
+- Flash-Next SGLang. The trial image `sha256:24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f` vendors certifi 2026.07.22 and uv 0.12.16. The registry listing for a newer tag was refused, so there was no newer image to retarget. The Dockerfile upgraded pip and certifi, replaced uv with 0.13.5, deleted the uv and pip wheel caches (a cached wheel still held the old bundle after the first attempt), and replaced the remaining bad bundles. This host's built image is `a770-builder/sglang-flashnext-ca@sha256:1d7d44a866cffad672fea734c50744682f18cedd582f16da98341c6a1a1c9936`. uv reports 0.13.5 and does not contain the root. The entrypoint is still `/opt/entrypoint.sh`. The measured registry row keeps the old digest: that row is a record of a run, not the image to start.
+
+The three local image ids exist only on the machine that built them. Another host builds `compose/refresh-ca.Dockerfile` from the base digest named in the matching `compose/*.env.example` and pins the id that build prints. The tracked default is the local tag, not the vulnerable upstream digest, so a checkout that has not built the refresh does not start the old image. `local-build.sh doctor` still warns while an env line is a tag rather than an id.
+
+Compose sets the container user from `A770B_CONTAINER_UID`. The Dockerfile's `USER root` applies to the build. The server process user is unchanged.
+
+### What this host still has
+
+- `/bin/uv` and `/usr/bin/uv` are 0.12.24 and still contain the root. Neither is the `uv` on `PATH` (`~/.local/bin/uv` is 0.13.5). The harness now refuses to start if a shell puts an older binary first.
+- Fedora's `python3` is 3.14.8, and the RPM pip is 26.0.1. That pip reads the system trust store, and the store on this machine does not contain the compromised root. Updating those RPMs needs administrator rights, which this session did not have. No `.python-version` file was added: pinning the managed 3.14.9 would change which interpreter `uv run` selects.
+- Reinstalling Ubuntu's `python3-pip` inside a refreshed image would put the old bundle back. The serve path does not run apt. A rebuild of the Dockerfile is the way to restore the replacement.

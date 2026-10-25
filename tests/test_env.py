@@ -50,6 +50,41 @@ def test_env_sh_defaults_reset_pattern_to_the_intel_wording(tmp_path):
     assert r.stdout == "engine reset|timedout"
 
 
+def test_env_sh_refuses_uv_older_than_0_13_4(tmp_path):
+    # uv before 0.13.4 ships a trust bundle that still contains emSign ECC Root CA - G3.
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    _make_bin(fake, "uv", 'printf "%s\\n" "uv 0.12.24 (test)"')
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"))
+    env["PATH"] = f"{fake}:/bin"
+    r = run_bash(f'. "{ENV_SH}"', env=env)
+    assert r.returncode == 2
+    assert "0.12.24" in r.stderr
+    assert "emSign ECC Root CA - G3" in r.stderr
+
+
+def test_env_sh_refuses_a_missing_uv(tmp_path):
+    # PATH still has to contain bash. It must not contain the host uv.
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    os.symlink("/bin/bash", shim / "bash")
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), PATH=str(shim))
+    r = run_bash(f'. "{ENV_SH}"', env=env)
+    assert r.returncode == 2
+    assert "not on PATH" in r.stderr
+
+
+def test_env_sh_accepts_uv_0_13_4(tmp_path):
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    _make_bin(fake, "uv", 'printf "%s\\n" "uv 0.13.4 (test)"')
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"))
+    env["PATH"] = f"{fake}:/bin"
+    r = run_bash(f'. "{ENV_SH}"; printf "%s" "$A770B_RESET_PATTERN"', env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "engine reset|timedout"
+
+
 def test_kernel_resets_since_uses_the_configured_pattern_not_a_hard_coded_one(tmp_path):
     # a fake journalctl that emits one line matching a NON-Intel driver's wording ("amdgpu: GPU reset") and one
     # matching nothing at all; kernel_resets_since must count only what A770B_RESET_PATTERN names.
