@@ -835,7 +835,7 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
         bin_,
         A770B_SERVED_BACKEND="vllm",
         A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
-        A770B_VLLM_IMAGE="intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b",
+        A770B_VLLM_IMAGE="example.invalid/vllm@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         A770B_BY_PATH_DIR=str(by_path),
         A770B_QUANT="gptq",
         A770B_CARD_VRAM_TOTAL="32",
@@ -851,6 +851,30 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
     assert ov["services"]["llama"]["command"][0] == "/models/Qwen/Qwen3-32B"
     pidf = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid"
     assert pidf.read_text(encoding="utf-8").strip() == "4242"
+
+
+def test_start_refuses_an_image_that_still_trusts_the_compromised_root(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b",
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2
+    assert "emSign ECC Root CA - G3" in r.stderr
+    assert "started server container" not in r.stdout
 
 
 def _assert_start_line_names_cap_once(stdout: str, cap: str, also: str | None = None) -> None:

@@ -21,6 +21,9 @@
 services:
   llama:
     image: ${A770B_VLLM_IMAGE:-a770-builder/llm-scaler-vllm-ca:2026-10-25}
+    # The default name is a local build, not a registry this project publishes.
+    # never: compose must not pull that name from Docker Hub.
+    pull_policy: never
     restart: "no"
     ipc: host
     shm_size: 32g

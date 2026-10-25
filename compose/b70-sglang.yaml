@@ -14,6 +14,9 @@
 services:
   llama:
     image: ${A770B_SGLANG_IMAGE:-a770-builder/sglang-flashnext-ca:2026-10-25}
+    # The default name is a local build, not a registry this project publishes.
+    # never: compose must not pull that name from Docker Hub.
+    pull_policy: never
     restart: "no"
     # --memory=40g --memory-swap=40g, shm 8g, cpuset 8-23, memlock unlimited.
     mem_limit: 40g

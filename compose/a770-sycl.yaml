@@ -21,6 +21,9 @@
 services:
   llama:
     image: ${A770B_LLAMA_IMAGE}
+    # The served image is the local refresh. Pull the base yourself, then build
+    # compose/refresh-ca.Dockerfile. never: compose must not pull the local name.
+    pull_policy: never
     restart: "no"
     user: "${A770B_CONTAINER_UID}:${A770B_CONTAINER_GID}"
     group_add:

@@ -503,6 +503,22 @@ _ep_arg=()
 [ -n "$ENTRYPOINT" ] && _ep_arg=(--entrypoint "$ENTRYPOINT")
 python3 "$(dirname "$0")/compose_override.py" "${_ep_arg[@]}" --out "$OVERRIDE" -- "${ARGV[@]}"
 # recreate, never --no-recreate: a profile change must replace the container
+# These published digests still trust emSign ECC Root CA - G3. A tag is a
+# doctor warning. These names do not start.
+_refuse_old_trust() {
+  case "$1" in
+    *33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4*|\
+    *7b4905e41d2720bfccf390e78e938e8148329b3da9467d3f1b008f0efc44cd97*|\
+    *52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b*|\
+    *24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f*)
+      echo "⛔ $1 still trusts the compromised emSign ECC Root CA - G3 root. Rebuild it with compose/refresh-ca.Dockerfile and pin that image." >&2
+      exit 2
+      ;;
+  esac
+}
+_refuse_old_trust "${A770B_LLAMA_IMAGE:-}"
+_refuse_old_trust "${A770B_VLLM_IMAGE:-}"
+_refuse_old_trust "${A770B_SGLANG_IMAGE:-}"
 if ! _compose up -d --force-recreate; then
   echo "⛔ docker compose up failed — the container did not start (docker's error is above); nothing was left running" >&2
   rm -f "$PIDFILE" "$MARK" "$SIDECAR"

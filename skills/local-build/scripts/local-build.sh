@@ -571,6 +571,11 @@ doctor(){
     fi
     _img="${_img%\"}"; _img="${_img#\"}"; _img="${_img%\'}"; _img="${_img#\'}"
     case "$_img" in
+       *33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4*|\
+       *7b4905e41d2720bfccf390e78e938e8148329b3da9467d3f1b008f0efc44cd97*|\
+       *52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b*|\
+       *24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f*)
+         echo "WARN image: ${_img_var}=$_img still trusts the compromised emSign ECC Root CA - G3 root. Rebuild it with compose/refresh-ca.Dockerfile and pin that image. serve refuses this name (warning only — doctor still passes)";;
        *@sha256:*) : ;;   # pinned: name@sha256:<digest> names exactly one image, so nothing to warn about
        "") : ;;           # unset is already a MISSING above; do not report the same gap twice
        *) echo "WARN image: ${_img_var}=$_img is a floating tag, not a digest — pull it once, then pin the exact bytes (docker inspect --format='{{index .RepoDigests 0}}' $_img) and set ${_img_var}=ghcr.io/ggml-org/llama.cpp@sha256:<digest> in $A770B_COMPOSE_ENV_FILE; see ${A770B_COMPOSE_ENV_FILE}.example (warning only — doctor still passes)";;
