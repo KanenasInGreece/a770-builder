@@ -76,8 +76,9 @@ not trust the compromised emSign ECC Root CA - G3 root. The SYCL base
 is already clean, but Ubuntu's pip bundle in that image still has the root. Do not put that digest in
 `A770B_LLAMA_IMAGE`. vLLM `0.26.0-b2` (and tag `1.5`, the same bytes) and the Flash-Next SGLang digest
 `24c872759256` still vendor certifi 2026.07.22. Build `compose/refresh-ca.Dockerfile` from each of those three
-digests and pin the image that build prints. The command is in the matching `compose/*.env.example`. Serve
-refuses the base digests.
+digests and pin the image that build prints. The command is in the matching `compose/*.env.example`. The
+build refuses the compromised root and the compromised intermediates by certificate SHA-256, including a
+trust file whose name ends in `.1` or `.2`. Serve refuses the base digests.
 
 ## 5. Bring the server up
 

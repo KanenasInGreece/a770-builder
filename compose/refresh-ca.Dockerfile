@@ -5,8 +5,10 @@
 # keeps its package and receives that same bundle in place of the compromised
 # file. Every file named uv is replaced with the uv 0.13.5 binary, and every
 # file named uvx with the uvx binary, both copied by digest. The build
-# refuses to finish while emSign ECC Root CA - G3 remains in a bundle,
-# in a uv or uvx binary, or in the system store. update-ca-certificates
+# refuses to finish while emSign ECC Root CA - G3, or a certificate whose
+# SHA-256 is one of the compromised intermediates, remains in a bundle,
+# in a uv or uvx binary, or in the system store. Hash-named trust files
+# (.0, .1, .2, and so on) are read the same way. update-ca-certificates
 # drops a certificate only when its conf line starts with !. The line is
 # marked, the store is rebuilt, then the certificate file and the line are
 # removed. The certifi bundle is not copied onto the system store, and a
@@ -17,19 +19,9 @@ FROM ${BASE}
 USER root
 COPY --from=ghcr.io/astral-sh/uv@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /tmp/uv-0.13.5
 COPY --from=ghcr.io/astral-sh/uv@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uvx /tmp/uvx-0.13.5
+COPY compose/ca-trust-check.sh /tmp/ca-trust-check.sh
 RUN set -eu; \
-    bundle_has_root() { \
-      if grep -q "emSign ECC Root CA - G3" "$1"; then return 0; \
-      else rc=$?; if [ "$rc" -ne 1 ]; then return 2; fi; fi; \
-      if grep -E -q "BEGIN( (TRUSTED|X509))? CERTIFICATE" "$1"; then \
-        if openssl crl2pkcs7 -nocrl -certfile "$1" -out /tmp/ca-one.p7 2>/dev/null; then \
-          if openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout > /tmp/ca-one.subj 2>/dev/null; then \
-            if grep -q "emSign ECC Root CA - G3" /tmp/ca-one.subj; then return 0; fi; \
-          else return 2; fi; \
-        else return 2; fi; \
-      fi; \
-      return 1; \
-    }; \
+    . /tmp/ca-trust-check.sh; \
     : > /tmp/ca-tools; \
     for dir in /*; do \
       base=$(basename "$dir"); \
@@ -72,7 +64,14 @@ RUN set -eu; \
     for py in /opt/venv/bin/python3 /root/.venv/bin/python3; do \
       if [ -x "$py" ]; then \
         pem=$("$py" -c 'import certifi; print(certifi.where())' 2>/dev/null || true); \
-        if [ -n "$pem" ] && [ -f "$pem" ] && ! grep -q "emSign ECC Root CA - G3" "$pem"; then clean=$pem; break; fi; \
+        if [ -n "$pem" ] && [ -f "$pem" ]; then \
+          if bundle_has_root "$pem"; then \
+            ca_strip_refused "$pem" /tmp/ca-clean.pem || { echo "could not read $pem" >&2; exit 1; }; \
+            if bundle_has_root /tmp/ca-clean.pem; then echo "the patched bundle still has a compromised certificate" >&2; exit 1; \
+            else rc=$?; if [ "$rc" -eq 2 ]; then echo "could not read the patched bundle" >&2; exit 1; fi; fi; \
+            clean=/tmp/ca-clean.pem; break; \
+          else rc=$?; if [ "$rc" -eq 1 ]; then clean=$pem; break; fi; fi; \
+        fi; \
       fi; \
     done; \
     if [ -z "$clean" ]; then echo "no patched certifi bundle was found" >&2; exit 1; fi; \
@@ -103,25 +102,25 @@ RUN set -eu; \
     fi; \
     if [ -f /etc/ssl/certs/ca-certificates.crt ]; then \
       if ! command -v openssl >/dev/null 2>&1; then echo "openssl is missing; cannot read the system bundle" >&2; exit 1; fi; \
-      if ! openssl crl2pkcs7 -nocrl -certfile /etc/ssl/certs/ca-certificates.crt -out /tmp/ca-system.p7; then echo "could not read the system bundle" >&2; exit 1; fi; \
-      if ! openssl pkcs7 -in /tmp/ca-system.p7 -print_certs -noout > /tmp/ca-system.subj; then echo "could not read the system bundle" >&2; exit 1; fi; \
-      if grep -q "emSign ECC Root CA - G3" /tmp/ca-system.subj; then echo "the system bundle still trusts emSign ECC Root CA - G3" >&2; exit 1; \
-      else rc=$?; if [ "$rc" -ne 1 ]; then echo "could not read the system bundle" >&2; exit 1; fi; fi; \
-      rm -f /tmp/ca-system.p7 /tmp/ca-system.subj; \
+      if bundle_has_root /etc/ssl/certs/ca-certificates.crt; then \
+        ca_clear_bundle /etc/ssl/certs/ca-certificates.crt "$clean" || { echo "could not read the system bundle" >&2; exit 1; }; \
+      else rc=$?; if [ "$rc" -eq 2 ]; then echo "could not read the system bundle" >&2; exit 1; fi; fi; \
+      if bundle_has_root /etc/ssl/certs/ca-certificates.crt; then echo "the system bundle still trusts a compromised emSign certificate" >&2; exit 1; \
+      else rc=$?; if [ "$rc" -eq 2 ]; then echo "could not read the system bundle" >&2; exit 1; fi; fi; \
     fi; \
     : > /tmp/ca-pems; \
     for dir in /*; do \
       base=$(basename "$dir"); \
       case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
-      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name '*.cer' -o -name '*.0' \) >> /tmp/ca-pems || { echo "could not list $dir" >&2; exit 1; }; \
+      ca_append_trust_files /tmp/ca-pems "$dir" || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
     while read -r bundle; do \
       [ -n "$bundle" ] || continue; \
       if [ -L "$bundle" ]; then continue; fi; \
       if [ "$bundle" = "$clean" ]; then continue; fi; \
-      if [ "$bundle" = /etc/ssl/certs/ca-certificates.crt ]; then continue; fi; \
-      if bundle_has_root "$bundle"; then cp "$clean" "$bundle"; \
+      if bundle_has_root "$bundle"; then \
+        ca_clear_bundle "$bundle" "$clean" || { echo "could not read $bundle" >&2; exit 1; }; \
       else rc=$?; if [ "$rc" -eq 2 ]; then echo "could not read $bundle" >&2; exit 1; fi; fi; \
     done < /tmp/ca-pems; \
     : > /tmp/ca-bundles; \
@@ -129,7 +128,7 @@ RUN set -eu; \
       base=$(basename "$dir"); \
       case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
-      find "$dir" -type f \( -name '*.pem' -o -name '*.crt' -o -name '*.cer' -o -name '*.0' -o -name ca-certificates.crt \) >> /tmp/ca-bundles || { echo "could not list $dir" >&2; exit 1; }; \
+      ca_append_trust_files /tmp/ca-bundles "$dir" || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
     bad=0; \
     while read -r bundle; do \
@@ -141,7 +140,7 @@ RUN set -eu; \
         if [ "$rc" -eq 2 ]; then echo "could not read $bundle" >&2; exit 1; fi; \
       fi; \
     done < /tmp/ca-bundles; \
-    if [ "$bad" = 1 ]; then echo "emSign ECC Root CA - G3 is still in a trust bundle" >&2; exit 1; fi; \
+    if [ "$bad" = 1 ]; then echo "a compromised emSign certificate is still in a trust bundle" >&2; exit 1; fi; \
     : > /tmp/ca-uv; \
     for dir in /*; do \
       base=$(basename "$dir"); \
@@ -159,4 +158,4 @@ RUN set -eu; \
       fi; \
     done < /tmp/ca-uv; \
     if [ "$bad" = 1 ]; then echo "a uv binary still trusts emSign ECC Root CA - G3" >&2; exit 1; fi; \
-    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-uv /tmp/ca-one.p7 /tmp/ca-one.subj
+    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-uv /tmp/ca-fingerprints

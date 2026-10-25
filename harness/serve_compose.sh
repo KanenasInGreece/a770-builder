@@ -195,10 +195,17 @@ _refuse_old_trust() {
 # Scan the id serve will start. The measured name is not the only tag that
 # can point at old bytes, so the name is not what decides whether to scan.
 _scan_image() {
-  local id="$1" shown="$2" found
-  if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never --entrypoint bash "$id" -c '
+  local id="$1" shown="$2" found check
+  check=$(CDPATH= cd -- "$(dirname "$0")/../compose" && pwd)/ca-trust-check.sh
+  if [ ! -f "$check" ]; then
+    echo "⛔ the trust check script is missing" >&2
+    exit 2
+  fi
+  if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never \
+      -v "$check:/tmp/ca-trust-check.sh:ro" --entrypoint bash "$id" -c '
     set +e
     err=0
+    . /tmp/ca-trust-check.sh || err=1
     if find /etc/ssl/certs /usr/share/ca-certificates -name "emSign_ECC_Root_CA_-_G3*" 2>/dev/null | grep -q .; then
       echo "emSign_ECC_Root_CA_-_G3"
     fi
@@ -209,34 +216,25 @@ _scan_image() {
       echo "/etc/ca-certificates.conf"
     fi
     if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
-      if ! command -v openssl >/dev/null 2>&1; then err=1
-      elif ! openssl crl2pkcs7 -nocrl -certfile /etc/ssl/certs/ca-certificates.crt -out /tmp/ca-system.p7; then err=1
-      elif ! openssl pkcs7 -in /tmp/ca-system.p7 -print_certs -noout > /tmp/ca-system.subj; then err=1
-      elif grep -q "emSign ECC Root CA - G3" /tmp/ca-system.subj; then echo "/etc/ssl/certs/ca-certificates.crt"
+      bundle_has_root /etc/ssl/certs/ca-certificates.crt
+      rc=$?
+      if [ "$rc" -eq 0 ]; then echo "/etc/ssl/certs/ca-certificates.crt"
+      elif [ "$rc" -eq 2 ]; then err=1
       fi
-      rm -f /tmp/ca-system.p7 /tmp/ca-system.subj
     fi
     for dir in /*; do
       base=$(basename "$dir")
       case "$base" in proc|sys|dev|run) continue;; esac
       [ -d "$dir" ] || continue
-      find "$dir" -type f \( -name "*.pem" -o -name "*.crt" -o -name "*.cer" -o -name "*.0" -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
-      if [ "$?" -ne 0 ]; then err=1; fi
+      : > /tmp/ca-scan-list
+      ca_append_trust_files /tmp/ca-scan-list "$dir" || err=1
+      find "$dir" -type f \( -name uv -o -name uvx \) >> /tmp/ca-scan-list || err=1
       while read -r f; do
         [ -n "$f" ] || continue
-        grep -a -q "emSign ECC Root CA - G3" "$f"
-        grc=$?
-        if [ "$grc" -eq 0 ]; then printf "%s\n" "$f"
-        elif [ "$grc" -ne 1 ]; then err=1
-        elif grep -E -q "BEGIN( (TRUSTED|X509))? CERTIFICATE" "$f"; then
-          if openssl crl2pkcs7 -nocrl -certfile "$f" -out /tmp/ca-one.p7 2>/dev/null; then
-            if openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout > /tmp/ca-one.subj 2>/dev/null; then
-              if grep -q "emSign ECC Root CA - G3" /tmp/ca-one.subj; then printf "%s\n" "$f"; fi
-            else err=1
-            fi
-          else err=1
-          fi
-          rm -f /tmp/ca-one.p7 /tmp/ca-one.subj
+        bundle_has_root "$f"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then printf "%s\n" "$f"
+        elif [ "$rc" -eq 2 ]; then err=1
         fi
       done < /tmp/ca-scan-list
     done
