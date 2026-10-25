@@ -220,7 +220,7 @@ _scan_image() {
       base=$(basename "$dir")
       case "$base" in proc|sys|dev|run) continue;; esac
       [ -d "$dir" ] || continue
-      find "$dir" -type f \( -name "*.pem" -o -name "*.crt" -o -name "*.cer" -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
+      find "$dir" -type f \( -name "*.pem" -o -name "*.crt" -o -name "*.cer" -o -name "*.0" -o -name ca-certificates.crt -o -name uv -o -name uvx \) > /tmp/ca-scan-list
       if [ "$?" -ne 0 ]; then err=1; fi
       while read -r f; do
         [ -n "$f" ] || continue
@@ -228,7 +228,7 @@ _scan_image() {
         grc=$?
         if [ "$grc" -eq 0 ]; then printf "%s\n" "$f"
         elif [ "$grc" -ne 1 ]; then err=1
-        elif grep -E -q "BEGIN (TRUSTED )?CERTIFICATE" "$f"; then
+        elif grep -E -q "BEGIN( (TRUSTED|X509))? CERTIFICATE" "$f"; then
           if openssl crl2pkcs7 -nocrl -certfile "$f" -out /tmp/ca-one.p7 2>/dev/null; then
             if openssl pkcs7 -in /tmp/ca-one.p7 -print_certs -noout > /tmp/ca-one.subj 2>/dev/null; then
               if grep -q "emSign ECC Root CA - G3" /tmp/ca-one.subj; then printf "%s\n" "$f"; fi
@@ -300,11 +300,13 @@ _trust_gate() {
     *) var=A770B_LLAMA_IMAGE ;;
   esac
   name=$(_value_for "$var")
-  if [ -n "$name" ]; then
-    id=$(_refuse_resolved_bytes "$name") || exit 2
-    _resolved_id=$id
-    _scan_image "$id" "$name"
+  if [ -z "$name" ]; then
+    echo "⛔ $var is not set, so serve will not start the compose file's default tag" >&2
+    exit 2
   fi
+  id=$(_refuse_resolved_bytes "$name") || exit 2
+  _resolved_id=$id
+  _scan_image "$id" "$name"
   _pin_compose_image "$var"
 }
 

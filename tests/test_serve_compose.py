@@ -922,6 +922,18 @@ def test_start_refuses_a_compromised_digest_named_only_in_the_env_file(tmp_path)
     assert "started server container" not in r.stdout
 
 
+def test_start_refuses_when_the_image_is_left_to_the_compose_default(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    env_file = tmp_path / "a770-vulkan.env"
+    env_file.write_text("A770B_DRM_CARD=/dev/dri/card0\n", encoding="utf-8")
+    env = _env(tmp_path, bin_, A770B_COMPOSE_ENV_FILE=str(env_file))
+    env.pop("A770B_LLAMA_IMAGE", None)
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "will not start the compose file's default tag" in r.stderr
+    assert "started server container" not in r.stdout
+
+
 def test_start_refuses_a_tag_whose_resolved_id_is_a_compromised_digest(tmp_path):
     bin_, _log = _fake_runtime(tmp_path)
     bad = "52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b"
