@@ -1,8 +1,8 @@
 # Changelog
 
-This file records security changes that are not yet a release. The published cut stays v0.5.8. The version number does not move in this change.
+## 0.5.9
 
-## Unreleased
+This release drops the compromised emSign ECC Root CA - G3 root from the server images and refuses uv and uvx older than 0.13.4. No card was remeasured and no speed changed.
 
 ### Compromised emSign root in TLS trust bundles
 
