@@ -5,6 +5,7 @@
 #   serve_compose.sh signature <gguf> <ctx> [extra…]  print the context and the argv signature; no docker, no env file, no health wait
 #   serve_compose.sh start <gguf> <ctx> [extra…]   recreate the container, wait for /health, enforce the cap, sidecar
 #   serve_compose.sh stop | status | health
+#   serve_compose.sh gate                                   the trust check start and bench run; no server
 #   serve_compose.sh bench [--dry-run] -- <llama-bench args…>   one-shot llama-bench in the same image (speed rung)
 #
 # The profile row (model, ctx, kv, extra, thinking) reaches this script through env.sh exactly as it reaches the
@@ -174,6 +175,146 @@ _value_for(){
   val="${line#*=}"
   val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
   printf '%s\n' "$val"
+}
+
+# Published images that still trust emSign ECC Root CA - G3. The value is the
+# one compose will interpolate: an export wins, then the gitignored env file.
+_refuse_old_trust() {
+  case "$1" in
+    *33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4*|\
+    *7b4905e41d2720bfccf390e78e938e8148329b3da9467d3f1b008f0efc44cd97*|\
+    *52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b*|\
+    *24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f*|\
+    *b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f*)
+      echo "⛔ $1 still trusts the compromised emSign ECC Root CA - G3 root. Rebuild it with compose/refresh-ca.Dockerfile and pin that image." >&2
+      exit 2
+      ;;
+  esac
+}
+
+# Scan the id serve will start. The measured name is not the only tag that
+# can point at old bytes, so the name is not what decides whether to scan.
+_scan_image() {
+  local id="$1" shown="$2" found check
+  check=$(CDPATH= cd -- "$(dirname "$0")/../compose" && pwd)/ca-trust-check.sh
+  if [ ! -f "$check" ]; then
+    echo "⛔ the trust check script is missing" >&2
+    exit 2
+  fi
+  if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never \
+      -v "$check:/tmp/ca-trust-check.sh:ro" --entrypoint bash "$id" -c '
+    set +e
+    err=0
+    . /tmp/ca-trust-check.sh || err=1
+    if find /etc/ssl/certs /usr/share/ca-certificates -name "emSign_ECC_Root_CA_-_G3*" 2>/dev/null | grep -q .; then
+      echo "emSign_ECC_Root_CA_-_G3"
+    fi
+    if find /etc/ssl/certs -type l -lname "*emSign_ECC_Root_CA_-_G3*" 2>/dev/null | grep -q .; then
+      echo "emSign_ECC_Root_CA_-_G3-link"
+    fi
+    if [ -f /etc/ca-certificates.conf ] && grep -q "emSign_ECC_Root_CA_-_G3" /etc/ca-certificates.conf; then
+      echo "/etc/ca-certificates.conf"
+    fi
+    if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+      bundle_has_root /etc/ssl/certs/ca-certificates.crt
+      rc=$?
+      if [ "$rc" -eq 0 ]; then echo "/etc/ssl/certs/ca-certificates.crt"
+      elif [ "$rc" -eq 2 ]; then err=1
+      fi
+    fi
+    for dir in /*; do
+      base=$(basename "$dir")
+      case "$base" in proc|sys|dev|run) continue;; esac
+      [ -d "$dir" ] || continue
+      : > /tmp/ca-scan-list
+      : > /tmp/ca-scan-embedded
+      ca_append_trust_files /tmp/ca-scan-list "$dir" || err=1
+      ca_append_embedded_files /tmp/ca-scan-embedded "$dir" || err=1
+      while read -r f; do
+        [ -n "$f" ] || continue
+        bundle_has_root "$f"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then printf "%s\n" "$f"
+        elif [ "$rc" -eq 2 ]; then err=1
+        fi
+      done < /tmp/ca-scan-list
+      while read -r f; do
+        [ -n "$f" ] || continue
+        ca_embedded_refused "$f"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then printf "%s\n" "$f"
+        elif [ "$rc" -eq 2 ]; then err=1
+        fi
+      done < /tmp/ca-scan-embedded
+    done
+    rm -f /tmp/ca-scan-list /tmp/ca-scan-embedded
+    [ "$err" -eq 0 ]
+  '); then
+    echo "⛔ could not scan $shown for the compromised emSign ECC Root CA - G3 root" >&2
+    exit 2
+  fi
+  if [ -n "$found" ]; then
+    echo "⛔ $shown still trusts the compromised emSign ECC Root CA - G3 root ($found). Rebuild it with compose/refresh-ca.Dockerfile and keep this name." >&2
+    exit 2
+  fi
+}
+
+# One id for the scan and for compose. An empty inspect is a refusal: a real
+# docker prints an id or fails, and a blank success must not keep the tag.
+_image_id() {
+  local name="$1" id
+  if ! id=$("$A770B_DOCKER" image inspect -f '{{.Id}}' "$name" 2>/dev/null); then
+    echo "⛔ could not resolve $name to an image id" >&2
+    return 1
+  fi
+  case "$id" in
+    sha256:*) printf '%s\n' "$id" ;;
+    *) echo "⛔ $name resolved to '${id:-empty}', not an image id" >&2; return 1 ;;
+  esac
+}
+# The configured name can be a tag of a refused image. Refuse the resolved id
+# and every repo digest, which is where those bytes are named.
+_refuse_resolved_bytes() {
+  local name="$1" id digests
+  id=$(_image_id "$name") || exit 2
+  _refuse_old_trust "$id"
+  digests=$("$A770B_DOCKER" image inspect -f '{{range .RepoDigests}}{{.}} {{end}}' "$name" 2>/dev/null || true)
+  _refuse_old_trust "$digests"
+  printf '%s\n' "$id"
+}
+_pin_compose_image() {
+  local var="$1" name id base
+  name=$(_value_for "$var")
+  [ -n "$name" ] || return 0
+  if [ -n "${_resolved_id:-}" ]; then
+    id=$_resolved_id
+  else
+    id=$(_image_id "$name") || exit 2
+  fi
+  base=${name%%@sha256:*}
+  export "$var=${base}@${id}"
+}
+
+_trust_gate() {
+  local name id var
+  _resolved_id=""
+  _refuse_old_trust "$(_value_for A770B_LLAMA_IMAGE)"
+  _refuse_old_trust "$(_value_for A770B_VLLM_IMAGE)"
+  _refuse_old_trust "$(_value_for A770B_SGLANG_IMAGE)"
+  case "${A770B_SERVED_BACKEND:-}" in
+    vllm) var=A770B_VLLM_IMAGE ;;
+    sglang) var=A770B_SGLANG_IMAGE ;;
+    *) var=A770B_LLAMA_IMAGE ;;
+  esac
+  name=$(_value_for "$var")
+  if [ -z "$name" ]; then
+    echo "⛔ $var is not set, so serve will not start the compose file's default tag" >&2
+    exit 2
+  fi
+  id=$(_refuse_resolved_bytes "$name") || exit 2
+  _resolved_id=$id
+  _scan_image "$id" "$name"
+  _pin_compose_image "$var"
 }
 
 # _sglang_preflight — before any docker call. Victim write-back stays on, and
@@ -391,12 +532,21 @@ case "${1:-}" in
   health)
     _health_class && exit 0
     exit 1;;
+  gate)
+    _trust_gate
+    case "${A770B_SERVED_BACKEND:-}" in
+      vllm) printf '%s\n' "${A770B_VLLM_IMAGE:-}" ;;
+      sglang) printf '%s\n' "${A770B_SGLANG_IMAGE:-}" ;;
+      *) printf '%s\n' "${A770B_LLAMA_IMAGE:-}" ;;
+    esac
+    exit 0;;
   plan|start|signature) ;;
   bench)
     shift
     DRY=0; [ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
     [ "${1:-}" = "--" ] && shift
     [ $# -gt 0 ] || { echo "usage: serve_compose.sh bench [--dry-run] -- <llama-bench args…>" >&2; exit 2; }
+    _trust_gate
     if [ "$DRY" = 1 ]; then
       DRY_ENVF=""; [ -f "$A770B_COMPOSE_ENV_FILE" ] && DRY_ENVF="--env-file $A770B_COMPOSE_ENV_FILE"
       printf '%s\n' "$A770B_DOCKER compose $DRY_ENVF -p $A770B_COMPOSE_PROJECT -f $A770B_COMPOSE_FILE run --rm --no-deps --entrypoint /app/llama-bench $CONTAINER $*"
@@ -404,7 +554,7 @@ case "${1:-}" in
     fi
     _compose run --rm --no-deps --entrypoint /app/llama-bench "$CONTAINER" "$@"
     exit 0;;
-  *) echo "usage: serve_compose.sh plan|start|signature <gguf> [ctx] [extra…] | stop | status | health | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
+  *) echo "usage: serve_compose.sh plan|start|signature <gguf> [ctx] [extra…] | gate | stop | status | health | bench [--dry-run] -- <llama-bench args…>" >&2; exit 2;;
 esac
 MODE="$1"
 MODEL=$(a770b_model_path "${2:?gguf}"); CTX="${3:-32768}"; shift 3 2>/dev/null || shift $#
@@ -503,6 +653,7 @@ _ep_arg=()
 [ -n "$ENTRYPOINT" ] && _ep_arg=(--entrypoint "$ENTRYPOINT")
 python3 "$(dirname "$0")/compose_override.py" "${_ep_arg[@]}" --out "$OVERRIDE" -- "${ARGV[@]}"
 # recreate, never --no-recreate: a profile change must replace the container
+_trust_gate
 if ! _compose up -d --force-recreate; then
   echo "⛔ docker compose up failed — the container did not start (docker's error is above); nothing was left running" >&2
   rm -f "$PIDFILE" "$MARK" "$SIDECAR"

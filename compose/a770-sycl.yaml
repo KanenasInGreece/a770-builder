@@ -5,10 +5,11 @@
 # NO llama-server argv: the profile row is turned into argv at serve time by harness/serve_compose.sh from
 # config/profiles*.json, so the registry stays the single source.
 #
-# The image is ghcr.io/ggml-org/llama.cpp:full-intel — llama.cpp built with SYCL (oneAPI / Level Zero) support,
-# the Intel GPU path that does not depend on vLLM's XPU backend. Use full-intel, NOT server-intel: full
-# copies build/bin/* so the one-shot llama-bench job (the speed rung) is in the same image. Pin it by digest after
-# the first pull (compose/a770-sycl.env).
+# The image is the full-intel SYCL build of llama.cpp (oneAPI / Level Zero), not server-intel:
+# full copies build/bin/* so the one-shot llama-bench job is in the same image. The base digest is
+# b11870 (sha256:b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f). Ubuntu's pip
+# bundle in that image still trusts emSign ECC Root CA - G3, so serve the refresh named in
+# compose/a770-sycl.env, built with compose/refresh-ca.Dockerfile. Do not serve the base digest.
 #
 # The image's own ENTRYPOINT is /app/tools.sh (a toolbox shell); compose appends `command:` to the entrypoint, so
 # without the explicit entrypoint below a serve would run tools.sh and never reach the server. The ruled start
@@ -20,6 +21,9 @@
 services:
   llama:
     image: ${A770B_LLAMA_IMAGE}
+    # The served image is the local refresh. Pull the base yourself, then build
+    # compose/refresh-ca.Dockerfile. never: compose must not pull the local name.
+    pull_policy: never
     restart: "no"
     user: "${A770B_CONTAINER_UID}:${A770B_CONTAINER_GID}"
     group_add:

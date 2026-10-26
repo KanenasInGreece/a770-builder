@@ -5,6 +5,27 @@
 #                          →  variables already in the environment. The mode naming the per-mode files is the mode
 #                          after the two builder.env files and the environment have been read.
 # Copy config/builder.env.example to one of those two places and edit. Nothing else needs touching.
+# uv older than 0.13.4 still trusts the compromised emSign ECC Root CA - G3 root from the bundle it ships.
+_uv_bin=$(command -v uv || true)
+if [ -z "$_uv_bin" ]; then
+  echo "⛔ uv is not on PATH (need 0.13.4 or newer; that release drops the compromised emSign ECC Root CA - G3 root)" >&2
+  return 2 2>/dev/null || exit 2
+fi
+_uv_ver=$("$_uv_bin" --version 2>/dev/null | awk '{print $2}')
+if [ "$(printf '%s\n%s\n' "0.13.4" "$_uv_ver" | sort -V | head -1)" != "0.13.4" ]; then
+  echo "⛔ uv $_uv_ver at $_uv_bin is older than 0.13.4 and still trusts the compromised emSign ECC Root CA - G3 root" >&2
+  return 2 2>/dev/null || exit 2
+fi
+# uvx fetches packages on its own. An old uvx beside a new uv still trusts the root.
+_uvx_bin=$(command -v uvx || true)
+if [ -n "$_uvx_bin" ]; then
+  _uvx_ver=$("$_uvx_bin" --version 2>/dev/null | awk '{print $2}')
+  if [ "$(printf '%s\n%s\n' "0.13.4" "$_uvx_ver" | sort -V | head -1)" != "0.13.4" ]; then
+    echo "⛔ uvx $_uvx_ver at $_uvx_bin is older than 0.13.4 and still trusts the compromised emSign ECC Root CA - G3 root" >&2
+    return 2 2>/dev/null || exit 2
+  fi
+fi
+unset _uv_bin _uv_ver _uvx_bin _uvx_ver
 A770B_PROJECT="${A770B_PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck disable=SC1090 # builder.env is named at run time; the linter cannot follow it and need not
 _a770b_load(){ [ -f "$1" ] && { set -a; . "$1"; set +a; }; return 0; }

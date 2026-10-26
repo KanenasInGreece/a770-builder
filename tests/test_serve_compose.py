@@ -68,6 +68,7 @@ case " $* " in
   *" up "*) {up_body}
   *" ps --all -q "*|*" ps -q --all "*|*" ps "*" --all "*) {ps_all_body}
   *" ps -q "*) {ps_body}
+  *" image inspect "*) printf '%s\\n' "sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0;;
   *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{inspect_pid}"; exit 0;;
   *" logs "*) {logs_arm}
   *) exit 0;;
@@ -361,10 +362,23 @@ def test_bench_is_a_one_shot_llama_bench_in_the_same_image(tmp_path):
     r = _run(_env(tmp_path, bin_), "bench", "--", "-m", "/models/x.gguf", "-ngl", "99", "-o", "json")
     assert r.returncode == 0, r.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    run = [c for c in calls if " run " in f" {c} "]
+    run = [c for c in calls if " run " in f" {c} " and "llama-bench" in c]
     assert run, calls
     assert "--entrypoint /app/llama-bench" in run[0]
     assert "--rm" in run[0] and "--no-deps" in run[0]
+
+
+def test_bench_refuses_an_image_that_still_trusts_the_compromised_root(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp@sha256:33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4",
+    )
+    r = _run(env, "bench", "--", "-m", "/models/x.gguf")
+    assert r.returncode == 2
+    assert "emSign ECC Root CA - G3" in r.stderr
+    assert not log.exists()
 
 
 def _budget_gate(env):
@@ -538,7 +552,8 @@ def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
     assert 'entrypoint: ["/bin/bash", "-c", "VLLM_API_KEY=\\"$(cat /run/a770b/api.key)\\" || exit 1; export VLLM_API_KEY; source /opt/intel/oneapi/setvars.sh --force >/dev/null || exit 1; exec vllm serve \\"$@\\"", "vllm-serve"]' in text
     assert "2>/dev/null" not in text
     assert "127.0.0.1:${A770B_PORT}:8000" in text
-    assert "${A770B_VLLM_IMAGE:-intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b}" in text
+    assert "${A770B_VLLM_IMAGE:-a770-builder/llm-scaler-vllm-ca:2026-10-25}" in text
+    assert "52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b" in text
     assert "${A770B_MODEL}" not in text and "${A770B_CTX}" not in text
     assert "${A770B_MODELS}:/models:ro,z" in text
     assert "${A770B_API_KEY_FILE}:/run/a770b/api.key:ro,z" in text
@@ -548,7 +563,8 @@ def test_vllm_envelope_sets_the_server_entrypoint_and_bakes_no_model():
 def test_vllm_env_example_documents_filtered_by_path_dir_and_trap():
     text = VLLM_ENV_EXAMPLE.read_text(encoding="utf-8")
     assert "A770B_MODEL=" not in text and "A770B_CTX=" not in text
-    assert "A770B_VLLM_IMAGE=intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b" in text
+    assert "A770B_VLLM_IMAGE=a770-builder/llm-scaler-vllm-ca:2026-10-25" in text
+    assert "52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b" in text
     assert "A770B_VLLM_IMAGE=intel/vllm" not in text
     assert "getent" in text
     assert "TRAP" in text
@@ -833,7 +849,7 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
         bin_,
         A770B_SERVED_BACKEND="vllm",
         A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
-        A770B_VLLM_IMAGE="intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b",
+        A770B_VLLM_IMAGE="example.invalid/vllm@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         A770B_BY_PATH_DIR=str(by_path),
         A770B_QUANT="gptq",
         A770B_CARD_VRAM_TOTAL="32",
@@ -849,6 +865,171 @@ def test_start_vllm_succeeds_with_empty_http_200_health_and_no_entrypoint(tmp_pa
     assert ov["services"]["llama"]["command"][0] == "/models/Qwen/Qwen3-32B"
     pidf = Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid"
     assert pidf.read_text(encoding="utf-8").strip() == "4242"
+
+
+def test_start_refuses_an_image_that_still_trusts_the_compromised_root(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="intel/llm-scaler-vllm@sha256:52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b",
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2
+    assert "emSign ECC Root CA - G3" in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_refuses_a_compromised_digest_named_only_in_the_env_file(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env_file = tmp_path / "vllm.env"
+    env_file.write_text(
+        "A770B_VLLM_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:"
+        "b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f\n",
+        encoding="utf-8",
+    )
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_COMPOSE_ENV_FILE=str(env_file),
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    env.pop("A770B_VLLM_IMAGE", None)
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2
+    assert "b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f" in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_refuses_when_the_image_is_left_to_the_compose_default(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    env_file = tmp_path / "a770-vulkan.env"
+    env_file.write_text("A770B_DRM_CARD=/dev/dri/card0\n", encoding="utf-8")
+    env = _env(tmp_path, bin_, A770B_COMPOSE_ENV_FILE=str(env_file))
+    env.pop("A770B_LLAMA_IMAGE", None)
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "will not start the compose file's default tag" in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_refuses_a_tag_whose_resolved_id_is_a_compromised_digest(tmp_path):
+    bin_, _log = _fake_runtime(tmp_path)
+    bad = "52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b"
+    _make_bin(
+        bin_,
+        "docker",
+        "case \" $* \" in\n"
+        "  *\" image inspect \"*)\n"
+        "    case \" $* \" in\n"
+        "      *RepoDigests*) printf '%s\\n' \"intel/llm-scaler-vllm@sha256:" + bad + "\" ;;\n"
+        "      *) printf '%s\\n' \"sha256:" + bad + "\" ;;\n"
+        "    esac\n"
+        "    exit 0;;\n"
+        "  *) exit 0;;\n"
+        "esac\n",
+    )
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="intel/llm-scaler-vllm:0.26.0-b2",
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert bad in r.stderr
+    assert "started server container" not in r.stdout
+
+
+def test_start_scans_the_image_it_will_start_even_when_the_name_is_not_measured(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(
+        bin_,
+        "docker",
+        f'printf \'%s\\n\' "$*" >> "{log}"\n'
+        'case " $* " in\n'
+        '  *" image inspect "*) printf \'%s\\n\' "sha256:2222222222222222222222222222222222222222222222222222222222222222"; exit 0;;\n'
+        '  *" run "*) printf \'%s\\n\' "/etc/ssl/certs/ca-certificates.crt"; exit 0;;\n'
+        '  *) exit 0;;\n'
+        'esac\n',
+    )
+    env = _env(tmp_path, bin_, A770B_LLAMA_IMAGE="example.invalid/llama:local-ca")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "example.invalid/llama:local-ca" in r.stderr
+    assert "emSign ECC Root CA - G3" in r.stderr
+    text = log.read_text(encoding="utf-8")
+    assert "sha256:2222222222222222222222222222222222222222222222222222222222222222" in text
+    assert "--pull=never" in text
+    assert "started server container" not in r.stdout
+
+
+def test_start_scans_the_measured_vllm_name_before_starting_it(tmp_path):
+    bin_, log = _fake_runtime(tmp_path)
+    _make_bin(
+        bin_,
+        "docker",
+        f'printf \'%s\\n\' "$*" >> "{log}"\n'
+        'case " $* " in\n'
+        '  *" image inspect "*) printf \'%s\\n\' "sha256:1111111111111111111111111111111111111111111111111111111111111111"; exit 0;;\n'
+        '  *" run "*) printf \'%s\\n\' "/opt/venv/lib/python3.12/site-packages/certifi/cacert.pem"; exit 0;;\n'
+        '  *) exit 0;;\n'
+        'esac\n',
+    )
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    hf_dir = tmp_path / "models" / "Qwen" / "Qwen3-32B"
+    hf_dir.mkdir(parents=True)
+    env = _env(
+        tmp_path,
+        bin_,
+        A770B_SERVED_BACKEND="vllm",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="exl3xpu:b70-15ded2f",
+        A770B_BY_PATH_DIR=str(by_path),
+        A770B_QUANT="gptq",
+        A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0",
+        TOOL_PARSER="qwen3_coder",
+    )
+    r = _run(env, "start", "Qwen/Qwen3-32B", "8192")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "exl3xpu:b70-15ded2f" in r.stderr
+    assert "emSign ECC Root CA - G3" in r.stderr
+    assert "sha256:1111111111111111111111111111111111111111111111111111111111111111" in log.read_text(encoding="utf-8")
+    assert "--pull=never" in log.read_text(encoding="utf-8")
+    assert "started server container" not in r.stdout
 
 
 def _assert_start_line_names_cap_once(stdout: str, cap: str, also: str | None = None) -> None:
@@ -1265,6 +1446,8 @@ def test_sglang_envelope_pins_the_trial_contract():
     assert "/home/" not in example
     assert SGLANG_DIGEST in text
     assert SGLANG_DIGEST in example
+    assert "a770-builder/sglang-flashnext-ca:2026-10-25" in text
+    assert "a770-builder/sglang-flashnext-ca:2026-10-25" in example
     assert 'entrypoint: ["python3"]' in text
     assert "127.0.0.1:${A770B_PORT}:${A770B_PORT}" in text
     assert "mem_limit: 40g" in text and "memswap_limit: 40g" in text
@@ -1477,6 +1660,10 @@ def test_start_sglang_keeps_a_load_above_the_llama_cap_and_below_the_card(tmp_pa
         f"\"mem_used\": {used}, \"mem_free\": 0}}]'",
     )
     nodes = _sglang_nodes(tmp_path)
+    nodes["A770B_SGLANG_IMAGE"] = (
+        "example.invalid/sglang@sha256:"
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
     env = _env(
         tmp_path, bin_,
         A770B_SERVED_BACKEND="sglang",
@@ -1512,6 +1699,10 @@ def test_start_sglang_stops_when_used_vram_exceeds_the_card(tmp_path):
         f"\"mem_used\": {used}, \"mem_free\": 0}}]'",
     )
     nodes = _sglang_nodes(tmp_path)
+    nodes["A770B_SGLANG_IMAGE"] = (
+        "example.invalid/sglang@sha256:"
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
     env = _env(
         tmp_path, bin_,
         A770B_SERVED_BACKEND="sglang",
@@ -1591,6 +1782,9 @@ def split_compose(rest):
         break
     return project, files, rest[i:], i
 
+if args[:3] == ["image", "inspect", "-f"]:
+    print("sha256:" + "0" * 64)
+    sys.exit(0)
 if args[:2] == ["compose", "version"]:
     print("Docker Compose version v2.30.0")
     sys.exit(0)

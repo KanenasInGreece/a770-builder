@@ -1670,6 +1670,7 @@ exit 0
 EOF
 cat > "$t/four/bin/uvx" <<EOF
 #!/bin/sh
+case "\$1" in --version) printf '%s\n' "uvx 0.13.5"; exit 0;; esac
 printf '%s\n' "uvx \$*" >> "$four_marker"
 exit 99
 EOF
@@ -1692,6 +1693,7 @@ fi
 bench_uvx_marker="$t/four/bench-uvx-called"
 cat > "$t/four/bin/uvx" <<EOF
 #!/bin/sh
+case "\$1" in --version) printf '%s\n' "uvx 0.13.5"; exit 0;; esac
 touch "$bench_uvx_marker"
 exit 99
 EOF
@@ -1872,6 +1874,7 @@ case " $* " in
     [ "${FAKE_CONTAINER_UP:-}" = 1 ] && printf '%s\n' cid
     exit 0;;
   *" ps -q "*) printf '%s\n' cid; exit 0;;
+  *" image inspect "*) printf '%s\n' "sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0;;
   *" inspect "*) printf '%s\n' 4242; exit 0;;
   *" logs "*)
     [ -z "${FAKE_DOCKER_LOGS_FAIL:-}" ] || exit 1

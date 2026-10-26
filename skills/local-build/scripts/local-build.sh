@@ -94,10 +94,15 @@ current(){ _recorded_serve_pid "$PIDF" >/dev/null && head -n 1 "$MARK" 2>/dev/nu
 # The pidfile is a live llama-server. A vLLM container's host pid is not that name, and a failed start
 # removes the pidfile while the container can still be running. The project label is this seat's container.
 _compose_container_id(){
+  local out
   [ "${A770B_SERVE:-}" = compose ] || return 0
-  "$A770B_DOCKER" ps -q \
+  local lines
+  out=$("$A770B_DOCKER" ps -q \
     --filter "label=com.docker.compose.project=${A770B_COMPOSE_PROJECT}" \
-    --filter "label=com.docker.compose.service=llama" 2>/dev/null | head -1 || true
+    --filter "label=com.docker.compose.service=llama" 2>/dev/null) || return 2
+  lines=$(printf '%s\n' "$out" | grep -c '[^[:space:]]' || true)
+  [ "$lines" -le 1 ] || return 2
+  printf '%s\n' "$out" | head -n 1
 }
 # the one line for a card with no measured rows, produced in ONE place (profiles.py empty-line) and quoted verbatim
 empty_registry_line(){ python3 "$A770B_PROJECT/harness/profiles.py" empty-line --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; }
@@ -236,6 +241,27 @@ _serve_start_or_die(){
   [ "$rc" = 0 ] && return 0
   die "server did not start — see the error above (a budget-gate or VRAM-cap refusal, or the server's own failure)"
 }
+# The container's image id has to be the id serve would start, and that image
+# has to pass the same trust gate a start runs. A retag of the name does not
+# keep the previous bytes. A refused digest does not stay up because its id matches.
+_running_image_matches(){
+  local cid running wanted pinned vllm_image
+  cid=$(_compose_container_id) || return 1
+  [ -n "$cid" ] || return 1
+  running=$("$A770B_DOCKER" inspect -f '{{.Image}}' "$cid" 2>/dev/null) || return 1
+  [ -n "$running" ] || return 1
+  if [ "${A770B_SERVED_BACKEND:-}" = vllm ]; then
+    vllm_image=$(a770b_profile_var "$p" VLLM_IMAGE 2>/dev/null || true)
+    [ -n "$vllm_image" ] && export A770B_VLLM_IMAGE="$vllm_image"
+  fi
+  pinned=$(bash "$A770B_PROJECT/harness/serve_compose.sh" gate) || return 1
+  case "$pinned" in
+    *@sha256:*) wanted="sha256:${pinned##*@sha256:}" ;;
+    sha256:*) wanted=$pinned ;;
+    *) return 1 ;;
+  esac
+  [ "$running" = "$wanted" ]
+}
 # The sidecar does not name this pid. Keep the container when the mark is this model,
 # this context, and this argv signature, the override file hashes the same, the compose
 # file is this envelope, and /health is ready. A missing mark line or a missing override
@@ -285,7 +311,7 @@ except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
     sys.exit(1)
 ' "$A770B_PROJECT/harness" "$ov") || return 1
   [ "$ov_hash" = "$sig_hash" ] || return 1
-  cid=$(_compose_container_id) || true
+  cid=$(_compose_container_id) || return 1
   [ -n "$cid" ] || return 1
   files=$("$A770B_DOCKER" inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null || true)
   [ -n "$files" ] || return 1
@@ -297,6 +323,10 @@ except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
   [ "$health_word" = ready ] || return 1
   if ! a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then
     echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+    return 1
+  fi
+  if ! _running_image_matches; then
+    echo "↻ the running server is not the pinned image — restarting it"
     return 1
   fi
   if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ]; then
@@ -315,7 +345,7 @@ _override_warn(){ # a card the operator marked operator_override: say so, so it 
 serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
   local live_json live_backend live_model live_profile req_backend req_model
-  local lock_held run_alive msg old_profile LIVE_PY health_word skip_unmarked_keep=0
+  local lock_held run_alive msg old_profile LIVE_PY health_word skip_unmarked_keep=0 cid crc=0
   local -a rb_args
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
@@ -347,10 +377,26 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
     if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ]; then
       health_word=$(bash "$SERVE" health 2>/dev/null) || true
       if [ "$health_word" = ready ]; then
-        if a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0; fi
-        echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
-        # One restart line, then stop and start. Do not fall through into the unmarked keep.
-        skip_unmarked_keep=1
+        if a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then
+          cid=$(_compose_container_id)
+          crc=$?
+          if [ "$crc" -ne 0 ]; then
+            echo "↻ the running container could not be read — restarting it"
+            skip_unmarked_keep=1
+          elif [ -z "$cid" ]; then
+            echo "↻ the running server is not this project's container — restarting it"
+            skip_unmarked_keep=1
+          elif _running_image_matches; then
+            echo "✓ $p already up ($(basename "$gguf"))"; _override_warn "$p"; return 0
+          else
+            echo "↻ the running server is not the pinned image — restarting it"
+            skip_unmarked_keep=1
+          fi
+        else
+          echo "↻ the running server does not accept the key in $A770B_API_KEY_FILE (rotated?) — restarting it"
+          # One restart line, then stop and start. Do not fall through into the unmarked keep.
+          skip_unmarked_keep=1
+        fi
       else
         echo "serve refused: $A770B_HOST:$A770B_PORT did not answer /health"
         return 1
@@ -571,6 +617,12 @@ doctor(){
     fi
     _img="${_img%\"}"; _img="${_img#\"}"; _img="${_img%\'}"; _img="${_img#\'}"
     case "$_img" in
+       *33ed2a8936e94ac893a50eed3d2958141d352198233d107e58c1c7ee3b96a9b4*|\
+       *7b4905e41d2720bfccf390e78e938e8148329b3da9467d3f1b008f0efc44cd97*|\
+       *52218ad85513ab6686d4c090c83c2bd8c5b02423c63aa4dabd41837fe641fe3b*|\
+       *24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f*|\
+       *b763b3587a8fd40f7575d8a12b38071cc2ed8a88086925e6936da7727723412f*)
+         echo "WARN image: ${_img_var}=$_img still trusts the compromised emSign ECC Root CA - G3 root. Rebuild it with compose/refresh-ca.Dockerfile and pin that image. serve refuses this name (warning only — doctor still passes)";;
        *@sha256:*) : ;;   # pinned: name@sha256:<digest> names exactly one image, so nothing to warn about
        "") : ;;           # unset is already a MISSING above; do not report the same gap twice
        *) echo "WARN image: ${_img_var}=$_img is a floating tag, not a digest — pull it once, then pin the exact bytes (docker inspect --format='{{index .RepoDigests 0}}' $_img) and set ${_img_var}=ghcr.io/ggml-org/llama.cpp@sha256:<digest> in $A770B_COMPOSE_ENV_FILE; see ${A770B_COMPOSE_ENV_FILE}.example (warning only — doctor still passes)";;

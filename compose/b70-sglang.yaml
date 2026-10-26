@@ -2,14 +2,21 @@
 # The measured Flash-Next start, translated into the compose envelope serve_compose.sh
 # already uses for vLLM. No model, no context, and no launch argv live here: the
 # profile row becomes `python3 -m sglang.launch_server` at serve time. This file
-# does not package the image; it pins the digest the trial already runs.
+# does not package the image. The trial ran
+# ghcr.io/0xsero/sglang-exl3-xpu-flashnext@sha256:24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f.
+# That image vendors certifi 2026.07.22 and uv 0.12.16, which still trust the compromised
+# emSign ECC Root CA - G3 root. The image line is the refresh of that digest
+# (compose/refresh-ca.Dockerfile): the same server, with pip 26.2.2, certifi 2026.10.23, and uv 0.13.5.
 #
 # Device targets are the by-path node's own path (the trial's same-path bind),
 # not a remap onto a neighbour node. Host paths stay in the env file.
 # security_opt label=disable is what that measured start used.
 services:
   llama:
-    image: ${A770B_SGLANG_IMAGE:-ghcr.io/0xsero/sglang-exl3-xpu-flashnext@sha256:24c872759256d4b0d3b9d0419ebdf6f3547e0fdbd3891fbb9f90e32ad255c94f}
+    image: ${A770B_SGLANG_IMAGE:-a770-builder/sglang-flashnext-ca:2026-10-25}
+    # The default name is a local build, not a registry this project publishes.
+    # never: compose must not pull that name from Docker Hub.
+    pull_policy: never
     restart: "no"
     # --memory=40g --memory-swap=40g, shm 8g, cpuset 8-23, memlock unlimited.
     mem_limit: 40g
