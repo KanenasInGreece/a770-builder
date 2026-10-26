@@ -227,8 +227,9 @@ _scan_image() {
       case "$base" in proc|sys|dev|run) continue;; esac
       [ -d "$dir" ] || continue
       : > /tmp/ca-scan-list
+      : > /tmp/ca-scan-embedded
       ca_append_trust_files /tmp/ca-scan-list "$dir" || err=1
-      find "$dir" -type f \( -name uv -o -name uvx \) >> /tmp/ca-scan-list || err=1
+      ca_append_embedded_files /tmp/ca-scan-embedded "$dir" || err=1
       while read -r f; do
         [ -n "$f" ] || continue
         bundle_has_root "$f"
@@ -237,8 +238,16 @@ _scan_image() {
         elif [ "$rc" -eq 2 ]; then err=1
         fi
       done < /tmp/ca-scan-list
+      while read -r f; do
+        [ -n "$f" ] || continue
+        ca_embedded_refused "$f"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then printf "%s\n" "$f"
+        elif [ "$rc" -eq 2 ]; then err=1
+        fi
+      done < /tmp/ca-scan-embedded
     done
-    rm -f /tmp/ca-scan-list
+    rm -f /tmp/ca-scan-list /tmp/ca-scan-embedded
     [ "$err" -eq 0 ]
   '); then
     echo "⛔ could not scan $shown for the compromised emSign ECC Root CA - G3 root" >&2

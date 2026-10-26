@@ -78,7 +78,8 @@ is already clean, but Ubuntu's pip bundle in that image still has the root. Do n
 `24c872759256` still vendor certifi 2026.07.22. Build `compose/refresh-ca.Dockerfile` from each of those three
 digests and pin the image that build prints. The command is in the matching `compose/*.env.example`. The
 build refuses the compromised root and the compromised intermediates by certificate SHA-256, including a
-trust file whose name ends in `.1` or `.2`. Serve refuses the base digests.
+trust file whose name ends in `.1` or `.2` and a hash name that is a symlink. It also reads DER
+certificates and text-scans the Java, NSS, and Rust copies of a trust list. Serve refuses the base digests.
 
 ## 5. Bring the server up
 

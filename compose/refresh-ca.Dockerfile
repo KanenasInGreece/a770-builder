@@ -8,12 +8,17 @@
 # refuses to finish while emSign ECC Root CA - G3, or a certificate whose
 # SHA-256 is one of the compromised intermediates, remains in a bundle,
 # in a uv or uvx binary, or in the system store. Hash-named trust files
-# (.0, .1, .2, and so on) are read the same way. update-ca-certificates
-# drops a certificate only when its conf line starts with !. The line is
-# marked, the store is rebuilt, then the certificate file and the line are
-# removed. The certifi bundle is not copied onto the system store, and a
-# symlink is not followed while another bundle is replaced. A directory
-# that cannot be listed, or a bundle that cannot be read, fails the build.
+# (.0, .1, .2, and so on) are read the same way, including when the name
+# is a symlink, and so are DER files. A planted fingerprint file is not
+# the list. Java cacerts, NSS databases, shared libraries, Rust rlibs,
+# and webpki-roots sources are text-scanned. A shared library is not
+# replaced with a certificate. openai_harmony, outlines_core, and the
+# SGLang extensions _server and _multimodal are left in place. update-ca-certificates drops a certificate
+# only when its conf line starts with !. The line is marked, the store is
+# rebuilt, then the certificate file and the line are removed. The certifi
+# bundle is not copied onto the system store, and a symlink is not followed
+# while another bundle is replaced. A directory that cannot be listed, or
+# a bundle that cannot be read, fails the build.
 ARG BASE
 FROM ${BASE}
 USER root
@@ -117,11 +122,8 @@ RUN set -eu; \
     done; \
     while read -r bundle; do \
       [ -n "$bundle" ] || continue; \
-      if [ -L "$bundle" ]; then continue; fi; \
       if [ "$bundle" = "$clean" ]; then continue; fi; \
-      if bundle_has_root "$bundle"; then \
-        ca_clear_bundle "$bundle" "$clean" || { echo "could not read $bundle" >&2; exit 1; }; \
-      else rc=$?; if [ "$rc" -eq 2 ]; then echo "could not read $bundle" >&2; exit 1; fi; fi; \
+      ca_dispose_bundle "$bundle" "$clean" || { echo "could not read $bundle" >&2; exit 1; }; \
     done < /tmp/ca-pems; \
     : > /tmp/ca-bundles; \
     for dir in /*; do \
@@ -141,21 +143,35 @@ RUN set -eu; \
       fi; \
     done < /tmp/ca-bundles; \
     if [ "$bad" = 1 ]; then echo "a compromised emSign certificate is still in a trust bundle" >&2; exit 1; fi; \
-    : > /tmp/ca-uv; \
+    : > /tmp/ca-embedded; \
     for dir in /*; do \
       base=$(basename "$dir"); \
       case "$base" in proc|sys|dev|run) continue;; esac; \
       if [ ! -d "$dir" ]; then continue; fi; \
-      find "$dir" -type f \( -name uv -o -name uvx \) >> /tmp/ca-uv || { echo "could not list $dir" >&2; exit 1; }; \
+      ca_append_embedded_files /tmp/ca-embedded "$dir" || { echo "could not list $dir" >&2; exit 1; }; \
     done; \
-    while read -r bin; do \
-      [ -n "$bin" ] || continue; \
-      if grep -a -q "emSign ECC Root CA - G3" "$bin"; then \
-        echo "$bin" >&2; bad=1; \
+    while read -r carrier; do \
+      [ -n "$carrier" ] || continue; \
+      if [ -f "$carrier" ]; then \
+        ca_clear_embedded "$carrier" || { echo "could not read $carrier" >&2; exit 1; }; \
+      fi; \
+    done < /tmp/ca-embedded; \
+    : > /tmp/ca-embedded-left; \
+    for dir in /*; do \
+      base=$(basename "$dir"); \
+      case "$base" in proc|sys|dev|run) continue;; esac; \
+      if [ ! -d "$dir" ]; then continue; fi; \
+      ca_append_embedded_files /tmp/ca-embedded-left "$dir" || { echo "could not list $dir" >&2; exit 1; }; \
+    done; \
+    while read -r carrier; do \
+      [ -n "$carrier" ] || continue; \
+      if [ ! -f "$carrier" ]; then continue; fi; \
+      if ca_embedded_refused "$carrier"; then \
+        echo "$carrier" >&2; bad=1; \
       else \
         rc=$?; \
-        if [ "$rc" -ne 1 ]; then echo "could not read $bin" >&2; exit 1; fi; \
+        if [ "$rc" -ne 1 ]; then echo "could not read $carrier" >&2; exit 1; fi; \
       fi; \
-    done < /tmp/ca-uv; \
-    if [ "$bad" = 1 ]; then echo "a uv binary still trusts emSign ECC Root CA - G3" >&2; exit 1; fi; \
-    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-uv /tmp/ca-fingerprints
+    done < /tmp/ca-embedded-left; \
+    if [ "$bad" = 1 ]; then echo "a bundled trust store still trusts emSign ECC Root CA - G3" >&2; exit 1; fi; \
+    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-embedded /tmp/ca-embedded-left /tmp/ca-fingerprints
