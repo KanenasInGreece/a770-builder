@@ -280,9 +280,14 @@ ca_carrier_kind() {
 
 # These four installed files embed webpki-roots 1.0.9. No rebuilt wheel is
 # published, and the vLLM image has no Rust compiler. A file is left only
-# when both the path and the SHA-256 match. Their own HTTPS clients still
-# trust the compromised root. Any other shared library that contains a
-# compromised name fails.
+# when both the path and the SHA-256 match. Harmony has two digests, one
+# for each image that ships it. Each other path has one digest, and a
+# digest does not apply to a different path. Their own HTTPS clients still
+# trust the compromised root. A later wheel built with webpki-roots 1.0.10
+# or newer is the replacement. Remove that path and its digest from this
+# function in the same change. A fixed wheel that no longer contains the
+# name never reaches this list, so a pair left behind would accept the old
+# file again. Any other shared library that contains a compromised name fails.
 ca_residual_library() {
   case "$1" in
     /opt/venv/lib/python3.12/site-packages/openai_harmony/openai_harmony.abi3.so|\

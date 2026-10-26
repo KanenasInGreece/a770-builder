@@ -337,6 +337,7 @@ def test_a_lookalike_library_path_is_not_the_pinned_exception(tmp_path: Path) ->
     assert "*/sglang/srt/rust_extensions" not in script
     assert "4c883161387d8be8327c641e429ed039d6b4da6920c3ce5388a19bab21dfc4e7" in script
     assert "2c60632ff6bfe7f5916a7035c5cf4192441ff3274c16ea4d6703c726e72fd918" in script
+    assert "Remove that path and its digest from this" in script
 
 
 def test_a_hash_symlink_to_a_non_certificate_is_not_overwritten(tmp_path: Path) -> None:
