@@ -283,13 +283,39 @@ def test_embedded_carriers_are_text_scanned(tmp_path: Path) -> None:
     assert store.read_text(encoding="utf-8") == "clean nss\n"
 
 
-def test_the_known_rust_libraries_are_left_in_place(tmp_path: Path) -> None:
+def test_a_lookalike_library_path_is_not_the_pinned_exception(tmp_path: Path) -> None:
     harmony = tmp_path / "site-packages" / "openai_harmony" / "openai_harmony.abi3.so"
     harmony.parent.mkdir(parents=True)
     harmony.write_text("emSign ECC Root CA - G3\n", encoding="utf-8")
     other = tmp_path / "site-packages" / "hf_xet" / "hf_xet.abi3.so"
     other.parent.mkdir(parents=True)
     other.write_text("emSign ECC Root CA - G3\n", encoding="utf-8")
+    nested = (
+        tmp_path
+        / "opt"
+        / "venv"
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "openai_harmony"
+        / "openai_harmony.abi3.so"
+    )
+    nested.parent.mkdir(parents=True)
+    nested.write_text("emSign ECC Root CA - G3\n", encoding="utf-8")
+    built = (
+        tmp_path
+        / "sgl-workspace"
+        / "sglang"
+        / "python"
+        / "build"
+        / "lib"
+        / "sglang"
+        / "srt"
+        / "rust_extensions"
+        / "_server.cpython-312-x86_64-linux-gnu.so"
+    )
+    built.parent.mkdir(parents=True)
+    built.write_text("emSign ECC Root CA - G3\n", encoding="utf-8")
     result = _run(
         tmp_path,
         "\n".join(
@@ -297,23 +323,20 @@ def test_the_known_rust_libraries_are_left_in_place(tmp_path: Path) -> None:
                 f'ca_clear_embedded "{harmony}"; printf "%s\\n" "$?"',
                 f'ca_embedded_refused "{harmony}"; printf "%s\\n" "$?"',
                 f'ca_embedded_refused "{other}"; printf "%s\\n" "$?"',
+                f'ca_clear_embedded "{nested}"; printf "%s\\n" "$?"',
+                f'ca_clear_embedded "{built}"; printf "%s\\n" "$?"',
             ]
         ),
     )
-    assert result.stdout.splitlines() == ["0", "1", "0"], result.stderr
+    assert result.stdout.splitlines() == ["2", "0", "0", "2", "2"], result.stderr
     assert harmony.read_text(encoding="utf-8") == "emSign ECC Root CA - G3\n"
-    built = tmp_path / "sglang" / "rust" / "target" / "release" / "deps" / "libsglang_server.so"
-    built.parent.mkdir(parents=True)
-    built.write_text("emSign ECC Root CA - G3\n", encoding="utf-8")
-    removed = _run(tmp_path, f'ca_clear_embedded "{built}"; printf "%s\\n" "$?"')
-    assert removed.stdout.strip() == "0", removed.stderr
-    assert not built.exists()
-    bundled = tmp_path / "site-packages" / "openai_harmony.libs" / "libfoo.so"
-    bundled.parent.mkdir(parents=True)
-    bundled.write_text("emSign ECC Root CA - G3\n", encoding="utf-8")
-    wider = _run(tmp_path, f'ca_clear_embedded "{bundled}"; printf "%s\\n" "$?"')
-    assert wider.stdout.strip() == "2", wider.stderr
-    assert bundled.read_text(encoding="utf-8") == "emSign ECC Root CA - G3\n"
+    assert nested.read_text(encoding="utf-8") == "emSign ECC Root CA - G3\n"
+    assert built.read_text(encoding="utf-8") == "emSign ECC Root CA - G3\n"
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "*/site-packages/openai_harmony" not in script
+    assert "*/sglang/srt/rust_extensions" not in script
+    assert "4c883161387d8be8327c641e429ed039d6b4da6920c3ce5388a19bab21dfc4e7" in script
+    assert "2c60632ff6bfe7f5916a7035c5cf4192441ff3274c16ea4d6703c726e72fd918" in script
 
 
 def test_a_hash_symlink_to_a_non_certificate_is_not_overwritten(tmp_path: Path) -> None:
@@ -335,16 +358,18 @@ def test_an_unparseable_der_file_fails_closed(tmp_path: Path) -> None:
     bad.write_bytes(b"\x30\x03\x01\x01\xff")
     result = _run(tmp_path, f'bundle_has_root "{bad}"; printf "%s\\n" "$?"')
     assert result.stdout.strip() == "2", result.stderr
-    cargo = tmp_path / "root" / ".cargo" / "registry" / "ed25519_pkcs8_v2_template.der"
+    cargo = tmp_path / "site-packages" / "foo" / ".cargo" / "ed25519_pkcs8_v2_template.der"
     cargo.parent.mkdir(parents=True)
     cargo.write_bytes(b"\x30\x03\x01\x01\xff")
     listed = tmp_path / "list"
-    skipped = _run(
+    walked = _run(
         tmp_path,
-        f': > "{listed}"; ca_append_trust_files "{listed}" "{tmp_path / "root"}"; cat "{listed}"',
+        f': > "{listed}"; ca_append_trust_files "{listed}" "{tmp_path}"; cat "{listed}"',
     )
-    assert skipped.returncode == 0, skipped.stderr
-    assert "ed25519_pkcs8_v2_template.der" not in skipped.stdout
+    assert walked.returncode == 0, walked.stderr
+    assert "ed25519_pkcs8_v2_template.der" in walked.stdout
+    assert "*/.cargo/*" not in SCRIPT.read_text(encoding="utf-8")
+    assert "*/rust/target/*" not in SCRIPT.read_text(encoding="utf-8")
 
 
 def test_the_image_build_and_the_serve_scan_use_the_same_check() -> None:
@@ -363,6 +388,8 @@ def test_the_image_build_and_the_serve_scan_use_the_same_check() -> None:
     assert "ca_dispose_bundle" in docker
     assert "ca_embedded_refused" in docker
     assert "ca_residual_library" in script
+    assert "rm -rf /root/.cargo /sgl-workspace/sglang/rust/target /sgl-workspace/sglang/python/build" in docker
+    assert "ca-fingerprints" not in docker
     assert "-name '*.0'" not in docker
     assert '-name "*.0"' not in serve
     assert "bugzilla.mozilla.org/show_bug.cgi?id=2083449" in script

@@ -79,7 +79,13 @@ is already clean, but Ubuntu's pip bundle in that image still has the root. Do n
 digests and pin the image that build prints. The command is in the matching `compose/*.env.example`. The
 build refuses the compromised root and the compromised intermediates by certificate SHA-256, including a
 trust file whose name ends in `.1` or `.2` and a hash name that is a symlink. It also reads DER
-certificates and text-scans the Java, NSS, and Rust copies of a trust list. Serve refuses the base digests.
+certificates and text-scans the Java, NSS, and Rust copies of a trust list. The vLLM, SGLang, and exl3
+images that build produces still contain four libraries that embed webpki-roots 1.0.9:
+`openai_harmony`, `outlines_core`, and the SGLang extensions `_server` and `_multimodal`. Their own
+HTTPS clients still trust the compromised root. The build leaves a file only when its path under
+`/opt/venv/lib/python3.12/site-packages/` and its SHA-256 are the ones recorded in the check. It removes
+the Cargo home, the SGLang `rust/target` tree, and the SGLang `python/build` tree before that scan.
+Serve refuses the base digests.
 
 ## 5. Bring the server up
 

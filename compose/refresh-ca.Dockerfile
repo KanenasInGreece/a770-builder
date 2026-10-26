@@ -12,8 +12,12 @@
 # is a symlink, and so are DER files. A planted fingerprint file is not
 # the list. Java cacerts, NSS databases, shared libraries, Rust rlibs,
 # and webpki-roots sources are text-scanned. A shared library is not
-# replaced with a certificate. openai_harmony, outlines_core, and the
-# SGLang extensions _server and _multimodal are left in place. update-ca-certificates drops a certificate
+# replaced with a certificate. Four installed files are left in place
+# only when the path and the SHA-256 both match: openai_harmony,
+# outlines_core, and the SGLang extensions _server and _multimodal.
+# Their own HTTPS clients still trust the compromised root. The Cargo
+# home, the SGLang rust/target tree, and the SGLang python/build tree
+# are removed before that scan. update-ca-certificates drops a certificate
 # only when its conf line starts with !. The line is marked, the store is
 # rebuilt, then the certificate file and the line are removed. The certifi
 # bundle is not copied onto the system store, and a symlink is not followed
@@ -113,6 +117,7 @@ RUN set -eu; \
       if bundle_has_root /etc/ssl/certs/ca-certificates.crt; then echo "the system bundle still trusts a compromised emSign certificate" >&2; exit 1; \
       else rc=$?; if [ "$rc" -eq 2 ]; then echo "could not read the system bundle" >&2; exit 1; fi; fi; \
     fi; \
+    rm -rf /root/.cargo /sgl-workspace/sglang/rust/target /sgl-workspace/sglang/python/build; \
     : > /tmp/ca-pems; \
     for dir in /*; do \
       base=$(basename "$dir"); \
@@ -174,5 +179,5 @@ RUN set -eu; \
       fi; \
     done < /tmp/ca-embedded-left; \
     if [ "$bad" = 1 ]; then echo "a bundled trust store still trusts emSign ECC Root CA - G3" >&2; exit 1; fi; \
-    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-embedded /tmp/ca-embedded-left /tmp/ca-fingerprints /tmp/ca-clean.pem; \
+    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-embedded /tmp/ca-embedded-left /tmp/ca-clean.pem; \
     if [ -n "${CA_OWN_DIR:-}" ]; then rm -rf "$CA_OWN_DIR"; fi

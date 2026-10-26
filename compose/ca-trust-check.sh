@@ -256,14 +256,7 @@ ca_text_has_compromised() {
 ca_carrier_kind() {
   case "$1" in
     *.so|*.so.*)
-      case "$1" in
-        */rust/target/*)
-          printf '%s\n' removable
-          ;;
-        *)
-          printf '%s\n' library
-          ;;
-      esac
+      printf '%s\n' library
       return 0
       ;;
     *.rlib)
@@ -285,27 +278,31 @@ ca_carrier_kind() {
   esac
 }
 
-# These four libraries embed webpki-roots 1.0.9. No rebuilt wheel is
-# published, and the vLLM image has no Rust compiler. They are left in
-# place. Any other shared library that contains a compromised name fails.
+# These four installed files embed webpki-roots 1.0.9. No rebuilt wheel is
+# published, and the vLLM image has no Rust compiler. A file is left only
+# when both the path and the SHA-256 match. Their own HTTPS clients still
+# trust the compromised root. Any other shared library that contains a
+# compromised name fails.
 ca_residual_library() {
-  ca_dir=$(dirname "$1")
-  ca_base=$(basename "$1")
-  case "$ca_base" in
-    openai_harmony.abi3.so)
-      case "$ca_dir" in
-        */site-packages/openai_harmony) return 0 ;;
-      esac
+  case "$1" in
+    /opt/venv/lib/python3.12/site-packages/openai_harmony/openai_harmony.abi3.so|\
+    /opt/venv/lib/python3.12/site-packages/outlines_core/outlines_core.cpython-312-x86_64-linux-gnu.so|\
+    /opt/venv/lib/python3.12/site-packages/sglang/srt/rust_extensions/_server.cpython-312-x86_64-linux-gnu.so|\
+    /opt/venv/lib/python3.12/site-packages/sglang/srt/rust_extensions/_multimodal.cpython-312-x86_64-linux-gnu.so)
       ;;
-    outlines_core.cpython-*.so)
-      case "$ca_dir" in
-        */site-packages/outlines_core) return 0 ;;
-      esac
+    *)
+      return 1
       ;;
-    _server.cpython-*.so|_multimodal.cpython-*.so)
-      case "$ca_dir" in
-        */sglang/srt/rust_extensions) return 0 ;;
-      esac
+  esac
+  ca_sum=$(openssl dgst -sha256 "$1") || return 2
+  ca_sum=${ca_sum##* }
+  case "$1:$ca_sum" in
+    /opt/venv/lib/python3.12/site-packages/openai_harmony/openai_harmony.abi3.so:4c883161387d8be8327c641e429ed039d6b4da6920c3ce5388a19bab21dfc4e7|\
+    /opt/venv/lib/python3.12/site-packages/openai_harmony/openai_harmony.abi3.so:2c60632ff6bfe7f5916a7035c5cf4192441ff3274c16ea4d6703c726e72fd918|\
+    /opt/venv/lib/python3.12/site-packages/outlines_core/outlines_core.cpython-312-x86_64-linux-gnu.so:2db321fd0c18abce17a97338decc90b41f6fdbcdd5e7a2175b8496185a82cf68|\
+    /opt/venv/lib/python3.12/site-packages/sglang/srt/rust_extensions/_server.cpython-312-x86_64-linux-gnu.so:80010fa8e3568a0ed4dfcc61748dfca084f2c32bd0e6a9b6749fec1cca1c41e6|\
+    /opt/venv/lib/python3.12/site-packages/sglang/srt/rust_extensions/_multimodal.cpython-312-x86_64-linux-gnu.so:3dba48aa2fcb6fb0288c6ddd91e81924b2bbf5cec48ef2c5c6c9b8e41099a365)
+      return 0
       ;;
   esac
   return 1
@@ -469,8 +466,7 @@ ca_dispose_bundle() {
 ca_append_trust_files() {
   ca_dest=$1
   ca_dir=$2
-  find "$ca_dir" \( -path '*/.cargo/*' -o -path '*/rust/target/*' \) -prune -o \
-    \( -type f -o -type l \) \( \
+  find "$ca_dir" \( -type f -o -type l \) \( \
       -name '*.pem' -o -name '*.crt' -o -name '*.cer' -o -name '*.der' \
       -o -name 'ca-certificates.crt' \
       -o -regex '.*/[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]\.[0-9][0-9]*$' \
