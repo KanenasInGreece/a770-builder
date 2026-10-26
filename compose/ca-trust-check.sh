@@ -162,7 +162,7 @@ bundle_has_root() {
   ca_der=$CA_WORK/ca-der-$$.pem
   if ! openssl x509 -inform DER -in "$1" -out "$ca_der" 2>/dev/null; then
     rm -f "$ca_der"
-    return 1
+    return 2
   fi
   if ca_cert_refused "$ca_der"; then
     ca_rc=0
@@ -289,20 +289,36 @@ ca_carrier_kind() {
 # published, and the vLLM image has no Rust compiler. They are left in
 # place. Any other shared library that contains a compromised name fails.
 ca_residual_library() {
-  case "$1" in
-    */openai_harmony*.so|*/openai_harmony*.so.*)
-      return 0
+  ca_dir=$(dirname "$1")
+  ca_base=$(basename "$1")
+  case "$ca_base" in
+    openai_harmony.abi3.so)
+      case "$ca_dir" in
+        */site-packages/openai_harmony) return 0 ;;
+      esac
       ;;
-    */outlines_core*.so|*/outlines_core*.so.*)
-      return 0
+    outlines_core.cpython-*.so)
+      case "$ca_dir" in
+        */site-packages/outlines_core) return 0 ;;
+      esac
       ;;
-    */rust_extensions/_server*.so|*/rust_extensions/_server*.so.*)
-      return 0
-      ;;
-    */rust_extensions/_multimodal*.so|*/rust_extensions/_multimodal*.so.*)
-      return 0
+    _server.cpython-*.so|_multimodal.cpython-*.so)
+      case "$ca_dir" in
+        */sglang/srt/rust_extensions) return 0 ;;
+      esac
       ;;
   esac
+  return 1
+}
+
+# 0 the file is a certificate OpenSSL can read, 1 it is not.
+ca_file_is_certificate() {
+  if openssl x509 -in "$1" -noout -subject >/dev/null 2>&1; then
+    return 0
+  fi
+  if openssl x509 -inform DER -in "$1" -noout -subject >/dev/null 2>&1; then
+    return 0
+  fi
   return 1
 }
 
@@ -364,8 +380,9 @@ ca_clear_embedded() {
   return 0
 }
 
-# A hash symlink is removed. Its target is rewritten only when it is a
-# certificate file. A shared library is not overwritten.
+# A hash symlink is removed. Its target is rewritten only when OpenSSL can
+# read it as a certificate. A shared library is not overwritten. A file that
+# merely contains the root's name is not replaced with a certificate.
 ca_dispose_bundle() {
   ca_file=$1
   ca_clean=$2
@@ -422,7 +439,7 @@ ca_dispose_bundle() {
     fi
     if bundle_has_root "$ca_file"; then
       rm -f "$ca_file" || return 2
-      if [ -f "$ca_target" ] && [ ! -L "$ca_target" ]; then
+      if [ -f "$ca_target" ] && [ ! -L "$ca_target" ] && ca_file_is_certificate "$ca_target"; then
         ca_clear_bundle "$ca_target" "$ca_clean" || return 2
       fi
     else
@@ -434,7 +451,9 @@ ca_dispose_bundle() {
     return 0
   fi
   if bundle_has_root "$ca_file"; then
-    ca_clear_bundle "$ca_file" "$ca_clean" || return 2
+    if ca_file_is_certificate "$ca_file"; then
+      ca_clear_bundle "$ca_file" "$ca_clean" || return 2
+    fi
   else
     ca_rc=$?
     if [ "$ca_rc" -eq 2 ]; then
@@ -450,11 +469,12 @@ ca_dispose_bundle() {
 ca_append_trust_files() {
   ca_dest=$1
   ca_dir=$2
-  find "$ca_dir" \( -type f -o -type l \) \( \
+  find "$ca_dir" \( -path '*/.cargo/*' -o -path '*/rust/target/*' \) -prune -o \
+    \( -type f -o -type l \) \( \
       -name '*.pem' -o -name '*.crt' -o -name '*.cer' -o -name '*.der' \
       -o -name 'ca-certificates.crt' \
       -o -regex '.*/[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]\.[0-9][0-9]*$' \
-    \) >> "$ca_dest"
+    \) -print >> "$ca_dest"
 }
 
 # Copies of a trust list that are not certificate files: uv, Java, NSS,

@@ -174,4 +174,5 @@ RUN set -eu; \
       fi; \
     done < /tmp/ca-embedded-left; \
     if [ "$bad" = 1 ]; then echo "a bundled trust store still trusts emSign ECC Root CA - G3" >&2; exit 1; fi; \
-    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-embedded /tmp/ca-embedded-left /tmp/ca-fingerprints
+    rm -f /tmp/ca-pems /tmp/ca-bundles /tmp/ca-embedded /tmp/ca-embedded-left /tmp/ca-fingerprints /tmp/ca-clean.pem; \
+    if [ -n "${CA_OWN_DIR:-}" ]; then rm -rf "$CA_OWN_DIR"; fi

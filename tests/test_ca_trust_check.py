@@ -105,6 +105,7 @@ def test_a_planted_fingerprint_file_is_not_the_list(tmp_path: Path) -> None:
             ]
         ),
     )
+    assert result.stdout.splitlines()[-1] == "0"
     assert result.returncode == 0, result.stderr
     assert planted.read_text(encoding="utf-8") == AAA + "\n"
     assert link.is_symlink()
@@ -307,6 +308,43 @@ def test_the_known_rust_libraries_are_left_in_place(tmp_path: Path) -> None:
     removed = _run(tmp_path, f'ca_clear_embedded "{built}"; printf "%s\\n" "$?"')
     assert removed.stdout.strip() == "0", removed.stderr
     assert not built.exists()
+    bundled = tmp_path / "site-packages" / "openai_harmony.libs" / "libfoo.so"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("emSign ECC Root CA - G3\n", encoding="utf-8")
+    wider = _run(tmp_path, f'ca_clear_embedded "{bundled}"; printf "%s\\n" "$?"')
+    assert wider.stdout.strip() == "2", wider.stderr
+    assert bundled.read_text(encoding="utf-8") == "emSign ECC Root CA - G3\n"
+
+
+def test_a_hash_symlink_to_a_non_certificate_is_not_overwritten(tmp_path: Path) -> None:
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    target = certs / "server-bin"
+    target.write_text("prefix emSign ECC Root CA - G3 suffix\n", encoding="utf-8")
+    link = certs / "064e0aa9.5"
+    link.symlink_to("server-bin")
+    keep = _cert(tmp_path, "keep.pem", "Example Keep")
+    result = _run(tmp_path, f'ca_dispose_bundle "{link}" "{keep}"; printf "%s\\n" "$?"')
+    assert result.stdout.strip() == "0", result.stderr
+    assert not link.is_symlink()
+    assert target.read_text(encoding="utf-8") == "prefix emSign ECC Root CA - G3 suffix\n"
+
+
+def test_an_unparseable_der_file_fails_closed(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.der"
+    bad.write_bytes(b"\x30\x03\x01\x01\xff")
+    result = _run(tmp_path, f'bundle_has_root "{bad}"; printf "%s\\n" "$?"')
+    assert result.stdout.strip() == "2", result.stderr
+    cargo = tmp_path / "root" / ".cargo" / "registry" / "ed25519_pkcs8_v2_template.der"
+    cargo.parent.mkdir(parents=True)
+    cargo.write_bytes(b"\x30\x03\x01\x01\xff")
+    listed = tmp_path / "list"
+    skipped = _run(
+        tmp_path,
+        f': > "{listed}"; ca_append_trust_files "{listed}" "{tmp_path / "root"}"; cat "{listed}"',
+    )
+    assert skipped.returncode == 0, skipped.stderr
+    assert "ed25519_pkcs8_v2_template.der" not in skipped.stdout
 
 
 def test_the_image_build_and_the_serve_scan_use_the_same_check() -> None:
