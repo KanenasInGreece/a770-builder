@@ -9,13 +9,29 @@
 # Exit codes: 2 refused (worktree), 3 no model server; the opencode exit code is informational only.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
-# A previous run's usage file and log stamp are not this run's count.
-# Removed before any exit, so a refused run cannot leave them for the capture.
-# The tap writes a new usage file when it starts. The stamp is written when this run starts.
-rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+_clear_stale_capture_markers_if_unlocked(){
+  local lock
+  mkdir -p "$A770B_DATA/logs"
+  lock=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$A770B_DATA/logs/local-build.lock")
+  if _inherited_lock_valid 9 "$lock" "${A770B_CARD_LOCK_PATH:-}"; then
+    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+    return 0
+  fi
+  (
+    exec 8>>"$lock"
+    flock -n 8 || exit 1
+    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+  ) 2>/dev/null || true
+}
+_clear_stale_capture_markers_if_unlocked
 WT=$(guard_worktree "${1:?worktree path}"); BRIEF="${2:?brief file or task text}"
 PROFILE="${PROFILE:?PROFILE is required — there is no default profile; pass a name from A770B_PROFILES}"
 a770b_is_profile "$PROFILE" || { echo "⛔ PROFILE must be one of: $A770B_PROFILES" >&2; exit 2; }
+card_lock; seat_lock "$WT"
+# A previous run's usage file and log stamp are not this run's count.
+# Removed only after locks are held so a refused concurrent caller cannot clear an active run's capture.
+# The tap writes a new usage file when it starts. The stamp is written when this run starts.
+rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
 CTX=$(a770b_profile_var "$PROFILE" CTX)
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"
 a770b_curl -sf --max-time 5 "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve <card>)" >&2; exit 3; }
@@ -60,17 +76,17 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@"
 if [ "${SANDBOX:-1}" = 1 ]; then
   if [ -n "${LOCAL_TIMEOUT:-}" ]; then
     ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "$LOCAL_TIMEOUT" bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
-        opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 9>&- ) 2>&1 | tee "$LOG"
+        opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG"
   else
     ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
-        opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 9>&- ) 2>&1 | tee "$LOG"
+        opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG"
   fi
 else
   echo "⚠ SANDBOX=0: running opencode UNCONFINED (testing only)" | tee -a "$LOG"
   if [ -n "${LOCAL_TIMEOUT:-}" ]; then
-    ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "$LOCAL_TIMEOUT" opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null ) 2>&1 | tee "$LOG"
+    ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec timeout "$LOCAL_TIMEOUT" opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG"
   else
-    ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null ) 2>&1 | tee "$LOG"
+    ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG"
   fi
 fi
 rc=${PIPESTATUS[0]}

@@ -36,43 +36,306 @@ def _make_bin(dir_: Path, name: str, body: str) -> Path:
 
 
 def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "4242", running: bool = True,
-                  down_clears: bool = True, up_fails: bool = False, exited: bool = False):
+                  down_clears: bool = True, up_fails: bool = False, exited: bool = False,
+                  stop_fails: bool = False, rm_fails: bool = False, partial_create: bool = False,
+                  replace_with_id: str = "", daemon_unreachable: bool = False,
+                  inspect_error: str = ""):
     """A bin dir with fake docker/curl/pgrep/nvtop; returns (bin_dir, docker_log_path).
 
-    The fake docker is stateful: `up` marks a container up, `down` clears it (unless down_clears is False), and
-    `ps -q` answers only while it is up, so a stop really stops and a recreate really recreates.
-    `exited=True` makes `inspect` print pid 0 while `ps --all` still lists the container.
+    The fake docker uses exact argv parsing (no bash string-globbing against `docker run -c`),
+    models container state, `--no-trunc` full IDs, `--filter label=...`, `compose up` labels
+    from the JSON override file, partial creation, container replacement, and daemon errors.
     """
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
     log = tmp_path / "docker.log"
-    state = tmp_path / "docker.state"
+    state_file = tmp_path / "docker.state.json"
+    init_containers = []
     if running:
-        state.write_text("up", encoding="utf-8")
-    down_body = f': > "{state}"; exit 0;;' if down_clears else 'exit 0;;'
-    up_body = 'echo "docker compose up failed" >&2; exit 1;;' if up_fails else f'printf up > "{state}"; exit 0;;'
-    ps_body = 'exit 0;;' if exited else f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
-    inspect_pid = "0" if exited else host_pid
-    ps_all_body = f'[ -s "{state}" ] && printf \'%s\\n\' "{ps_id}"; exit 0;;'
-    # logs succeeds only while the container state file is present, and only for
-    # the id ps --all would have printed. A copy after down must not stay green.
-    logs_arm = (
-        f'[ -s "{state}" ] || exit 1; '
-        f'case " $* " in *" logs {ps_id} "*) printf \'%s\\n\' "engine refused the model"; exit 0;; '
-        f'*) exit 1;; esac;;'
-    )
-    _make_bin(bin_, "docker", f'''printf '%s\\n' "$*" >> "{log}"
-case " $* " in
-  *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
-  *" down"*) {down_body}
-  *" up "*) {up_body}
-  *" ps --all -q "*|*" ps -q --all "*|*" ps "*" --all "*) {ps_all_body}
-  *" ps -q "*) {ps_body}
-  *" image inspect "*) printf '%s\\n' "sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0;;
-  *" inspect "*) [ -s "{state}" ] && printf '%s\\n' "{inspect_pid}"; exit 0;;
-  *" logs "*) {logs_arm}
-  *) exit 0;;
-esac''')
+        init_containers.append({
+            "id": ps_id,
+            "name": "a770-builder-llama-1",
+            "project": "a770-builder",
+            "service": "llama",
+            "running": not exited,
+            "pid": "0" if exited else host_pid,
+            "labels": {
+                "com.docker.compose.project": "a770-builder",
+                "com.docker.compose.service": "llama",
+            },
+        })
+    state_file.write_text(json.dumps({"containers": init_containers}), encoding="utf-8")
+    cfg_file = tmp_path / "docker.cfg.json"
+    cfg_file.write_text(json.dumps({
+        "ps_id": ps_id,
+        "host_pid": host_pid,
+        "down_clears": down_clears,
+        "up_fails": up_fails,
+        "exited": exited,
+        "stop_fails": stop_fails,
+        "rm_fails": rm_fails,
+        "partial_create": partial_create,
+        "replace_with_id": replace_with_id,
+        "daemon_unreachable": daemon_unreachable,
+        "inspect_error": inspect_error,
+    }), encoding="utf-8")
+    docker_script = f'''#!/usr/bin/env python3
+import json, os, re, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+log_path = Path({str(log)!r})
+state_path = Path({str(state_file)!r})
+cfg = json.loads(Path({str(cfg_file)!r}).read_text(encoding="utf-8"))
+
+with open(log_path, "a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\\n")
+
+state = json.loads(state_path.read_text(encoding="utf-8"))
+
+def save():
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+def daemon_down():
+    return cfg.get("daemon_unreachable") or os.environ.get("FAKE_DOCKER_UNREACHABLE") == "1"
+
+def split_compose(rest):
+    project = "a770-builder"
+    files = []
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--env-file" and i + 1 < len(rest):
+            i += 2
+        elif a == "-p" and i + 1 < len(rest):
+            project = rest[i + 1]
+            i += 2
+        elif a == "-f" and i + 1 < len(rest):
+            files.append(rest[i + 1])
+            i += 2
+        else:
+            break
+    return project, files, rest[i:]
+
+def override_labels(files):
+    labels = {{}}
+    for fp in files:
+        try:
+            doc = json.loads(Path(fp).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        lbls = ((doc.get("services") or {{}}).get("llama") or {{}}).get("labels")
+        if isinstance(lbls, dict):
+            labels.update(lbls)
+    return labels
+
+def match_cid(cid):
+    for c in state["containers"]:
+        if c["id"] == cid or c.get("name") == cid or (len(cid) >= 4 and c["id"].startswith(cid)):
+            return c
+    return None
+
+if args[:2] == ["compose", "version"]:
+    print("Docker Compose version v2.30.0")
+    sys.exit(0)
+
+if args and args[0] == "compose":
+    if daemon_down():
+        print("Cannot connect to the Docker daemon at unix:///var/run/docker.sock", file=sys.stderr)
+        sys.exit(1)
+    project, files, tail = split_compose(args[1:])
+    cmd = tail[0] if tail else ""
+    if cmd == "down":
+        if cfg["down_clears"]:
+            state["containers"] = [c for c in state["containers"] if c.get("project") != project]
+            save()
+        sys.exit(0)
+    if cmd == "up":
+        lbls = {{
+            "com.docker.compose.project": project,
+            "com.docker.compose.service": "llama",
+            "com.docker.compose.project.config_files": ",".join(files),
+        }}
+        lbls.update(override_labels(files))
+        if cfg["partial_create"]:
+            state["containers"] = [c for c in state["containers"] if c.get("project") != project]
+            state["containers"].append({{
+                "id": cfg["ps_id"],
+                "name": f"{{project}}-llama-1",
+                "project": project,
+                "service": "llama",
+                "running": False,
+                "pid": "0",
+                "labels": lbls,
+            }})
+            save()
+            print("docker compose up failed after creating container", file=sys.stderr)
+            sys.exit(1)
+        if cfg["up_fails"]:
+            print("docker compose up failed", file=sys.stderr)
+            sys.exit(1)
+        state["containers"] = [c for c in state["containers"] if c.get("project") != project]
+        if cfg["replace_with_id"]:
+            state["containers"].append({{
+                "id": cfg["replace_with_id"],
+                "name": f"{{project}}-llama-1",
+                "project": project,
+                "service": "llama",
+                "running": True,
+                "pid": cfg["host_pid"],
+                "labels": {{"com.docker.compose.project": project, "com.docker.compose.service": "llama"}},
+            }})
+        else:
+            state["containers"].append({{
+                "id": cfg["ps_id"],
+                "name": f"{{project}}-llama-1",
+                "project": project,
+                "service": "llama",
+                "running": not cfg["exited"],
+                "pid": "0" if cfg["exited"] else cfg["host_pid"],
+                "labels": lbls,
+            }})
+        save()
+        sys.exit(0)
+    if cmd == "ps":
+        show_all = "--all" in tail or "-a" in tail
+        for c in state["containers"]:
+            if c.get("project") != project:
+                continue
+            if not show_all and not c.get("running"):
+                continue
+            print(c["id"])
+        sys.exit(0)
+    sys.exit(0)
+
+if args and args[0] == "ps":
+    if daemon_down():
+        print("Cannot connect to the Docker daemon at unix:///var/run/docker.sock", file=sys.stderr)
+        sys.exit(1)
+    show_all = any(a == "--all" or (a.startswith("-") and not a.startswith("--") and "a" in a) for a in args[1:])
+    no_trunc = "--no-trunc" in args[1:]
+    want_labels = {{}}
+    want_id = None
+    i = 1
+    while i < len(args):
+        a = args[i]
+        if a == "--filter" and i + 1 < len(args):
+            flt = args[i + 1]
+            if flt.startswith("label="):
+                k, v = flt[len("label="):].split("=", 1)
+                want_labels[k] = v
+            elif flt.startswith("id="):
+                want_id = flt[len("id="):]
+            i += 2
+            continue
+        if a.startswith("--filter="):
+            flt = a[len("--filter="):]
+            if flt.startswith("label="):
+                k, v = flt[len("label="):].split("=", 1)
+                want_labels[k] = v
+            elif flt.startswith("id="):
+                want_id = flt[len("id="):]
+        i += 1
+    for c in state["containers"]:
+        if not show_all and not c.get("running"):
+            continue
+        clbls = c.get("labels") or {{}}
+        if any(clbls.get(k) != v for k, v in want_labels.items()):
+            continue
+        if want_id is not None and not (c["id"] == want_id or c["id"].startswith(want_id)):
+            continue
+        print(c["id"] if no_trunc else c["id"][:12])
+    sys.exit(0)
+
+if args[:2] == ["image", "inspect"]:
+    if daemon_down():
+        print("Cannot connect to the Docker daemon at unix:///var/run/docker.sock", file=sys.stderr)
+        sys.exit(1)
+    print("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+    sys.exit(0)
+
+if args and args[0] == "inspect":
+    if daemon_down():
+        print("Cannot connect to the Docker daemon at unix:///var/run/docker.sock", file=sys.stderr)
+        sys.exit(1)
+    inspect_err = os.environ.get("FAKE_DOCKER_INSPECT_ERROR") or cfg.get("inspect_error")
+    if inspect_err:
+        print(inspect_err, file=sys.stderr)
+        sys.exit(1)
+    fmt = ""
+    cid = args[-1]
+    if "-f" in args:
+        idx = args.index("-f")
+        if idx + 1 < len(args):
+            fmt = args[idx + 1]
+    elif "--format" in args:
+        idx = args.index("--format")
+        if idx + 1 < len(args):
+            fmt = args[idx + 1]
+    c = match_cid(cid)
+    if c is None:
+        print(f"Error: No such object: {{cid}}", file=sys.stderr)
+        sys.exit(1)
+    lbl_m = re.search(r'index \\.Config\\.Labels "([^"]+)"', fmt)
+    if lbl_m:
+        print((c.get("labels") or {{}}).get(lbl_m.group(1), ""))
+    elif "{{{{.Id}}}}" in fmt:
+        print(c["id"])
+    elif "{{{{.Name}}}}" in fmt:
+        print("/" + c.get("name", f"{{c.get('project', 'a770-builder')}}-{{c.get('service', 'llama')}}-1"))
+    elif "{{{{.Image}}}}" in fmt:
+        print(c.get("image", ""))
+    elif "{{{{.State.Running}}}}" in fmt:
+        print("true" if c.get("running") else "false")
+    elif "{{{{.State.Pid}}}}" in fmt:
+        print(c.get("pid", "0"))
+    else:
+        print("")
+    sys.exit(0)
+
+if args and args[0] == "run":
+    sys.exit(0)
+
+if args and args[0] == "logs":
+    if daemon_down():
+        print("Cannot connect to the Docker daemon at unix:///var/run/docker.sock", file=sys.stderr)
+        sys.exit(1)
+    cid = args[-1]
+    c = match_cid(cid)
+    if c is None:
+        print(f"Error: No such container: {{cid}}", file=sys.stderr)
+        sys.exit(1)
+    print("engine refused the model")
+    sys.exit(0)
+
+if args and args[0] == "stop":
+    if cfg["stop_fails"] or daemon_down():
+        sys.exit(1)
+    cid = args[-1]
+    c = match_cid(cid)
+    if c is None:
+        sys.exit(1)
+    if cfg["down_clears"]:
+        c["running"] = False
+        save()
+    sys.exit(0)
+
+if args and args[0] == "rm":
+    if cfg["rm_fails"] or daemon_down():
+        sys.exit(1)
+    cid = args[-1]
+    before = len(state["containers"])
+    if cfg["down_clears"]:
+        state["containers"] = [c for c in state["containers"] if not (c["id"] == cid or c["id"].startswith(cid))]
+        save()
+        sys.exit(0 if len(state["containers"]) < before else 1)
+    sys.exit(0)
+
+sys.exit(0)
+'''
+    dp = bin_ / "docker"
+    dp.write_text(docker_script, encoding="utf-8")
+    dp.chmod(dp.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     _make_bin(bin_, "curl", 'echo \'{"ok": true}\'; exit 0')
     _make_bin(bin_, "pgrep", 'printf "%s\\n" ${FAKE_PGREP:-}')
     _make_bin(bin_, "nvtop", 'echo \'[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\'')
@@ -1056,6 +1319,27 @@ def _assert_log_kept_before_down(log: Path, stderr: str, data: Path, ps_id: str 
     _assert_logs_before_a_later_down(log, ps_id)
 
 
+def _assert_logs_before_exact_teardown(log: Path, ps_id: str = "cid123"):
+    calls = log.read_text(encoding="utf-8").splitlines()
+    up_at = [i for i, c in enumerate(calls) if " up " in f" {c} "]
+    assert up_at, calls
+    after_up = [(i, c) for i, c in enumerate(calls) if i > up_at[-1]]
+    logs_at = [i for i, c in after_up if f" logs {ps_id} " in f" {c} "]
+    assert logs_at, calls
+    assert any(c.strip() == f"stop {ps_id}" and i > logs_at[0] for i, c in after_up), calls
+    assert any(c.strip() == f"rm -f {ps_id}" and i > logs_at[0] for i, c in after_up), calls
+    assert not any(" down" in f" {c} " and i > logs_at[0] for i, c in after_up), calls
+
+
+def _assert_log_kept_before_exact_teardown(log: Path, stderr: str, data: Path, ps_id: str = "cid123"):
+    kept = data / "logs" / "llamacpp-a770.log"
+    assert kept.is_file(), stderr
+    assert "engine refused the model" in kept.read_text(encoding="utf-8")
+    assert "serve log kept:" in stderr
+    assert str(kept) in stderr
+    _assert_logs_before_exact_teardown(log, ps_id)
+
+
 def test_health_failure_keeps_the_container_log_before_down(tmp_path):
     bin_, log = _fake_runtime(tmp_path)
     _make_bin(bin_, "curl", "exit 1")
@@ -1065,7 +1349,7 @@ def test_health_failure_keeps_the_container_log_before_down(tmp_path):
     assert "did not answer /health" in r.stderr
     assert "health: down" in r.stderr
     assert "▶ started server container" not in r.stdout
-    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+    _assert_log_kept_before_exact_teardown(log, r.stderr, Path(env["A770B_DATA"]))
     assert not (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid").exists()
 
 
@@ -1140,7 +1424,7 @@ def test_exited_container_log_is_kept_before_down(tmp_path):
     r = _run(env, "start", GGUF, "8192")
     assert r.returncode == 3, r.stdout + r.stderr
     assert "did not answer /health" in r.stderr
-    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+    _assert_log_kept_before_exact_teardown(log, r.stderr, Path(env["A770B_DATA"]))
     assert not (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.pid").exists()
 
 
@@ -1158,7 +1442,7 @@ def test_symlink_at_the_log_path_is_replaced(tmp_path):
     assert target.read_text(encoding="utf-8") == "keep me\n"
     assert dest.is_file() and not dest.is_symlink()
     assert "engine refused the model" in dest.read_text(encoding="utf-8")
-    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+    _assert_log_kept_before_exact_teardown(log, r.stderr, Path(env["A770B_DATA"]))
 
 
 def test_directory_at_the_log_path_is_not_a_kept_log(tmp_path):
@@ -1175,7 +1459,7 @@ def test_directory_at_the_log_path_is_not_a_kept_log(tmp_path):
     assert dest.is_dir()
     assert list(dest.iterdir()) == []
     assert list(dest.parent.glob("llamacpp-a770.log.tmp.*")) == []
-    _assert_logs_before_a_later_down(log)
+    _assert_logs_before_exact_teardown(log)
 
 
 def test_vram_stop_keeps_the_container_log_before_down(tmp_path):
@@ -1191,7 +1475,7 @@ def test_vram_stop_keeps_the_container_log_before_down(tmp_path):
     r = _run(env, "start", GGUF, "8192")
     assert r.returncode == 3, r.stdout + r.stderr
     assert "VRAM after load" in r.stderr
-    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+    _assert_log_kept_before_exact_teardown(log, r.stderr, Path(env["A770B_DATA"]))
 
 
 def _assert_status_filters(log: Path):
@@ -1721,7 +2005,7 @@ def test_start_sglang_stops_when_used_vram_exceeds_the_card(tmp_path):
     assert r.returncode == 3, r.stdout + r.stderr
     assert "the card total" in r.stderr
     assert "STOPPED" in r.stderr
-    _assert_log_kept_before_down(log, r.stderr, Path(env["A770B_DATA"]))
+    _assert_log_kept_before_exact_teardown(log, r.stderr, Path(env["A770B_DATA"]))
 
 
 FRAMEWORK_NAMES = ("vllm-embed", "vllm-rerank", "neo4j-memory", "postgres-vector")
@@ -1750,7 +2034,7 @@ def _label_docker(tmp_path: Path, state: dict) -> tuple[Path, Path, Path]:
     state_path = tmp_path / "containers.json"
     state_path.write_text(json.dumps(state), encoding="utf-8")
     script = r'''#!/usr/bin/env python3
-import json, os, sys
+import json, os, re, sys
 from pathlib import Path
 args = sys.argv[1:]
 log = Path(os.environ["FAKE_DOCKER_LOG"])
@@ -1817,11 +2101,21 @@ if args and args[0] == "compose":
             save()
         sys.exit(0)
     if cmd == "up":
+        lbls = {"com.docker.compose.project": project, "com.docker.compose.service": "llama"}
+        for fp in files:
+            try:
+                doc = json.loads(Path(fp).read_text(encoding="utf-8"))
+                ol = ((doc.get("services") or {}).get("llama") or {}).get("labels")
+                if isinstance(ol, dict):
+                    lbls.update(ol)
+            except Exception:
+                pass
         started = False
         for c in state["containers"]:
             if c["project"] == project and c["files"] == joined:
                 c["running"] = True
                 c["pid"] = c.get("pid") or 4242
+                c["labels"] = lbls
                 started = True
         if not started:
             state["containers"].append({
@@ -1832,34 +2126,53 @@ if args and args[0] == "compose":
                 "files": joined,
                 "running": True,
                 "pid": 4242,
+                "labels": lbls,
                 "log": "started log",
             })
         save()
         sys.exit(0)
     sys.exit(0)
 if args and args[0] == "ps":
-    show_all = any(a.startswith("-") and "a" in a for a in args)
+    show_all = any(a == "--all" or (a.startswith("-") and not a.startswith("--") and "a" in a) for a in args[1:])
+    no_trunc = "--no-trunc" in args[1:]
     want = {}
-    for a in args:
-        if a.startswith("label="):
+    for i, a in enumerate(args):
+        if a == "--filter" and i + 1 < len(args) and args[i + 1].startswith("label="):
+            key, value = args[i + 1][len("label="):].split("=", 1)
+            want[key] = value
+        elif a.startswith("label="):
             key, value = a[len("label="):].split("=", 1)
             want[key] = value
     for c in state["containers"]:
         if not show_all and not c["running"]:
             continue
-        if want.get("com.docker.compose.project") not in (None, c["project"]):
+        clbls = dict(c.get("labels") or {})
+        clbls.setdefault("com.docker.compose.project", c["project"])
+        clbls.setdefault("com.docker.compose.service", c["service"])
+        if any(clbls.get(k) != v for k, v in want.items()):
             continue
-        if want.get("com.docker.compose.service") not in (None, c["service"]):
-            continue
-        print(c["id"])
+        print(c["id"] if no_trunc else c["id"][:12])
     sys.exit(0)
 if args[:2] == ["inspect", "-f"] and len(args) >= 4:
     fmt, cid = args[2], args[3]
     c = next((x for x in state["containers"] if x["id"] == cid), None)
     if c is None:
+        print(f"Error: No such object: {cid}", file=sys.stderr)
         sys.exit(1)
-    if fmt == "{{.State.Pid}}":
+    lbl_m = re.search(r'index \.Config\.Labels "([^"]+)"', fmt)
+    if lbl_m:
+        clbls = dict(c.get("labels") or {})
+        clbls.setdefault("com.docker.compose.project", c["project"])
+        clbls.setdefault("com.docker.compose.service", c["service"])
+        if "files" in c:
+            clbls.setdefault("com.docker.compose.project.config_files", c["files"])
+        print(clbls.get(lbl_m.group(1), ""))
+    elif fmt == "{{.State.Pid}}":
         print(c["pid"] if c["running"] else 0)
+    elif fmt == "{{.State.Running}}":
+        print("true" if c["running"] else "false")
+    elif fmt == "{{.Id}}":
+        print(c["id"])
     elif fmt == "{{.Name}}":
         print("/" + c["name"])
     elif "config_files" in fmt:
@@ -1867,6 +2180,19 @@ if args[:2] == ["inspect", "-f"] and len(args) >= 4:
     else:
         print("")
     sys.exit(0)
+if args and args[0] == "stop" and len(args) >= 2:
+    c = next((x for x in state["containers"] if x["id"] == args[1]), None)
+    if c is None:
+        sys.exit(1)
+    c["running"] = False
+    save()
+    sys.exit(0)
+if args and args[0] == "rm" and len(args) >= 2:
+    cid = args[-1]
+    before = len(state["containers"])
+    state["containers"] = [x for x in state["containers"] if x["id"] != cid]
+    save()
+    sys.exit(0 if len(state["containers"]) < before else 1)
 if args and args[0] == "logs" and len(args) >= 2:
     c = next((x for x in state["containers"] if x["id"] == args[1]), None)
     if c is None or not c.get("log_ok", True):
@@ -2114,3 +2440,405 @@ def test_unattached_sglang_stage_counters_skip_diff_with_one_warning(tmp_path):
     called = log.read_text(encoding="utf-8") if log.exists() else ""
     assert " diff " not in f" {called} "
     assert not (data / "results" / "sg-label.counters.json").exists()
+
+
+def test_fail_started_removes_only_created_cid_and_retains_evidence_when_teardown_fails(tmp_path):
+    # Case 1: failed start tears down ONLY its own full container id (never project-wide compose down)
+    full_id = "c" * 64
+    bin_, log = _fake_runtime(tmp_path, ps_id=full_id, running=False)
+    _make_bin(bin_, "curl", "exit 1")
+    env = _env(tmp_path, bin_, A770B_HEALTH_TRIES="1", A770B_HEALTH_PAUSE="0")
+    r = _run(env, "start", GGUF, "8192")
+    assert r.returncode == 3, r.stdout + r.stderr
+    _assert_log_kept_before_exact_teardown(log, r.stderr, Path(env["A770B_DATA"]), ps_id=full_id)
+    assert not (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.cid").exists()
+
+    # Case 2: failing docker rm retains cid/pid/mark/sidecar ownership files + log and fails loudly
+    d2 = tmp_path / "fail-rm"
+    d2.mkdir()
+    survive_id = "d" * 64
+    bin2, log2 = _fake_runtime(d2, ps_id=survive_id, running=False, rm_fails=True)
+    _make_bin(bin2, "curl", "exit 1")
+    env2 = _env(d2, bin2, A770B_HEALTH_TRIES="1", A770B_HEALTH_PAUSE="0")
+    r2 = _run(env2, "start", GGUF, "8192")
+    assert r2.returncode == 3
+    assert "could not be torn down cleanly" in r2.stderr
+    logs2 = Path(env2["A770B_DATA"]) / "logs"
+    assert (logs2 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == survive_id
+    assert (logs2 / "llamacpp-a770.log").is_file()
+
+
+def test_compose_ownership_replacement_partial_creation_and_unreachable_daemon(tmp_path):
+    # 1. Replacement between creation and discovery: unrelated replacement container without our invocation
+    # label must NEVER be adopted into CIDFILE or reported as started.
+    d1 = tmp_path / "replaced"
+    d1.mkdir()
+    repl_id = "e" * 64
+    bin1, _ = _fake_runtime(d1, running=False, replace_with_id=repl_id)
+    env1 = _env(d1, bin1)
+    r1 = _run(env1, "start", GGUF, "8192")
+    assert r1.returncode == 3, r1.stdout + r1.stderr
+    assert "positive container ownership" in r1.stderr
+    assert "▶ started server container" not in r1.stdout
+    logs1 = Path(env1["A770B_DATA"]) / "logs"
+    assert not (logs1 / "llamacpp-a770.cid").exists()
+    assert not (logs1 / "llamacpp-a770.pid").exists()
+
+    # 2. Partial Compose failure: `up` creates our labeled container then fails. Recover that exact full ID
+    # and clean it up (or retain CIDFILE if teardown fails).
+    d2 = tmp_path / "partial-clean"
+    d2.mkdir()
+    part_id = "f" * 64
+    bin2, log2 = _fake_runtime(d2, ps_id=part_id, running=False, partial_create=True)
+    env2 = _env(d2, bin2)
+    r2 = _run(env2, "start", GGUF, "8192")
+    assert r2.returncode == 1, r2.stdout + r2.stderr
+    assert f"partially created container {part_id} was stopped and removed" in r2.stderr
+    calls2 = log2.read_text(encoding="utf-8").splitlines()
+    assert any(c.strip() == f"stop {part_id}" for c in calls2), calls2
+    assert any(c.strip() == f"rm -f {part_id}" for c in calls2), calls2
+    assert not (Path(env2["A770B_DATA"]) / "logs" / "llamacpp-a770.cid").exists()
+
+    d3 = tmp_path / "partial-survive"
+    d3.mkdir()
+    bin3, _ = _fake_runtime(d3, ps_id=part_id, running=False, partial_create=True, rm_fails=True)
+    env3 = _env(d3, bin3)
+    r3 = _run(env3, "start", GGUF, "8192")
+    assert r3.returncode == 3, r3.stdout + r3.stderr
+    assert "could not be torn down cleanly" in r3.stderr
+    logs3 = Path(env3["A770B_DATA"]) / "logs"
+    assert (logs3 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == part_id
+
+    # 3. stop-id with unreachable Docker daemon must NOT erase ownership files or exit 0.
+    d4 = tmp_path / "unreachable"
+    d4.mkdir()
+    bin4, _ = _fake_runtime(d4, ps_id=part_id, running=True, daemon_unreachable=True)
+    env4 = _env(d4, bin4)
+    logs4 = Path(env4["A770B_DATA"]) / "logs"
+    logs4.mkdir(parents=True, exist_ok=True)
+    (logs4 / "llamacpp-a770.cid").write_text(part_id + "\n", encoding="utf-8")
+    (logs4 / "llamacpp-a770.invocation").write_text("inv-partial-4\n", encoding="utf-8")
+    (logs4 / "llamacpp-a770.pid").write_text("4242\n", encoding="utf-8")
+    r4 = _run(env4, "stop-id", part_id)
+    assert r4.returncode == 3, r4.stdout + r4.stderr
+    assert "docker daemon error" in r4.stderr
+    assert (logs4 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == part_id
+    assert (logs4 / "llamacpp-a770.invocation").read_text(encoding="utf-8").strip() == "inv-partial-4"
+    assert (logs4 / "llamacpp-a770.pid").read_text(encoding="utf-8").strip() == "4242"
+
+
+def test_stop_id_preserves_ownership_on_ambiguous_inspect_and_rejects_foreign_or_named_targets(tmp_path):
+    owned_id = "1" * 64
+    foreign_id = "2" * 64
+    other_proj_id = "3" * 64
+
+    # 1. Generic inspect error while the requested ID is still present in `ps -aq` must NOT erase ownership files.
+    d1 = tmp_path / "generic-inspect-err"
+    d1.mkdir()
+    bin1, log1 = _fake_runtime(d1, ps_id=owned_id, running=True, exited=True, inspect_error="Error response from daemon: unexpected metadata error")
+    env1 = _env(d1, bin1)
+    logs1 = Path(env1["A770B_DATA"]) / "logs"
+    logs1.mkdir(parents=True, exist_ok=True)
+    (logs1 / "llamacpp-a770.cid").write_text(owned_id + "\n", encoding="utf-8")
+    (logs1 / "llamacpp-a770.invocation").write_text("inv-owned-1\n", encoding="utf-8")
+    (logs1 / "llamacpp-a770.pid").write_text("4242\n", encoding="utf-8")
+    r1 = _run(env1, "stop-id", owned_id)
+    assert r1.returncode == 3, r1.stdout + r1.stderr
+    assert (logs1 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == owned_id
+    assert (logs1 / "llamacpp-a770.invocation").read_text(encoding="utf-8").strip() == "inv-owned-1"
+    assert (logs1 / "llamacpp-a770.pid").read_text(encoding="utf-8").strip() == "4242"
+    calls1 = log1.read_text(encoding="utf-8").splitlines()
+    assert not any(c.startswith("stop ") or c.startswith("rm ") for c in calls1), calls1
+
+    # 2. Start writes verified full ID + invocation record; foreign IDs, mismatched labels, and mutable names are refused.
+    d2 = tmp_path / "ownership-binding"
+    d2.mkdir()
+    bin2, log2 = _fake_runtime(d2, ps_id=owned_id, running=False)
+    env2 = _env(d2, bin2)
+    r_start = _run(env2, "start", GGUF, "8192")
+    assert r_start.returncode == 0, r_start.stdout + r_start.stderr
+    logs2 = Path(env2["A770B_DATA"]) / "logs"
+    assert (logs2 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == owned_id
+    recorded_inv = (logs2 / "llamacpp-a770.invocation").read_text(encoding="utf-8").strip()
+    assert recorded_inv
+
+    # Inject a foreign container and a container in another project into docker.state.json
+    state_path = d2 / "docker.state.json"
+    st = json.loads(state_path.read_text(encoding="utf-8"))
+    st["containers"].extend([
+        {
+            "id": foreign_id,
+            "name": "foreign-llama-1",
+            "project": "a770-builder",
+            "service": "llama",
+            "running": True,
+            "pid": "5151",
+            "labels": {
+                "com.docker.compose.project": "a770-builder",
+                "com.docker.compose.service": "llama",
+                "builder.invocation": "different-inv",
+            },
+        },
+        {
+            "id": other_proj_id,
+            "name": "other-project-db",
+            "project": "other-project",
+            "service": "db",
+            "running": True,
+            "pid": "6161",
+            "labels": {
+                "com.docker.compose.project": "other-project",
+                "com.docker.compose.service": "db",
+                "builder.invocation": recorded_inv,
+            },
+        },
+    ])
+    state_path.write_text(json.dumps(st), encoding="utf-8")
+
+    # 2a. Mutable container names and short IDs are rejected without touching docker stop/rm or ownership files.
+    for bad_target in ("a770-builder-llama-1", "foreign-llama-1", owned_id[:12]):
+        r_bad = _run(env2, "stop-id", bad_target)
+        assert r_bad.returncode == 2, (bad_target, r_bad.stdout, r_bad.stderr)
+        assert (logs2 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == owned_id
+        assert (logs2 / "llamacpp-a770.invocation").read_text(encoding="utf-8").strip() == recorded_inv
+
+    # 2b. Foreign full IDs are refused without touching docker stop/rm or original ownership files.
+    for foreign in (foreign_id, other_proj_id):
+        r_for = _run(env2, "stop-id", foreign)
+        assert r_for.returncode == 3, (foreign, r_for.stdout, r_for.stderr)
+        assert (logs2 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == owned_id
+        assert (logs2 / "llamacpp-a770.invocation").read_text(encoding="utf-8").strip() == recorded_inv
+        assert (logs2 / "llamacpp-a770.pid").read_text(encoding="utf-8").strip() == "4242"
+
+    # 2c. Even if CIDFILE were overwritten with a foreign container ID, invocation/project/service mismatch still refuses.
+    (logs2 / "llamacpp-a770.cid").write_text(foreign_id + "\n", encoding="utf-8")
+    r_tamper = _run(env2, "stop-id", foreign_id)
+    assert r_tamper.returncode == 3, r_tamper.stdout + r_tamper.stderr
+    assert "ownership mismatch" in r_tamper.stderr
+    assert (logs2 / "llamacpp-a770.cid").read_text(encoding="utf-8").strip() == foreign_id
+
+    (logs2 / "llamacpp-a770.cid").write_text(other_proj_id + "\n", encoding="utf-8")
+    r_tamper_proj = _run(env2, "stop-id", other_proj_id)
+    assert r_tamper_proj.returncode == 3, r_tamper_proj.stdout + r_tamper_proj.stderr
+    assert "ownership mismatch" in r_tamper_proj.stderr
+
+    calls2 = log2.read_text(encoding="utf-8").splitlines()
+    assert not any(foreign_id in c or other_proj_id in c for c in calls2 if c.startswith(("stop ", "rm "))), calls2
+
+    # 2d. Valid recorded full ID + matching labels stops ONLY owned_id and clears ownership files.
+    (logs2 / "llamacpp-a770.cid").write_text(owned_id + "\n", encoding="utf-8")
+    r_ok = _run(env2, "stop-id", owned_id)
+    assert r_ok.returncode == 0, r_ok.stdout + r_ok.stderr
+    assert not (logs2 / "llamacpp-a770.cid").exists()
+    assert not (logs2 / "llamacpp-a770.invocation").exists()
+    assert not (logs2 / "llamacpp-a770.pid").exists()
+    remaining = {c["id"] for c in json.loads(state_path.read_text(encoding="utf-8"))["containers"]}
+    assert owned_id not in remaining
+    assert foreign_id in remaining and other_proj_id in remaining
+
+
+def test_post_load_unavailable_vram_fails_closed_unless_override_enabled(tmp_path):
+    # Preflight reads a valid nvtop, then post-load telemetry drops out -> fail closed when override=0, warn when override=1.
+    for allow in ("0", "1"):
+        d = tmp_path / f"vram-{allow}"
+        d.mkdir()
+        bin_, log = _fake_runtime(d, ps_id=f"cid-vram-{allow}", running=False)
+        count_file = d / "nvtop.count"
+        _make_bin(bin_, "nvtop", f'''
+n=$(cat "{count_file}" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s' "$n" > "{count_file}"
+if [ "$n" -le 2 ]; then
+  echo '[{{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}}]'
+else
+  echo '[]'
+fi
+''')
+        env = _env(d, bin_, A770B_ALLOW_NO_NVTOP=allow, A770B_MIN_VRAM_MB="0")
+        r = _run(env, "start", GGUF, "8192")
+        if allow == "0":
+            assert r.returncode == 3, r.stdout + r.stderr
+            assert "VRAM telemetry unavailable after load" in r.stderr
+            assert not (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.cid").exists()
+        else:
+            assert r.returncode == 0, r.stdout + r.stderr
+            assert "⚠ VRAM after load: unavailable" in r.stdout
+
+
+def test_compose_image_pinning_handles_digest_id_repodigest_and_local_derivative(tmp_path):
+    config_id = "sha256:" + "a" * 64
+    manifest_dig = "ghcr.io/ggml-org/llama.cpp@sha256:" + "b" * 64
+    other_repo_dig = "ghcr.io/other/repo@sha256:" + "c" * 64
+
+    def _gate_env(d: Path, image_ref: str, repo_digests: list[str], extra_map: dict[str, str]):
+        d.mkdir(exist_ok=True)
+        bin_, log = _fake_runtime(d, running=True)
+        mapping = {image_ref: (config_id, repo_digests)}
+        for k, v in extra_map.items():
+            mapping[k] = (v, [])
+        map_file = d / "imgmap.json"
+        map_file.write_text(json.dumps(mapping), encoding="utf-8")
+        state_file = d / "pin-docker.state.json"
+        state_file.write_text(json.dumps({
+            "containers": [{
+                "id": "cid123",
+                "name": "a770-builder-llama-1",
+                "project": "a770-builder",
+                "service": "llama",
+                "running": True,
+                "pid": "4242",
+                "labels": {
+                    "com.docker.compose.project": "a770-builder",
+                    "com.docker.compose.service": "llama",
+                },
+            }],
+        }), encoding="utf-8")
+        _make_bin(bin_, "docker", f'''python3 - "{log}" "{map_file}" "{state_file}" "$@" <<'PY'
+import json, re, sys
+from pathlib import Path
+log, mfile, sfile, *argv = sys.argv[1:]
+with open(log, "a") as fh:
+    fh.write(" ".join(argv) + "\\n")
+m = json.load(open(mfile))
+state = json.loads(Path(sfile).read_text(encoding="utf-8"))
+def save():
+    Path(sfile).write_text(json.dumps(state), encoding="utf-8")
+if argv[:3] == ["image", "inspect", "-f"]:
+    fmt, name = argv[3], argv[4]
+    if name not in m:
+        sys.exit(1)
+    cid, rds = m[name]
+    if "RepoDigests" in fmt:
+        for r in rds:
+            print(r)
+    else:
+        print(cid)
+    sys.exit(0)
+if argv and argv[0] == "compose":
+    project = "a770-builder"
+    files = []
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--env-file" and i + 1 < len(argv):
+            i += 2
+        elif a == "-p" and i + 1 < len(argv):
+            project = argv[i + 1]; i += 2
+        elif a == "-f" and i + 1 < len(argv):
+            files.append(argv[i + 1]); i += 2
+        else:
+            break
+    tail = argv[i:]
+    cmd = tail[0] if tail else ""
+    if cmd == "down":
+        state["containers"] = [c for c in state["containers"] if c.get("project") != project]
+        save()
+    elif cmd == "up":
+        lbls = {{
+            "com.docker.compose.project": project,
+            "com.docker.compose.service": "llama",
+            "com.docker.compose.project.config_files": ",".join(files),
+        }}
+        for fp in files:
+            try:
+                doc = json.loads(Path(fp).read_text(encoding="utf-8"))
+                ol = ((doc.get("services") or {{}}).get("llama") or {{}}).get("labels")
+                if isinstance(ol, dict):
+                    lbls.update(ol)
+            except Exception:
+                pass
+        state["containers"] = [c for c in state["containers"] if c.get("project") != project]
+        state["containers"].append({{
+            "id": "cid123",
+            "name": f"{{project}}-llama-1",
+            "project": project,
+            "service": "llama",
+            "running": True,
+            "pid": "4242",
+            "labels": lbls,
+        }})
+        save()
+    elif cmd == "ps":
+        show_all = "--all" in tail or "-a" in tail
+        for c in state["containers"]:
+            if c.get("project") == project and (show_all or c.get("running")):
+                print(c["id"])
+    sys.exit(0)
+if argv[:2] == ["inspect", "-f"]:
+    fmt, cid = argv[2], argv[3]
+    c = next((x for x in state["containers"] if x["id"] == cid or x.get("name") == cid), None)
+    if c is None:
+        print(f"Error: No such object: {{cid}}", file=sys.stderr)
+        sys.exit(1)
+    lbl_m = re.search(r'index \\.Config\\.Labels "([^"]+)"', fmt)
+    if lbl_m:
+        print((c.get("labels") or {{}}).get(lbl_m.group(1), ""))
+    elif "{{{{.Image}}}}" in fmt:
+        print("{config_id}")
+    elif "{{{{.Id}}}}" in fmt:
+        print(c["id"])
+    elif "{{{{.Name}}}}" in fmt:
+        print("/" + c.get("name", "a770-builder-llama-1"))
+    elif "{{{{.State.Running}}}}" in fmt:
+        print("true" if c.get("running") else "false")
+    elif "{{{{.State.Pid}}}}" in fmt:
+        print(c.get("pid", "0"))
+    else:
+        print("")
+    sys.exit(0)
+if argv and argv[0] == "ps":
+    show_all = any(a == "--all" or (a.startswith("-") and not a.startswith("--") and "a" in a) for a in argv[1:])
+    want = {{}}
+    i = 1
+    while i < len(argv):
+        if argv[i] == "--filter" and i + 1 < len(argv) and argv[i + 1].startswith("label="):
+            k, v = argv[i + 1][len("label="):].split("=", 1)
+            want[k] = v
+            i += 2
+            continue
+        i += 1
+    for c in state["containers"]:
+        if not show_all and not c.get("running"):
+            continue
+        clbls = c.get("labels") or {{}}
+        if any(clbls.get(k) != v for k, v in want.items()):
+            continue
+        print(c["id"])
+    sys.exit(0)
+sys.exit(0)
+PY
+''')
+        return _env(d, bin_, A770B_LLAMA_IMAGE=image_ref), log
+
+    # 1. Existing repo@sha256:<manifest> stays as-is (never overwritten with @config_id)
+    e1, _ = _gate_env(tmp_path / "c1", manifest_dig, [manifest_dig], {})
+    r1 = _run(e1, "gate")
+    assert r1.returncode == 0, r1.stderr
+    assert r1.stdout.strip() == manifest_dig
+
+    # 2. Explicit sha256:<id> stays as-is
+    e2, _ = _gate_env(tmp_path / "c2", config_id, [], {})
+    r2 = _run(e2, "gate")
+    assert r2.returncode == 0, r2.stderr
+    assert r2.stdout.strip() == config_id
+
+    # 3. Tagged image with matching RepoDigest uses RepoDigest AND local-build._running_image_matches resolves it to .Id
+    e3, _ = _gate_env(tmp_path / "c3", "ghcr.io/ggml-org/llama.cpp:full-vulkan", [other_repo_dig, manifest_dig], {manifest_dig: config_id})
+    r3 = _run(e3, "gate")
+    assert r3.returncode == 0, r3.stderr
+    assert r3.stdout.strip() == manifest_dig
+    lb = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    e3["p"] = "qwen35-9b-q4km-vulkan"
+    e3["A770B_SERVED_BACKEND"] = "vulkan"
+    m = subprocess.run(["bash", "-c", '. "$1"; _running_image_matches', "_", str(lb)], capture_output=True, text=True, env=e3, cwd=ROOT)
+    assert m.returncode == 0, m.stderr
+
+    # 4. Tagged local derivative (no matching RepoDigest) falls back to .Id (sha256:...) + start writes pull_policy: never
+    e4, _ = _gate_env(tmp_path / "c4", "a770-builder/llama-vulkan-ca:2026-10-25", [other_repo_dig], {other_repo_dig: "sha256:" + "d" * 64})
+    r4 = _run(e4, "gate")
+    assert r4.returncode == 0, r4.stderr
+    assert r4.stdout.strip() == config_id
+    r4_start = _run(e4, "start", GGUF, "8192")
+    assert r4_start.returncode == 0, r4_start.stdout + r4_start.stderr
+    ov = json.loads((Path(e4["A770B_DATA"]) / "logs" / "compose-argv.override.json").read_text(encoding="utf-8"))
+    assert ov["services"]["llama"]["pull_policy"] == "never"

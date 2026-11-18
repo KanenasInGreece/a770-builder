@@ -236,6 +236,41 @@ def test_a_failed_probe_over_a_measured_window_still_caps_at_the_shallow_point(t
     assert printed_row(result.stdout)["useful_ctx"] == 8000, result.stdout
 
 
+def test_sweep_unavailable_vram_serializes_as_null_and_preserves_measured_zero(tmp_path):
+    """Unavailable sweep VRAM becomes JSON null while measured 0/0.0GiB remains numeric 0.0, preserving timings."""
+    sweep_unavail = (
+        "target   tokens   ttft_s    prefill_tps decode_tps vram_max    resets\n"
+        "8000     7993     14.0      571.0       36.8       unavailable 0\n"
+        f"{FAR_END}    38970    265.0     147.0       11.6       unavailable 0\n"
+    )
+    unavail_dir = tmp_path / "unavail"
+    unavail_dir.mkdir()
+    res_u, doc_u = run_row(unavail_dir, sweep_unavail, DEPTH_PASSED)
+    assert res_u.returncode == 0, res_u.stdout + res_u.stderr
+    ws_u = doc_u["rungs"]["window_sweep"]
+    assert ws_u["8000"]["vram_max_gib"] is None
+    assert ws_u[str(FAR_END)]["vram_max_gib"] is None
+    assert ws_u[str(FAR_END)]["decode_tps"] == 11.6
+    assert doc_u["computed"]["speed"]["far_end"]["tokens"] == 38970
+    assert isinstance(doc_u["computed"]["useful_ctx"], int) and doc_u["computed"]["useful_ctx"] > 8000
+
+    sweep_zero = (
+        "target   tokens   ttft_s    prefill_tps decode_tps vram_max  resets\n"
+        "8000     7993     14.0      571.0       36.8       0.0GiB    0\n"
+        f"{FAR_END}    38970    265.0     147.0       11.6       0GiB      0\n"
+    )
+    zero_dir = tmp_path / "zero"
+    zero_dir.mkdir()
+    res_z, doc_z = run_row(zero_dir, sweep_zero, DEPTH_PASSED)
+    assert res_z.returncode == 0, res_z.stdout + res_z.stderr
+    ws_z = doc_z["rungs"]["window_sweep"]
+    assert type(ws_z["8000"]["vram_max_gib"]) is float and ws_z["8000"]["vram_max_gib"] == 0.0
+    assert type(ws_z[str(FAR_END)]["vram_max_gib"]) is float and ws_z[str(FAR_END)]["vram_max_gib"] == 0.0
+    assert ws_z[str(FAR_END)]["decode_tps"] == 11.6
+    assert doc_z["computed"]["speed"]["far_end"]["tokens"] == 38970
+    assert isinstance(doc_z["computed"]["useful_ctx"], int) and doc_z["computed"]["useful_ctx"] > 8000
+
+
 def test_ladder_row_with_evidence_path_computes_ram_gb_extra_and_checkpoint_evidence(tmp_path):
     """When an evidence path is passed as the optional 24th argument, ladder_row computes
     ram_gb_extra = host_buffers_mib / 1024 rounded to 2, and adds checkpoint.evidence."""
@@ -430,7 +465,11 @@ def _run_bare_ladder(tmp_path, *, dry_run=False, start_code=0):
     fake = tmp_path / "fake-serve.sh"
     fake.write_text(
         "#!/bin/bash\n"
-        f"printf '%s\\n' \"$1\" >> {shlex.quote(str(log))}\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(log))}\n"
+        f"if [ \"$1\" = start ] && [ {int(start_code)} -eq 0 ]; then\n"
+        "  mkdir -p \"$A770B_DATA/logs\"\n"
+        "  printf '%s\\n' \"cid-bare-1\" > \"$A770B_DATA/logs/llamacpp-a770.cid\"\n"
+        "fi\n"
         f"exit {int(start_code)}\n",
         encoding="utf-8",
     )
@@ -473,14 +512,14 @@ def _run_bare_ladder(tmp_path, *, dry_run=False, start_code=0):
 
 
 def test_ladder_stops_a_started_server_when_suite_json_cannot_be_read(tmp_path):
-    """A successful start is stopped on the way out, including the suite.json refusal.
+    """A successful start is stopped on the way out via stop-id, including the suite.json refusal.
 
     No tokenizer means the ladder never reaches a bench. The suite file is not JSON,
-    so the ladder exits non-zero before the results file. The fake records start then stop.
+    so the ladder exits non-zero before the results file. The fake records start then stop-id.
     """
     res, lines = _run_bare_ladder(tmp_path, start_code=0)
     assert res.returncode != 0, res.stdout + res.stderr
-    assert lines == ["start", "stop"]
+    assert len(lines) == 2 and lines[0].startswith("start ") and lines[1] == "stop-id cid-bare-1", lines
     assert "▶ rung 1/6" in res.stdout
     for n in (2, 3, 4, 5, 6):
         assert f"▶ rung {n}/6" not in res.stdout
@@ -501,7 +540,7 @@ def test_ladder_does_not_stop_when_start_fails(tmp_path):
     """A non-zero start did not leave a server. The fake must not record stop."""
     res, lines = _run_bare_ladder(tmp_path, start_code=7)
     assert res.returncode != 0, res.stdout + res.stderr
-    assert lines == ["start"]
+    assert len(lines) == 1 and lines[0].startswith("start "), lines
     for n in (2, 3, 4, 5, 6):
         assert f"▶ rung {n}/6" not in res.stdout
 

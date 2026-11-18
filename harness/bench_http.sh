@@ -111,5 +111,5 @@ if ! curl -sf --max-time 5 "$origin/health" >/dev/null; then
   exit 1
 fi
 "${cmd[@]}"
-python3 "$here/bench_http_map.py" "$save" --out "${save%.json}.mapped.json" --flags "$flagline"
+python3 "$here/bench_http_map.py" "$save" --out "${save%.json}.mapped.json" --flags "$flagline" --require-pp "${sizes[@]}"
 echo "mapped → ${save%.json}.mapped.json"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # local-build.sh — the A770 builder seat, serving the profiles of the card mode's own registry. Installed as a skill in every agent's skill dir (copies).
-#   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME]     (no worktree = the default seat, A770B_SEAT)
+#   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
@@ -148,17 +148,25 @@ _reload_lock_held(){ # true when another process holds the run lock; this shell'
   if ( flock -n 8 ) 8>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then return 1; fi
   return 0
 }
+_clear_serve_evidence_pointer(){
+  local ev="$A770B_DATA/logs/serve-evidence.path"
+  if [ -f "$ev" ] && [ ! -L "$ev" ]; then
+    rm -f -- "$ev"
+  fi
+}
 _write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4): pipe the compose service's own
   # container log into engine_evidence.py log, so every successful serve leaves evidence beside the run's other
   # results, and record its path for a caller (the stage-counter diff, the ladder) to pick up. docker, python or
   # an unreadable log failing here must never fail the serve that already succeeded — warn once and carry on.
-  local profile="$1" model="$3" engine container out logtext
+  local profile="$1" model="$3" engine cid container out logtext
+  _clear_serve_evidence_pointer
   engine="${A770B_SERVED_ENGINE:-}"
   if [ -z "$engine" ]; then
     echo "⚠ A770B_SERVED_ENGINE is empty — skipping serve evidence for $profile" >&2
     return 0
   fi
-  container="${A770B_COMPOSE_PROJECT}-llama-1"           # the one compose service name every envelope uses
+  cid=$(cat "$A770B_DATA/logs/llamacpp-a770.cid" 2>/dev/null | tr -d '[:space:]' || true)
+  container="${cid:-${A770B_COMPOSE_PROJECT}-llama-1}"           # prefer the recorded container id from start
   mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
   out="$A770B_DATA/results/serve-$profile-$(date +%Y%m%d-%H%M%S).evidence.json"
   # docker's own exit status is checked BEFORE python3 ever runs (rather than piping straight into it): python3
@@ -170,6 +178,7 @@ _write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4)
   then
     printf '%s\n' "$out" > "$A770B_DATA/logs/serve-evidence.path"
   else
+    _clear_serve_evidence_pointer
     echo "⚠ could not write serve evidence for $profile (the container log or engine_evidence.py failed) — continuing" >&2
   fi
 }
@@ -255,9 +264,9 @@ _running_image_matches(){
     [ -n "$vllm_image" ] && export A770B_VLLM_IMAGE="$vllm_image"
   fi
   pinned=$(bash "$A770B_PROJECT/harness/serve_compose.sh" gate) || return 1
-  case "$pinned" in
-    *@sha256:*) wanted="sha256:${pinned##*@sha256:}" ;;
-    sha256:*) wanted=$pinned ;;
+  wanted=$("$A770B_DOCKER" image inspect -f '{{.Id}}' "$pinned" 2>/dev/null) || return 1
+  case "$wanted" in
+    sha256:*) ;;
     *) return 1 ;;
   esac
   [ "$running" = "$wanted" ]
@@ -483,28 +492,39 @@ bench_profile(){
   bash "$A770B_PROJECT/harness/bench_http.sh" "${http_args[@]}"
 }
 # _attach_running_server <base-url> <served-name> — use a server that is already up. Does not start or stop one.
-# Health is the origin /health after one trailing /v1 is removed. Any HTTP success is enough; the body is not read.
+# Requires a plain http://host:port or http://host:port/v1 URL; health is the origin /health.
 _attach_running_server(){
-  local url="$1" name="$2" origin rest hostport code ev_logs ev_base
+  local url="$1" name="$2" origin code ev_logs ev_base parsed
   [ -n "$url" ] && [ -n "$name" ] || die "--base-url and --served-model-name are required together"
-  url="${url%/}"
-  origin="${url%/v1}"
-  case "$origin" in
-    http://*|https://*) ;;
-    *) die "--base-url must start with http:// or https://: $1" ;;
-  esac
-  rest="${origin#*://}"
-  hostport="${rest%%/*}"
-  case "$hostport" in
-    *:*) ;;
-    *) die "--base-url needs a host and a port: $1" ;;
-  esac
-  A770B_HOST="${hostport%:*}"
-  A770B_PORT="${hostport##*:}"
-  case "$A770B_PORT" in
-    ''|*[!0-9]*) die "--base-url port is not a number: $1" ;;
-  esac
-  [ -n "$A770B_HOST" ] || die "--base-url has no host: $1"
+  parsed=$(python3 -c '
+import sys
+from urllib.parse import urlsplit
+raw_in = sys.argv[1]
+if "?" in raw_in or "#" in raw_in:
+    sys.exit(1)
+raw = raw_in[:-1] if raw_in.endswith("/") else raw_in
+try:
+    u = urlsplit(raw)
+except ValueError:
+    sys.exit(1)
+if u.scheme != "http":
+    sys.exit(1)
+if u.username is not None or u.password is not None or "@" in (u.netloc or ""):
+    sys.exit(1)
+if u.query or u.fragment:
+    sys.exit(1)
+if u.path not in ("", "/v1"):
+    sys.exit(1)
+host = u.hostname
+try:
+    port = u.port
+except ValueError:
+    sys.exit(1)
+if not host or port is None or not (1 <= port <= 65535):
+    sys.exit(1)
+print(f"http://{u.netloc}\t{host}\t{port}")
+' "$url" 2>/dev/null) || die "--base-url must be a plain http://host:port or http://host:port/v1 URL (no https, userinfo, extra path, query, or fragment): $1"
+  IFS=$'\t' read -r origin A770B_HOST A770B_PORT <<<"$parsed"
   export A770B_HOST A770B_PORT A770B_ALIAS="$name"
   code=$(curl -sS -o /dev/null --max-time 5 -w '%{http_code}' "$origin/health" 2>/dev/null || true)
   case "$code" in
@@ -555,7 +575,12 @@ status(){ local c cid; c=$(current); version 2>&1
     else echo "server: down"; fi
   fi
   curl -s --max-time 3 "http://$A770B_HOST:$A770B_PORT/health" 2>/dev/null | head -c 80; echo
-  echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · mode $A770B_CARD_MODE · registry $A770B_PROFILES_FILE · VRAM used $(gpu_used_gib) GiB · cap $A770B_VRAM_CAP_GIB"
+  local _vram_s; _vram_s=$(gpu_used_gib 2>/dev/null) || _vram_s="unavailable"
+  if [ "$_vram_s" = "unavailable" ] || [ -z "$_vram_s" ]; then
+    echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · mode $A770B_CARD_MODE · registry $A770B_PROFILES_FILE · VRAM used unavailable · cap $A770B_VRAM_CAP_GIB"
+  else
+    echo "builder card: $A770B_DEVICE ($A770B_GPU_MATCH) · mode $A770B_CARD_MODE · registry $A770B_PROFILES_FILE · VRAM used $_vram_s GiB · cap $A770B_VRAM_CAP_GIB"
+  fi
   if [ -n "$A770B_PROFILES" ]; then printf 'profiles:'; for p in $A770B_PROFILES; do printf ' %s = %s ctx %s ·' "$p" "$(a770b_profile_var "$p" MODEL)" "$(a770b_profile_var "$p" CTX)"; done; echo " models in $A770B_MODELS"; else empty_registry_line; fi
   echo "project $A770B_PROJECT · data $A770B_DATA · seat $A770B_SEAT"
   if ! : 9>>"$A770B_DATA/logs/local-build.lock" 2>/dev/null; then echo "run lock: unknown (cannot open $A770B_DATA/logs/local-build.lock)"; elif ( flock -n 9 ) 9>>"$A770B_DATA/logs/local-build.lock"; then echo "run lock: free"; else echo "run lock: HELD — a run, verify, serve or reset is in progress; wait for it"; fi
@@ -653,19 +678,25 @@ doctor(){
   elif [ "$n" != 1 ]; then
     echo "ok   mode: $A770B_CARD_MODE, not measured (no VRAM readings or more than one matching card)"
   else
-    u=$(python3 -c "print(f'{$(gpu_used_gib):.2f}')")
-    case "$A770B_CARD_MODE" in
-      inference)
-        if python3 -c "import sys; sys.exit(0 if float('$u') > 0.5 else 1)"; then
-          echo "MISSING mode: inference, but the builder card holds $u GiB with the seat's server down — something else draws it (a desktop?); set A770B_CARD_MODE=display, or free the card"; missing=$((missing+1))
-        else
-          echo "ok   mode: inference; the builder card holds $u GiB with the seat's server down"
-        fi ;;
-      *)
-        hint=""
-        python3 -c "import sys; sys.exit(0 if float('$u') <= 0.1 else 1)" && hint=" — no desktop measured on it; A770B_CARD_MODE=inference would serve the inference registry under its measured cap"
-        echo "ok   mode: display; the builder card holds $u GiB with the seat's server down$hint" ;;
-    esac
+    local _raw_u=""
+    if _raw_u=$(gpu_used_gib 2>/dev/null) && u=$(python3 -c "import sys; print(f'{float(sys.argv[1]):.2f}')" "$_raw_u" 2>/dev/null); then
+      case "$A770B_CARD_MODE" in
+        inference)
+          if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > 0.5 else 1)" "$u"; then
+            echo "MISSING mode: inference, but the builder card holds $u GiB with the seat's server down — something else draws it (a desktop?); set A770B_CARD_MODE=display, or free the card"; missing=$((missing+1))
+          else
+            echo "ok   mode: inference; the builder card holds $u GiB with the seat's server down"
+          fi ;;
+        *)
+          hint=""
+          python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 0.1 else 1)" "$u" && hint=" — no desktop measured on it; A770B_CARD_MODE=inference would serve the inference registry under its measured cap"
+          echo "ok   mode: display; the builder card holds $u GiB with the seat's server down$hint" ;;
+      esac
+    elif [ "${A770B_ALLOW_NO_NVTOP:-0}" = 1 ]; then
+      echo "ok   mode: $A770B_CARD_MODE, not measured (VRAM reading unavailable)"
+    else
+      echo "MISSING mode: VRAM reading unavailable on $A770B_GPU_MATCH"; missing=$((missing+1))
+    fi
   fi
   if [ -z "$A770B_PROFILES_FILE" ] || [ ! -f "$A770B_PROFILES_FILE" ]; then
     echo "MISSING registry: $(empty_registry_line)"; missing=$((missing+1))
@@ -723,14 +754,14 @@ doctor(){
 }
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 case "${1:-}" in
-  serve)  run_lock; [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; serve "$2" ;;
+  serve)  card_lock; [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; serve "$2" ;;
   bench)  [ -n "${2:-}" ] || { if [ -n "$A770B_PROFILES" ]; then die "serve needs a profile name (there is no default profile) — one of: $A770B_PROFILES"; else die "$(empty_registry_line)"; fi; }; case "$2" in --*) die "unknown arg $2";; esac; shift; bench_profile "$@" ;;
-  reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; run_lock; reset_worktree "$WT" ;;
+  reset)  WT=$(guard_worktree "${2:-$A770B_SEAT}") || exit 2; seat_lock "$WT"; reset_worktree "$WT" ;;
   status) status ;;
   profiles) if [ -n "$A770B_PROFILES" ]; then shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@"; else empty_registry_line; fi ;;
   menu) if [ -n "$A770B_PROFILES" ]; then python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid"; else python3 "$A770B_PROJECT/harness/profiles.py" menu --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; fi ;;
   doctor) doctor ;;
-  stop)   _envelope_from_sidecar; bash "$SERVE" stop ;;
+  stop)   card_lock; _envelope_from_sidecar; _clear_serve_evidence_pointer; bash "$SERVE" stop ;;
   stop-run)
     # end exactly the run in progress, through its own pid. The pid file names the process-group leader:
     # `timeout` when this run has a caller fence, the sandbox when it has no clock. One TERM to that leader
@@ -801,7 +832,8 @@ if name:
 PY
 ) || { rm -f -- "$SPEC_SNAP"; die "${fit_line:-fit refused}"; }
     fi
-    run_lock                                                       # one run at a time on this card
+    card_lock                                                      # card lock before seat lock (single lock order)
+    seat_lock "$WT"                                                # exclusive seat lock on canonical worktree path
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
     profile_vars "$profile"
     if [ -n "$base_url" ]; then
@@ -837,87 +869,394 @@ PY
     [ "$crc" = 0 ] || { echo "⛔ the capture failed (exit $crc) and the seat was NOT reset: read $A770B_DATA/results/$label.task.md, then run: local-build.sh reset $WT" >&2; exit "$crc"; }
     echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean." ;;
   verify)
-    # Re-apply what a run produced (<label>.patch beside the capture) to a CLEAN seat and run the tests inside the same
-    # boundary the model had — no server, no bridge, no key. The verdict is the EXIT CODE of the test command; the pytest
-    # line is quoted for the reader but decides nothing (the patch controls what the tests print). If the run had a
-    # specification, <label>.spec.json beside the patch supplies the test command when --test is absent, and its hidden
-    # acceptance tests — files the model never saw, kept under A770B_HIDDEN_ROOT — are copied into the seat AFTER the
-    # patch applies and run with the rest; the reset removes them.
-    shift; SRC="${1:?capture label or .patch path}"; shift; WT_RAW="$A770B_SEAT"; TEST=""; timeout=""
-    while [ $# -gt 0 ]; do case "$1" in --test) TEST="${2:?command}"; shift;; --timeout) timeout="${2:?seconds}"; shift;; *) if [ -d "$1" ]; then WT_RAW="$1"; else die "unknown arg $1"; fi;; esac; shift; done
-    if [ -f "$SRC" ]; then PATCH=$(realpath -e -- "$SRC"); else SRC=$(basename "$SRC"); PATCH="$A770B_DATA/results/${SRC%.task.md}"; PATCH="${PATCH%.patch}.patch"; fi
-    [ -f "$PATCH" ] || die "patch not found: $PATCH (every capture writes <label>.patch beside <label>.task.md)"
-    [ -s "$PATCH" ] || die "patch is empty — that run changed nothing, there is nothing to verify"
+    # Re-apply what a run produced (<label>.patch beside the capture) to a CLEAN seat and run public + hidden phases
+    # inside the same boundary the model had — no server, no bridge, no key. Emits explicit phase status to both
+    # <label>.verify.md and <label>.verify.json (plus A770B_VERIFY_OUT when set) so infra_error / timeout / not_run
+    # are never masked as model fail.
+    _verify_published=0
+    _verify_infra_attempted=0
+    VJSON=""
+    label=""
+    timeout=""
+    _verify_publish_json(){
+      local status="$1" code="$2" pub_s="$3" hid_s="$4" is_infra="$5" is_to="$6" err_msg="${7:-}"
+      mkdir -p "$A770B_DATA/results" 2>/dev/null || true
+      python3 - "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "$status" "$code" "$pub_s" "$hid_s" "$is_infra" "$is_to" "$err_msg" "${timeout:-}" <<'PY'
+import json, os, sys, tempfile
+vjson_path, handoff_path, label, status, code_s, pub_s, hid_s, is_infra, is_to, err_msg, timeout_s = sys.argv[1:12]
+doc = {
+    "label": label or None,
+    "status": status,
+    "exit_code": int(code_s),
+    "public": pub_s,
+    "hidden": hid_s,
+    "infra_error": (is_infra == "1"),
+    "timed_out": (is_to == "1"),
+    "timeout_s": int(timeout_s) if timeout_s.isdigit() and int(timeout_s) > 0 else None,
+}
+if err_msg:
+    doc["error"] = err_msg
+payload = json.dumps(doc, indent=2) + "\n"
+errors = []
+for dest in (vjson_path, handoff_path):
+    if not dest:
+        continue
+    try:
+        d = os.path.dirname(os.path.abspath(dest))
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".verify-", suffix=".json", dir=d)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp, dest)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception as exc:
+        errors.append(f"{dest}: {exc}")
+if errors:
+    sys.stderr.write("⛔ verify publish failed: " + "; ".join(errors) + "\n")
+    sys.exit(1)
+PY
+    }
+    _verify_infra_die(){
+      local msg="$1"
+      _verify_infra_attempted=1
+      if _verify_publish_json "infra_error" 2 "not_run" "not_run" 1 0 "$msg"; then
+        _verify_published=1
+      fi
+      die "$msg"
+    }
+    shift; SRC="${1:?capture label or .patch path}"; shift; WT_RAW="$A770B_SEAT"; TEST=""
+    while [ $# -gt 0 ]; do case "$1" in --test) TEST="${2:?command}"; shift;; --timeout) timeout="${2:?seconds}"; shift;; *) if [ -d "$1" ]; then WT_RAW="$1"; else _verify_infra_die "unknown arg $1"; fi;; esac; shift; done
+    if [ -f "$SRC" ]; then
+      PATCH=$(realpath -e -- "$SRC")
+      label=$(basename "${PATCH%.patch}")
+    else
+      _src_base=$(basename "$SRC")
+      _src_stem="${_src_base%.task.md}"
+      label="${_src_stem%.patch}"
+      PATCH="$A770B_DATA/results/$label.patch"
+    fi
+    OUT="$A770B_DATA/results/$label.verify.md"
+    VJSON="$A770B_DATA/results/$label.verify.json"
+    # Remove any stale verification files for this label/handoff before checks or grading start.
+    rm -f -- "$VJSON" "$OUT" 2>/dev/null || true
+    if [ -n "${A770B_VERIFY_OUT:-}" ]; then
+      rm -f -- "$A770B_VERIFY_OUT" 2>/dev/null || true
+    fi
+    [ -f "$PATCH" ] || _verify_infra_die "patch not found: $PATCH (every capture writes <label>.patch beside <label>.task.md)"
+    [ -s "$PATCH" ] || _verify_infra_die "patch is empty — that run changed nothing, there is nothing to verify"
+    if [ -n "$timeout" ]; then
+      case "$timeout" in
+        ''|*[!0-9]*|0) _verify_infra_die "--timeout must be a positive integer (got '$timeout')" ;;
+      esac
+    fi
+    WT=$(guard_worktree "$WT_RAW") || _verify_infra_die "worktree refused: $WT_RAW"
+    _verify_abort_trap(){
+      local rc=$?
+      if [ "$_verify_published" != 1 ] && [ "$_verify_infra_attempted" != 1 ] && [ "$rc" -ne 0 ]; then
+        _verify_publish_json "infra_error" "$rc" "not_run" "not_run" 1 0 "verify aborted before grading (exit $rc)" || true
+      fi
+    }
+    trap '_verify_abort_trap' EXIT
+    seat_lock "$WT"                                                # exclusive lock on canonical seat; inherits if caller holds it
     SPECF="${PATCH%.patch}.spec.json"; HIDDEN=(); HROOT_RAW="${A770B_HIDDEN_ROOT:-$A770B_DATA/hidden}"
     if [ -f "$SPECF" ]; then
       # the hidden root is a real directory, never a link, and every file in it is checked at its resolved path
-      [ -d "$HROOT_RAW" ] && [ ! -L "$HROOT_RAW" ] || die "A770B_HIDDEN_ROOT is not a real directory (a symlink is refused): $HROOT_RAW"
+      [ -d "$HROOT_RAW" ] && [ ! -L "$HROOT_RAW" ] || _verify_infra_die "A770B_HIDDEN_ROOT is not a real directory (a symlink is refused): $HROOT_RAW"
       HROOT=$(realpath -e -- "$HROOT_RAW")
       [ -n "$TEST" ] || TEST=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print((d.get("verify") or {}).get("test") or "")' "$SPECF")
       while IFS= read -r h; do
         [ -n "$h" ] || continue
-        case "$h" in *[!A-Za-z0-9._-]*|.*|-*) die "hidden test name is not a plain basename: '$h'";; esac
-        [ -f "$HROOT/$h" ] && [ ! -L "$HROOT/$h" ] || die "hidden test not found under $HROOT, or a symlink: $h"
-        [ "$(stat -c %s -- "$HROOT/$h")" -le 65536 ] || die "hidden test over 64 KiB: $h"
+        case "$h" in *[!A-Za-z0-9._-]*|.*|-*) _verify_infra_die "hidden test name is not a plain basename: '$h'";; esac
+        [ -f "$HROOT/$h" ] && [ ! -L "$HROOT/$h" ] || _verify_infra_die "hidden test not found under $HROOT, or a symlink: $h"
+        [ "$(stat -c %s -- "$HROOT/$h")" -le 65536 ] || _verify_infra_die "hidden test over 64 KiB: $h"
         HIDDEN+=("$h")
       done < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [print(x) for x in ((d.get("verify") or {}).get("hidden") or [])]' "$SPECF")
     fi
-    WT=$(guard_worktree "$WT_RAW") || exit 2
-    run_lock                                                       # the seat is exclusive, like the card
-    dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — it is reset after every run; run: local-build.sh reset $WT"; }
-    files=()
+    dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; _verify_infra_die "seat $WT is not clean (ignored files count) — it is reset after every run; run: local-build.sh reset $WT"; }
+    pub_files=(); hid_files=(); files=()
     if [ -z "$TEST" ]; then
       # the default: pytest on every tests/*.py file the patch touches — file names pass as SEPARATE argv words and must be
       # plain (a model-chosen name is untrusted input; a shell metacharacter in it is refused, never interpreted)
       while IFS= read -r f; do
-        case "$f" in *[!A-Za-z0-9._/-]*|*..*|/*) die "unsafe test path in the patch: '$f' — pass --test '<command>' if you still want to run it";; esac
-        files+=("$f")
+        case "$f" in *[!A-Za-z0-9._/-]*|*..*|/*) _verify_infra_die "unsafe test path in the patch: '$f' — pass --test '<command>' if you still want to run it";; esac
+        pub_files+=("$f"); files+=("$f")
       done < <(grep -oE '^\+\+\+ b/tests?/[^[:space:]]+\.py$' "$PATCH" | sed 's#^+++ b/##' | sort -u)
-      [ ${#files[@]} -gt 0 ] || [ ${#HIDDEN[@]} -gt 0 ] || die "the patch adds or changes no tests/*.py file — pass --test '<command to run inside the sandbox>'"
+      [ ${#pub_files[@]} -gt 0 ] || [ ${#HIDDEN[@]} -gt 0 ] || _verify_infra_die "the patch adds or changes no tests/*.py file — pass --test '<command to run inside the sandbox>'"
     fi
-    safe_git "$WT" apply --check "$PATCH" || die "patch does not apply cleanly to $WT"
-    trap 'reset_worktree "$WT" >/dev/null' EXIT; trap 'reset_worktree "$WT" >/dev/null; exit 130' INT TERM   # clean again whatever happens
-    safe_git "$WT" apply "$PATCH" || die "patch failed to apply"
+    safe_git "$WT" apply --check "$PATCH" || _verify_infra_die "patch does not apply cleanly to $WT"
+    trap 'reset_worktree "$WT" >/dev/null; _verify_abort_trap' EXIT; trap 'reset_worktree "$WT" >/dev/null; exit 130' INT TERM   # clean again whatever happens
+    safe_git "$WT" apply "$PATCH" || _verify_infra_die "patch failed to apply"
     if [ ${#HIDDEN[@]} -gt 0 ]; then
       # the destination directory is the seat's own tests/, never a link the patch or the model planted
-      mkdir -p "$WT/tests"; [ -d "$WT/tests" ] && [ ! -L "$WT/tests" ] && [ "$(realpath -e -- "$WT/tests")" = "$WT/tests" ] || die "the patched seat's tests/ is a symlink or missing — hidden tests refused"
+      mkdir -p "$WT/tests"; [ -d "$WT/tests" ] && [ ! -L "$WT/tests" ] && [ "$(realpath -e -- "$WT/tests")" = "$WT/tests" ] || _verify_infra_die "the patched seat's tests/ is a symlink or missing — hidden tests refused"
     fi
     for h in "${HIDDEN[@]}"; do
-      [ ! -e "$WT/tests/_hidden_$h" ] && [ ! -L "$WT/tests/_hidden_$h" ] || die "the patched seat already has tests/_hidden_$h — refused, a hidden test must not be overwritten"
-      cp -P -- "$HROOT/$h" "$WT/tests/_hidden_$h"; chmod 644 "$WT/tests/_hidden_$h"; files+=("tests/_hidden_$h")
+      [ ! -e "$WT/tests/_hidden_$h" ] && [ ! -L "$WT/tests/_hidden_$h" ] || _verify_infra_die "the patched seat already has tests/_hidden_$h — refused, a hidden test must not be overwritten"
+      cp -P -- "$HROOT/$h" "$WT/tests/_hidden_$h"; chmod 644 "$WT/tests/_hidden_$h"; hid_files+=("tests/_hidden_$h"); files+=("tests/_hidden_$h")
     done
-    if [ -n "$TEST" ] && [ ${#HIDDEN[@]} -gt 0 ]; then
-      # the caller's command first, then the hidden tests by pytest; the names reach pytest as argv words, never through the shell string
-      CMD=(bash -c "$TEST"' && exec uv run --with pytest --with pytest-asyncio python -m pytest -q "$@"' _ "${files[@]}")
-    elif [ -n "$TEST" ]; then CMD=(bash -c "$TEST"); else CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${files[@]}"); fi
-    label=$(basename "${PATCH%.patch}"); OUT="$A770B_DATA/results/$label.verify.md"
-    CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify 32768 "$CFG" nokey || exit 2
+    mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
+    CFG="$A770B_DATA/logs/opencode.verify.jsonc"; a770b_render_profile verify 32768 "$CFG" nokey || _verify_infra_die "could not render verify sandbox config"
+    PUB_CMD=(); HID_CMD=()
+    if [ -n "$TEST" ]; then
+      PUB_CMD=(bash -c "$TEST")
+    elif [ ${#pub_files[@]} -gt 0 ]; then
+      PUB_CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${pub_files[@]}")
+    fi
+    if [ ${#hid_files[@]} -gt 0 ]; then
+      HID_CMD=(uv run --with pytest --with pytest-asyncio python -m pytest -q "${hid_files[@]}")
+    fi
+    if [ ${#PUB_CMD[@]} -gt 0 ] && [ ${#HID_CMD[@]} -gt 0 ]; then
+      CMD_DESC="${PUB_CMD[*]} && ${HID_CMD[*]}"
+    elif [ ${#PUB_CMD[@]} -gt 0 ]; then
+      CMD_DESC="${PUB_CMD[*]}"
+    else
+      CMD_DESC="${HID_CMD[*]}"
+    fi
     # An omitted --timeout is not a clock, the same rule run already uses.
-    # A number here is only the caller's fence, and 124 is that fence firing.
+    # A number here is only the caller's fence; host TimeoutExpired is distinguished from grader exit 124.
     if [ -n "$timeout" ]; then
-      echo "▶ verify $label · timeout=${timeout}s · seat $WT · inside the sandbox: ${CMD[*]}"
+      echo "▶ verify $label · timeout=${timeout}s · seat $WT · inside the sandbox: $CMD_DESC"
     else
-      echo "▶ verify $label · timeout=none · seat $WT · inside the sandbox: ${CMD[*]}"
+      echo "▶ verify $label · timeout=none · seat $WT · inside the sandbox: $CMD_DESC"
     fi
-    { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "hidden tests: ${HIDDEN[*]:-none}"; echo "command, inside the sandbox (no model, no bridge, no key): ${CMD[*]}"; echo; echo '```'; } > "$OUT"
-    if [ -n "$timeout" ]; then
-      ( A770B_NO_BRIDGE=1 timeout "$timeout" bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
-    else
-      ( A770B_NO_BRIDGE=1 bash "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" -- "${CMD[@]}" < /dev/null 9>&- ) 2>&1 | tail -80 | cut -c1-300 | tee -a "$OUT"
+    { echo "# Verify — $label — $(date -Is)"; echo; echo "patch: $PATCH"; echo "applied to: $WT ($(seat_dirty "$WT" | wc -l) entries)"; echo "hidden tests: ${HIDDEN[*]:-none}"; echo "command, inside the sandbox (no model, no bridge, no key): $CMD_DESC"; echo; echo '```'; } > "$OUT"
+    VRAW=$(mktemp "$A770B_DATA/logs/verify-raw-XXXXXX.log")
+    PUB_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PUB_CMD[@]}")
+    HID_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${HID_CMD[@]}")
+    v_py_rc=0
+    v_py_out=$(python3 - "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" "$VRAW" "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "${timeout:-}" "$PUB_JSON" "$HID_JSON" "$A770B_DATA/logs" <<'PY'
+import json, os, signal, subprocess, sys, tempfile, time
+
+sandbox_sh, wt, cfg, raw_path, json_path, handoff_path, label, timeout_s, pub_json, hid_json, log_dir = sys.argv[1:12]
+pub_cmd = json.loads(pub_json)
+hid_cmd = json.loads(hid_json)
+has_public = len(pub_cmd) > 0
+has_hidden = len(hid_cmd) > 0
+timeout_val = int(timeout_s) if timeout_s.isdigit() else None
+deadline = (time.monotonic() + timeout_val) if timeout_val is not None else None
+
+
+def run_phase(cmd_args, raw_fh):
+    if deadline is not None:
+        rem = deadline - time.monotonic()
+        if rem <= 0:
+            return "not_run", 124, "timeout"
+    else:
+        rem = None
+    fd, entered_file = tempfile.mkstemp(prefix="verify-entered-", dir=log_dir)
+    os.close(fd)
+    os.unlink(entered_file)
+    env = dict(os.environ)
+    env["A770B_NO_BRIDGE"] = "1"
+    env["A770B_SANDBOX_ENTERED_FILE"] = entered_file
+    proc = subprocess.Popen(
+        ["bash", sandbox_sh, wt, cfg, "--", *cmd_args],
+        stdin=subprocess.DEVNULL,
+        stdout=raw_fh,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
+        close_fds=True,
+    )
+    try:
+        rc = proc.wait(timeout=rem)
+        entered = False
+        try:
+            with open(entered_file, encoding="utf-8", errors="ignore") as ef:
+                entered = "entered" in ef.read()
+        except OSError:
+            entered = False
+        if not entered:
+            return "not_run", (rc if rc != 0 else 2), "infra_error"
+        return ("pass" if rc == 0 else "fail"), rc, None
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        proc.wait()
+        entered = False
+        try:
+            with open(entered_file, encoding="utf-8", errors="ignore") as ef:
+                entered = "entered" in ef.read()
+        except OSError:
+            entered = False
+        return ("timeout" if entered else "not_run"), 124, "timeout"
+    finally:
+        try:
+            os.unlink(entered_file)
+        except OSError:
+            pass
+
+
+inv_override = None
+hid_inv = None
+with open(raw_path, "w", encoding="utf-8", errors="replace") as raw_fh:
+    if has_public:
+        pub_state, pub_rc, pub_inv = run_phase(pub_cmd, raw_fh)
+        if pub_inv is not None:
+            inv_override = pub_inv
+    else:
+        pub_state, pub_rc, pub_inv = "none", 0, None
+
+    if has_hidden:
+        if (not has_public or pub_state == "pass") and inv_override is None:
+            hid_state, hid_rc, hid_inv = run_phase(hid_cmd, raw_fh)
+            if hid_inv is not None:
+                inv_override = hid_inv
+        else:
+            hid_state, hid_rc = "not_run", pub_rc
+    else:
+        hid_state, hid_rc = "none", 0
+
+if inv_override is not None:
+    status = inv_override
+    vrc = hid_rc if (has_hidden and hid_inv is not None) else pub_rc
+elif has_public and pub_state != "pass":
+    status = pub_state
+    vrc = pub_rc
+elif has_hidden:
+    status = hid_state
+    vrc = hid_rc
+else:
+    status = pub_state
+    vrc = pub_rc
+
+infra_error = (status == "infra_error")
+timed_out = (status == "timeout")
+
+doc = {
+    "label": label,
+    "status": status,
+    "exit_code": vrc,
+    "public": pub_state,
+    "hidden": hid_state,
+    "infra_error": infra_error,
+    "timed_out": timed_out,
+    "timeout_s": timeout_val,
+    "has_public": has_public,
+    "has_hidden": has_hidden,
+}
+payload = json.dumps(doc, indent=2) + "\n"
+staged = []
+try:
+    for dest in (json_path, handoff_path):
+        if not dest:
+            continue
+        d = os.path.dirname(os.path.abspath(dest))
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".verify-", suffix=".json", dir=d)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        staged.append((tmp, dest))
+    replaced = []
+    for tmp, dest in staged:
+        try:
+            os.replace(tmp, dest)
+            replaced.append(dest)
+        except Exception:
+            for prev in replaced:
+                try:
+                    os.unlink(prev)
+                except OSError:
+                    pass
+            raise
+except Exception:
+    for tmp, _ in staged:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    raise
+print(f"{status} {pub_state} {hid_state} {1 if infra_error else 0} {1 if timed_out else 0} {vrc}")
+PY
+) || v_py_rc=$?
+    v_status="" pub_state="" hid_state="" v_infra="" v_timed="" vrc="" v_extra=""
+    v_fields_ok=0
+    if [ "$v_py_rc" -eq 0 ] && [ -n "$v_py_out" ]; then
+      case "$v_py_out" in
+        *$'\n'*) ;;
+        *)
+          IFS=' ' read -r v_status pub_state hid_state v_infra v_timed vrc v_extra <<<"$v_py_out"
+          case "$v_status" in
+            pass|fail|timeout|infra_error)
+              case "$pub_state" in
+                pass|fail|timeout|not_run|none)
+                  case "$hid_state" in
+                    pass|fail|timeout|not_run|none)
+                      case "$v_infra:$v_timed" in
+                        [01]:[01])
+                          if [ -z "$v_extra" ] && [ -n "$vrc" ]; then
+                            case "$vrc" in
+                              *[!0-9]*) ;;
+                              *) v_fields_ok=1 ;;
+                            esac
+                          fi
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+      esac
     fi
-    vrc=${PIPESTATUS[0]}
+    if [ "$v_fields_ok" != 1 ]; then
+      rm -f -- "$VJSON" 2>/dev/null || true
+      if [ -n "${A770B_VERIFY_OUT:-}" ]; then
+        rm -f -- "$A770B_VERIFY_OUT" 2>/dev/null || true
+      fi
+      if [ -f "$VRAW" ]; then
+        tail -80 "$VRAW" | cut -c1-300 >> "$OUT" 2>/dev/null || true
+        rm -f -- "$VRAW"
+      fi
+      { echo '```'; echo; echo "public: not_run"; echo "hidden: not_run"; echo "status: infra_error"; echo "verdict: INFRA_ERROR (exit 2) — verify publication failed (exit $v_py_rc)"; } >> "$OUT" 2>/dev/null || true
+      _verify_infra_die "verify grading or publication failed (exit $v_py_rc)"
+    fi
+    _verify_published=1
+    if [ -f "$VRAW" ]; then
+      if ! tail -80 "$VRAW" | cut -c1-300 | tee -a "$OUT"; then
+        rm -f -- "$VRAW"
+        _verify_published=0
+        rm -f -- "$VJSON" 2>/dev/null || true
+        if [ -n "${A770B_VERIFY_OUT:-}" ]; then
+          rm -f -- "$A770B_VERIFY_OUT" 2>/dev/null || true
+        fi
+        _verify_infra_die "could not write verify report: $OUT"
+      fi
+      rm -f -- "$VRAW"
+    fi
     summary=$(grep -E '[0-9]+ (passed|failed|error)' "$OUT" | tail -1)
-    case "$vrc" in
-      0) verdict="PASS (exit 0)";;
-      124)
-        if [ -n "$timeout" ]; then verdict="TIMEOUT after ${timeout}s"
-        else verdict="FAIL (exit 124)"; fi;;
-      *) verdict="FAIL (exit $vrc)";;
+    case "$v_status" in
+      pass) verdict="PASS (exit 0)";;
+      timeout) verdict="TIMEOUT after ${timeout}s";;
+      infra_error) verdict="INFRA_ERROR (exit $vrc)";;
+      *)
+        if [ "$vrc" = 124 ]; then verdict="FAIL (exit 124)"
+        else verdict="FAIL (exit $vrc)"; fi;;
     esac
-    { echo '```'; echo; echo "verdict: $verdict — the exit code of the command is the verdict"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"
+    if ! { echo '```'; echo; echo "public: $pub_state"; echo "hidden: $hid_state"; echo "status: $v_status"; echo "verdict: $verdict — the exit code of the command is the verdict"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"; then
+      _verify_published=0
+      rm -f -- "$VJSON" 2>/dev/null || true
+      if [ -n "${A770B_VERIFY_OUT:-}" ]; then
+        rm -f -- "$A770B_VERIFY_OUT" 2>/dev/null || true
+      fi
+      _verify_infra_die "could not finalize verify report: $OUT"
+    fi
     reset_worktree "$WT"; trap - EXIT INT TERM
-    echo "▶ verify: $verdict · reported: ${summary:-no pytest summary line} · $OUT"
+    echo "▶ verify: $verdict (public=$pub_state hidden=$hid_state) · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url URL --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] [--timeout S] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] [--timeout S] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
 fi

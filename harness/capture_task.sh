@@ -73,11 +73,11 @@ capture_timings(){
       ;;
   esac
 }
-# the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff
-{ safe_git_diff "$WT"
+# the complete change, untruncated, for `verify`: tracked diff, then each new file as a creation diff (--binary so binary assets round-trip through git apply)
+{ safe_git_diff "$WT" --binary
   safe_git "$WT" ls-files --others --exclude-standard -z | { grep -zvE '^Local_Documentation/briefs/brief-[0-9]{8}-[0-9]{6}\.md$' || true; } | while IFS= read -r -d '' f; do
     [ -L "$WT/$f" ] && continue                                   # a symlink is named in the report, never followed or applied
-    safe_git_diff "$WT" --no-index -- /dev/null "$f" || true; done
+    safe_git_diff "$WT" --binary --no-index -- /dev/null "$f" || true; done
 } > "$PATCH"
 # the diff is taken into a file first: piping it into head made git die of SIGPIPE on a diff over 400 lines, and under
 # pipefail that aborted the capture before the reset, leaving the seat dirty while the skill reported it clean

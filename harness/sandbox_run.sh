@@ -39,10 +39,10 @@ if [ "${A770B_NO_BRIDGE:-0}" != 1 ]; then
   rm -f "$SOCK"
   case "${A770B_SERVED_ENGINE:-}" in
     sglang|vllm)
-      python3 "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" 9>&- >>"$A770B_DATA/logs/llama-bridge.log" 2>&1 & BRIDGE=$!
+      python3 "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" 7>&- 9>&- >>"$A770B_DATA/logs/llama-bridge.log" 2>&1 & BRIDGE=$!
       ;;
     *)
-      socat "UNIX-LISTEN:$SOCK,fork,unlink-early" "TCP:$A770B_HOST:$A770B_PORT" 9>&- 2>>"$A770B_DATA/logs/llama-bridge.log" & BRIDGE=$!
+      socat "UNIX-LISTEN:$SOCK,fork,unlink-early" "TCP:$A770B_HOST:$A770B_PORT" 7>&- 9>&- 2>>"$A770B_DATA/logs/llama-bridge.log" & BRIDGE=$!
       ;;
   esac
   trap 'kill $BRIDGE 2>/dev/null; rm -f "$SOCK"' EXIT
@@ -75,6 +75,44 @@ ARGS=(
 [ -d "$HOME/.local/share/uv/python" ] && ARGS+=(--ro-bind "$HOME/.local/share/uv/python" "$HOME/.local/share/uv/python")
 # inside: a private per-run copy of the warm uv cache (uv must write ephemeral environments into its cache; the warm
 # source stays read-only so no run can poison a later one), the loopback bridge, then the command
-# 9>&-: the caller's run-lock descriptor must not cross into the sandbox (it is a writable host file and the lock itself);
+# 7>&- 9>&-: caller lock descriptors (seat lock & card lock) must not cross into the sandbox;
 # every other inherited descriptor is closed by --new-session/--clearenv semantics only for the env, so close it explicitly.
-bwrap "${ARGS[@]}" -- bash -c 'mkdir -p "$HOME/.cache/uv" && cp -a "$HOME/.cache/uv-warm/." "$HOME/.cache/uv/" 2>/dev/null; [ -S /run/llama.sock ] && { socat "TCP-LISTEN:$A770B_PORT,bind=127.0.0.1,fork,reuseaddr" UNIX-CONNECT:/run/llama.sock 2>/dev/null & }; exec "$@"' _ "$@" 9>&-
+if [ -n "${A770B_SANDBOX_ENTERED_FILE:-}" ]; then
+  python3 - "$A770B_SANDBOX_ENTERED_FILE" "$HOME" "$A770B_PORT" "${ARGS[@]}" -- "$@" 7>&- 9>&- <<'PY'
+import os, subprocess, sys
+entered_file = sys.argv[1]
+sb_home = sys.argv[2]
+sb_port = sys.argv[3]
+rest = sys.argv[4:]
+sep = rest.index("--")
+bwrap_args = rest[:sep]
+cmd = rest[sep + 1:]
+r_fd, w_fd = os.pipe()
+os.set_inheritable(w_fd, True)
+inner = (
+    'mkdir -p "$HOME/.cache/uv" && cp -a "$HOME/.cache/uv-warm/." "$HOME/.cache/uv/" 2>/dev/null; '
+    '[ -S /run/llama.sock ] && { socat "TCP-LISTEN:' + sb_port + ',bind=127.0.0.1,fork,reuseaddr" UNIX-CONNECT:/run/llama.sock 2>/dev/null & }; '
+    f'printf "entered\\n" >&{w_fd} 2>/dev/null || true; exec {w_fd}>&-; '
+    'exec "$@"'
+)
+proc = subprocess.Popen(
+    ["bwrap", *bwrap_args, "--", "bash", "-c", inner, "_", *cmd],
+    pass_fds=(w_fd,),
+    close_fds=True,
+)
+os.close(w_fd)
+chunks = []
+while True:
+    data = os.read(r_fd, 64)
+    if not data:
+        break
+    chunks.append(data)
+os.close(r_fd)
+if b"entered" in b"".join(chunks):
+    with open(entered_file, "w", encoding="utf-8") as fh:
+        fh.write("entered\n")
+sys.exit(proc.wait())
+PY
+else
+  bwrap "${ARGS[@]}" -- bash -c 'mkdir -p "$HOME/.cache/uv" && cp -a "$HOME/.cache/uv-warm/." "$HOME/.cache/uv/" 2>/dev/null; [ -S /run/llama.sock ] && { socat "TCP-LISTEN:$A770B_PORT,bind=127.0.0.1,fork,reuseaddr" UNIX-CONNECT:/run/llama.sock 2>/dev/null & }; exec "$@"' _ "$@" 7>&- 9>&-
+fi

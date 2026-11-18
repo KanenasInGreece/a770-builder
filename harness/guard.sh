@@ -11,25 +11,58 @@
 # false by construction for a seat about to be created, and for the kit seat, which is an export, not a clone).
 # guard_worktree now calls this and keeps its clone checks on top, so both callers enforce one rule.
 # Echoes the resolved path on success; exits 2 on any refusal.
+# _paths_overlap <canon_a> <canon_b> — true when two canonical paths are identical or either is an ancestor of the other.
+_paths_overlap(){
+  local a="$1" b="$2"
+  [ "$a" = "$b" ] && return 0
+  [ "$a" = "/" ] || [ "$b" = "/" ] && return 0
+  case "$a" in "$b"/*) return 0 ;; esac
+  case "$b" in "$a"/*) return 0 ;; esac
+  return 1
+}
+
+# _path_is_inside <canon_path> <canon_parent> — true when canon_path equals or is inside canon_parent.
+_path_is_inside(){
+  local p="$1" parent="$2"
+  [ "$p" = "$parent" ] && return 0
+  [ "$parent" = "/" ] && return 0
+  case "$p" in "$parent"/*) return 0 ;; esac
+  return 1
+}
+
 guard_path_policy(){
-  local p="$1" real r
+  local p="$1" real r r_real prot prot_real
   [ -n "$A770B_REFUSE" ] || { echo "⛔ A770B_REFUSE is empty — list the live checkouts this seat must never touch (colon-separated) in builder.env before running" >&2; exit 2; }
   [ -n "$p" ] || { echo "⛔ empty path" >&2; exit 2; }
   # -m, not -e: a path that does not exist yet is still judged (every component that DOES exist is still resolved
   # through its symlinks, so a link planted where the seat will be cannot point the removal somewhere else)
   real=$(realpath -m -- "$p" 2>/dev/null) || { echo "⛔ cannot resolve path: $p" >&2; exit 2; }
   local IFS=':'; for r in $A770B_REFUSE; do
-    [ -n "$r" ] || continue; r=$(realpath -m -- "$r")
-    case "$real" in "$r"|"$r"/*) echo "⛔ refusing: $p resolves to a protected live checkout ($r)" >&2; exit 2;; esac
+    [ -n "$r" ] || continue
+    r_real=$(realpath -m -- "$r" 2>/dev/null) || continue
+    if _path_is_inside "$real" "$r_real"; then
+      echo "⛔ refusing: $p resolves to a protected live checkout ($r_real)" >&2; exit 2
+    elif _path_is_inside "$r_real" "$real"; then
+      echo "⛔ refusing: $p is an ancestor of a protected live checkout ($r_real)" >&2; exit 2
+    fi
   done; unset IFS
-  # the agent homes, the operator's configuration and keys, and the harness's own project directory. Each home is
-  # named BOTH as itself and as a prefix: ~/.claude is an agent home, not only the things inside it.
-  case "$real" in \
-    "$HOME"/.claude|"$HOME"/.claude/*|"$HOME"/.grok|"$HOME"/.grok/*|"$HOME"/.codex|"$HOME"/.codex/*|\
-    "$HOME"/.gemini|"$HOME"/.gemini/*|"$HOME"/.config|"$HOME"/.config/*|"$HOME"/.ssh|"$HOME"/.ssh/*|\
-    "$A770B_PROJECT"|"$A770B_PROJECT"/*)
-      echo "⛔ refusing: $real is an agent home, operator ground or the harness itself" >&2; exit 2;;
-  esac
+  # the agent homes, the operator's configuration and keys, and the harness's own project directory.
+  # Canonical overlap in either direction is refused so an ancestor (e.g. $HOME or /) can never wipe a protected tree.
+  for prot in \
+    "$HOME/.claude" "$HOME/.grok" "$HOME/.codex" "$HOME/.gemini" \
+    "$HOME/.config" "$HOME/.ssh" "$A770B_PROJECT" \
+    "${A770B_DATA:+$A770B_DATA/logs}" "${A770B_DATA:+$A770B_DATA/results}" \
+    "${A770B_DATA:+$A770B_DATA/hidden}" "${A770B_DATA:+$A770B_DATA/seat-cache}" \
+    "${A770B_HIDDEN_ROOT:-}"
+  do
+    [ -n "$prot" ] || continue
+    prot_real=$(realpath -m -- "$prot" 2>/dev/null) || continue
+    if _path_is_inside "$real" "$prot_real"; then
+      echo "⛔ refusing: $real is an agent home, operator ground, harness state or the harness itself ($prot_real)" >&2; exit 2
+    elif _path_is_inside "$prot_real" "$real"; then
+      echo "⛔ refusing: $real is an ancestor of an agent home, operator ground, harness state or the harness itself ($prot_real)" >&2; exit 2
+    fi
+  done
   printf '%s\n' "$real"
 }
 
@@ -111,25 +144,246 @@ run_pid_alive(){
   printf '%s\n' "$pid"
 }
 
-# run_lock — take the exclusive run lock for the rest of this shell; refuses if another run holds it (one retry, so a
-# status probe holding it for a moment never refuses a run).
-run_lock(){
-  exec 9>"$A770B_DATA/logs/local-build.lock"
-  flock -n 9 || { sleep 0.3; flock -n 9; } || { echo "⛔ another local-build run holds the lock ($A770B_DATA/logs/local-build.lock) — one run at a time on this card" >&2; exit 2; }
+# Lock ordering (single order across the entire harness): card_lock (FD 9) MUST be acquired before seat_lock (FD 7).
+# Inherited locks are trusted only when A770B_*_LOCK_PATH matches the canonical lock path, FD 9/7 points to the same
+# (st_dev, st_ino) as the lock file, and a non-blocking flock probe confirms the lock is actively held on that inode.
+_inherited_lock_valid(){
+  local fd="$1" lock="$2" env_path="${3:-}"
+  [ -n "$env_path" ] || return 1
+  python3 -c '
+import fcntl, os, sys
+fd = int(sys.argv[1])
+target = os.path.realpath(sys.argv[2])
+env_path = os.path.realpath(sys.argv[3])
+if target != env_path:
+    sys.exit(1)
+try:
+    st_fd = os.fstat(fd)
+    st_target = os.stat(target)
+except OSError:
+    sys.exit(1)
+if (st_fd.st_dev, st_fd.st_ino) != (st_target.st_dev, st_target.st_ino):
+    sys.exit(1)
+probe = os.open(target, os.O_RDONLY)
+try:
+    try:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        fcntl.flock(probe, fcntl.LOCK_UN)
+        sys.exit(1)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(1)
+    sys.exit(0)
+finally:
+    os.close(probe)
+' "$fd" "$lock" "$env_path" 2>/dev/null
+}
+
+# card_lock — take the exclusive card lock on FD 9 for the rest of this shell (inherits across phases in the same run).
+card_lock(){
+  local lock
+  mkdir -p "$A770B_DATA/logs"
+  lock=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$A770B_DATA/logs/local-build.lock")
+  if _inherited_lock_valid 9 "$lock" "${A770B_CARD_LOCK_PATH:-}"; then
+    export A770B_CARD_LOCK_PATH="$lock"
+    return 0
+  fi
+  if [ -n "${A770B_SEAT_LOCK_PATH:-}" ] && _inherited_lock_valid 7 "$A770B_SEAT_LOCK_PATH" "$A770B_SEAT_LOCK_PATH"; then
+    echo "⛔ lock order violation: seat lock ($A770B_SEAT_LOCK_PATH) is held without card lock — acquire card_lock before seat_lock" >&2
+    exit 2
+  fi
+  exec 9>"$lock"
+  flock -n 9 || { sleep 0.3; flock -n 9; } || { echo "⛔ another local-build run holds the card lock ($lock) — one run at a time on this card" >&2; exit 2; }
+  export A770B_CARD_LOCK_PATH="$lock"
+}
+run_lock(){ card_lock "$@"; }
+
+# seat_lock <seat-dir> — take the exclusive seat lock on FD 7 after resolving canonical seat path (always after card_lock when both are needed).
+seat_lock(){
+  local raw="${1:-}" canon lock
+  [ -n "$raw" ] || { echo "⛔ seat_lock requires a seat path" >&2; exit 2; }
+  mkdir -p "$A770B_DATA/logs/seat-locks"
+  IFS=$'\t' read -r canon lock < <(python3 -c '
+import hashlib, os, sys
+canon = os.path.realpath(sys.argv[1])
+h = hashlib.sha256(canon.encode("utf-8")).hexdigest()
+print(canon + "\t" + os.path.realpath(os.path.join(sys.argv[2], "logs", "seat-locks", h + ".lock")))
+' "$raw" "$A770B_DATA")
+  if _inherited_lock_valid 7 "$lock" "${A770B_SEAT_LOCK_PATH:-}"; then
+    export A770B_SEAT_LOCK_PATH="$lock"
+    return 0
+  fi
+  if [ -n "${A770B_SEAT_LOCK_PATH:-}" ] && _inherited_lock_valid 7 "$A770B_SEAT_LOCK_PATH" "$A770B_SEAT_LOCK_PATH"; then
+    echo "⛔ another seat lock is already held in this process ($A770B_SEAT_LOCK_PATH) — cannot also lock $canon" >&2
+    exit 2
+  fi
+  exec 7>"$lock"
+  flock -n 7 || { sleep 0.3; flock -n 7; } || { echo "⛔ another harness run holds the seat lock for $canon ($lock)" >&2; exit 2; }
+  export A770B_SEAT_LOCK_PATH="$lock"
+}
+
+# Seat provenance (stored outside the writable seat under $A770B_DATA/logs/disposable-seats/ and paired with a
+# per-instance nonce inside $seat/.git/a770-seat-nonce so inode reuse on a recreated directory is rejected).
+seat_provenance_file(){
+  python3 -c '
+import hashlib, os, sys
+canon = os.path.realpath(sys.argv[1])
+print(os.path.join(sys.argv[2], "logs", "disposable-seats", hashlib.sha256(canon.encode("utf-8")).hexdigest() + ".json"))
+' "$1" "$A770B_DATA"
+}
+
+clear_seat_provenance(){
+  local seat="${1:-}"
+  [ -n "$seat" ] || return 0
+  python3 -c '
+import hashlib, os, sys
+seat, data_dir = sys.argv[1], sys.argv[2]
+canon = os.path.realpath(seat)
+prov = os.path.join(data_dir, "logs", "disposable-seats", hashlib.sha256(canon.encode("utf-8")).hexdigest() + ".json")
+try:
+    os.unlink(prov)
+except OSError:
+    pass
+' "$seat" "$A770B_DATA"
+}
+
+record_seat_provenance(){
+  local seat="$1"
+  [ -n "$seat" ] || return 1
+  python3 -c '
+import hashlib, json, os, secrets, sys, tempfile, time
+seat, data_dir = sys.argv[1], sys.argv[2]
+if os.path.islink(seat):
+    sys.exit(1)
+canon = os.path.realpath(seat)
+st = os.stat(canon)
+if not os.path.isdir(canon):
+    sys.exit(1)
+git_dir = os.path.join(canon, ".git")
+if os.path.islink(git_dir) or (os.path.exists(git_dir) and not os.path.isdir(git_dir)):
+    sys.exit(1)
+os.makedirs(git_dir, exist_ok=True)
+nonce_path = os.path.join(git_dir, "a770-seat-nonce")
+if os.path.islink(nonce_path):
+    sys.exit(1)
+nonce = secrets.token_hex(16)
+fd_n, tmp_n = tempfile.mkstemp(prefix=".seat-nonce-", dir=git_dir)
+try:
+    with os.fdopen(fd_n, "w", encoding="utf-8") as fn:
+        fn.write(nonce + "\n")
+    os.replace(tmp_n, nonce_path)
+except Exception:
+    try: os.unlink(tmp_n)
+    except OSError: pass
+    raise
+dest_dir = os.path.join(data_dir, "logs", "disposable-seats")
+os.makedirs(dest_dir, exist_ok=True)
+dest = os.path.join(dest_dir, hashlib.sha256(canon.encode("utf-8")).hexdigest() + ".json")
+if os.path.islink(dest):
+    os.unlink(dest)
+payload = {
+    "owner": "a770-builder/run_suite",
+    "seat": canon,
+    "dev": st.st_dev,
+    "ino": st.st_ino,
+    "nonce": nonce,
+    "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+}
+fd, tmp = tempfile.mkstemp(prefix=".seat-prov-", dir=dest_dir)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(payload, f, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, dest)
+except Exception:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
+' "$seat" "$A770B_DATA"
+}
+
+verify_seat_provenance(){
+  local seat="$1"
+  [ -n "$seat" ] || return 1
+  [ ! -L "$seat" ] || return 1
+  python3 -c '
+import hashlib, hmac, json, os, sys
+seat, data_dir = sys.argv[1], sys.argv[2]
+if os.path.islink(seat) or not os.path.isdir(seat):
+    sys.exit(1)
+canon = os.path.realpath(seat)
+st = os.stat(canon)
+git_dir = os.path.join(canon, ".git")
+if os.path.islink(git_dir) or not os.path.isdir(git_dir):
+    sys.exit(1)
+nonce_path = os.path.join(git_dir, "a770-seat-nonce")
+if os.path.islink(nonce_path) or not os.path.isfile(nonce_path):
+    sys.exit(1)
+try:
+    with open(nonce_path, encoding="utf-8") as fn:
+        seat_nonce = fn.read().strip()
+except Exception:
+    sys.exit(1)
+prov = os.path.join(data_dir, "logs", "disposable-seats", hashlib.sha256(canon.encode("utf-8")).hexdigest() + ".json")
+if os.path.islink(prov) or not os.path.isfile(prov):
+    sys.exit(1)
+try:
+    with open(prov, encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(1)
+ledger_nonce = data.get("nonce") if isinstance(data, dict) else None
+ok = (
+    isinstance(data, dict)
+    and data.get("owner") == "a770-builder/run_suite"
+    and data.get("seat") == canon
+    and data.get("dev") == st.st_dev
+    and data.get("ino") == st.st_ino
+    and isinstance(ledger_nonce, str)
+    and len(ledger_nonce) >= 16
+    and bool(seat_nonce)
+    and hmac.compare_digest(seat_nonce, ledger_nonce)
+)
+sys.exit(0 if ok else 1)
+' "$seat" "$A770B_DATA"
 }
 
 # VRAM on the builder card via nvtop. Refuses to fail open: without nvtop the caller must have set A770B_ALLOW_NO_NVTOP=1.
-# -1 (not just when nvtop is absent) when the number of matching devices is not exactly one — an ambiguous match never picks d[0].
-_nvtop_field(){ nvtop -s 2>/dev/null | python3 -c "import sys,json; d=[x for x in json.load(sys.stdin) if '$A770B_GPU_MATCH' in x['device_name']]; print(int(d[0]['$1']) if len(d) == 1 else -1)" 2>/dev/null || echo -1; }
-# gpu_match_count — the number of nvtop devices whose device_name contains A770B_GPU_MATCH; -1 without readings (nvtop absent or its JSON unreadable).
-gpu_match_count(){ nvtop -s 2>/dev/null | python3 -c "import sys,json; print(len([x for x in json.load(sys.stdin) if '$A770B_GPU_MATCH' in x['device_name']]))" 2>/dev/null || echo -1; }
+# -1 (not just when nvtop is absent) when the number of matching devices is not exactly one or A770B_GPU_MATCH is empty — an ambiguous match never picks d[0].
+_nvtop_field(){
+  [ -n "${A770B_GPU_MATCH:-}" ] || { echo -1; return 0; }
+  nvtop -s 2>/dev/null | python3 -c "import sys,json; m=sys.argv[1]; f=sys.argv[2]; d=[x for x in json.load(sys.stdin) if m in x.get('device_name','')]; print(int(d[0][f]) if len(d) == 1 else -1)" "$A770B_GPU_MATCH" "$1" 2>/dev/null || echo -1
+}
+# gpu_match_count — the number of nvtop devices whose device_name contains A770B_GPU_MATCH; -1 without readings (nvtop absent, match empty, or JSON unreadable).
+gpu_match_count(){
+  [ -n "${A770B_GPU_MATCH:-}" ] || { echo -1; return 0; }
+  nvtop -s 2>/dev/null | python3 -c "import sys,json; m=sys.argv[1]; print(len([x for x in json.load(sys.stdin) if m in x.get('device_name','')]))" "$A770B_GPU_MATCH" 2>/dev/null || echo -1
+}
 require_vram_readings(){
-  command -v nvtop >/dev/null && [ "$(_nvtop_field mem_total)" -gt 0 ] && return 0
+  [ -n "${A770B_GPU_MATCH:-}" ] && command -v nvtop >/dev/null && [ "$(_nvtop_field mem_total)" -gt 0 ] && return 0
   [ "$A770B_ALLOW_NO_NVTOP" = 1 ] && { echo "⚠ no VRAM readings (nvtop absent or card '$A770B_GPU_MATCH' not found) — A770B_ALLOW_NO_NVTOP=1, the VRAM cap is NOT enforced" >&2; return 0; }
   echo "⛔ no VRAM readings: install nvtop and make A770B_GPU_MATCH match the builder card in 'nvtop -s' (or set A770B_ALLOW_NO_NVTOP=1 on a card that draws no desktop)" >&2; return 1
 }
-gpu_used_gib(){ local u; u=$(_nvtop_field mem_used); [ "$u" -ge 0 ] && python3 -c "print($u/2**30)" || echo 0; }
-gpu_free_mb(){  local f; f=$(_nvtop_field mem_free); [ "$f" -ge 0 ] && echo $((f/1048576)) || echo 1000000; }
+gpu_used_gib(){
+  local u
+  u=$(_nvtop_field mem_used)
+  case "$u" in
+    ''|*[!0-9]*) echo "unavailable"; return 1 ;;
+    *) python3 -c "print($u/2**30)" ;;
+  esac
+}
+gpu_free_mb(){
+  local f
+  f=$(_nvtop_field mem_free)
+  case "$f" in
+    ''|*[!0-9]*) echo "unavailable"; return 1 ;;
+    *) echo $((f/1048576)) ;;
+  esac
+}
 
 # kernel_resets_since <journalctl --since ARG> — count of kernel-log lines since ARG matching A770B_RESET_PATTERN
 # (Intel's Xe driver wording by default; a non-Intel driver's user sets A770B_RESET_PATTERN in builder.env — see
@@ -240,7 +494,13 @@ budget_gate(){
     done
     if [ "$foreign" = 1 ]; then printf '⛔ %-30s %s\n' "other llama-server" "running outside this compose project — one GPU process per card"; ok=0; else printf '  %-30s %s\n' "other llama-server" "none"; fi
   elif pgrep -x llama-server >/dev/null && ! llama_pid_alive "$A770B_DATA/logs/llamacpp-a770.pid" >/dev/null; then printf '⛔ %-30s %s\n' "other llama-server" "running outside this harness — one GPU process per card"; ok=0; else printf '  %-30s %s\n' "other llama-server" "none"; fi
-  free=$(gpu_free_mb); if [ "$free" -ge "$A770B_MIN_VRAM_MB" ]; then printf '  %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free ≥ $A770B_MIN_VRAM_MB"; else printf '⛔ %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free < $A770B_MIN_VRAM_MB"; ok=0; fi
+  if free=$(gpu_free_mb); then
+    if [ "$free" -ge "$A770B_MIN_VRAM_MB" ]; then printf '  %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free ≥ $A770B_MIN_VRAM_MB"; else printf '⛔ %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "$free < $A770B_MIN_VRAM_MB"; ok=0; fi
+  elif [ "${A770B_ALLOW_NO_NVTOP:-0}" = 1 ]; then
+    printf '  %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "unavailable (A770B_ALLOW_NO_NVTOP=1)"
+  else
+    printf '⛔ %-30s %s\n' "VRAM free on $A770B_GPU_MATCH (MB)" "unavailable"; ok=0
+  fi
   if [ -n "$A770B_HEALTH_URL" ]; then printf '  %-30s %s\n' "health $A770B_HEALTH_URL" "$(health_status "$A770B_HEALTH_URL") (informational, never a refusal)"; fi
   case " $A770B_FRAMEWORK_PORTS " in *" $A770B_PORT "*) printf '⛔ %-30s %s\n' "port $A770B_PORT" "is a protected port"; ok=0;; esac
   [ "$ok" = 1 ] || { echo "⛔ budget refused — nothing started"; return 1; }

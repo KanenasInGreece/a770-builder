@@ -293,6 +293,13 @@ node_modules/
 GITIGNORE
 }
 
+_seat_nonempty(){
+  local seat="$1" entries
+  [ -r "$seat" ] && [ -x "$seat" ] || die "refusing unreadable seat directory: $seat"
+  entries=$(ls -A "$seat" 2>/dev/null) || die "refusing unreadable seat directory: $seat"
+  [ -n "$entries" ]
+}
+
 # export_kit_seat <seat> <src> <label> [<solution-dir>...] — a standalone git clone-shaped copy of kit/seat/ at
 # <seat>, with each named solution subtree (kit/hidden/solutions/<id>/, laid out to mirror the seat itself) pasted
 # over it in order, one commit "kit seat for <label>". Always removes and recreates <seat> first: a stage's seat is
@@ -304,13 +311,21 @@ export_kit_seat(){
   local seat="$1" src="$2" label="$3"; shift 3
   [ -d "$src" ] || die "kit seat source not found: $src (kit/seat/ is another unit's — is it built yet?)"
   guard_path_policy "$seat" >/dev/null   # BEFORE the removal: the policy judges the path, existing or not
+  [ ! -L "$seat" ] || die "seat path is a symlink (refused): $seat"
+  if [ -e "$seat" ]; then
+    if [ ! -d "$seat" ] || _seat_nonempty "$seat"; then
+      verify_seat_provenance "$seat" || die "refusing to replace nonempty path without disposable-seat provenance: $seat (pick a new seat path or move it aside)"
+    fi
+  fi
   rm -rf -- "$seat"
+  clear_seat_provenance "$seat"
   mkdir -p "$seat"
+  safe_git "$seat" init -q
+  record_seat_provenance "$seat" || die "could not record seat provenance for $seat"
   copy_tracked "$seat" "$src"
   local d
   for d in "$@"; do copy_tracked "$seat" "$d"; done
   write_seat_gitignore "$seat"
-  safe_git "$seat" init -q
   safe_git "$seat" add -A
   safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat for $label" >/dev/null
   local dirty; dirty=$(safe_git "$seat" status --porcelain --ignored)
@@ -333,8 +348,17 @@ export_reference_seat(){
   local seat="$1" label="$2" refdir="$3" d
   [ -d "$refdir" ] || die "reference source not found: $refdir"
   guard_path_policy "$seat" >/dev/null   # BEFORE the removal: the policy judges the path, existing or not
+  [ ! -L "$seat" ] || die "seat path is a symlink (refused): $seat"
+  if [ -e "$seat" ]; then
+    if [ ! -d "$seat" ] || _seat_nonempty "$seat"; then
+      verify_seat_provenance "$seat" || die "refusing to replace nonempty path without disposable-seat provenance: $seat (pick a new seat path or move it aside)"
+    fi
+  fi
   rm -rf -- "$seat"
+  clear_seat_provenance "$seat"
   mkdir -p "$seat/kit/reference"
+  safe_git "$seat" init -q
+  record_seat_provenance "$seat" || die "could not record seat provenance for $seat"
   for d in cpp javascript python js; do
     if [ -d "$refdir/$d" ]; then
       mkdir -p "$seat/kit/reference/$d"
@@ -343,7 +367,6 @@ export_reference_seat(){
   done
   find "$seat" -depth -type d -name '.meta' -exec rm -rf -- {} +
   write_seat_gitignore "$seat"
-  safe_git "$seat" init -q
   safe_git "$seat" add -A
   safe_git "$seat" -c user.name=a770-builder -c user.email=a770-builder@localhost commit -q -m "kit seat for $label" >/dev/null
   local dirty; dirty=$(safe_git "$seat" status --porcelain --ignored)
@@ -351,8 +374,9 @@ export_reference_seat(){
 }
 
 # check_seat_path <seat> — the one-time safety gate before the first per-stage export: a path that already exists
-# and is not empty is refused unless --fresh removes it first. Every export after this one owns the path outright
-# (export_kit_seat itself recreates it each call), so this runs only once, before the stage loop.
+# and is not empty is refused unless --fresh removes a positively identified disposable harness seat first.
+# Every export after this one owns the path outright (export_kit_seat itself verifies provenance before recreating
+# it each call), so this runs only once, before the stage loop.
 # The PATH POLICY (guard_path_policy, harness/guard.sh) runs FIRST, before --fresh's removal and before anything
 # else here: guard_worktree cannot run this early (the seat may not exist yet, and the kit seat is never a clone),
 # and until the policy was split out of it a protected tree — a live checkout, an agent home, this project itself —
@@ -360,20 +384,35 @@ export_reference_seat(){
 check_seat_path(){
   local seat="$1"
   guard_path_policy "$seat" >/dev/null
+  [ ! -L "$seat" ] || die "seat path is a symlink (refused): $seat"
   if [ -e "$seat" ]; then
-    if [ "$FRESH" = 1 ]; then rm -rf -- "$seat"
-    else
-      [ -d "$seat" ] || die "seat path exists and is not a directory: $seat (pass --fresh to replace it)"
-      [ -z "$(ls -A "$seat" 2>/dev/null)" ] || die "seat path exists and is not empty: $seat (pass --fresh to replace it)"
+    [ -d "$seat" ] || die "seat path exists and is not a directory: $seat (choose a new seat path instead of this file)"
+    if _seat_nonempty "$seat"; then
+      if [ "$FRESH" != 1 ]; then
+        die "seat path exists and is not empty: $seat (pass --fresh if this is an existing disposable harness seat, or pick a new seat path)"
+      fi
+      verify_seat_provenance "$seat" || die "refusing to delete nonempty directory without disposable-seat provenance: $seat (not created by run_suite.sh — move it aside or choose a new seat path)"
+      rm -rf -- "$seat"
+      clear_seat_provenance "$seat"
     fi
   fi
 }
 
+SUITE_OWNED_CIDS_FILE=""
+unset A770B_OWNED_CIDS_FILE
 if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] export kit seat per stage: $KIT_SEAT_SRC -> $SEAT (fresh=$FRESH)"
   WT="$SEAT"
 else
+  card_lock
+  SEAT=$(guard_path_policy "$SEAT") || exit 2
+  seat_lock "$SEAT"
   check_seat_path "$SEAT"
+  if [ "${A770B_LADDER_RUN:-0}" = 1 ] && [ ${#RUN_ATTACH[@]} -eq 0 ]; then
+    mkdir -p "$A770B_DATA/logs"
+    SUITE_OWNED_CIDS_FILE=$(mktemp "$A770B_DATA/logs/suite-owned-XXXXXX.cids")
+    export A770B_OWNED_CIDS_FILE="$SUITE_OWNED_CIDS_FILE"
+  fi
 fi
 
 # -$$: the date alone is second-resolution — two runs of the same profile inside one second (harness scripted
@@ -381,7 +420,39 @@ fi
 # pid makes every run's OUTFILE distinct regardless of how close together two runs land.
 OUTFILE="$A770B_DATA/results/${PROFILE}-suite-$(date +%Y%m%d-%H%M%S)-$$.json"
 RESULTS_NDJSON=$(mktemp)
-trap 'rm -f "$RESULTS_NDJSON"' EXIT
+_suite_cleanup(){
+  local rc=$? stop_rc=0 serve_script cid inv seen=" " line idx
+  local -a entries=()
+  rm -f "$RESULTS_NDJSON"
+  if [ -n "$SUITE_OWNED_CIDS_FILE" ] && [ -f "$SUITE_OWNED_CIDS_FILE" ]; then
+    serve_script="${A770B_SERVE_SCRIPT:-$here/serve_compose.sh}"
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      entries+=("$line")
+    done < "$SUITE_OWNED_CIDS_FILE"
+    rm -f "$SUITE_OWNED_CIDS_FILE"
+    for (( idx=${#entries[@]}-1; idx>=0; idx-- )); do
+      cid="" inv=""
+      read -r cid inv <<<"${entries[$idx]}"
+      [ -n "$cid" ] || continue
+      case "$seen" in *" $cid "*) continue ;; esac
+      seen="$seen$cid "
+      local -a _stop_args=(stop-id "$cid")
+      [ -n "$inv" ] && _stop_args+=("$inv")
+      if ! bash "$serve_script" "${_stop_args[@]}"; then
+        stop_rc=1
+      fi
+    done
+  elif [ -n "$SUITE_OWNED_CIDS_FILE" ]; then
+    rm -f "$SUITE_OWNED_CIDS_FILE"
+  fi
+  if [ "$stop_rc" -ne 0 ]; then
+    echo "⚠ could not stop a server started by this suite run" >&2
+    [ "$rc" -eq 0 ] && rc=1
+  fi
+  exit "$rc"
+}
+trap _suite_cleanup EXIT
 
 write_results(){
   [ "$DRYRUN" = 1 ] && return 0
@@ -406,7 +477,7 @@ with open(outfile, "w") as f:
 PY
 }
 
-emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome [counters_json] [serve_evidence]
+emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome [counters_json] [serve_evidence] [verify_json]
   python3 - "$@" >> "$RESULTS_NDJSON" <<'PY'
 import json, sys
 def num(s):
@@ -423,6 +494,7 @@ args = sys.argv[1:]
  score_json, wall, requests, ptok, gtok, axes_json, counts, seat_state_json, outcome) = args[:17]
 counters_json = args[17] if len(args) > 17 else "null"
 serve_evidence = args[18] if len(args) > 18 else ""
+verify_json_s = args[19] if len(args) > 19 else ""
 
 counters = None
 if counters_json and counters_json != "null":
@@ -451,6 +523,13 @@ if (req_val is None or req_val == 0) and counters:
 else:
     counts_source = "log"
 
+verify_meta = None
+if verify_json_s and verify_json_s != "null":
+    try:
+        verify_meta = json.loads(verify_json_s)
+    except Exception:
+        verify_meta = None
+
 rec = {
     "id": id_, "language": language or None, "label": label or None,
     "working": boolean(working), "conformance_exit": num(conf),
@@ -465,6 +544,8 @@ rec = {
     "serve_evidence": serve_evidence_val,
     "counts_source": counts_source,
 }
+if verify_meta is not None:
+    rec["verify"] = verify_meta
 print(json.dumps(rec))
 PY
 }
@@ -501,23 +582,13 @@ record_measured(){
   fi
   reasoning=$(a770b_profile_var "$PROFILE" REASONING 2>/dev/null || true)
   python3 - "$pf" "$PROFILE" "$id" "$working" "$wall" "$ptok" "$reasoning" "$A770B_PROJECT/harness/profiles.py" <<'PY' || echo "⚠ measured_tasks: update failed — continuing" >&2
-import json, os, subprocess, sys, tempfile
+import fcntl, json, os, subprocess, sys, tempfile
 path, profile, stage, working, wall, ptok, thinking, checker = sys.argv[1:9]
 
 def warn(msg):
     print("⚠ measured_tasks: " + msg, file=sys.stderr)
 
-try:
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
-except (OSError, json.JSONDecodeError):
-    warn("profiles file is not JSON — not updated")
-    sys.exit(0)
-if not isinstance(data, dict):
-    warn("profiles file is not a JSON object — not updated")
-    sys.exit(0)
-profiles = data.get("profiles")
-if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
+if working not in ("true", "false"):
     sys.exit(0)
 if thinking not in ("on", "off"):
     warn("profile reasoning is not on or off — not updated")
@@ -531,23 +602,14 @@ pt = str(ptok).strip()
 if pt.isdigit() and int(pt) > 0:
     ctx = int(pt)
 quality = "pass" if working == "true" else "fail"
-prof = profiles[profile]
-mt = prof.get("measured_tasks")
-if not isinstance(mt, dict):
-    mt = {}
-mt[stage] = {
-    "quality": quality,
-    "wall_s": int(wall_txt),
-    "context_tokens": ctx,
-    "thinking": thinking,
-}
-prof["measured_tasks"] = mt
-text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
 dest = os.path.abspath(path)
 dest_dir = os.path.dirname(dest) or "."
-# Same directory as the destination, so replace stays on one filesystem. A dot prefix keeps a
-# leftover out of the registry's *.json listing.
-fd, tmp = tempfile.mkstemp(prefix=".measured-", suffix=".json", dir=dest_dir)
+# Stable sidecar lockfile survives os.replace(tmp, path) so concurrent writers serialize
+# their read, profiles.py check validation, and atomic replacement against live state.
+lock_path = os.path.join(dest_dir, "." + os.path.basename(dest) + ".lock")
+lock_fh = open(lock_path, "a+", encoding="utf-8")
+tmp = ""
 stage_dir = ""
 
 def check_file(target):
@@ -560,6 +622,32 @@ def check_detail(chk):
     return detail[-1] if detail else "check failed"
 
 try:
+    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        warn("profiles file is not JSON — not updated")
+        sys.exit(0)
+    if not isinstance(data, dict):
+        warn("profiles file is not a JSON object — not updated")
+        sys.exit(0)
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
+        sys.exit(0)
+    prof = profiles[profile]
+    mt = prof.get("measured_tasks")
+    if not isinstance(mt, dict):
+        mt = {}
+    mt[stage] = {
+        "quality": quality,
+        "wall_s": int(wall_txt),
+        "context_tokens": ctx,
+        "thinking": thinking,
+    }
+    prof["measured_tasks"] = mt
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp = tempfile.mkstemp(prefix=".measured-", suffix=".json", dir=dest_dir)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     chk = check_file(tmp)
@@ -601,6 +689,11 @@ finally:
             os.rmdir(stage_dir)
         except OSError:
             pass
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    lock_fh.close()
 PY
 }
 
@@ -610,7 +703,9 @@ review_stage(){
   local rubric="$1" artefact="$2" ctx sha body resp
   ctx=$(a770b_profile_var "$REVIEWER" CTX)
   sha=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$rubric")
-  bash "$LOCAL_BUILD" stop >/dev/null 2>&1 || true
+  if ! bash "$LOCAL_BUILD" stop >/dev/null 2>&1; then
+    echo "⚠ builder stop failed before reviewer $REVIEWER — no score" >&2; echo null; return 0
+  fi
   if ! bash "$LOCAL_BUILD" serve "$REVIEWER" >/dev/null 2>&1; then
     echo "⚠ reviewer profile $REVIEWER did not start — no score" >&2; echo null; return 0
   fi
@@ -716,6 +811,17 @@ process_task(){
       printf '%s\n' "$run_out" | tail -5 >&2
       return "$rrc" ;;
   esac
+  # Capture builder serve evidence & counters BEFORE verify/review_stage (review_stage stops/restarts the server with $REVIEWER).
+  local serve_ev_path=""
+  if [ -f "$A770B_DATA/logs/serve-evidence.path" ] && [ ! -L "$A770B_DATA/logs/serve-evidence.path" ]; then
+    serve_ev_path=$(head -n 1 "$A770B_DATA/logs/serve-evidence.path" 2>/dev/null || true)
+    if [ -n "$REVIEWER" ] && [ "$REVIEWER" != "$PROFILE" ]; then
+      case "$(basename "$serve_ev_path" 2>/dev/null || true)" in
+        "serve-${REVIEWER}-"*.evidence.json) serve_ev_path="" ;;
+      esac
+    fi
+    [ -n "$serve_ev_path" ] && [ -f "$serve_ev_path" ] || serve_ev_path=""
+  fi
   local label="" capline croot
   if [ "$rrc" = 0 ]; then
     capline=$(printf '%s\n' "$run_out" | grep -m1 'capture:')
@@ -723,17 +829,15 @@ process_task(){
     [ -n "$croot" ] && label=$(basename "$croot" .task.md)
   fi
   if [ -z "$label" ]; then
-    local no_cap_outcome; no_cap_outcome=$(stage_outcome false "$wall_s")
-    echo "⚠ stage $id: run exited $rrc with no capture — recording as ${no_cap_outcome:-failed}" >&2
-    local serve_ev_path=""
-    if [ -f "$A770B_DATA/logs/serve-evidence.path" ]; then
-      serve_ev_path=$(head -n 1 "$A770B_DATA/logs/serve-evidence.path" 2>/dev/null || true)
-    fi
-    emit_stage "$id" "$S_LANGUAGE" "" false "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$no_cap_outcome" "null" "${serve_ev_path:-}"
-    record_measured "$id" false "$wall_s" ""
+    echo "⚠ stage $id: run exited $rrc with no capture — recording as run_error (verifier did not run; measured_tasks not updated)" >&2
+    emit_stage "$id" "$S_LANGUAGE" "" "" "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "run_error" "null" "${serve_ev_path:-}"
     write_results
-    echo "stage $id: quality=fail ${no_cap_outcome:-FAILED} (no capture, run exit $rrc)"
+    echo "stage $id: working=null outcome=run_error quality=unknown (no capture, run exit $rrc)"
     return 0
+  fi
+  local counters_json="null"
+  if [ -n "$label" ] && [ -f "$A770B_DATA/results/$label.counters.json" ]; then
+    counters_json=$(cat "$A770B_DATA/results/$label.counters.json" 2>/dev/null || echo "null")
   fi
   local capfile="$A770B_DATA/results/$label.task.md" patchfile="$A770B_DATA/results/$label.patch"
   local reqline requests prompt_tokens gen_tokens lone section
@@ -765,14 +869,117 @@ process_task(){
   if [ -n "$S_BUDGET" ]; then
     if [ "$lines" -le "$S_BUDGET" ]; then budget_ok=true; else budget_ok=false; fi
   fi
-  local vrc working=false
+  local vrc working="" outcome="" verify_meta_json="null"
+  mkdir -p "$A770B_DATA/logs"
+  local vjson_handoff; vjson_handoff=$(mktemp "$A770B_DATA/logs/verify-outcome-XXXXXX.json")
+  : > "$vjson_handoff"
   if [ -n "$S_WORKING_CMD" ]; then
-    A770B_HIDDEN_ROOT="$HIDDEN_ROOT" bash "$LOCAL_BUILD" verify "$label" "$WT" --test "$S_WORKING_CMD" >/dev/null 2>&1; vrc=$?
+    A770B_HIDDEN_ROOT="$HIDDEN_ROOT" A770B_VERIFY_OUT="$vjson_handoff" bash "$LOCAL_BUILD" verify "$label" "$WT" --test "$S_WORKING_CMD" >/dev/null 2>&1; vrc=$?
   else
-    A770B_HIDDEN_ROOT="$HIDDEN_ROOT" bash "$LOCAL_BUILD" verify "$label" "$WT" >/dev/null 2>&1; vrc=$?
+    A770B_HIDDEN_ROOT="$HIDDEN_ROOT" A770B_VERIFY_OUT="$vjson_handoff" bash "$LOCAL_BUILD" verify "$label" "$WT" >/dev/null 2>&1; vrc=$?
   fi
-  [ "$vrc" = 0 ] && working=true
-  local outcome; outcome=$(stage_outcome "$working" "$wall_s")
+  local vmd_file="$A770B_DATA/results/$label.verify.md"
+  local default_lb="$A770B_PROJECT/skills/local-build/scripts/local-build.sh"
+  read -r working outcome verify_meta_json <<<"$(python3 - "$vjson_handoff" "$vmd_file" "$vrc" "$LOCAL_BUILD" "$default_lb" <<'PY'
+import json, os, re, sys
+handoff_path, vmd_path, vrc_s, local_build, default_lb = sys.argv[1:6]
+vrc = int(vrc_s)
+data = None
+if os.path.isfile(handoff_path) and os.path.getsize(handoff_path) > 0:
+    try:
+        data = json.load(open(handoff_path, encoding="utf-8"))
+    except Exception:
+        data = None
+
+if isinstance(data, dict) and data.get("status"):
+    st = data["status"]
+    if st == "infra_error" or data.get("infra_error"):
+        working, outcome = "-", "verify_error"
+    elif st == "timeout" or data.get("timed_out"):
+        working, outcome = "-", "verify_timeout"
+    elif st == "pass" and vrc == 0:
+        working, outcome = "true", "pass"
+    elif st == "fail" and not data.get("infra_error") and not data.get("timed_out"):
+        working, outcome = "false", "fail"
+    else:
+        working, outcome = "-", "verify_error"
+    meta = {
+        "status": st,
+        "public": data.get("public"),
+        "hidden": data.get("hidden"),
+        "exit_code": data.get("exit_code", vrc),
+        "infra_error": bool(data.get("infra_error")) or (outcome == "verify_error"),
+        "timed_out": bool(data.get("timed_out")),
+    }
+    print(working, outcome, json.dumps(meta))
+    raise SystemExit(0)
+
+is_real_local_build = os.path.realpath(local_build) == os.path.realpath(default_lb)
+if is_real_local_build:
+    # Real local-build.sh must confirm grading via the invocation-specific handoff file.
+    # Missing or unparseable handoff means grading was not confirmed -> infra_error, never historical JSON or fail.
+    meta = {
+        "status": "infra_error",
+        "public": "not_run",
+        "hidden": "not_run",
+        "exit_code": vrc,
+        "infra_error": True,
+        "timed_out": False,
+    }
+    print("-", "verify_error", json.dumps(meta))
+    raise SystemExit(0)
+
+# Fallback ONLY when a test mock A770B_LOCAL_BUILD did not write A770B_VERIFY_OUT.
+# Restrict parsing to the harness-authored footer (after the last ``` fence, when fences exist).
+md_text = ""
+if os.path.isfile(vmd_path):
+    try:
+        md_text = open(vmd_path, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        md_text = ""
+
+footer_text = ""
+if md_text:
+    lines = md_text.splitlines()
+    fences = [i for i, ln in enumerate(lines) if re.match(r"^```\s*$", ln)]
+    if not fences:
+        footer_text = md_text
+    elif len(fences) >= 2:
+        footer_text = "\n".join(lines[fences[-1] + 1:])
+
+def md_field(name):
+    if not footer_text:
+        return None
+    m = re.search(rf"^{name}:\s*(.+)$", footer_text, re.MULTILINE)
+    return m.group(1).strip() if m else None
+
+pub_md = md_field("public")
+hid_md = md_field("hidden")
+st_md = md_field("status")
+verdict_md = md_field("verdict") or ""
+
+if st_md == "infra_error" or verdict_md.startswith("INFRA_ERROR") or vrc == 2:
+    working, outcome, st = "-", "verify_error", "infra_error"
+elif st_md == "timeout" or verdict_md.startswith("TIMEOUT") or vrc == 124:
+    working, outcome, st = "-", "verify_timeout", "timeout"
+elif vrc == 0:
+    working, outcome, st = "true", "pass", "pass"
+else:
+    working, outcome, st = "false", "fail", "fail"
+
+meta = {
+    "status": st,
+    "public": pub_md,
+    "hidden": hid_md,
+    "exit_code": vrc,
+    "infra_error": outcome == "verify_error",
+    "timed_out": outcome == "verify_timeout",
+}
+print(working, outcome, json.dumps(meta))
+PY
+)"
+  rm -f -- "$vjson_handoff"
+  [ "$working" = "-" ] && working=""
   local conf_exit=""
   if [ -n "$S_CONFORMANCE_CMD" ]; then
     # verify drags the spec's hidden pytest tests along whenever a same-named <patch>.spec.json sits
@@ -791,20 +998,14 @@ process_task(){
     if [ -f "$rubricpath" ]; then score_json=$(review_stage "$rubricpath" "$patchfile")
     else echo "⚠ stage $id: rubric file not found: $rubricpath — no score" >&2; fi
   fi
-  local counters_json="null"
-  if [ -n "$label" ] && [ -f "$A770B_DATA/results/$label.counters.json" ]; then
-    counters_json=$(cat "$A770B_DATA/results/$label.counters.json" 2>/dev/null || echo "null")
+  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome" "$counters_json" "${serve_ev_path:-}" "$verify_meta_json"
+  if [ "$working" = true ] || [ "$working" = false ]; then
+    record_measured "$id" "$working" "$wall_s" "$prompt_tokens"
   fi
-  local serve_ev_path=""
-  if [ -f "$A770B_DATA/logs/serve-evidence.path" ]; then
-    serve_ev_path=$(head -n 1 "$A770B_DATA/logs/serve-evidence.path" 2>/dev/null || true)
-  fi
-  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome" "$counters_json" "${serve_ev_path:-}"
-  record_measured "$id" "$working" "$wall_s" "$prompt_tokens"
   write_results
-  local quality=fail
+  local quality="${outcome:-fail}"
   [ "$working" = true ] && quality=pass
-  echo "stage $id: working=$working outcome=${outcome:-n/a} quality=$quality conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-n/a} tokens=${prompt_tokens:-n/a}+${gen_tokens:-n/a}"
+  echo "stage $id: working=${working:-null} outcome=${outcome:-n/a} quality=$quality conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-n/a} tokens=${prompt_tokens:-n/a}+${gen_tokens:-n/a}"
 }
 
 rc=0
