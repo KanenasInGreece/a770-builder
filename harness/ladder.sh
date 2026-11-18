@@ -269,21 +269,30 @@ if [ "$DRYRUN" = 1 ]; then
   exit 0
 fi
 
-# Stop on the way out once this process has started a server. The next engine
-# uses a different compose file, so this start's container would stay up.
+# Stop ONLY the exact container ID this ladder run started, never project-level compose down.
+unset A770B_OWNED_CIDS_FILE
 _serve="${A770B_SERVE_SCRIPT:-$here/serve_compose.sh}"
 _ladder_started=0
+LADDER_CID=""
 _ladder_stop() {
-  local rc=$?
+  local rc=$? stop_rc=0
   [ "$_ladder_started" = 1 ] || return 0
   _ladder_started=0
-  if ! bash "$_serve" stop; then
+  if [ -n "$LADDER_CID" ]; then
+    bash "$_serve" stop-id "$LADDER_CID" || stop_rc=$?
+  else
+    echo "⚠ no recorded container id for this ladder run — refusing project-wide compose down" >&2
+    stop_rc=3
+  fi
+  if [ "$stop_rc" -ne 0 ]; then
     echo "⚠ could not stop the server this ladder started" >&2
+    [ "$rc" -eq 0 ] && rc=1
   fi
   exit "$rc"
 }
 trap _ladder_stop EXIT
 
+card_lock
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
 LOGDIR="$A770B_DATA/logs"
 FAIL_RUNG=""; FAIL_MSG=""
@@ -313,6 +322,7 @@ fi
 echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(date -Is)"
 
 # ── rung 1: load and VRAM. rung 2: one llama-benchy call. The server stays up for rung 3. ──
+BENCH_MODEL_JSON=""
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 1/6 — load (serve_compose.sh); MemAvailable and VRAM"
@@ -340,14 +350,30 @@ if [ -z "$FAIL_RUNG" ]; then
       FAIL_RUNG="load"; FAIL_MSG="serve_compose.sh failed"
     else
       _ladder_started=1
-      _vram=$(gpu_used_gib)
-      _load=$(T0="$_t0" T1="$(date +%s.%N)" python3 -c 'import os; print(round(float(os.environ["T1"]) - float(os.environ["T0"]), 1))')
-      python3 - "$A770B_DATA/results/$NAME.json" "$NAME" "$GGUF" "$CTX" "$_load" "$_vram" <<'PY'
+      LADDER_CID=$(cat "$A770B_DATA/logs/llamacpp-a770.cid" 2>/dev/null || true)
+      if _vram=$(gpu_used_gib); then
+        _vram_val="$_vram"
+        _vram_ok=1
+      elif [ "${A770B_ALLOW_NO_NVTOP:-0}" = 1 ]; then
+        _vram_val=""
+        _vram_ok=1
+        echo "⚠ VRAM after load: unavailable (A770B_ALLOW_NO_NVTOP=1 — recording null in $NAME)" >&2
+      else
+        _vram_ok=0
+        FAIL_RUNG="load"; FAIL_MSG="VRAM telemetry unavailable after load"
+      fi
+      if [ "$_vram_ok" = 1 ]; then
+        _load=$(T0="$_t0" T1="$(date +%s.%N)" python3 -c 'import os; print(round(float(os.environ["T1"]) - float(os.environ["T0"]), 1))')
+        LOAD_JSON="$A770B_DATA/results/${NAME}-load-${DATE}-$$.json"
+        python3 - "$LOAD_JSON" "$NAME" "$GGUF" "$CTX" "$_load" "$_vram_val" <<'PY'
 import json, sys
 out, label, gguf, ctx, load_s, vram = sys.argv[1:7]
+doc = {"label": label, "gguf": gguf, "ctx": int(ctx), "load_s": float(load_s), "vram_gib_after_load": float(vram) if vram else None}
 with open(out, "w", encoding="utf-8") as fh:
-    json.dump({"label": label, "gguf": gguf, "ctx": int(ctx), "load_s": float(load_s), "vram_gib_after_load": float(vram)}, fh)
+    json.dump(doc, fh)
 PY
+        BENCH_MODEL_JSON="$LOAD_JSON"
+      fi
     fi
   fi
   if [ -z "$FAIL_RUNG" ]; then
@@ -367,12 +393,11 @@ PY
   fi
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
-BENCH_MODEL_JSON="$A770B_DATA/results/$NAME.json"
 
 EVIDENCE_PATH=""
 if [ -z "$FAIL_RUNG" ] && [ "$BRING" != attach ]; then
   ev_out="$LOGDIR/$NAME.evidence.json"
-  ev_container="${A770B_COMPOSE_PROJECT}-llama-1"
+  ev_container="${LADDER_CID:-${A770B_COMPOSE_PROJECT}-llama-1}"
   if ev_logtext=$("$A770B_DOCKER" logs "$ev_container" 2>&1) \
       && printf '%s\n' "$ev_logtext" | python3 "$here/engine_evidence.py" \
            log --engine "$ENGINE" --log - --model "$GGUF" --out "$ev_out"; then
@@ -395,10 +420,11 @@ if [ -z "$FAIL_RUNG" ]; then
     echo "▶ rung 3/6 — standard speed ($SPEED, server left up)"
     SPEED_LOG="$LOGDIR/ladder-bench-http-$$.log"
     HTTP_OUT="$A770B_DATA/results/${NAME}-http-$(date +%Y%m%d-%H%M%S).json"
+    mapped="${HTTP_OUT%.json}.mapped.json"
     if bash "$here/$SPEED" --base-url "http://$A770B_HOST:$A770B_PORT" --served-model-name "$A770B_ALIAS" --tokenizer "$tok" --save-result "$HTTP_OUT" --pp "${SPEED_SIZES[@]}" 2>&1 | tee "$SPEED_LOG"; then
-      mapped="${HTTP_OUT%.json}.mapped.json"
-      if [ -f "$mapped" ]; then BENCH_SPEED_JSON="$mapped"; fi
+      [ -f "$mapped" ] && BENCH_SPEED_JSON="$mapped"
     else
+      [ -f "$mapped" ] && BENCH_SPEED_JSON="$mapped"
       FAIL_RUNG="speed"; FAIL_MSG="$SPEED failed — see $SPEED_LOG"
     fi
   else
@@ -468,7 +494,11 @@ if [ -z "$FAIL_RUNG" ]; then
   # the operator named by hand keeps run_suite.sh's guard.
   { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && RS_ARGS+=(--fresh)
   RS_LOG="$LOGDIR/ladder-run-suite-$$.log"
-  bash "$here/$KIT" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}
+  if [ "$BRING" != attach ]; then
+    A770B_LADDER_RUN=1 bash "$here/$KIT" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}
+  else
+    bash "$here/$KIT" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}
+  fi
   SUITE_RESULTS_JSON=$(grep -oE '[^ ]+-suite-[0-9]{8}-[0-9]{6}-[0-9]+\.json' "$RS_LOG" | tail -1)
   [ "$rc" = 0 ] || { FAIL_RUNG="task"; FAIL_MSG="run_suite.sh exited $rc — see $RS_LOG"; }
 fi

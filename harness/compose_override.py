@@ -52,13 +52,17 @@ def llama_service_signature(service):
     return argv_signature(entrypoint_s, command)
 
 
-def override(argv, entrypoint=None):
+def override(argv, entrypoint=None, pull_policy=None, labels=None):
     """The compose override document for an argv list."""
     svc = {}
     if entrypoint:
         ep = list(entrypoint) if isinstance(entrypoint, (list, tuple)) else entrypoint.split()
         if ep:
             svc["entrypoint"] = ep
+    if pull_policy:
+        svc["pull_policy"] = pull_policy
+    if labels:
+        svc["labels"] = dict(labels)
     svc["command"] = list(argv)
     return {"services": {"llama": svc}}
 
@@ -67,6 +71,8 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="compose_override.py")
     parser.add_argument("--out", required=True, help="the override file to write")
     parser.add_argument("--entrypoint", default=None, help="the container entrypoint")
+    parser.add_argument("--pull-policy", default=None, help="compose service pull_policy (e.g. never)")
+    parser.add_argument("--label", action="append", default=[], help="container label KEY=VALUE")
     parser.add_argument("argv", nargs=argparse.REMAINDER, help="the llama-server argv, after --")
     args = parser.parse_args(argv[1:])
     words = args.argv
@@ -75,9 +81,19 @@ def main(argv):
     if not words:
         print("compose_override.py: refusing an empty argv", file=sys.stderr)
         return 2
+    labels = {}
+    for item in args.label:
+        if "=" not in item:
+            print(f"compose_override.py: invalid --label {item!r} (expected KEY=VALUE)", file=sys.stderr)
+            return 2
+        k, v = item.split("=", 1)
+        if not k:
+            print(f"compose_override.py: empty label key in {item!r}", file=sys.stderr)
+            return 2
+        labels[k] = v
     ep = args.entrypoint.split() if (args.entrypoint and args.entrypoint.strip()) else None
     with open(args.out, "w", encoding="utf-8") as fh:
-        json.dump(override(words, entrypoint=ep), fh, indent=2)
+        json.dump(override(words, entrypoint=ep, pull_policy=args.pull_policy, labels=labels or None), fh, indent=2)
         fh.write("\n")
     return 0
 

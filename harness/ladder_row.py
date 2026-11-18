@@ -86,12 +86,14 @@ vram_gib_after_load = (bench_model or {}).get("vram_gib_after_load")
 sweep_points = {}
 sweep_text = read_text(ctx_sweep_log)
 for m in re.finditer(
-    r'^(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)GiB\s+(-?\d+)\s*$', sweep_text, re.MULTILINE
+    r'^(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(?:([\d.]+)GiB|unavailable)\s+(-?\d+)\s*$',
+    sweep_text, re.MULTILINE,
 ):
     target, toks, ttft, pp, tg, vmax, resets = m.groups()
     sweep_points[int(target)] = {
         "tokens": int(toks), "ttft_s": float(ttft), "prefill_tps": float(pp),
-        "decode_tps": float(tg), "vram_max_gib": float(vmax), "resets": int(resets),
+        "decode_tps": float(tg), "vram_max_gib": float(vmax) if vmax is not None else None,
+        "resets": int(resets),
     }
 p8, pfar = sweep_points.get(8000), sweep_points.get(far_end)
 
@@ -207,8 +209,18 @@ if at_depth:
             "source": os.path.basename(bench_speed_path),
         }
     publish = bench_out["prompt"] > 0 and bench_out["gen"] > 0 and bench_out["at_depth"]
-    if http_speed and not bench_out["flags"]:
-        publish = False
+    missing_depths = bench_speed.get("missing_depths") if isinstance(bench_speed, dict) else None
+    if http_speed:
+        if not bench_out["flags"]:
+            publish = False
+        if missing_depths:
+            publish = False
+            if not fail_rung:
+                fail_rung = "speed"
+                fail_msg = f"incomplete standard_speed benchmark: missing_depths={missing_depths}"
+        elif not at_depth and not fail_rung:
+            fail_rung = "speed"
+            fail_msg = "empty standard_speed benchmark (at_depth is empty)"
     if publish:
         speed["bench"] = bench_out
 

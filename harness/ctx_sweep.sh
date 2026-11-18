@@ -239,12 +239,13 @@ for want in "${SIZES[@]}"; do
   fi
 
   b0=$(kernel_resets_since '-1min')
-  vmax=0; ( while :; do u=$(gpu_used_gib); echo "$u"; sleep 2; done ) > "$T/vram" & VP=$!
+  vmax=""; ( while :; do u=$(gpu_used_gib 2>/dev/null) || u=""; case "$u" in [0-9]*) echo "$u" ;; esac; sleep 2; done ) 7>&- 9>&- > "$T/vram" & VP=$!
   t0=$(date +%s.%N)
   # -sN so a streamed line is readable when it arrives, not when the body ends. The selftest's curl stub stays the client.
   read -r toks pms pps dps <<<"$(a770b_curl -sN --max-time "$deadline" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions" | python3 "$T/read_point.py" "$T/raw" "$A770B_PROJECT/harness/engine_record.py")"
   t1=$(date +%s.%N); kill $VP 2>/dev/null; wait $VP 2>/dev/null
-  vmax=$(sort -n "$T/vram" | tail -1)
+  vmax=$(sort -n "$T/vram" 2>/dev/null | tail -1 || true)
+  vram_col="unavailable"; [ -z "$vmax" ] || vram_col="${vmax}GiB"
   R=$(cat "$T/raw" 2>/dev/null || true)
   wall=$(python3 -c "print(round($t1-$t0,1))"); after=$(kernel_resets_since '-1min')
   if [ -z "$R" ]; then
@@ -275,7 +276,7 @@ for want in "${SIZES[@]}"; do
         echo "$want: NOT MEASURED: the server was sent $toks tokens, $off away from the $want asked for (tolerance $tol tokens, sizing expected $toks_expected); this point measures no depth the sweep was asked for"
         failed=1
       else
-        printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' "$want" "$toks" "$pms" "$pps" "$dps" "${vmax}GiB" "$((after-b0))"
+        printf '%-8s %-8s %-9s %-11s %-10s %-9s %-8s\n' "$want" "$toks" "$pms" "$pps" "$dps" "$vram_col" "$((after-b0))"
         # what the curve said it would cost, beside what it did. They should be close, and the prediction should sit a
         # little high; a request that runs well past its own prediction is the card telling you something changed.
         if [ -n "$predicted" ] && [ "$predicted" -gt 0 ] 2>/dev/null \

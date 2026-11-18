@@ -501,13 +501,32 @@ u8b=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_PROJECT="$u8/p
 if [ ! -f "$u8/proj/inside/deep/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED a seat inside the harness's own project directory before refusing it"; fail=1
 elif [ "$u8b_rc" != 2 ]; then echo "FAIL policy: a seat inside A770B_PROJECT was not refused (rc=$u8b_rc)"; printf '%s\n' "$u8b" | tail -5; fail=1
 else echo "ok   policy: a seat inside the harness's own project directory keeps its contents and is refused"; fi
-# 3. the control: a legitimate seat is still accepted, and --fresh still replaces what was there
+# 2b. ancestor of A770B_REFUSE (bidirectional overlap), with --fresh
+mkdir -p "$u8/anc/deep/live"
+echo "witness" > "$u8/anc/deep/live/witness.txt"
+u8_anc=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_REFUSE="$u8/anc/deep/live" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+      bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/anc" --suite "$ku3/suite.json" --fresh 2>&1); u8_anc_rc=$?
+if [ ! -f "$u8/anc/deep/live/witness.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED an ancestor containing A770B_REFUSE"; fail=1
+elif [ "$u8_anc_rc" != 2 ]; then echo "FAIL policy: an ancestor of A770B_REFUSE was not refused (rc=$u8_anc_rc)"; printf '%s\n' "$u8_anc" | tail -5; fail=1
+else echo "ok   policy: an ancestor of a protected path keeps its contents and is refused"; fi
+# 3a. ordinary populated directory (no disposable-seat provenance), even with --fresh and git-like shape
+mkdir -p "$u8/ordinary/.git"
+echo "stale" > "$u8/ordinary/STALE.txt"
+git -C "$u8/ordinary" init -q && git -C "$u8/ordinary" add -A && git -C "$u8/ordinary" -c user.name=t -c user.email=t@t commit -q -m "kit seat for fake"
+u8_ord=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+      bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/ordinary" --suite "$ku3/suite.json" --fresh 2>&1); u8_ord_rc=$?
+if [ ! -f "$u8/ordinary/STALE.txt" ]; then echo "FAIL policy: run_suite.sh --fresh DELETED an ordinary populated directory without provenance"; fail=1
+elif [ "$u8_ord_rc" != 2 ]; then echo "FAIL policy: an ordinary populated directory was not refused (rc=$u8_ord_rc)"; fail=1
+else echo "ok   policy: an ordinary populated directory without provenance is refused even with --fresh"; fi
+# 3b. the control: a seat created by run_suite.sh has external provenance, so a later --fresh run replaces it
+u8c1=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
+      bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/good" --suite "$ku3/suite.json" 2>&1); u8c1_rc=$?
 echo "stale" > "$u8/good/STALE.txt"
 u8c=$(A770B_PROFILES_FILE="$ku3_profiles/a770.display.json" A770B_LOCAL_BUILD="$ku3/fake-local-build.sh" KU3_ARGV_LOG="$ku3/argv.log" KU3_SEAT_LS_DIR="$ku3/seat-ls" \
       bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan "$u8/good" --suite "$ku3/suite.json" --fresh 2>&1); u8c_rc=$?
-if [ "$u8c_rc" = 0 ] && [ ! -e "$u8/good/STALE.txt" ] && [ -d "$u8/good/.git" ]; then
-  echo "ok   policy: a legitimate seat is still accepted and still replaced by --fresh"
-else echo "FAIL policy: the path policy refused or failed to replace a legitimate seat (rc=$u8c_rc)"; printf '%s\n' "$u8c" | tail -10; fail=1
+if [ "$u8c1_rc" = 0 ] && [ "$u8c_rc" = 0 ] && [ ! -e "$u8/good/STALE.txt" ] && [ -d "$u8/good/.git" ]; then
+  echo "ok   policy: a legitimate harness seat is accepted and replaced cleanly by --fresh"
+else echo "FAIL policy: a legitimate harnessed seat failed on initial or --fresh reuse (rc1=$u8c1_rc rc2=$u8c_rc)"; printf '%s\n' "$u8c" | tail -10; fail=1
 fi
 # and the policy is the ONE home of the rule: guard_worktree must reach it rather than keep a second copy
 grep -q 'guard_path_policy "$real"' "$here/harness/guard.sh" && echo "ok   policy: guard_worktree enforces it through guard_path_policy, not a second copy" || { echo "FAIL guard_worktree no longer routes through guard_path_policy"; fail=1; }
@@ -1429,6 +1448,39 @@ if [ "$cs_empty_rc" = 0 ] && printf '%s\n' "$cs_empty" | grep -qE '^1000 +990 ' 
 then echo "ok   ctx_sweep: an empty HTTP success from /health still counts as healthy"
 else echo "FAIL ctx_sweep: an empty /health was treated as dead (rc=$cs_empty_rc)"; printf '%s\n' "$cs_empty" | tail -20; fail=1
 fi
+mkdir -p "$t/csbin-novram" "$t/csbin-zerovram"
+cp "$t/csbin/curl" "$t/csbin-novram/curl"
+cp "$t/csbin/curl" "$t/csbin-zerovram/curl"
+printf '#!/bin/sh\necho "[]"\n' > "$t/csbin-novram/nvtop"
+printf '#!/bin/sh\necho '\''[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]'\''\n' > "$t/csbin-zerovram/nvtop"
+chmod +x "$t/csbin-novram/curl" "$t/csbin-novram/nvtop" "$t/csbin-zerovram/curl" "$t/csbin-zerovram/nvtop"
+cs_novram=$(CS_FAKE_ANSWER_FILE="$t/cs-in-tolerance.json" CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" A770B_GPU_MATCH=DG2 \
+  PATH="$t/csbin-novram:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_novram_rc=$?
+cs_zerovram=$(CS_FAKE_ANSWER_FILE="$t/cs-in-tolerance.json" CS_CURL_LOG="$t/cs-curl.log" A770B_SWEEP_MAX_TIME= \
+  A770B_CORPUS_FILE="$dp_corpus" A770B_REFUSE=/nonexistent A770B_HOST=127.0.0.1 A770B_PORT="$tok_port" A770B_GPU_MATCH=DG2 \
+  PATH="$t/csbin-zerovram:$PATH" bash "$here/harness/ctx_sweep.sh" 1000 2>&1); cs_zerovram_rc=$?
+printf '%s\n' "$cs_novram" > "$t/cs-novram.log"
+printf '%s\n' "$cs_zerovram" > "$t/cs-zerovram.log"
+python3 "$here/harness/ladder_row.py" "$t/cs-novram-row.json" test /models/m.gguf 4096 q8_0 q8_0 off "" 600 test SUITE-1@1 1000 "" "" "" "" "$t/cs-novram.log" "" "" "" "" "" "2026-09-09T00:00:00" >/dev/null 2>&1
+python3 "$here/harness/ladder_row.py" "$t/cs-zerovram-row.json" test /models/m.gguf 4096 q8_0 q8_0 off "" 600 test SUITE-1@1 1000 "" "" "" "" "$t/cs-zerovram.log" "" "" "" "" "" "2026-09-09T00:00:00" >/dev/null 2>&1
+if [ "$cs_novram_rc" = 0 ] && printf '%s\n' "$cs_novram" | grep -qE '^1000 +990 .* unavailable +[0-9-]+[[:space:]]*$' \
+  && ! printf '%s\n' "$cs_novram" | grep -qE '^1000 .* 0(\.0)?GiB ' \
+  && [ "$cs_zerovram_rc" = 0 ] && printf '%s\n' "$cs_zerovram" | grep -qE '^1000 +990 .* 0(\.0)?GiB +[0-9-]+[[:space:]]*$' \
+  && python3 -c '
+import json, sys
+nv = json.load(open(sys.argv[1]))
+zv = json.load(open(sys.argv[2]))
+np = nv["rungs"]["window_sweep"]["1000"]
+zp = zv["rungs"]["window_sweep"]["1000"]
+assert np["vram_max_gib"] is None and np["tokens"] == 990 and np["decode_tps"] == 20.0
+assert nv["computed"]["speed"]["far_end"]["tokens"] == 990
+assert type(zp["vram_max_gib"]) is float and zp["vram_max_gib"] == 0.0 and zp["tokens"] == 990 and zp["decode_tps"] == 20.0
+assert zv["computed"]["speed"]["far_end"]["tokens"] == 990
+' "$t/cs-novram-row.json" "$t/cs-zerovram-row.json" 2>/dev/null
+then echo "ok   ctx_sweep: missing VRAM telemetry prints unavailable (JSON null in ladder_row) while measured zero prints 0.0GiB (0.0 in ladder_row)"
+else echo "FAIL ctx_sweep: missing vs zero VRAM telemetry did not round-trip (no_rc=$cs_novram_rc zero_rc=$cs_zerovram_rc)"; printf '%s\n' "$cs_novram" "$cs_zerovram" | tail -20; fail=1
+fi
 # a GGUF with no registry row: the dry-run paths never open the file, so this is a name inside the test's own
 # temporary directory — never a path on the machine that happens to be running the suite.
 lad_res=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/lad3" bash "$here/harness/ladder.sh" "$t/no-row-model.gguf" --ctx 40000 --dry-run 2>&1)
@@ -1846,17 +1898,36 @@ fi
 cr="$t/contam"; mkdir -p "$cr/results"
 cat > "$cr/results/ref-cpp-x.verify.md" <<'EOF'
 hidden tests: test_bst_hidden.py
+public: pass
+hidden: fail
+status: fail
 verdict: FAIL (exit 1) — the exit code of the command is the verdict
 reported: 5 passed, 1 failed in 0.42s (quoted from output the tests control; informational)
 EOF
+cat > "$cr/results/ref-py-legacy-fail.verify.md" <<'EOF'
+hidden tests: test_py_hidden.py
+verdict: FAIL (exit 1) — the exit code of the command is the verdict
+reported: 5 passed, 1 failed in 0.42s (quoted from output the tests control; informational)
+EOF
+cat > "$cr/results/ref-js-legacy-pass.verify.md" <<'EOF'
+hidden tests: test_js_hidden.py
+verdict: PASS (exit 0) — the exit code of the command is the verdict
+reported: 3 passed in 0.12s (quoted from output the tests control; informational)
+EOF
 cat > "$cr/results.json" <<JSON
-{"instrument": "SUITE-1", "stages": [{"id": "ref-cpp-x", "language": "cpp", "label": "ref-cpp-x", "working": false}]}
+{"instrument": "SUITE-1", "stages": [
+  {"id": "ref-cpp-x", "language": "cpp", "label": "ref-cpp-x", "working": false},
+  {"id": "ref-py-legacy-fail", "language": "python", "label": "ref-py-legacy-fail", "working": false},
+  {"id": "ref-js-legacy-pass", "language": "js", "label": "ref-js-legacy-pass", "working": true}
+]}
 JSON
 cr_out=$(A770B_DATA="$cr" python3 "$here/harness/suite_report.py" "$cr/results.json" 2>&1)
 cr_json=$(A770B_DATA="$cr" python3 "$here/harness/suite_report.py" "$cr/results.json" --json 2>/dev/null)
 if printf '%s\n' "$cr_out" | grep -q 'contamination (ref-cpp-x, cpp): public PASS · hidden FAIL' \
+  && printf '%s\n' "$cr_out" | grep -q 'contamination (ref-py-legacy-fail, python): public UNKNOWN · hidden UNKNOWN' \
+  && printf '%s\n' "$cr_out" | grep -q 'contamination (ref-js-legacy-pass, js): public PASS · hidden PASS' \
   && ! printf '%s' "$cr_json" | grep -q contamination
-then echo "ok   suite_report: prints the contamination pair (public PASS, hidden FAIL) per reference stage's language, never in --json"
+then echo "ok   suite_report: prints explicit phase pairs, keeps ambiguous legacy FAIL as UNKNOWN, infers PASS only on legacy PASS, never in --json"
 else echo "FAIL suite_report: contamination pair not reported as expected"; printf '%s\n' "$cr_out"; echo "$cr_json"; fail=1
 fi
 # ── A770B_SERVE=compose: the container backend is wired behind the same serve() ────────────────────────────────
@@ -1865,22 +1936,192 @@ fi
 cb="$t/compose"; mkdir -p "$cb/bin" "$cb/models" "$cb/data"
 printf 'dummy\n' > "$cb/models/Qwen3.5-9B-Q4_K_M.gguf"
 cat > "$cb/bin/docker" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "${FAKE_DOCKER_LOG:?}"
-case " $* " in
-  *" compose version "*) echo "Docker Compose version v2.30.0"; exit 0;;
-  # docker ps --filter is the project's container probe. compose ps -q is a different call and still prints cid.
-  *" --filter "*)
-    [ "${FAKE_CONTAINER_UP:-}" = 1 ] && printf '%s\n' cid
-    exit 0;;
-  *" ps -q "*) printf '%s\n' cid; exit 0;;
-  *" image inspect "*) printf '%s\n' "sha256:0000000000000000000000000000000000000000000000000000000000000000"; exit 0;;
-  *" inspect "*) printf '%s\n' 4242; exit 0;;
-  *" logs "*)
-    [ -z "${FAKE_DOCKER_LOGS_FAIL:-}" ] || exit 1
-    cat "${FAKE_DOCKER_CONTAINER_LOG:-/dev/null}" 2>/dev/null; exit 0;;
-  *) exit 0;;
-esac
+#!/usr/bin/env python3
+import json, os, re, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+log_path = Path(os.environ["FAKE_DOCKER_LOG"])
+state_path = log_path.with_suffix(".state.json")
+with log_path.open("a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\n")
+
+if state_path.exists():
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+else:
+    state = {"containers": []}
+
+def save():
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+def containers_view():
+    cs = list(state["containers"])
+    if not cs and os.environ.get("FAKE_CONTAINER_UP") == "1":
+        cs.append({
+            "id": "a" * 64,
+            "name": "a770-builder-llama-1",
+            "project": "a770-builder",
+            "service": "llama",
+            "running": True,
+            "pid": "4242",
+            "labels": {
+                "com.docker.compose.project": "a770-builder",
+                "com.docker.compose.service": "llama",
+            },
+        })
+    return cs
+
+def match_cid(cid):
+    for c in containers_view():
+        if c["id"] == cid or c.get("name") == cid or (len(cid) >= 4 and c["id"].startswith(cid)):
+            return c
+    return None
+
+if args[:2] == ["compose", "version"]:
+    print("Docker Compose version v2.30.0")
+    sys.exit(0)
+
+if args[:2] == ["image", "inspect"]:
+    print("sha256:" + "0" * 64)
+    sys.exit(0)
+
+if args and args[0] == "compose":
+    project = "a770-builder"
+    files = []
+    i = 1
+    while i < len(args):
+        a = args[i]
+        if a == "--env-file" and i + 1 < len(args):
+            i += 2
+        elif a == "-p" and i + 1 < len(args):
+            project = args[i + 1]; i += 2
+        elif a == "-f" and i + 1 < len(args):
+            files.append(args[i + 1]); i += 2
+        else:
+            break
+    tail = args[i:]
+    cmd = tail[0] if tail else ""
+    if cmd == "down":
+        state["containers"] = [c for c in state["containers"] if c.get("project") != project]
+        save()
+        sys.exit(0)
+    if cmd == "up":
+        lbls = {
+            "com.docker.compose.project": project,
+            "com.docker.compose.service": "llama",
+            "com.docker.compose.project.config_files": ",".join(files),
+        }
+        for fp in files:
+            try:
+                doc = json.loads(Path(fp).read_text(encoding="utf-8"))
+                ol = ((doc.get("services") or {}).get("llama") or {}).get("labels")
+                if isinstance(ol, dict):
+                    lbls.update(ol)
+            except Exception:
+                pass
+        state["containers"] = [c for c in state["containers"] if c.get("project") != project]
+        state["containers"].append({
+            "id": "a" * 64,
+            "name": f"{project}-llama-1",
+            "project": project,
+            "service": "llama",
+            "running": True,
+            "pid": "4242",
+            "labels": lbls,
+        })
+        save()
+        sys.exit(0)
+    if cmd == "ps":
+        show_all = "--all" in tail or "-a" in tail
+        for c in containers_view():
+            if c.get("project") == project and (show_all or c.get("running")):
+                print(c["id"])
+        sys.exit(0)
+    sys.exit(0)
+
+if args and args[0] == "ps":
+    show_all = any(a == "--all" or (a.startswith("-") and not a.startswith("--") and "a" in a) for a in args[1:])
+    no_trunc = "--no-trunc" in args[1:]
+    want_labels = {}
+    want_id = None
+    i = 1
+    while i < len(args):
+        a = args[i]
+        if a == "--filter" and i + 1 < len(args):
+            flt = args[i + 1]
+            if flt.startswith("label="):
+                k, v = flt[len("label="):].split("=", 1)
+                want_labels[k] = v
+            elif flt.startswith("id="):
+                want_id = flt[len("id="):]
+            i += 2
+            continue
+        i += 1
+    for c in containers_view():
+        if not show_all and not c.get("running"):
+            continue
+        clbls = c.get("labels") or {}
+        if any(clbls.get(k) != v for k, v in want_labels.items()):
+            continue
+        if want_id is not None and not (c["id"] == want_id or c["id"].startswith(want_id)):
+            continue
+        print(c["id"] if no_trunc else c["id"][:12])
+    sys.exit(0)
+
+if args and args[0] == "inspect":
+    fmt = ""
+    cid = args[-1]
+    if "-f" in args:
+        idx = args.index("-f")
+        if idx + 1 < len(args):
+            fmt = args[idx + 1]
+    elif "--format" in args:
+        idx = args.index("--format")
+        if idx + 1 < len(args):
+            fmt = args[idx + 1]
+    c = match_cid(cid)
+    if c is None:
+        print(f"Error: No such object: {cid}", file=sys.stderr)
+        sys.exit(1)
+    lbl_m = re.search(r'index \.Config\.Labels "([^"]+)"', fmt)
+    if lbl_m:
+        print((c.get("labels") or {}).get(lbl_m.group(1), ""))
+    elif "{{.Id}}" in fmt:
+        print(c["id"])
+    elif "{{.Name}}" in fmt:
+        print("/" + c.get("name", "a770-builder-llama-1"))
+    elif "{{.State.Running}}" in fmt:
+        print("true" if c.get("running") else "false")
+    elif "{{.State.Pid}}" in fmt:
+        print(c.get("pid", "0"))
+    else:
+        print("")
+    sys.exit(0)
+
+if args and args[0] == "logs":
+    if os.environ.get("FAKE_DOCKER_LOGS_FAIL"):
+        sys.exit(1)
+    logf = os.environ.get("FAKE_DOCKER_CONTAINER_LOG", "")
+    if logf and os.path.exists(logf):
+        sys.stdout.write(Path(logf).read_text(encoding="utf-8", errors="ignore"))
+    sys.exit(0)
+
+if args and args[0] == "stop":
+    c = match_cid(args[-1])
+    if c is None:
+        sys.exit(1)
+    c["running"] = False
+    save()
+    sys.exit(0)
+
+if args and args[0] == "rm":
+    cid = args[-1]
+    before = len(state["containers"])
+    state["containers"] = [c for c in state["containers"] if not (c["id"] == cid or c["id"].startswith(cid))]
+    save()
+    sys.exit(0 if len(state["containers"]) < before else 1)
+
+sys.exit(0)
 EOF
 chmod +x "$cb/bin/docker"
 # C11-W2: logs every call (never the header VALUE, only curl's own argv — the key rides a process-substitution fd,
@@ -1941,7 +2182,7 @@ then echo "ok   compose: a sycl row selects the SYCL envelope from its backend, 
 else echo "FAIL compose: a sycl row did not select the SYCL envelope"; printf '%s\n' "$cb_sycl" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
 fi
 : > "$cb/docker.log"
-rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid"   # a cold start, not a reload from the sycl row above
+rm -f "$cb/docker.state.json" "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid"   # a cold start, not a reload from the sycl row above
 cb_vk=$( _iso; cb_env bash "$here/skills/local-build/scripts/local-build.sh" serve qwen35-9b-q4km-vulkan 2>&1 )
 if grep -q 'a770-vulkan.yaml' "$cb/docker.log" && ! grep -q 'a770-sycl.yaml' "$cb/docker.log"
 then echo "ok   compose: a vulkan row selects the vulkan envelope from its backend"
@@ -1974,7 +2215,7 @@ if [ "$cb_health_rc" != 0 ] && printf '%s\n' "$cb_health" | grep -q 'serve refus
 then echo "ok   serve: a matching server that does not answer /health is refused by host and port, and stop is not called"
 else echo "FAIL serve: a matching server with no /health was not refused cleanly (rc=$cb_health_rc)"; printf '%s\n' "$cb_health" | tail -20; cat "$cb/docker.log" 2>/dev/null; fail=1
 fi
-rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid"
+rm -f "$cb/docker.state.json" "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid"
 # the host serve path was removed: A770B_SERVE=host is refused, never served
 cb_host=$( _iso; A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" A770B_CARD_MODE=inference \
   A770B_MODELS="$cb/models" A770B_ALLOW_NO_NVTOP=1 A770B_SERVE=host \
@@ -2040,7 +2281,7 @@ LOCAL_BUILD_SCRIPT="$here/skills/local-build/scripts/local-build.sh"
 # a successful serve writes engine evidence from the container's own log and records its path
 cp "$here/tests/fixtures/engine/llamacpp-sycl-lv4.log" "$cb/container.log"
 : > "$cb/docker.log"
-rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid" "$cb/data/logs/serve-evidence.path"
+rm -f "$cb/docker.state.json" "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid" "$cb/data/logs/serve-evidence.path"
 cb_ev=$( _iso; FAKE_DOCKER_CONTAINER_LOG="$cb/container.log" cb_env bash "$LOCAL_BUILD_SCRIPT" serve qwen35-9b-q4km-vulkan 2>&1 )
 evpath=$(cat "$cb/data/logs/serve-evidence.path" 2>/dev/null || true)
 if [ -n "$evpath" ] && [ -f "$evpath" ] \
@@ -2050,7 +2291,7 @@ else echo "FAIL compose: serve did not write evidence as expected"; printf '%s\n
 fi
 # a docker-logs failure must warn, never fail the serve (E4): still up, no evidence file, no path file
 : > "$cb/docker.log"
-rm -f "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid" "$cb/data/logs/serve-evidence.path"
+rm -f "$cb/docker.state.json" "$cb/data/logs/live-backend.json" "$cb/data/logs/llamacpp-a770.pid" "$cb/data/logs/serve-evidence.path"
 before_n=$(find "$cb/data/results" -name 'serve-*.evidence.json' 2>/dev/null | wc -l)
 cb_ev_fail=$( _iso; FAKE_DOCKER_LOGS_FAIL=1 cb_env bash "$LOCAL_BUILD_SCRIPT" serve qwen35-9b-q4km-vulkan 2>&1 )
 after_n=$(find "$cb/data/results" -name 'serve-*.evidence.json' 2>/dev/null | wc -l)

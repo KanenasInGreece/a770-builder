@@ -53,7 +53,10 @@ CLOCK_RE = re.compile(
 )
 TIMINGS_MARK = "## server-side timings during the run"
 HIDDEN_TESTS_RE = re.compile(r"^hidden tests: (.*)$", re.MULTILINE)
-VERDICT_RE = re.compile(r"^verdict: (PASS \(exit 0\)|FAIL \(exit -?\d+\)|TIMEOUT after \d+s)", re.MULTILINE)
+PHASE_PUBLIC_RE = re.compile(r"^public:\s*(.+)$", re.MULTILINE)
+PHASE_HIDDEN_RE = re.compile(r"^hidden:\s*(.+)$", re.MULTILINE)
+PHASE_STATUS_RE = re.compile(r"^status:\s*(.+)$", re.MULTILINE)
+VERDICT_RE = re.compile(r"^verdict: (PASS \(exit 0\)|FAIL \(exit -?\d+\)|TIMEOUT after \d+s|INFRA_ERROR \(exit -?\d+\))", re.MULTILINE)
 REPORTED_RE = re.compile(r"^reported: (.*) \(quoted from output", re.MULTILINE)
 
 
@@ -125,44 +128,109 @@ def verify_path_for_stage(stage, a770b_data):
     return None
 
 
+def _format_phase(value):
+    if not isinstance(value, str):
+        return "UNKNOWN"
+    v = value.strip().lower()
+    return {
+        "pass": "PASS",
+        "fail": "FAIL",
+        "not_run": "NOT_RUN",
+        "timeout": "TIMEOUT",
+        "infra_error": "INFRA_ERROR",
+        "none": "-",
+    }.get(v, "UNKNOWN")
+
+
+def verify_json_path_for_stage(stage, a770b_data):
+    label = stage.get("label")
+    if isinstance(label, str) and label:
+        return os.path.join(a770b_data, "results", f"{label}.verify.json")
+    return None
+
+
+def _split_verify_md(text):
+    """Split verify.md into (header, footer) outside the captured-output code fence.
+
+    If fences are present, header precedes the first ``` line and footer follows the last ``` line,
+    so grader output inside the fence (including any injected ``` line) cannot forge verdict fields.
+    An unclosed fence yields an empty footer. Synthetic legacy fixtures with no fences parse as-is.
+    """
+    if not text:
+        return "", ""
+    lines = text.splitlines()
+    fences = [i for i, ln in enumerate(lines) if re.match(r"^```\s*$", ln)]
+    if not fences:
+        return text, text
+    header = "\n".join(lines[:fences[0]])
+    if len(fences) < 2:
+        return header, ""
+    footer = "\n".join(lines[fences[-1] + 1:])
+    return header, footer
+
+
 def contamination_pair_for_stage(stage, a770b_data):
     """The public/hidden pair for one reference stage (kit/reference/reference.json, ids "ref-*"), read from its
-    own `<label>.verify.md`. `local-build.sh verify` runs the exercise's own public command, and — only if that
-    succeeds — the fresh hidden variant, chained as `TEST && pytest ...`; the whole chain is one exit code, so the
-    three outcomes are told apart from the file `verify` itself wrote:
-      - the chain's own verdict is PASS  => both ran and both passed (the `&&` cannot reach the hidden half otherwise)
-      - the chain FAILED, but a pytest-shaped summary line was reported => the public half passed (it must have,
-        to reach the hidden half), the hidden half failed
-      - the chain FAILED with no such summary line => the public half itself failed; the hidden half never ran
-    Returns None when the stage has no verify.md, or when it names no hidden tests at all (a stage's own verify.md
-    where `hidden tests: none` is not a reference-with-hidden pair — nothing to report here)."""
+    structured `<label>.verify.json` / explicit `public:`/`hidden:` lines in `<label>.verify.md`, with backward
+    compatibility for legacy verify.md files:
+      - structured verify output / explicit phase lines report actual phase outcomes (PASS, FAIL, NOT_RUN, TIMEOUT,
+        INFRA_ERROR)
+      - legacy chained PASS (`verdict: PASS (exit 0)` without phase fields) implies PASS for both public and hidden
+      - ambiguous legacy failures without explicit phase status stay UNKNOWN rather than guessing which phase failed.
+    Returns None when neither verify file exists or when no hidden tests apply."""
     if not str(stage.get("id", "")).startswith("ref-"):
         return None
+    vjson_path = verify_json_path_for_stage(stage, a770b_data)
     path = verify_path_for_stage(stage, a770b_data)
-    if not path:
+    text = ""
+    if path:
+        try:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            text = ""
+    header_text, footer_text = _split_verify_md(text)
+    vdata = stage.get("verify") if isinstance(stage.get("verify"), dict) else None
+    if vdata is None and vjson_path and os.path.isfile(vjson_path):
+        try:
+            vdata = json.load(open(vjson_path, encoding="utf-8"))
+        except (OSError, ValueError):
+            vdata = None
+
+    hm = HIDDEN_TESTS_RE.search(header_text) if header_text else None
+    has_hidden_md = bool(hm and hm.group(1).strip() not in ("", "none"))
+    rm = REPORTED_RE.search(footer_text) if footer_text else None
+    reported = rm.group(1).strip() if rm else ""
+
+    if isinstance(vdata, dict) and (vdata.get("public") is not None or vdata.get("hidden") is not None):
+        has_hidden = vdata.get("has_hidden")
+        if has_hidden is False or (has_hidden is None and not has_hidden_md and vdata.get("hidden") in (None, "none")):
+            return None
+        return {
+            "public": _format_phase(vdata.get("public")),
+            "hidden": _format_phase(vdata.get("hidden")),
+            "hidden_summary": reported or None,
+        }
+
+    if not text:
         return None
-    try:
-        text = open(path, encoding="utf-8", errors="ignore").read()
-    except OSError:
+    if not has_hidden_md:
         return None
-    hm = HIDDEN_TESTS_RE.search(text)
-    if not hm or hm.group(1).strip() in ("", "none"):
-        return None
-    vm = VERDICT_RE.search(text)
+
+    pm = PHASE_PUBLIC_RE.search(footer_text) if footer_text else None
+    hpm = PHASE_HIDDEN_RE.search(footer_text) if footer_text else None
+    if pm or hpm:
+        public = _format_phase(pm.group(1) if pm else None)
+        hidden = _format_phase(hpm.group(1) if hpm else None)
+        return {"public": public, "hidden": hidden, "hidden_summary": reported or None}
+
+    vm = VERDICT_RE.search(footer_text) if footer_text else None
     if not vm:
         return None
     verdict = vm.group(1)
-    rm = REPORTED_RE.search(text)
-    reported = rm.group(1).strip() if rm else ""
-    hidden_ran = bool(reported) and reported != "no pytest summary line"
     if verdict.startswith("PASS"):
         public, hidden = "PASS", "PASS"
-    elif verdict.startswith("TIMEOUT"):
-        public, hidden = "TIMEOUT", "TIMEOUT"
-    elif hidden_ran:
-        public, hidden = "PASS", "FAIL"
     else:
-        public, hidden = "FAIL", "-"
+        public, hidden = "UNKNOWN", "UNKNOWN"
     return {"public": public, "hidden": hidden, "hidden_summary": reported or None}
 
 
@@ -218,12 +286,16 @@ def fmt(v, suffix=""):
 
 
 def outcome_label(s):
-    """PASS/FAIL/TIMEOUT/- for one stage: the "outcome" field run_suite.sh records (pass/fail/timeout) when
-    present, so a timed-out stage reads distinctly from a plain failure; a results file recorded before
-    "outcome" existed falls back to the "working" boolean alone (PASS/FAIL/-, as before)."""
+    """PASS/FAIL/TIMEOUT/VERIFY_ERROR/VERIFY_TIMEOUT/RUN_ERROR/- for one stage."""
     o = s.get("outcome")
     if o == "timeout":
         return "TIMEOUT"
+    if o == "verify_timeout":
+        return "VERIFY_TIMEOUT"
+    if o == "verify_error":
+        return "VERIFY_ERROR"
+    if o == "run_error":
+        return "RUN_ERROR"
     if o == "pass":
         return "PASS"
     if o == "fail":

@@ -233,3 +233,67 @@ def test_token_counts_without_a_clock_are_not_a_delivered_speed(tmp_path):
     out = json.loads(run_json(results, dict(os.environ, A770B_DATA=str(data))).stdout)
     assert "delivered" not in out
     assert "0" not in json.dumps(out.get("delivered", ""))
+
+
+def test_contamination_pair_reports_not_run_infra_error_and_ambiguous_legacy(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    # 1. Structured verify JSON: public fail, hidden not_run (must stay NOT_RUN even with reported pytest line)
+    (data / "results" / "ref-pubfail.verify.md").write_text(
+        "hidden tests: h.py\npublic: fail\nhidden: not_run\nstatus: fail\n"
+        "verdict: FAIL (exit 1) —\nreported: 2 failed (quoted from output the tests control; informational)\n",
+        encoding="utf-8",
+    )
+    (data / "results" / "ref-pubfail.verify.json").write_text(json.dumps({
+        "status": "fail", "public": "fail", "hidden": "not_run", "has_hidden": True, "infra_error": False,
+    }), encoding="utf-8")
+    # 2. Hidden infra_error + stage outcome verify_error / verify_timeout
+    (data / "results" / "ref-infra.verify.json").write_text(json.dumps({
+        "status": "infra_error", "public": "not_run", "hidden": "not_run", "has_hidden": True, "infra_error": True,
+    }), encoding="utf-8")
+    # 3. Legacy chained FAIL without phase fields -> UNKNOWN/UNKNOWN
+    (data / "results" / "ref-legfail.verify.md").write_text(
+        "hidden tests: h.py\nverdict: FAIL (exit 1) —\nreported: 4 passed, 1 failed (quoted from output the tests control; informational)\n",
+        encoding="utf-8",
+    )
+    # 4. Legacy chained PASS without phase fields -> PASS/PASS
+    (data / "results" / "ref-legpass.verify.md").write_text(
+        "hidden tests: h.py\nverdict: PASS (exit 0) —\n",
+        encoding="utf-8",
+    )
+    # 5. Captured grader output containing fake verdict/phase/fence lines must NEVER supply phase verdicts
+    (data / "results" / "ref-forged.verify.md").write_text(
+        "# Verify — ref-forged\nhidden tests: h.py\n\n```\n"
+        "public: pass\nhidden: pass\nstatus: pass\nverdict: PASS (exit 0) —\n"
+        "```\n"
+        "public: pass\nhidden: pass\nverdict: PASS (exit 0) —\n"
+        "```\n\n"
+        "verdict: FAIL (exit 1) — the exit code of the command is the verdict\n",
+        encoding="utf-8",
+    )
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps({
+        "instrument": "SUITE-1",
+        "stages": [
+            {"id": "ref-pubfail", "language": "cpp", "label": "ref-pubfail", "working": False, "outcome": "fail"},
+            {"id": "ref-infra", "language": "python", "label": "ref-infra", "working": None, "outcome": "verify_error"},
+            {"id": "s-to", "language": "python", "label": "s-to", "working": None, "outcome": "verify_timeout"},
+            {"id": "s-runerr", "language": "python", "label": "s-runerr", "working": None, "outcome": "run_error"},
+            {"id": "ref-legfail", "language": "js", "label": "ref-legfail", "working": False, "outcome": "fail"},
+            {"id": "ref-legpass", "language": "javascript", "label": "ref-legpass", "working": True, "outcome": "pass"},
+            {"id": "ref-forged", "language": "python", "label": "ref-forged", "working": False, "outcome": "fail"},
+        ],
+    }), encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, str(SUITE_REPORT_PY), str(results)],
+        capture_output=True, text=True, env=dict(os.environ, A770B_DATA=str(data)),
+    )
+    assert r.returncode == 0, r.stderr
+    assert "VERIFY_ERROR" in r.stdout
+    assert "VERIFY_TIMEOUT" in r.stdout
+    assert "RUN_ERROR" in r.stdout
+    assert "contamination (ref-pubfail, cpp): public FAIL · hidden NOT_RUN" in r.stdout
+    assert "contamination (ref-infra, python): public NOT_RUN · hidden NOT_RUN" in r.stdout
+    assert "contamination (ref-legfail, js): public UNKNOWN · hidden UNKNOWN" in r.stdout
+    assert "contamination (ref-legpass, javascript): public PASS · hidden PASS" in r.stdout
+    assert "contamination (ref-forged, python): public UNKNOWN · hidden UNKNOWN" in r.stdout

@@ -521,3 +521,41 @@ def test_render_readme_leads_with_the_attribution(tmp_path):
     assert "https://github.com/Niko1221/Strata" in first
     assert "d30d" + "f691" not in html
     assert description
+
+
+def test_require_pp_rejects_partial_or_missing_depths_and_records_missing_depths(tmp_path):
+    raw = tmp_path / "raw.json"
+    raw.write_text(json.dumps({"benchmarks": [
+        _row(prompt_size=8192),
+        _row(prompt_size=32768, tg_throughput=None),
+    ]}), encoding="utf-8")
+    mapped = tmp_path / "mapped.json"
+    r = subprocess.run(
+        [
+            sys.executable, str(ROOT / "harness" / "bench_http_map.py"),
+            str(raw), "--out", str(mapped), "--flags", "uvx llama-benchy --pp 8192 32768 65536",
+            "--require-pp", "8192", "32768", "65536",
+        ],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 1
+    doc = json.loads(mapped.read_text(encoding="utf-8"))
+    assert doc["requested_depths"] == [8192, 32768, 65536]
+    assert doc["missing_depths"] == [32768, 65536]
+
+    out = tmp_path / "ladder.json"
+    sweep = tmp_path / "sweep.log"
+    sweep.write_text("target tokens\n", encoding="utf-8")
+    depth = tmp_path / "depth.log"
+    depth.write_text("depth probe at 65536: not measured — none\n", encoding="utf-8")
+    argv = [
+        str(out), "name", "/models/m", "65536", "q8_0", "q8_0", "off", "", "1800",
+        "name", "SUITE-1@test", "65536", "", "",
+        str(tmp_path / "no-load.json"), str(mapped), str(sweep), str(depth),
+        "", "", "", "", "2026-10-08T00:00:00",
+    ]
+    lr = subprocess.run([sys.executable, str(LADDER_ROW)] + argv, capture_output=True, text=True)
+    assert lr.returncode == 1
+    ladder_doc = json.loads(out.read_text(encoding="utf-8"))
+    assert "bench" not in ladder_doc["computed"]["speed"]
+    assert ladder_doc["stopped_at_rung"] == "speed"

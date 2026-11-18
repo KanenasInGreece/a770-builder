@@ -89,12 +89,12 @@ else
   deadline=$(python3 "$here/prompt_budget.py" time --tokens "$toks_expected" --gen "$GEN" ${BENCH:+--bench "$BENCH"})
 fi
 b0=$(kernel_resets_since '-1min')
-( while :; do gpu_used_gib; sleep 2; done ) > "$T/vram" & VP=$!
+( while :; do gpu_used_gib 2>/dev/null || true; sleep 2; done ) 7>&- 9>&- > "$T/vram" & VP=$!
 t0=$(date +%s); R=$(a770b_curl -s --max-time "$deadline" -H 'Content-Type: application/json' -d @"$T/body" "$URL/v1/chat/completions"); t1=$(date +%s)
 kill $VP 2>/dev/null; wait $VP 2>/dev/null
 # counts and rates come from the module, not from a parser in this script; an unreadable reply leaves it empty
 REC=$(printf '%s' "$R" | python3 "$A770B_PROJECT/harness/engine_record.py" completion 2>/dev/null || true)
-python3 - "$R" "$((t1-t0))" "$(sort -n "$T/vram" | tail -1)" "$(kernel_resets_since '-1min')" "$b0" "$T/prompt" "$want" "$deadline" "$REC" <<'PY'
+python3 - "$R" "$((t1-t0))" "$(grep -E '^[0-9]+(\.[0-9]+)?$' "$T/vram" 2>/dev/null | sort -n | tail -1 || true)" "$(kernel_resets_since '-1min')" "$b0" "$T/prompt" "$want" "$deadline" "$REC" <<'PY'
 import json, os, re, sys
 
 def _num(v, unit=""):

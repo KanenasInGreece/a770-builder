@@ -46,16 +46,27 @@ def map_document(doc):
     return found
 
 
-def mapped_bench(doc, source_name, flags):
-    return {
+def mapped_bench(doc, source_name, flags, require_pp=None):
+    at_depth = map_document(doc)
+    out = {
         "instrument": "llama-benchy",
         "tool": "llama-benchy",
         "prompt": 8192,
         "gen": 128,
         "flags": flags,
-        "at_depth": map_document(doc),
+        "at_depth": at_depth,
         "source": source_name,
     }
+    if require_pp is not None:
+        req = [int(d) for d in require_pp]
+        missing = []
+        for d in req:
+            pair = at_depth.get(str(d))
+            if not isinstance(pair, dict) or pair.get("pp") is None or pair.get("tg") is None:
+                missing.append(d)
+        out["requested_depths"] = req
+        out["missing_depths"] = missing
+    return out
 
 
 def main():
@@ -63,13 +74,21 @@ def main():
     ap.add_argument("raw")
     ap.add_argument("--out", required=True)
     ap.add_argument("--flags", default="")
+    ap.add_argument("--require-pp", nargs="+", type=int, default=None,
+                    help="prompt sizes that must each have non-null pp and tg")
     args = ap.parse_args()
     with open(args.raw, encoding="utf-8") as handle:
         doc = json.load(handle)
-    out = mapped_bench(doc, os.path.basename(args.raw), args.flags)
+    out = mapped_bench(doc, os.path.basename(args.raw), args.flags, require_pp=args.require_pp)
     with open(args.out, "w", encoding="utf-8") as handle:
         json.dump(out, handle, indent=2)
         handle.write("\n")
+    if args.require_pp is not None:
+        missing = out.get("missing_depths") or []
+        if missing:
+            print(f"missing or incomplete benchmark samples at depths: {missing}", file=sys.stderr)
+            return 1
+        return 0
     if not out["at_depth"]:
         print("no prompt size matched the four sizes at depth 0", file=sys.stderr)
     return 0
