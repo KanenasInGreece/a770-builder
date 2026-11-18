@@ -740,6 +740,111 @@
           "thinking": "off"
         }
       }
+    },
+    "intel-qwen3-coder-30b-a3b-w4a16-vllm": {
+      "model": "Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound",
+      "source": "Intel/Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound",
+      "family": "qwen3-coder",
+      "architecture": "Qwen3MoE, 48 layers, 128 experts, eight active per token",
+      "quant": "gptq",
+      "category": "moe",
+      "weight_class": "30b-a3b",
+      "params_b": {
+        "total": 30.5,
+        "active": 3.3
+      },
+      "ctx": 101024,
+      "useful_ctx": 100000,
+      "kv": "bf16",
+      "flash_attention": "on",
+      "reasoning": "off",
+      "extra": "--enforce-eager --tensor-parallel-size 1 --max-num-seqs 1 --gpu-memory-utilization 0.84 --hf-overrides {\"quantization_config\":{\"quant_method\":\"gptq\",\"bits\":4,\"group_size\":128,\"sym\":true,\"desc_act\":false,\"lm_head\":false}}",
+      "timeout_s": 1500,
+      "vram_gib_after_load": 26.771,
+      "ram_gb_extra": 5.16,
+      "measured_on": "Arc Pro B70, Intel LLM Scaler 1.5 CA-refreshed derivative d321efe647fb, vLLM 0.26.1.dev0+g568afb3a1.d20260907, 2026-11-18",
+      "card": "b70",
+      "backend": "vllm",
+      "placement": "container",
+      "mode": "inference",
+      "engine": "vllm",
+      "tool_parser": "qwen3_coder",
+      "checkpoint": {
+        "format": "safetensors",
+        "weight_quant": "AutoRound INT4 W4A16 G128 symmetric, GPTQ packing",
+        "activation_quant": "bf16",
+        "evidence": "Intel Hub revision 2e34fa861568584540b3c4f7a47cc1a4a4d88773, original weights unchanged. Runtime metadata override selects the packed GPTQ loader."
+      },
+      "kernel": {
+        "path": "gpu",
+        "xmx": "untested",
+        "evidence": "Engine logged XPUwNa16LinearKernel, XPUExpertsWNA16 and FlashAttention version 2."
+      },
+      "speed": {
+        "prefill_tps": {
+          "8k": 8995.45,
+          "32k": 4874.5,
+          "64k": 3078.96,
+          "100k": 2214.99
+        },
+        "decode_tps": {
+          "8k": 19.45,
+          "32k": 19.49,
+          "64k": 19.59,
+          "100k": 19.42
+        },
+        "bench": {
+          "tool": "llama-benchy",
+          "prompt": 8192,
+          "gen": 128,
+          "flags": "uvx llama-benchy --base-url http://127.0.0.1:7890/v1 --served-model-name local-builder --model local-builder --tokenizer \"${A770B_MODELS}\"/Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound --api-key from-key-file --pp 8192 32768 65536 100000 --tg 128 --depth 0 --runs 3 --concurrency 1 --no-cache --skip-coherence --latency-mode generation --extra-body return_token_ids=false --format json --save-result results/intel-qwen3-coder/speed.json",
+          "at_depth": {
+            "8192": {
+              "pp": 8995.448260305537,
+              "tg": 19.451608529524368
+            },
+            "32768": {
+              "pp": 4874.499954144804,
+              "tg": 19.49341610101507
+            },
+            "65536": {
+              "pp": 3078.9624413342704,
+              "tg": 19.58508250618446
+            },
+            "100000": {
+              "pp": 2214.9937896438173,
+              "tg": 19.42250158700281
+            }
+          },
+          "source": "speed.json"
+        },
+        "far_end": {
+          "tokens": 99846,
+          "ttft_s": 43.4,
+          "prefill_tps": 2302,
+          "decode_tps": 20.5
+        }
+      },
+      "capability": {},
+      "capability_source": "Local functional smoke, context sweep, depth probe and coding kit. No external quant-specific capability scores used.",
+      "depth_probe_100k": "PASS 2/3 at 99,756 prompt tokens",
+      "task": "code-edit",
+      "instrument": "SUITE-1@1",
+      "evidence": "Counted JavaScript, Python and C++ optimisation accepted by hidden graders and conformance. See the suite JSON for reference outcomes. Design passed. All three reference exercises failed their public graders; hidden phases did not run. Forth and POV calls were interrupted after repeated failures, then captured and graded.",
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "mean_wall_s": 305.67,
+        "source": "candidate-suite-20261118-115550-2201506.json",
+        "instrument": "SUITE-1@1"
+      },
+      "fit": {
+        "code": "3/3 counted stages, 305.67 s mean; design passed. Reference exercises 0/3, with two calls interrupted after repeated failures.",
+        "write": "not measured"
+      },
+      "use_for": "Bounded coding tasks with tests on one B70. Uses the configured Intel Scaler 1.5 CA-refreshed image. Host RAM overhead is a sampled drop in system MemAvailable, not process RSS."
     }
   }
 }
