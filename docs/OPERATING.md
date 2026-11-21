@@ -536,6 +536,56 @@ python3 harness/prompt_budget.py fit --corpus "$A770B_CORPUS_FILE" --target 8192
 bash harness/depth_probe.sh 8192 --base-url http://127.0.0.1:PORT --tokenize openai --model NAME --tokenizer /path/to/model
 ```
 
+## Inkling 2 Mini on Arc Pro B70
+
+Use the [ggml-org IQ4_NL GGUF](https://huggingface.co/ggml-org/Inkling-2-Mini-GGUF/tree/db61c5b492a6a034d986328d28274af0a439aa6c)
+and the [model tokenizer](https://huggingface.co/thinkingmachines/Inkling-2-Mini/tree/ed40e7da625f594fc9c4990f5f66be24873c22d7).
+The tested Vulkan build was llama.cpp b12602 at commit `418fe97b5`. Its amd64 image was
+`ghcr.io/ggml-org/llama.cpp@sha256:b5e3a86d6b52792f8845fcd03366b5e04bd6460c7c936660365ca3fc835f930c`.
+The trial used a derivative with the compromised certificates removed from the vendored pip bundle.
+The container trust scan stayed enabled. Its server wrapper unsets `GGML_VK_DISABLE_COOPMAT`
+before executing the original server so the setting applies only to this test image.
+
+To reproduce the derivative, save this as `Dockerfile.inkling` and build it with the
+repository root as the build context. The repository trust scan still checks the full
+resulting image when the harness starts it.
+
+```dockerfile
+FROM ghcr.io/ggml-org/llama.cpp@sha256:b5e3a86d6b52792f8845fcd03366b5e04bd6460c7c936660365ca3fc835f930c
+USER root
+COPY compose/ca-trust-check.sh /tmp/ca-trust-check.sh
+RUN set -eu; . /tmp/ca-trust-check.sh; \
+    pem=/usr/lib/python3/dist-packages/pip/_vendor/certifi/cacert.pem; \
+    ca_strip_refused "$pem" /tmp/clean-ca.pem; \
+    cat /tmp/clean-ca.pem > "$pem"; \
+    rm -f /tmp/clean-ca.pem /tmp/ca-trust-check.sh
+RUN mv /app/llama-server /app/llama-server-real; \
+    printf '%s\n' '#!/bin/sh' 'unset GGML_VK_DISABLE_COOPMAT' \
+      'exec /app/llama-server-real "$@"' > /app/llama-server; \
+    chmod 755 /app/llama-server
+```
+
+```bash
+docker build --network none -f Dockerfile.inkling -t inkling-vulkan:b12602 .
+```
+
+Put the GGUF in the model directory and put the pinned `tokenizer.json` in a dedicated
+directory. Set `A770B_TOKENIZER_DIR` for the benchmark and ladder to use that tokenizer.
+Point `A770B_LLAMA_IMAGE` at the prepared image and select the B70 inference registry.
+Run the named profile with the skill.
+
+```bash
+export A770B_CARD=b70 A770B_CARD_MODE=inference
+export A770B_LLAMA_IMAGE=inkling-vulkan:b12602
+export A770B_TOKENIZER_DIR=/path/to/inkling-tokenizer
+export A770B_PROFILES_FILE="$PWD/config/registry/b70.inference.json"
+bash skills/local-build/scripts/local-build.sh serve inkling2-mini-iq4nl-vulkan
+```
+
+The profile allocates 65,536 tokens with q8_0 KV and a 2,048-token reasoning budget.
+The published vLLM recipe validates the looped architecture on NVIDIA hardware.
+The installed Intel XPU vLLM image tested here did not register that architecture.
+
 ## Managed Strata
 
 The native path runs the pinned [Strata v0.2.17 terminal

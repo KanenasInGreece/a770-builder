@@ -645,13 +645,15 @@ def test_profile_key_checks_against_registry_union_without_env(tmp_path):
         capture_output=True, text=True, env=env,
     )
     assert result_bad.returncode == 2
-    assert (
-        "must be one of flashnext, flashnext-ram24, gemma4-8b-e4b-q4km-vulkan, "
-        "intel-qwen3-coder-30b-a3b-w4a16-vllm, qwen35-9b-q4km-vulkan, "
-        "qwen38-27b-exl3-4bpw-vllm, qwen38-27b-iq3s-sycl, qwen38-27b-iq3s-vulkan, "
-        "qwen38-27b-iq3xxs-vulkan, qwen38-27b-q6k-oq8-sycl, qwen38-27b-q6k-qkv8-mtp-sycl, "
-        "qwen38-27b-udq6k-sycl"
-    ) in result_bad.stderr
+    registry = TEMPLATE.parent / "registry"
+    expected_names = {
+        name
+        for path in registry.glob("*.json")
+        for name in json.loads(path.read_text())["profiles"]
+    }
+    _, marker, allowed = result_bad.stderr.partition("must be one of ")
+    assert marker
+    assert allowed.strip().split(", ") == sorted(expected_names)
 
 
 def test_profile_key_checks_against_a770b_profiles_env(tmp_path):

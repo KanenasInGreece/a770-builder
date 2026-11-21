@@ -775,6 +775,7 @@ fi
 ''')
     _make_exec(doc_bin / "uv", 'printf "%s\\n" "uv 0.13.4 (test)"')
     _make_exec(doc_bin / "uvx", 'printf "%s\\n" "uvx 0.13.4 (test)"')
+    _make_exec(doc_bin / "docker", "exit 0")
     doc_env = _base_env(d_doc, PATH=f"{doc_bin}:{os.environ['PATH']}", A770B_ALLOW_NO_NVTOP="1")
     r_doc = subprocess.run(["bash", str(LOCAL_BUILD), "doctor"], capture_output=True, text=True, env=doc_env, cwd=ROOT)
     assert "NameError" not in r_doc.stderr
