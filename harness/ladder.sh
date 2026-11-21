@@ -60,7 +60,9 @@ tokenizer_dir() {
     bash "$here/serve_strata.sh" tokenizer "$model"
     return $?
   fi
-  if [ -d "$model" ]; then
+  if [ -n "${A770B_TOKENIZER_DIR:-}" ]; then
+    dir="$A770B_TOKENIZER_DIR"
+  elif [ -d "$model" ]; then
     dir="$model"
   else
     dir=$(dirname -- "$model")
@@ -183,24 +185,28 @@ LOGDIR="$A770B_DATA/logs"
 # The window has to hold the reply and the chat template as well as the prompt, so leave room for them: a probe sized
 # to exactly CTX asks the server for a request it can only turn down.
 FAR_END=100000
-FAR_ROOM=$((CTX - 1024))
+# Keep the existing margin for short replies and reserve the full generation budget for reasoning probes.
+FAR_HEADROOM=$((GEN + 64))
+[ "$FAR_HEADROOM" -ge 1024 ] || FAR_HEADROOM=1024
+FAR_ROOM=$((CTX - FAR_HEADROOM))
 [ "$FAR_ROOM" -lt "$FAR_END" ] 2>/dev/null && FAR_END="$FAR_ROOM"
-[ "$FAR_END" -gt 8000 ] || die "the served window ($CTX) leaves a far end of $FAR_END tokens, at or below the sweep's 8000-token shallow point — this ladder needs a window above about 9,024 tokens"
+[ "$FAR_END" -gt 8000 ] || die "the served window ($CTX) leaves a far end of $FAR_END tokens, at or below the sweep's 8000-token shallow point — this ladder needs a window above $((8000 + FAR_HEADROOM)) tokens"
 
+SPEED_ROOM=$((CTX - 1024))
 SPEED_SIZES=()
 for sz in 8192 32768 65536 100000; do
-  [ "$sz" -le "$FAR_END" ] && SPEED_SIZES+=("$sz")
+  [ "$sz" -le "$SPEED_ROOM" ] && SPEED_SIZES+=("$sz")
 done
 # Rung 2's one prompt. 8192 when it fits; otherwise the largest of the standard sizes that fits.
 # Empty when none of 8192, 32768, 65536, 100000 fit the served window.
 initial_pp(){
   local sz best=""
-  if [ 8192 -le "$FAR_END" ]; then
+  if [ 8192 -le "$SPEED_ROOM" ]; then
     printf '%s\n' 8192
     return 0
   fi
   for sz in 8192 32768 65536 100000; do
-    [ "$sz" -le "$FAR_END" ] && best=$sz
+    [ "$sz" -le "$SPEED_ROOM" ] && best=$sz
   done
   [ -n "$best" ] && printf '%s\n' "$best"
 }

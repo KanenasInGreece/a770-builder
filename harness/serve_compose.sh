@@ -205,7 +205,7 @@ _scan_image() {
     exit 2
   fi
   if ! found=$("$A770B_DOCKER" run --rm --network=none --pull=never \
-      -v "$check:/tmp/ca-trust-check.sh:ro" --entrypoint bash "$id" -c '
+      -v "$check:/tmp/ca-trust-check.sh:ro,z" --entrypoint bash "$id" -c '
     set +e
     err=0
     . /tmp/ca-trust-check.sh || err=1

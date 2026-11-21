@@ -498,6 +498,7 @@ bench_profile(){
   if [ "$eng" = strata ]; then
     tok_dir=$(bash "$A770B_PROJECT/harness/serve_strata.sh" tokenizer "$gguf") || return $?
     A770B_ALIAS=$(bash "$A770B_PROJECT/harness/serve_strata.sh" config-model "$gguf") || return $?
+  elif [ -n "${A770B_TOKENIZER_DIR:-}" ]; then tok_dir="$A770B_TOKENIZER_DIR"
   elif [ -d "$gguf" ]; then tok_dir="$gguf"; else tok_dir=$(dirname -- "$gguf"); fi
   if [ ! -f "$tok_dir/tokenizer.json" ] && [ ! -f "$tok_dir/tokenizer_config.json" ]; then
     die "bench refused: $gguf has no tokenizer.json or tokenizer_config.json"

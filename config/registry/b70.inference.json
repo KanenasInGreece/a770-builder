@@ -2,8 +2,158 @@
   "schema": 1,
   "card": "b70",
   "mode": "inference",
-  "notes": "The llama.cpp rows are measurements on the Arc Pro B70 (32 GB, Xe2) with nothing else on the card, in the full-intel SYCL container, -ub 512, K/V q8_0. The vLLM row names its own image, quant flag and cache dtype in vllm_image, quant and kv; its measured_on names the engine. The ledger config/models.md holds every B70 checkpoint measured, adopted or not. builder.env and the environment override any A770B_<NAME>_* value.",
+  "notes": "The llama.cpp rows are measurements on the Arc Pro B70 (32 GB, Xe2) with nothing else on the card. Each row records its backend and build. The SYCL rows use the full-intel container, -ub 512 and K/V q8_0. The vLLM row names its own image, quant flag and cache dtype in vllm_image, quant and kv; its measured_on names the engine. The ledger config/models.md holds every B70 checkpoint measured, adopted or not. builder.env and the environment override any A770B_<NAME>_* value.",
   "profiles": {
+    "inkling2-mini-iq4nl-vulkan": {
+      "source": "https://huggingface.co/ggml-org/Inkling-2-Mini-GGUF/tree/db61c5b492a6a034d986328d28274af0a439aa6c",
+      "family": "inkling-2",
+      "architecture": "inkling2_loop",
+      "kv": "q8_0",
+      "kv_v": "q8_0",
+      "flash_attention": "on",
+      "reasoning": "on",
+      "timeout_s": 3756,
+      "category": "moe",
+      "weight_class": "26b",
+      "params_b": {
+        "total": 26,
+        "active": 3.5
+      },
+      "capability": {},
+      "capability_source": "Pinned ggml-org model card compares weight fidelity with BF16.",
+      "use_for": "Text-only coding on B70 with one request, q8_0 KV and a 2,048-token reasoning budget. The Vulkan b12602 trial allowed cooperative matrices.",
+      "depth_probe_100k": "not run",
+      "engine": "llama.cpp",
+      "mode": "inference",
+      "card": "b70",
+      "placement": "container",
+      "instrument": "SUITE-1@1",
+      "task": "code-edit",
+      "evidence": "SUITE-1@1: all three counted coding stages and the design stage passed. The 62,926-token depth probe scored 3/3. The 62,949-token sweep recorded 6.8 tok/s decode and zero GPU resets. The reference exercises passed 3/3.",
+      "speed": {
+        "decode_tps": {
+          "8k": 11.049357239111018,
+          "32k": 8.680349783889696,
+          "64k": null,
+          "100k": null
+        },
+        "prefill_tps": {
+          "8k": 105.97891477884406,
+          "32k": 97.08501329995583,
+          "64k": null,
+          "100k": null
+        },
+        "bench": {
+          "tool": "llama-benchy",
+          "prompt": 8192,
+          "gen": 128,
+          "flags": "--pp 8192 32768 --tg 128 --depth 0 --runs 3 --concurrency 1 --no-cache --skip-coherence --latency-mode generation --extra-body return_token_ids=false",
+          "at_depth": {
+            "8192": {
+              "pp": 105.97891477884406,
+              "tg": 11.049357239111018
+            },
+            "32768": {
+              "pp": 97.08501329995583,
+              "tg": 8.680349783889696
+            }
+          },
+          "source": "inkling2-mini-iq4nl-vulkan-candidate-http-20261121-121041.json"
+        },
+        "far_end": {
+          "tokens": 62949,
+          "decode_tps": 6.8,
+          "prefill_tps": 86.0,
+          "ttft_s": 643.1
+        },
+        "delivered": {
+          "prefill_tps": 94.0,
+          "decode_tps": 9.9,
+          "source": "inkling2-mini-iq4nl-vulkan-candidate-suite-20261121-130758-1096737.json"
+        }
+      },
+      "ram_gb_extra": 0.71,
+      "useful_ctx": 62949,
+      "model": "Inkling-2-Mini-IQ4_NL.gguf",
+      "quant": "IQ4_NL",
+      "backend": "vulkan",
+      "measured_on": "Intel Arc Pro B70 32 GB (Battlemage G31), llama.cpp b12602 Vulkan, 2026-11-21",
+      "ctx": 65536,
+      "extra": "",
+      "vram_gib_after_load": 23.71,
+      "thinking": {
+        "mode": "on",
+        "budget": 2048,
+        "source": "B70 trial generation budget"
+      },
+      "checkpoint": {
+        "format": "gguf",
+        "weight_quant": "IQ4_NL",
+        "activation_quant": "none"
+      },
+      "measured_tasks": {
+        "s0-design": {
+          "quality": "pass",
+          "wall_s": 648,
+          "context_tokens": 12055,
+          "thinking": "on"
+        },
+        "s1-frontend": {
+          "quality": "pass",
+          "wall_s": 2699,
+          "context_tokens": 24427,
+          "thinking": "on"
+        },
+        "s2-backend": {
+          "quality": "pass",
+          "wall_s": 617,
+          "context_tokens": 11904,
+          "thinking": "on"
+        },
+        "s3-optimise": {
+          "quality": "pass",
+          "wall_s": 3756,
+          "context_tokens": 65582,
+          "thinking": "on"
+        },
+        "ref-cpp-binary-search-tree": {
+          "quality": "pass",
+          "wall_s": 1952,
+          "context_tokens": 15157,
+          "thinking": "on"
+        },
+        "ref-javascript-forth": {
+          "quality": "pass",
+          "wall_s": 1898,
+          "context_tokens": 17202,
+          "thinking": "on"
+        },
+        "ref-python-pov": {
+          "quality": "pass",
+          "wall_s": 1064,
+          "context_tokens": 10370,
+          "thinking": "on"
+        }
+      },
+      "fit": {
+        "code": "SUITE-1: 3/3 stages passed, mean wall 2357.3s (this ladder run)",
+        "write": "not measured"
+      },
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "source": "inkling2-mini-iq4nl-vulkan-candidate-suite-20261121-130758-1096737.json",
+        "mean_wall_s": 2357.3,
+        "instrument": "SUITE-1@1"
+      },
+      "kernel": {
+        "path": "gpu",
+        "xmx": "untested",
+        "evidence": "49/49 logical layers offloaded on G31. A matched 8,135-token Vulkan sweep improved prefill from 81 to 103 tok/s after allowing cooperative matrices."
+      }
+    },
     "qwen38-flash-next-iq3s-strata": {
       "model": "Qwen3.8-Flash-Next-IQ3_S.strata.json",
       "ctx": 32768,

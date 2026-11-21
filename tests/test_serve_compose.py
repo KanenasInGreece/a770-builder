@@ -1255,6 +1255,7 @@ def test_start_scans_the_image_it_will_start_even_when_the_name_is_not_measured(
     text = log.read_text(encoding="utf-8")
     assert "sha256:2222222222222222222222222222222222222222222222222222222222222222" in text
     assert "--pull=never" in text
+    assert "/tmp/ca-trust-check.sh:ro,z" in text
     assert "started server container" not in r.stdout
 
 
