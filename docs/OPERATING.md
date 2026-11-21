@@ -190,8 +190,13 @@ on a fresh measurement of what else the card holds, never by hand.
 
 **The card.** `A770B_DEVICE` is the name from `llama-server --list-devices`; `A770B_GPU_MATCH` is the substring of that
 card in `nvtop -s`, which the VRAM readings and the cap depend on (supplied from `config/cards.json` by `A770B_CARD`). `A770B_UBATCH` (512) stays the same in both modes:
-it keeps the GPU's job watchdog quiet. The server refuses to stay up past the mode's cap after load. No speculative
-decoding on this card: draft models and MTP heads all made decode slower.
+it keeps the GPU's job watchdog quiet. The server refuses to stay up past the mode's cap after load.
+
+**Speculative decoding.** Qualify each method for the exact checkpoint, engine build, backend and card. Record
+the draft method and settings, hardware and memory limits, and the workload. Compare against speculation off
+when the same configuration supports it. Measure prefill, decode at representative depths, peak VRAM and host RAM,
+stability, useful context, and kit results. When a pack requires speculation, qualify the required setting and
+record it as part of that configuration. Each published profile uses its measured settings.
 
 **The device pin.** `A770B_VK_DEVICE_SELECT` (no default — `doctor` refuses while unset; supplied by `A770B_CARD` from `config/cards.json`) pins the server to the builder
 card by PCI vendor and device id rather than by the Vulkan device index `A770B_DEVICE` names, because Vulkan lists the
@@ -529,6 +534,140 @@ The skill starts SGLang from the profile's tool_parser and reasoning_parser and 
 bash harness/bench_http.sh --base-url http://127.0.0.1:PORT --served-model-name NAME --tokenizer /path/to/model --dry-run
 python3 harness/prompt_budget.py fit --corpus "$A770B_CORPUS_FILE" --target 8192 --out prompt.txt --url http://127.0.0.1:PORT --tokenize openai --model NAME --tokenizer /path/to/model
 bash harness/depth_probe.sh 8192 --base-url http://127.0.0.1:PORT --tokenize openai --model NAME --tokenizer /path/to/model
+```
+
+## Managed Strata
+
+The native path runs the pinned [Strata v0.2.17 terminal
+source](https://github.com/Niko1221/Strata/tree/12d491da4a6904eb49aaa6f2f63ec4b1a17582e3/terminal)
+with an operator-prepared Python runtime and Intel engine. Prepare the executable, its runtime libraries,
+the model pack and shards, the tokenizer, and the JSON run config before using the harness. Start uses
+`python -s -m serve.server --engine strata --offline` from the pinned terminal checkout. The harness
+records the source revision and SHA-256 of the engine, tokenizer and config beside separate server and
+engine logs. It gives the launched terminal its own settings, profiles and state directories and
+disables saved presets and acquisition. Record the model artifacts and checkpoint or revision with the
+measurement notes.
+
+The run config supplies `backend` (`intel` or `sycl`), `exe`, `cwd`, `tokenizer`, `model_name` and
+an engine `args` array. Use absolute paths for the executable, working directory, and tokenizer. The
+tokenizer directory needs both `vocab.json` for Strata and `tokenizer.json` for harness probes. Place
+context, KV, reserve and host-memory parameters in the config. Keep replicas, layer splitting, vision,
+MCP, and before-load commands disabled. The pinned Intel guide calls for `--spec 2` or higher with native
+IQ packs. The managed path preserves that setting. Pin each separate draft asset by absolute path and SHA-256 in `draft_asset_sha256`.
+This covers `--draft-model`, `--mtp-draft-vocab` and `--mtp`. For an MTP directory, pin its
+`draft_vocab.bin`. The `dflash2` mode requires `--draft-model`.
+
+Set the measured card-mode cap and host `MemAvailable` floor in the builder environment. The native path
+matches the card in `config/cards.json` to both the unique nvtop reading and the selected Level Zero PCI ID.
+Override `A770B_ONEAPI_DEVICE_SELECTOR` to that single indexed device and clear ambient
+Level Zero, Unified Runtime and SYCL device filters. Match the selector in the config if it sets one. On the B70, nvtop reports G31 and
+Level Zero reports PCI ID `8086:e223`. The budget gate applies before loading. The harness checks the VRAM cap after loading and on reuse. The owner checks the
+host memory floor during serving. Use a Linux memory scope when the trial needs a hard per-process limit.
+
+```bash
+export A770B_STRATA_ROOT=/path/to/clean/Strata-v0.2.17
+export A770B_STRATA_PYTHON=/path/to/prepared/venv/bin/python
+export A770B_STRATA_ENGINE_SHA256=ENGINE_SHA256
+export A770B_STRATA_CONFIG=/path/to/prepared/strata.json
+export A770B_STRATA_CTX=32768
+export A770B_HOST=127.0.0.1
+export A770B_GPU_MATCH=G31
+export A770B_ONEAPI_DEVICE_SELECTOR=level_zero:1  # use the index verified on this host
+
+bash skills/local-build/scripts/local-build.sh serve strata-candidate
+bash skills/local-build/scripts/local-build.sh status
+bash skills/local-build/scripts/local-build.sh bench strata-candidate --pp 8192
+bash skills/local-build/scripts/local-build.sh run /path/to/brief.md --profile strata-candidate
+bash skills/local-build/scripts/local-build.sh stop
+bash harness/ladder.sh strata-candidate
+```
+
+`strata-candidate` is an environment-only candidate. A measured registry profile uses `engine: strata`,
+`backend: strata` and a `model` path to the prepared config. Strata identifies the served model by
+`model_name` in the config. The ladder loads once, uses the same HTTP benchmark, context and depth
+tools as other engines, then runs the ordinary kit path. Stop an existing builder server before starting
+the ladder. The ladder cleans up its own invocation and refuses `--reviewer`, which would switch
+servers between stages. The start checks readiness, loaded identity, context, authentication and a
+launch attestation. It reuses a matching owned launch. Stop uses the recorded supervisor identity and
+the pinned terminal's owner guard to close its server and engine.
+
+### Arc Pro B70 and Qwen3.8-Flash-Next IQ3_S
+
+Use the [Intel Arc guide](https://github.com/Niko1221/Strata/blob/v0.2.17/docs/INTEL_ARC.md)
+and the [ISTA-DASLab IQ3_S checkpoint](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S).
+The two GGUF shards occupy 77.9 GiB on disk. Place them on a local SSD and prepare
+the native pack with the pinned Terminal. The measured run used the signed
+SYCL engine 0.1.63 and the `expert-profile-sycl.bin` from that Terminal revision.
+
+The run config uses the transformer GGUF for `--native`, the per-layer embedding GGUF for
+`--ple-gguf`, and the prepared directory for `--pack`. Pass the profile above as `--expert-profile`.
+The other measured arguments are
+`--expert-cache auto --stream-experts --spec 2 --prefill 4096 --max-context 32768 --kv int8 --ple-io mmap --vram-reserve-mib 5120`.
+Set `parallel` to 1 in the JSON. The config's engine environment uses
+`STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1`, and
+`STRATA_MIRROR_MIB=28672`. Use the single indexed Level Zero selector verified
+for your host. Keep the existing 28 GiB card cap and a 10 GiB host
+`MemAvailable` floor (`A770B_MIN_AVAIL_MB=10240`). The trial ran in a systemd user scope with
+`MemoryMax=36G` and `MemorySwapMax=0`.
+
+The engine reported 10,087 resident experts and 14,489 experts mirrored in
+27.70 GiB of pinned host RAM. The measured load read 25.64 GiB of GPU memory.
+The native suffix draft path used `--spec 2` without an external draft head.
+Three llama-benchy trials averaged 1,337 tok/s prefill and 28.7 tok/s decode at 8,192
+prompt tokens and 128 generated tokens. The context sweep reached 31,632 input tokens at
+33.5 tok/s decode, 18.9 seconds to first token and zero GPU resets. The 31,522-token
+depth probe passed at 2/3.
+
+For the named B70 profile, place the prepared JSON at
+`$A770B_MODELS/Qwen3.8-Flash-Next-IQ3_S.strata.json` and use
+`local-build.sh serve qwen38-flash-next-iq3s-strata`.
+
+## An externally managed Strata candidate
+
+- **Identity is explicit.** Pass `--engine strata` next to `--base-url` and `--served-model-name`. The harness never
+  decides a server is Strata, llama.cpp or vLLM from compatible metrics. The vLLM, SGLang and llama.cpp attach paths
+  keep their own contract unchanged.
+- **Pinned contract (Strata v0.2.16).** `strata_attach.py attach` reads `/health` (`service` must be `"strata"`,
+  `loaded` true, `model`, a positive `max_context`) and `/v1/models`: the requested id must be one row, itself or
+  through `alias_of`, whose `status.value` is `loaded`, whose `architecture.output_modalities` names `text` (an image
+  row names `["image"]` and is refused), and whose `meta.n_ctx` is positive. `/health` must have that model (or its
+  alias target) loaded. Both answers need a successful HTTP status; a valid-looking body on an error status is
+  refused. The caller's `--ctx` is refused when it exceeds the usable window, the smaller of `max_context` and
+  `meta.n_ctx`. The check sends GETs only.
+- **Loopback is `127.0.0.1`.** `localhost`, `[::1]` and any other host are refused before any request: the sandbox
+  listener, the rendered client URL and the usage tap's upstream all use this one spelling. The checks use Python's
+  `http.client`, so environment proxies and curl configuration never apply.
+- **Auth.** The skill and kit first request `/v1/models` anonymously. They send the key from `A770B_API_KEY_FILE`
+  only if the confirmed Strata endpoint requires authentication. For direct checks, `strata_attach.py attach` and
+  `probe` also accept `--auth key` or `--auth none`. They read `/health` anonymously and keep credentials off their
+  command lines. The existing profile renderer still receives `--apikey` in key mode. In unkeyed mode,
+  OpenCode sends its placeholder bearer, which Strata v0.2.16 ignores when it has no configured key. The harness
+  skips key-file creation and still applies the run specification and model ID.
+- **Caller.** The run uses the existing sandboxed OpenCode OpenAI-compatible Chat Completions provider. Its bridge is
+  `usage_tap.py`. The capture is labelled `engine: strata (attached)`. A stream that carries no usage is recorded as
+  unmeasured, never as zero. The coordinator verified OpenCode 1.18.35 through the ordinary `run` and `verify`, inside
+  Bubblewrap, against a deterministic fixture endpoint, and no key file was created. That is a fixture run, not a
+  live Strata measurement. Compatibility with OpenCode v2 is unverified, and the existing `opencode run` invocation
+  does not support it.
+- **Probe before long prompts.** Run `strata_attach.py probe` once against the live endpoint. `--tokenizer DIR` and
+  `--checkpoint REF` (for example `repo@revision`) are both required. The probe counts the local tokenizer first,
+  through `prompt_budget.py`'s path, so that path's one `uv` re-exec for `tokenizers` happens before any traffic.
+  It then runs the attach checks and, in key mode, checks that a request without the key is refused. A failure
+  there ends the probe before any POST. Next comes the tool smoke. The tool call must carry its own id, name
+  `read_file` on `NOTE.txt`, end with `tool_calls` and `[DONE]`, and report usage. The answer to the tool result
+  must complete with `stop`, carry the probe's random marker, and report usage. The probe disconnects after it
+  sees generation progress and records whether a fresh request returns a usable HTTP 200 completion. It can only
+  account for stream events it has received. Backend cancellation and slot release need separate evidence. The probe also compares API
+  `prompt_tokens` with the local count. The bare prompt may exceed it by up to `--count-slack`, and the tool
+  definitions must add tokens. The evidence records the tokenizer's
+  checkpoint and `tokenizer.json` SHA-256, the usage, and the response *shapes*. It keeps no returned text or tool
+  arguments. Run `ctx_sweep.sh` / `depth_probe.sh` with `--tokenize openai --tokenizer DIR` only after the probe passes.
+```text
+python3 harness/strata_attach.py attach --base-url http://127.0.0.1:PORT/v1 --model NAME --ctx N [--auth auto|key|none]
+python3 harness/strata_attach.py probe --base-url http://127.0.0.1:PORT/v1 --model NAME [--auth auto|key|none] \
+  --tokenizer /path/to/checkpoint --checkpoint REPO@REV --evidence "$A770B_DATA/results/strata-probe.json"
+bash harness/run_suite.sh --base-url http://127.0.0.1:PORT/v1 --served-model-name NAME --engine strata \
+  --ctx N --stages s1-frontend
 ```
 
 ## What is in here

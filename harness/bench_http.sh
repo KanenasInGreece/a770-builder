@@ -69,7 +69,10 @@ fi
 
 # llama.cpp and vLLM start with this file. The client's default bearer is the word EMPTY,
 # which those servers reject. The printed line is stored beside the result, so the value stays out of it.
-key=$(a770b_api_key) || { echo "⛔ cannot read the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
+key=""
+if [ "$dry" != 1 ]; then
+  key=$(a770b_api_key) || { echo "⛔ cannot read the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
+fi
 cmd=(uvx llama-benchy
   --base-url "$bench_base"
   --served-model-name "$served"

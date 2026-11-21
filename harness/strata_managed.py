@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""Launch and identify one Linux-owned Strata v0.2.17 text server."""
+import argparse
+import ctypes as c
+import hashlib
+import hmac
+import json
+import math
+import os
+from pathlib import Path
+import re
+import secrets
+import select
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+from strata_attach import Endpoint, attach_check, read_key
+
+
+PIN = "12d491da4a6904eb49aaa6f2f63ec4b1a17582e3"
+STOP_TIMEOUT = 48
+SERVER_GATE = """
+import os
+import sys
+
+with os.fdopen(int(sys.argv[1]), "rb") as gate:
+    if gate.read(1) != b"1":
+        sys.exit(0)
+command = sys.argv[2:]
+os.execv(command[0], command)
+"""
+
+
+def file_digest(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def process_identity(pid):
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return fields[19] if fields[0] not in ("Z", "X") else None
+    except FileNotFoundError:
+        return None
+
+
+def process_alive(state):
+    return state["start"] is not None and process_identity(state["pid"]) == state["start"]
+
+
+def device_override(name):
+    return name.startswith(("ZE_", "UR_")) or name in {
+        "SYCL_DEVICE_FILTER", "SYCL_DEVICE_ALLOWLIST", "SYCL_DEVICE_WHITELIST",
+    }
+
+
+def prepare_config(path):
+    raw = path.read_bytes()
+    doc = json.loads(raw)
+    if not isinstance(doc, dict) or doc.get("backend") not in ("intel", "sycl"):
+        raise ValueError("prepared config must name the Intel backend")
+    for field in ("exe", "cwd", "tokenizer", "model_name"):
+        if not isinstance(doc.get(field), str) or not doc[field]:
+            raise ValueError(f"prepared config requires {field}")
+    exe, cwd, tok = (Path(doc[field]) for field in ("exe", "cwd", "tokenizer"))
+    if not all(p.is_absolute() for p in (exe, cwd, tok)) or not cwd.is_dir() or not os.access(exe, os.X_OK):
+        raise ValueError("prepared config needs an absolute executable, cwd and tokenizer directory")
+    if not all((tok / name).is_file() for name in ("vocab.json", "tokenizer.json")):
+        raise ValueError("prepared tokenizer needs vocab.json and tokenizer.json")
+    engine_sha = file_digest(exe)
+    if not hmac.compare_digest(engine_sha, os.environ.get("A770B_STRATA_ENGINE_SHA256", "")):
+        raise ValueError("engine does not match A770B_STRATA_ENGINE_SHA256")
+    if not re.fullmatch(r"[\w.-][\w./:-]*", doc["model_name"]):
+        raise ValueError("prepared model_name is not a plain model identifier")
+    for field in ("gpu", "replicas", "layer_split", "split_serve", "fallback", "vision", "image", "images",
+                  "mcp", "mcp_servers", "mcp_config", "before_load", "api_key", "telemetry_key", "lazy_load",
+                  "user_args", "idle_unload_s"):
+        if doc.get(field) not in (None, "", [], {}, False):
+            raise ValueError(f"prepared config must leave {field} disabled")
+    if type(doc.get("parallel", 1)) is not int or doc.get("parallel", 1) != 1:
+        raise ValueError("managed Strata requires one slot")
+    args = doc.get("args")
+    if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
+        raise ValueError("prepared config needs an engine args array")
+    if doc.get("args_written", args) != args:
+        raise ValueError("prepared args differ from args_written")
+    draft_pins = doc.pop("draft_asset_sha256", {})
+    if not isinstance(draft_pins, dict):
+        raise ValueError("draft_asset_sha256 must map absolute draft asset paths to SHA-256")
+    drafts = {}
+    pinned_args = []
+    for i, item in enumerate(args):
+        flag, equal, inline = item.partition("=")
+        if flag in {"--batch", "--slots", "--gpu", "--layer-split", "--device", "--devices", "--serve"}:
+            raise ValueError(f"prepared config contains unsupported engine flag {flag}")
+        value = inline if equal else args[i + 1] if i + 1 < len(args) else ""
+        if flag in {"--spec", "--draft-model", "--draft-conf"}:
+            if not value or value.startswith("--"):
+                raise ValueError(f"{flag} requires a value")
+            pinned_args.extend((flag, value))
+        if flag in {"--draft-model", "--mtp-draft-vocab", "--mtp"}:
+            asset = Path(value)
+            if flag == "--mtp" and asset.is_dir():
+                asset /= "draft_vocab.bin"
+            if not asset.is_absolute() or not asset.is_file():
+                raise ValueError(f"{flag} needs a prepared local asset")
+            sha = file_digest(asset)
+            pin = draft_pins.get(str(asset))
+            if not isinstance(pin, str) or not hmac.compare_digest(sha, pin):
+                raise ValueError(f"{flag} needs a matching draft_asset_sha256 pin")
+            drafts[str(asset)] = sha
+    if doc.get("drafting") == "dflash2" and not any(a.partition("=")[0] == "--draft-model" for a in args):
+        raise ValueError("explicit DFlash2 needs a pinned --draft-model")
+    if pinned_args:
+        doc["user_args"] = pinned_args
+    selector = os.environ.get("A770B_ONEAPI_DEVICE_SELECTOR", "")
+    env = doc.get("env", {})
+    if not re.fullmatch(r"level_zero:[0-9]+", selector):
+        raise ValueError("managed Strata requires a single indexed Level Zero device selector")
+    if not isinstance(env, dict) or env.get("ONEAPI_DEVICE_SELECTOR", selector) != selector:
+        raise ValueError("prepared config changes the selected card")
+    guarded = {"LD_PRELOAD", "STRATA_PRIMARY_DEVICE", "STRATA_NO_ACQUIRE", "STRATA_NO_PRESET",
+               "STRATA_KEEP_LEFTOVERS", "HOME"}
+    if env.keys() & guarded or any(device_override(k) or k.startswith((
+            "STRATA_HOME", "STRATA_SETTINGS_", "STRATA_PROFILE_", "STRATA_CONNECTION_",
+            "STRATA_RUNTIME_", "XDG_")) for k in env):
+        raise ValueError("prepared config cannot override the isolated runtime or card selection")
+    doc["env"] = {**env, "ONEAPI_DEVICE_SELECTOR": selector}
+    return doc, {"engine": "strata", "source_commit": PIN, "engine_sha256": engine_sha,
+                 "config_sha256": hashlib.sha256(raw).hexdigest(), "tokenizer_sha256": file_digest(tok / "tokenizer.json"),
+                 "model_id": doc["model_name"], "selector": selector, "config": str(path), "draft_sha256": drafts}
+
+
+def level_zero_pci_ids():
+    """Read the PCI IDs in the single Level Zero driver's device order."""
+    overrides = sorted(name for name, value in os.environ.items() if value and device_override(name))
+    if overrides:
+        raise ValueError(f"clear {', '.join(overrides)} before selecting an indexed Level Zero card")
+    ze = c.CDLL("libze_loader.so.1")
+    handle = c.c_void_p
+    count_type = c.c_uint32
+
+    def checked(function, *arguments):
+        code = function(*arguments)
+        if code:
+            raise ValueError(f"Level Zero device preflight failed (0x{code:08x})")
+
+    checked(ze.zeInit, 1)  # ZE_INIT_FLAG_GPU_ONLY
+    drivers = count_type()
+    checked(ze.zeDriverGet, c.byref(drivers), None)
+    if drivers.value != 1:
+        raise ValueError("managed Strata needs one Level Zero GPU driver to resolve device order")
+    driver = handle()
+    checked(ze.zeDriverGet, c.byref(drivers), c.byref(driver))
+    count = count_type()
+    checked(ze.zeDeviceGet, driver, c.byref(count), None)
+    devices = (handle * count.value)()
+    checked(ze.zeDeviceGet, driver, c.byref(count), devices)
+
+    class DeviceProperties(c.Structure):
+        # ze_device_properties_t from the Level Zero API. Keep the ABI layout for fields the loader writes.
+        _fields_ = [("stype", count_type), ("next", handle), ("type", count_type),
+                    ("vendor", count_type), ("device", count_type), ("flags", count_type),
+                    ("subdevice", count_type), ("clock", count_type), ("max_allocation", c.c_uint64),
+                    ("topology", count_type * 7), ("timer_resolution", c.c_uint64),
+                    ("timestamps", count_type * 2), ("uuid", c.c_uint8 * 16), ("name", c.c_char * 256)]
+
+    ids = []
+    for device in devices:
+        properties = DeviceProperties(stype=3)  # ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES
+        checked(ze.zeDeviceGetProperties, handle(device), c.byref(properties))
+        ids.append((properties.vendor, properties.device))
+    return ids
+
+
+def require_selected_card(selector):
+    cards = json.loads((Path(__file__).resolve().parents[1] / "config/cards.json").read_text())["cards"]
+    card = cards.get(os.environ.get("A770B_CARD"))
+    if not card or card.get("gpu_match") != os.environ.get("A770B_GPU_MATCH"):
+        raise ValueError("managed Strata needs the selected card's nvtop match from config/cards.json")
+    pci = tuple(int(part, 16) for part in card["pci"].split(":"))
+    index = int(selector.split(":")[1])
+    ids = level_zero_pci_ids()
+    if index >= len(ids) or ids[index] != pci:
+        raise ValueError(f"{selector} does not select the configured card ({card['pci']})")
+
+
+def source_inputs():
+    root = Path(os.environ["A770B_STRATA_ROOT"])
+    python = Path(os.environ["A770B_STRATA_PYTHON"])
+    if not root.is_absolute() or not python.is_absolute() or not os.access(python, os.X_OK):
+        raise ValueError("set absolute A770B_STRATA_ROOT and A770B_STRATA_PYTHON paths")
+    git = ["git", "-C", str(root)]
+    commit = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    changed = subprocess.check_output([*git, "status", "--porcelain", "--untracked-files=normal", "--", "terminal"],
+                                      text=True).strip()
+    if commit != PIN or changed or not (root / "terminal/serve/server.py").is_file():
+        raise ValueError("Strata terminal source must be a clean v0.2.17 checkout")
+    return root / "terminal", python
+
+
+def read_state(path):
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+
+
+def write_state(path, state):
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                     prefix=path.name + ".", delete=False) as stream:
+        tmp = Path(stream.name)
+        try:
+            json.dump(state, stream)
+            stream.write("\n")
+            stream.flush()
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def server_alive(state):
+    started = state.get("server_start")
+    return started is not None and process_identity(state["server_pid"]) == started
+
+
+def engine_alive(state):
+    started = state.get("server_start")
+    if started is None:
+        return False
+    parent = {"pid": state["server_pid"], "token": f"l:{started}"}
+    # Strata gives its engine a separate process group and records it under this launch's private XDG state.
+    for path in (Path(state["run"]) / "xdg-state/strata/procs").glob("*.json"):
+        record = read_state(path)
+        if record is None or record.get("role") != "engine" or record.get("parent") != parent:
+            continue
+        identity = process_identity(record["pid"])
+        if identity is not None and record["token"] == f"l:{identity}":
+            return True
+    return False
+
+
+def occupied(state):
+    return process_alive(state) or server_alive(state) or engine_alive(state)
+
+
+def signal_and_wait(pid, started, signum, timeout):
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return True
+    try:
+        if process_identity(pid) != started:
+            return True
+        signal.pidfd_send_signal(fd, signum)
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        return bool(poller.poll(timeout * 1000))
+    except ProcessLookupError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def stop(path, expected=None):
+    state = read_state(path)
+    if state is None:
+        return
+    if expected is not None and expected != state["id"]:
+        raise ValueError("Strata instance changed; refusing to stop it")
+    if process_alive(state) and not signal_and_wait(state["pid"], state["start"], signal.SIGTERM, STOP_TIMEOUT):
+        raise ValueError("owned Strata supervisor stop timed out; retaining ownership record")
+    # The supervisor can add the server identity while handling the foreground stop.
+    current = read_state(path)
+    if current is None or current["id"] != state["id"]:
+        raise ValueError("Strata ownership changed during stop")
+    if server_alive(current):
+        pid, started = current["server_pid"], current["server_start"]
+        if not signal_and_wait(pid, started, signal.SIGTERM, 3):
+            signal_and_wait(pid, started, signal.SIGKILL, 3)
+    deadline = time.monotonic() + min(3, STOP_TIMEOUT)
+    while engine_alive(current) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if occupied(current):
+        raise ValueError("owned Strata processes remain alive; retaining ownership record")
+    path.unlink(missing_ok=True)
+
+
+def launch_mac(key, config, argv):
+    args = json.dumps(argv, ensure_ascii=False, separators=(",", ":")).encode()
+    message = b"strata-owned-launch-v1\0" + len(config).to_bytes(8, "big") + config + len(args).to_bytes(8, "big") + args
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def health_matches(state, key):
+    if not key or "server_pid" not in state:
+        return False
+    if state["server_start"] is None or process_identity(state["server_pid"]) != state["server_start"]:
+        return False
+    try:
+        ready = read_state(Path(state["run"]) / "ready.json")
+    except json.JSONDecodeError:
+        # The pinned Terminal can expose its ready file before the JSON write completes.
+        return False
+    if not isinstance(ready, dict) or (ready.get("pid"), ready.get("bound_host"), ready.get("bound_port"),
+                                      ready.get("model_id"), ready.get("model_state")) != (
+            state["server_pid"], "127.0.0.1", state["port"], state["model_id"], "ready"):
+        return False
+    instance_id = ready.get("instance_id")
+    if not isinstance(instance_id, str) or not instance_id:
+        return False
+    ep = Endpoint(f"http://127.0.0.1:{state['port']}", key)
+    verdict = attach_check(ep, state["model_id"], state["ctx"], "key")
+    if not verdict["ok"]:
+        return False
+    status, doc, err = ep.get_json("/v1/telemetry")
+    instance = doc.get("instance") if isinstance(doc, dict) else None
+    mac = instance.get("launch_attestation") if isinstance(instance, dict) else None
+    return (not err and status == 200 and isinstance(mac, str) and instance.get("id") == instance_id
+            and hmac.compare_digest(mac, state["attestation"]))
+
+
+def ram_ok(minimum):
+    with open("/proc/meminfo", encoding="ascii") as stream:
+        return any(line.startswith("MemAvailable:") and int(line.split()[1]) >= minimum * 1024 for line in stream)
+
+
+def supervise(plan_path, gate_fd):
+    # EOF means the foreground exited before recording ownership.
+    with os.fdopen(gate_fd, "rb") as gate:
+        if gate.read(1) != b"1":
+            return
+    plan = read_state(plan_path)
+    stopping = False
+
+    def request_stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    key = read_key()
+    if not key:
+        raise ValueError("managed Strata requires the builder key")
+    read_fd, write_fd = os.pipe()
+    run = Path(plan["run"])
+    argv = ["--engine", "strata", "--config", plan["snapshot"], "--host", "127.0.0.1",
+            "--port", str(plan["port"]), "--parallel", "1", "--offline", "--ready-file", str(run / "ready.json"),
+            "--shutdown-timeout", "1", "--owner-fd", str(read_fd)]
+    attestation_key = secrets.token_bytes(32)
+    plan["attestation"] = launch_mac(attestation_key, Path(plan["snapshot"]).read_bytes(), argv)
+    plan.update(pid=os.getpid(), start=process_identity(os.getpid()))
+    write_state(Path(plan["state"]), plan)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("STRATA_", "PYTHON"))
+           and not device_override(k)}
+    env.update(STRATA_KEEP_LEFTOVERS="1", STRATA_NO_PRESET="1", STRATA_NO_ACQUIRE="1",
+               STRATA_API_KEY=key, STRATA_OWNER_ATTEST_KEY=attestation_key.hex(),
+               PYTHONDONTWRITEBYTECODE="1", ONEAPI_DEVICE_SELECTOR=plan["selector"], STRATA_HOME=str(run),
+               STRATA_SETTINGS_FILE=str(run / "settings.json"), STRATA_PROFILE_DIR=str(run / "profiles"),
+               STRATA_RUNTIME_DIR=str(run / "runtime"), STRATA_CONNECTION_DIR=str(run / "connections"),
+               XDG_CONFIG_HOME=str(run / "xdg-config"), XDG_STATE_HOME=str(run / "xdg-state"),
+               XDG_CACHE_HOME=str(run / "xdg-cache"), XDG_DATA_HOME=str(run / "xdg-data"))
+    server = None
+    gate_read, gate_write = os.pipe()
+    try:
+        if stopping:
+            return
+        command = [plan["python"], "-s", "-m", "serve.server", *argv]
+        gate_command = [plan["python"], "-I", "-S", "-c", SERVER_GATE, str(gate_read)]
+        server = subprocess.Popen([*gate_command, *command], cwd=plan["terminal"], env=env,
+                                  pass_fds=(read_fd, gate_read), start_new_session=True)
+        os.close(read_fd)
+        read_fd = None
+        os.close(gate_read)
+        gate_read = None
+        plan.update(server_pid=server.pid, server_start=process_identity(server.pid))
+        if plan["server_start"] is None:
+            raise ValueError("Strata server exited before ownership was recorded")
+        write_state(Path(plan["state"]), plan)
+        if stopping:
+            return
+        os.write(gate_write, b"1")
+        os.close(gate_write)
+        gate_write = None
+        while server.poll() is None and not stopping:
+            if not ram_ok(plan["min_ram_mib"]):
+                print("Strata stopped: host MemAvailable fell below the configured floor", file=sys.stderr, flush=True)
+                break
+            time.sleep(0.25)
+    finally:
+        for fd in (read_fd, gate_read, gate_write):
+            if fd is not None:
+                os.close(fd)
+        os.close(write_fd)  # EOF requests Strata's owner-guard shutdown.
+        if server is not None:
+            server.wait(timeout=STOP_TIMEOUT - 1)
+
+
+def start(path, config, ctx, timeout):
+    doc, evidence = prepare_config(config)
+    terminal, python = source_inputs()
+    require_selected_card(evidence["selector"])
+    if os.environ.get("A770B_HOST") != "127.0.0.1" or ctx < 1:
+        raise ValueError("managed Strata requires numeric loopback and a positive context")
+    port = int(os.environ["A770B_PORT"])
+    minimum = int(os.environ["A770B_MIN_AVAIL_MB"])
+    if not 1 <= port <= 65535 or minimum < 1 or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("invalid port, host memory floor or ready timeout")
+    if not ram_ok(minimum):
+        raise ValueError("host MemAvailable is below the configured floor")
+    key = read_key()
+    if not key:
+        raise ValueError("managed Strata requires the builder key")
+    old = read_state(path)
+    if old and occupied(old):
+        same = all(old.get(k) == v for k, v in evidence.items())
+        requested = (port, ctx, minimum, str(python), str(terminal))
+        recorded = (old["port"], old["ctx"], old["min_ram_mib"], old["python"], old["terminal"])
+        if same and recorded == requested and process_alive(old) and health_matches(old, key):
+            return old
+        raise ValueError("an owned Strata server is up with a different launch or health; stop it explicitly")
+    with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", port))
+    instance = secrets.token_hex(16)
+    run = path.parent / f"strata-{instance}"
+    run.mkdir(mode=0o700)
+    snapshot = run / "config.json"
+    doc["log"] = str(run / "engine.log")
+    snapshot.write_text(json.dumps(doc))
+    plan = {**evidence, "id": instance, "state": str(path), "snapshot": str(snapshot), "ctx": ctx, "port": port,
+            "python": str(python), "terminal": str(terminal), "min_ram_mib": minimum, "run": str(run)}
+    plan_path = run / "launch.json"
+    write_state(plan_path, plan)
+    gate_read, gate_write = os.pipe()
+    proc = None
+    try:
+        with (run / "server.log").open("ab") as log:
+            proc = subprocess.Popen([sys.executable, __file__, "supervise", str(plan_path),
+                                     "--gate-fd", str(gate_read)], start_new_session=True,
+                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, pass_fds=(gate_read,))
+        os.close(gate_read)
+        gate_read = None
+        identity = process_identity(proc.pid)
+        if identity is None:
+            raise ValueError("Strata supervisor exited before launch")
+        write_state(path, {**plan, "pid": proc.pid, "start": identity})
+        os.write(gate_write, b"1")
+        os.close(gate_write)
+        gate_write = None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and proc.poll() is None:
+            state = read_state(path)
+            if state and state["id"] == instance and process_alive(state) and health_matches(state, key):
+                write_state(run / "evidence.json", {**evidence, "ctx": ctx, "port": port, "log_dir": str(run),
+                           "host_memavailable_floor_mib": minimum, "card_mode": os.environ.get("A770B_CARD_MODE"),
+                           "configured_vram_cap_gib": os.environ.get("A770B_VRAM_CAP_GIB"),
+                           "gpu_match": os.environ.get("A770B_GPU_MATCH")})
+                return state
+            time.sleep(0.25)
+        raise ValueError(f"owned Strata failed readiness; see {run / 'server.log'}")
+    except BaseException:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=STOP_TIMEOUT)
+        state = read_state(path)
+        if state and state["id"] == instance:
+            stop(path, instance)
+        raise
+    finally:
+        for fd in (gate_read, gate_write):
+            if fd is not None:
+                os.close(fd)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("start", "status", "stop", "id", "model", "tokenizer", "config-model", "verify", "supervise"))
+    parser.add_argument("value", nargs="?")
+    parser.add_argument("--gate-fd", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--ctx", type=int, default=0)
+    parser.add_argument("--timeout", type=float, default=300)
+    args = parser.parse_args()
+    try:
+        if args.command == "supervise":
+            if args.gate_fd is None:
+                raise ValueError("supervisor requires foreground launch authorization")
+            supervise(Path(args.value), args.gate_fd)
+            return 0
+        if args.command in ("tokenizer", "config-model"):
+            config, _ = prepare_config(Path(args.value).resolve())
+            print(config["tokenizer" if args.command == "tokenizer" else "model_name"])
+            return 0
+        path = Path(os.environ["A770B_DATA"]).resolve() / "logs/strata-instance.json"
+        if args.command == "start":
+            state = start(path, Path(args.value).resolve(), args.ctx, args.timeout)
+            print(Path(state["run"]) / "evidence.json")
+            return 0
+        if args.command == "stop":
+            stop(path, args.value)
+            return 0
+        state = read_state(path)
+        if not state or not occupied(state):
+            return 1
+        if args.command in ("id", "model"):
+            print(state["id" if args.command == "id" else "model_id"])
+            return 0
+        ready = process_alive(state) and health_matches(state, read_key())
+        if args.command == "verify":
+            return 0 if ready and state["port"] == int(os.environ["A770B_PORT"]) and \
+                state["model_id"] == args.value and state["ctx"] == args.ctx else 2
+        print(f"server: {'UP' if ready else 'STARTING OR UNHEALTHY'} · Strata · {state['model_id']} · 127.0.0.1:{state['port']}")
+        return 0
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        print(f"managed Strata: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

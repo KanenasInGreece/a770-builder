@@ -34,7 +34,16 @@ card_lock; seat_lock "$WT"
 rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
 CTX=$(a770b_profile_var "$PROFILE" CTX)
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"
-a770b_curl -sf --max-time 5 "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve <card>)" >&2; exit 3; }
+if [ "${A770B_SERVED_ENGINE:-}" = strata ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
+  bash "$A770B_PROJECT/harness/serve_strata.sh" verify "$A770B_ALIAS" --ctx "$CTX" \
+    || { echo "⛔ the managed Strata launch no longer matches this run" >&2; exit 3; }
+elif [ "${A770B_SERVED_ENGINE:-}" = strata ]; then
+  # Recheck the endpoint in the verified auth mode before rendering the client.
+  strata_verdict=$(python3 "$A770B_PROJECT/harness/strata_attach.py" attach --base-url "$ENDPOINT" --model "$A770B_ALIAS" --ctx "$CTX" --auth "${A770B_STRATA_AUTH:?the Strata attach records its auth mode}") \
+    || { echo "⛔ the attached Strata endpoint at $ENDPOINT no longer passes the attach check: $strata_verdict" >&2; exit 3; }
+else
+  a770b_curl -sf --max-time 5 "$ENDPOINT/v1/models" >/dev/null || { echo "⛔ no model server answering at $ENDPOINT — start it first (local-build.sh serve <card>)" >&2; exit 3; }
+fi
 # render the profile config (server URL, key, window, output limit)
 CFG="$A770B_DATA/logs/opencode.$PROFILE.jsonc"
 export A770B_RENDER_SEAT="$WT"; a770b_render_profile "$PROFILE" "$CTX" "$CFG" || exit 2

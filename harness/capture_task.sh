@@ -45,6 +45,11 @@ capture_timings(){
   local since_file="$A770B_DATA/logs/run-since"
   local since=""
   case "$engine" in
+    strata)
+      # Read Strata token counts from the usage tap. Streams without usage are unmeasured.
+      if [ "${A770B_ATTACHED:-}" = 1 ]; then echo "engine: strata (attached)"; else echo "engine: strata (managed)"; fi
+      python3 "$A770B_PROJECT/harness/engine_record.py" capture --usage "$usage"
+      ;;
     sglang|vllm)
       python3 "$A770B_PROJECT/harness/engine_record.py" capture --usage "$usage"
       ;;

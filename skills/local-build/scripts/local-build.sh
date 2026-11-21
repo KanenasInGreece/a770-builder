@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # local-build.sh — the A770 builder seat, serving the profiles of the card mode's own registry. Installed as a skill in every agent's skill dir (copies).
-#   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME]     (no worktree = the default seat, A770B_SEAT)
+#   run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME [--engine strata]]     (no worktree = the default seat, A770B_SEAT)
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
@@ -184,6 +184,8 @@ _write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4)
 }
 _metrics_snapshot(){ # <out-file> — best-effort GET of /metrics; a failure writes nothing and warns. a770b_curl sends the key.
   local out="$1" url="http://$A770B_HOST:$A770B_PORT/metrics" body rc=1
+  # Strata usage comes from the request stream. An attached endpoint can also have its own auth mode.
+  [ "${A770B_SERVED_ENGINE:-}" = strata ] && return 0
   if [ "${A770B_SERVED_BACKEND:-}" = "vllm" ]; then
     body=$(curl -sf --max-time 5 "$url" 2>/dev/null) && rc=0
   else
@@ -205,6 +207,7 @@ _stage_counters(){ # <label> — engine_evidence.py diff over <label>.metrics-be
     return 0
   fi
   # engine_evidence.py diff does not accept sglang. Calling it is only the generic failure warning.
+  [ "$engine" = strata ] && return 0
   if [ "$engine" = sglang ]; then
     echo "⚠ sglang has no prometheus counter diff" >&2
     return 0
@@ -351,6 +354,15 @@ _override_warn(){ # a card the operator marked operator_override: say so, so it 
   local p="$1" v; v=$(a770b_profile_var "$p" OPERATOR_OVERRIDE)
   case "${v,,}" in true|1|yes) echo "⚠ $p is presented by operator override — set on the card (operator_override) or in A770B_${p^^}_OPERATOR_OVERRIDE; unset it to choose from all cards";; esac
 }
+_strata_serve(){
+  local evidence
+  [ -z "$extra" ] || { echo "Strata engine flags belong in the prepared config" >&2; return 2; }
+  evidence=$(bash "$A770B_PROJECT/harness/serve_strata.sh" start "$gguf" "$ctx") || return $?
+  A770B_ALIAS=$(bash "$A770B_PROJECT/harness/serve_strata.sh" model) || return $?
+  export A770B_ALIAS A770B_STRATA_AUTH=key A770B_SERVED_BACKEND=strata
+  printf '%s\n' "$evidence" > "$A770B_DATA/logs/serve-evidence.path"
+  echo "✓ $p serving $A770B_ALIAS on $A770B_HOST:$A770B_PORT · Strata"
+}
 serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
   local live_json live_backend live_model live_profile req_backend req_model
@@ -359,6 +371,10 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
   export A770B_SERVED_ENGINE
+  if [ "$A770B_SERVED_ENGINE" = strata ]; then _strata_serve; return $?; fi
+  local strata_rc=0
+  bash "$A770B_PROJECT/harness/serve_strata.sh" id >/dev/null || strata_rc=$?
+  [ "$strata_rc" = 1 ] || { echo "stop managed Strata before starting another builder engine" >&2; return 2; }
   _envelope_for_backend "$p"
   if [ "$A770B_SERVED_ENGINE" = "vllm" ] || [ "$A770B_SERVED_ENGINE" = "sglang" ]; then
     [ -r "$gguf" ] || die "model not found: $gguf — put the model file or directory in A770B_MODELS ($A770B_MODELS) or set A770B_${p^^}_MODEL"
@@ -477,8 +493,12 @@ bench_profile(){
   profile_vars "$p"
   # The ladder passes the directory that holds tokenizer.json. The weight file itself
   # is not that directory: llama-benchy would read the whole file into RAM.
-  local tok_dir
-  if [ -d "$gguf" ]; then tok_dir="$gguf"; else tok_dir=$(dirname -- "$gguf"); fi
+  local tok_dir eng
+  eng=$(_profile_engine "$p") || return $?
+  if [ "$eng" = strata ]; then
+    tok_dir=$(bash "$A770B_PROJECT/harness/serve_strata.sh" tokenizer "$gguf") || return $?
+    A770B_ALIAS=$(bash "$A770B_PROJECT/harness/serve_strata.sh" config-model "$gguf") || return $?
+  elif [ -d "$gguf" ]; then tok_dir="$gguf"; else tok_dir=$(dirname -- "$gguf"); fi
   if [ ! -f "$tok_dir/tokenizer.json" ] && [ ! -f "$tok_dir/tokenizer_config.json" ]; then
     die "bench refused: $gguf has no tokenizer.json or tokenizer_config.json"
   fi
@@ -491,11 +511,18 @@ bench_profile(){
   [ "${#pp[@]}" -gt 0 ] && http_args+=(--pp "${pp[@]}")
   bash "$A770B_PROJECT/harness/bench_http.sh" "${http_args[@]}"
 }
-# _attach_running_server <base-url> <served-name> — use a server that is already up. Does not start or stop one.
+# _attach_running_server <base-url> <served-name> [<engine> <ctx>] — use a server that is already up. Does not start or stop one.
 # Requires a plain http://host:port or http://host:port/v1 URL; health is the origin /health.
+# The explicit engine argument accepts strata. Validate its v0.2.16 health and model endpoints, context and auth
+# mode through strata_attach.py. Strata uses 127.0.0.1.
 _attach_running_server(){
-  local url="$1" name="$2" origin code ev_logs ev_base parsed
+  local url="$1" name="$2" engine="${3:-}" ctx="${4:-}" origin code ev_logs ev_base parsed
   [ -n "$url" ] && [ -n "$name" ] || die "--base-url and --served-model-name are required together"
+  case "$engine" in
+    ''|strata) ;;
+    *) die "--engine accepts strata only (got '$engine'); llama.cpp, vllm and sglang are named by the attached server itself" ;;
+  esac
+  unset A770B_STRATA_AUTH
   parsed=$(python3 -c '
 import sys
 from urllib.parse import urlsplit
@@ -525,6 +552,22 @@ if not host or port is None or not (1 <= port <= 65535):
 print(f"http://{u.netloc}\t{host}\t{port}")
 ' "$url" 2>/dev/null) || die "--base-url must be a plain http://host:port or http://host:port/v1 URL (no https, userinfo, extra path, query, or fragment): $1"
   IFS=$'\t' read -r origin A770B_HOST A770B_PORT <<<"$parsed"
+  if [ "$engine" = strata ]; then
+    # One spelling: the sandbox listener binds 127.0.0.1, the rendered client URL and the usage tap's upstream are
+    # built from this host, and none of them is shown to take a bracketed IPv6 or a resolved name.
+    [ "$A770B_HOST" = 127.0.0.1 ] || die "Strata attach accepts only http://127.0.0.1:<port>[/v1] (got host $A770B_HOST)"
+    case "$ctx" in ''|*[!0-9]*|0*) die "Strata attach needs the caller's window as a positive integer (got '${ctx}')" ;; esac
+    export A770B_HOST A770B_PORT A770B_ALIAS="$name"
+    local verdict="" _ok auth usable
+    verdict=$(python3 "$A770B_PROJECT/harness/strata_attach.py" attach --base-url "$origin" --model "$name" --ctx "$ctx") \
+      || die "Strata candidate refused at $origin: ${verdict:-the attach check failed}"
+    read -r _ok auth usable <<<"$verdict"
+    export A770B_STRATA_AUTH="$auth" A770B_SERVED_ENGINE=strata
+    _clear_serve_evidence_pointer
+    export A770B_ATTACHED=1
+    echo "▶ attached $A770B_HOST:$A770B_PORT model $A770B_ALIAS · engine strata (explicit, externally managed; auth $auth; ctx $ctx ≤ usable $usable) — not starting or stopping a server"
+    return 0
+  fi
   export A770B_HOST A770B_PORT A770B_ALIAS="$name"
   code=$(curl -sS -o /dev/null --max-time 5 -w '%{http_code}' "$origin/health" 2>/dev/null || true)
   case "$code" in
@@ -567,8 +610,11 @@ if isinstance(name, str):
   export A770B_ATTACHED=1
   echo "▶ attached $A770B_HOST:$A770B_PORT model $A770B_ALIAS (not starting a server)"
 }
-status(){ local c cid; c=$(current); version 2>&1
-  if [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"
+status(){ local c cid strata_rc=0; c=$(current); version 2>&1
+  bash "$A770B_PROJECT/harness/serve_strata.sh" status || strata_rc=$?
+  if [ "$strata_rc" = 0 ]; then :
+  elif [ "$strata_rc" != 1 ]; then echo "server: managed Strata ownership could not be read"
+  elif [ -n "$c" ]; then echo "server: UP · $(basename "$c") · pid $(cat "$PIDF")"
   else
     cid=$(_compose_container_id)
     if [ -n "$cid" ]; then echo "server: UP · container ${cid}"
@@ -673,7 +719,8 @@ doctor(){
       *) echo "MISSING card: $n nvtop devices match A770B_GPU_MATCH=$A770B_GPU_MATCH, not 1; set it to a substring naming the builder card alone in 'nvtop -s'"; missing=$((missing+1)) ;;
     esac
   fi
-  if llama_pid_alive "$PIDF" >/dev/null || [ -n "$(_compose_container_id)" ]; then
+  if llama_pid_alive "$PIDF" >/dev/null || [ -n "$(_compose_container_id)" ] ||
+      bash "$A770B_PROJECT/harness/serve_strata.sh" id >/dev/null 2>&1; then
     echo "ok   mode: $A770B_CARD_MODE, not measured (the seat's server is up)"
   elif [ "$n" != 1 ]; then
     echo "ok   mode: $A770B_CARD_MODE, not measured (no VRAM readings or more than one matching card)"
@@ -761,7 +808,15 @@ case "${1:-}" in
   profiles) if [ -n "$A770B_PROFILES" ]; then shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@"; else empty_registry_line; fi ;;
   menu) if [ -n "$A770B_PROFILES" ]; then python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid"; else python3 "$A770B_PROJECT/harness/profiles.py" menu --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; fi ;;
   doctor) doctor ;;
-  stop)   card_lock; _envelope_from_sidecar; _clear_serve_evidence_pointer; bash "$SERVE" stop ;;
+  stop)
+    card_lock
+    strata_rc=0
+    bash "$A770B_PROJECT/harness/serve_strata.sh" id >/dev/null || strata_rc=$?
+    case "$strata_rc" in
+      0) bash "$A770B_PROJECT/harness/serve_strata.sh" stop && _clear_serve_evidence_pointer ;;
+      1) _envelope_from_sidecar; _clear_serve_evidence_pointer; bash "$SERVE" stop ;;
+      *) die "managed Strata ownership could not be read" ;;
+    esac ;;
   stop-run)
     # end exactly the run in progress, through its own pid. The pid file names the process-group leader:
     # `timeout` when this run has a caller fence, the sandbox when it has no clock. One TERM to that leader
@@ -780,14 +835,16 @@ case "${1:-}" in
     kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
-    unset A770B_ATTACHED
-    shift; profile=""; timeout=""; spec=""; profile_set=0; base_url=""; served_name=""
+    unset A770B_ATTACHED A770B_STRATA_AUTH
+    shift; profile=""; timeout=""; spec=""; profile_set=0; base_url=""; served_name=""; engine=""
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
     if [ -f "${1:-}" ] && [ ! -d "${1:-}" ]; then WT_RAW="$A770B_SEAT"; BRIEF="$1"; shift 1; else WT_RAW="${1:?worktree or brief}"; BRIEF="${2:?brief.md}"; shift 2; fi
-    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; require_profile "$profile"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; --base-url) base_url="${2:?base url}"; shift;; --served-model-name) served_name="${2:?served model name}"; shift;; *) die "unknown arg $1";; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --profile) profile="${2:?profile name}"; require_profile "$profile"; profile_set=1; shift;; --timeout) timeout="${2:?seconds}"; shift;; --spec) spec="${2:?spec.json}"; shift;; --base-url) base_url="${2:?base url}"; shift;; --served-model-name) served_name="${2:?served model name}"; shift;; --engine) engine="${2:?engine}"; shift;; *) die "unknown arg $1";; esac; shift; done
     if [ -n "$base_url" ] || [ -n "$served_name" ]; then
       [ -n "$base_url" ] && [ -n "$served_name" ] || die "--base-url and --served-model-name are required together"
     fi
+    # An explicit engine describes the attachment. A named profile selects a managed engine.
+    [ -z "$engine" ] || [ -n "$base_url" ] || die "--engine needs --base-url: --engine strata attaches to an externally managed endpoint and never starts a server"
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
@@ -837,7 +894,7 @@ PY
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }
     profile_vars "$profile"
     if [ -n "$base_url" ]; then
-      _attach_running_server "$base_url" "$served_name"    # exports host, port and alias; does not call serve or stop
+      _attach_running_server "$base_url" "$served_name" "$engine" "$ctx"   # exports host, port, alias and engine; does not call serve or stop
     else
       serve "$profile" || exit $?
     fi
@@ -1257,6 +1314,6 @@ PY
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict (public=$pub_state hidden=$hid_state) · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] [--timeout S] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME [--engine strata]] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] [--timeout S] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
 esac
 fi

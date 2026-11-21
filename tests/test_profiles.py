@@ -2306,7 +2306,7 @@ def test_check_fails_bad_engine(tmp_path):
     path = write_json(tmp_path / "p.json", data)
     result = run("check", "--file", str(path))
     assert result.returncode == 2
-    assert "profiles: qwen35-9b-q4km-vulkan: engine must be llama.cpp, vllm, or sglang" in result.stderr
+    assert "profiles: qwen35-9b-q4km-vulkan: engine must be llama.cpp, vllm, sglang, or strata" in result.stderr
 
 
 def test_check_passes_sglang_on_sglang_backend(tmp_path):
@@ -3184,3 +3184,20 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
     assert ram24["source"] != "local"
     result = run("check", "--file", str(B70_JSON))
     assert result.returncode == 0, result.stderr
+
+
+def test_strata_profile_preserves_int8_and_can_omit_flash_attention(tmp_path):
+    registry = json.loads((ROOT / "config/registry/b70.inference.json").read_text())
+    entry = registry["profiles"]["flashnext"]
+    entry.update(engine="strata", backend="strata", kv="int8")
+    for field in ("flash_attention", "tool_parser", "reasoning_parser"):
+        entry.pop(field)
+    path = write_json(tmp_path / "strata-registry.json", registry)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+    entry.update(engine="sglang", backend="sglang")
+    path = write_json(path, registry)
+    result = run("check", "--file", str(path))
+    assert result.returncode != 0
+    assert "int8" in result.stderr and "flash_attention" in result.stderr

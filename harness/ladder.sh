@@ -56,6 +56,10 @@ die(){ echo "⛔ $*" >&2; exit 2; }
 tokenizer_dir() {
   local model dir
   model="$1"
+  if [ "${ENGINE:-}" = strata ]; then
+    bash "$here/serve_strata.sh" tokenizer "$model"
+    return $?
+  fi
   if [ -d "$model" ]; then
     dir="$model"
   else
@@ -129,7 +133,15 @@ if [ -z "$ENGINE" ]; then
 fi
 # bring, speed, and count are roles.py's answers. The ladder does not keep a second copy.
 BRING=$(python3 "$here/roles.py" bring "$ENGINE") || die "roles.py bring refused engine '$ENGINE'"
-select_serve_envelope "$BACKEND"
+if [ "$ENGINE" = strata ]; then
+  [ "$BACKEND" = strata ] && [ -n "$PROFILE_NAME" ] || die "Strata requires a profile with backend strata"
+  [ -z "$REVIEWER" ] || die "a managed Strata ladder holds one server through all rungs; --reviewer switches it"
+  [ -z "$EXTRA" ] || die "Strata engine flags belong in the prepared config"
+  A770B_ALIAS=$(bash "$here/serve_strata.sh" config-model "$GGUF") || die "Strata prepared config failed preflight"
+  export A770B_ALIAS
+else
+  select_serve_envelope "$BACKEND"
+fi
 SPEED=$(python3 "$here/roles.py" speed "$ENGINE") || die "roles.py speed refused engine '$ENGINE'"
 COUNT=$(python3 "$here/roles.py" count "$ENGINE") || die "roles.py count refused engine '$ENGINE'"
 KIT=$(python3 "$here/roles.py" kit) || die "roles.py kit failed"
@@ -217,6 +229,7 @@ if [ "$DRYRUN" = 1 ]; then
     load_preview="A770B_SERVED_BACKEND=$A770B_SERVED_BACKEND A770B_COMPOSE_FILE=$A770B_COMPOSE_FILE"
     load_preview+=" ${_image_prefix}${_live_prefix}KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS"
     load_preview+=" THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA}"
+    if [ "$ENGINE" = strata ]; then load_preview="bash harness/serve_strata.sh start $GGUF $CTX"; fi
     echo "[dry-run] rung 1/6: $load_preview — MemAvailable sampled before and after; VRAM sampled after load"
     _pp=$(initial_pp || true)
     if [ -z "$_pp" ]; then
@@ -228,7 +241,11 @@ if [ "$DRYRUN" = 1 ]; then
       echo "[dry-run] rung 2/6: STOPPED — $GGUF has no tokenizer.json or tokenizer_config.json"
     fi
   fi
-  echo "[dry-run] evidence: $A770B_DOCKER logs ${A770B_COMPOSE_PROJECT}-llama-1 2>&1 | python3 harness/engine_evidence.py log --engine $ENGINE --log - --model $GGUF --out $LOGDIR/$NAME.evidence.json"
+  if [ "$ENGINE" = strata ]; then
+    echo "[dry-run] evidence: managed Strata launch record, config digest, executable digest, and native logs"
+  else
+    echo "[dry-run] evidence: $A770B_DOCKER logs ${A770B_COMPOSE_PROJECT}-llama-1 2>&1 | python3 harness/engine_evidence.py log --engine $ENGINE --log - --model $GGUF --out $LOGDIR/$NAME.evidence.json"
+  fi
   if [ -z "$PROFILE_NAME" ]; then
     echo "[dry-run] rung 3/6: SKIPPED — the speed rung runs only when given a registry profile name; $GGUF has no row yet"
   elif [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
@@ -243,7 +260,7 @@ if [ "$DRYRUN" = 1 ]; then
   fi
   if tok=$(tokenizer_dir "$GGUF"); then
     case "$ENGINE" in
-      vllm|sglang)
+      vllm|sglang|strata)
         echo "[dry-run] rung 4/6: A770B_SWEEP_STREAM=1 bash harness/ctx_sweep.sh --tokenize openai --model $A770B_ALIAS --tokenizer $tok 8000 $FAR_END"
         ;;
       *)
@@ -272,6 +289,8 @@ fi
 # Stop ONLY the exact container ID this ladder run started, never project-level compose down.
 unset A770B_OWNED_CIDS_FILE
 _serve="${A770B_SERVE_SCRIPT:-$here/serve_compose.sh}"
+if [ "$ENGINE" = strata ]; then _serve="$here/serve_strata.sh"; fi
+STRATA_EVIDENCE=""
 _ladder_started=0
 LADDER_CID=""
 _ladder_stop() {
@@ -293,6 +312,11 @@ _ladder_stop() {
 trap _ladder_stop EXIT
 
 card_lock
+if [ "$ENGINE" = strata ]; then
+  _managed_rc=0
+  bash "$_serve" id >/dev/null || _managed_rc=$?
+  [ "$_managed_rc" = 1 ] || die "stop any owned Strata before starting a measurement ladder"
+fi
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
 LOGDIR="$A770B_DATA/logs"
 FAIL_RUNG=""; FAIL_MSG=""
@@ -325,7 +349,7 @@ echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(d
 BENCH_MODEL_JSON=""
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 if [ -z "$FAIL_RUNG" ]; then
-  echo "▶ rung 1/6 — load (serve_compose.sh); MemAvailable and VRAM"
+  echo "▶ rung 1/6 — load ($(basename "$_serve")); MemAvailable and VRAM"
   if [ "$BRING" = attach ]; then
     echo "bring is attach — not starting a server" >&2
   else
@@ -338,19 +362,29 @@ if [ -z "$FAIL_RUNG" ]; then
     fi
     _t0=$(date +%s.%N)
     # This start only. A vLLM row may name an image the pinned compose file does not hold.
-    if ! (
-      if [ -n "$_vllm_image" ]; then export A770B_VLLM_IMAGE="$_vllm_image"; fi
-      # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, exactly as local-build.sh's serve() does
-      A770B_LIVE_CARD="$A770B_LIVE_CARD" A770B_LIVE_BACKEND="$A770B_LIVE_BACKEND" \
-        A770B_LIVE_MODE="$A770B_LIVE_MODE" A770B_LIVE_PROFILE="$A770B_LIVE_PROFILE" \
-        KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
-        QUANT="$_q" TOOL_PARSER="$_tool" REASONING_PARSER="$_reason" \
-        bash "$_serve" start "$GGUF" "$CTX" $EXTRA
-    ); then
-      FAIL_RUNG="load"; FAIL_MSG="serve_compose.sh failed"
+    _start_rc=0
+    if [ "$ENGINE" = strata ]; then
+      STRATA_EVIDENCE=$(bash "$_serve" start "$GGUF" "$CTX") || _start_rc=$?
+    else
+      (
+        if [ -n "$_vllm_image" ]; then export A770B_VLLM_IMAGE="$_vllm_image"; fi
+        # shellcheck disable=SC2086  # EXTRA is a deliberate word list, expanded unquoted, as in local-build.sh's serve()
+        A770B_LIVE_CARD="$A770B_LIVE_CARD" A770B_LIVE_BACKEND="$A770B_LIVE_BACKEND" \
+          A770B_LIVE_MODE="$A770B_LIVE_MODE" A770B_LIVE_PROFILE="$A770B_LIVE_PROFILE" \
+          KV_K="$KV" KV_V="$KV_V" REASONING="$REAS" THINKING_MODE="$REAS" THINKING_BUDGET="$BUDGET" \
+          QUANT="$_q" TOOL_PARSER="$_tool" REASONING_PARSER="$_reason" \
+          bash "$_serve" start "$GGUF" "$CTX" $EXTRA
+      ) || _start_rc=$?
+    fi
+    if [ "$_start_rc" != 0 ]; then
+      FAIL_RUNG="load"; FAIL_MSG="$(basename "$_serve") failed"
     else
       _ladder_started=1
-      LADDER_CID=$(cat "$A770B_DATA/logs/llamacpp-a770.cid" 2>/dev/null || true)
+      if [ "$ENGINE" = strata ]; then
+        LADDER_CID=$(bash "$_serve" id) || die "managed Strata instance disappeared after startup"
+      else
+        LADDER_CID=$(cat "$A770B_DATA/logs/llamacpp-a770.cid" 2>/dev/null || true)
+      fi
       if _vram=$(gpu_used_gib); then
         _vram_val="$_vram"
         _vram_ok=1
@@ -394,8 +428,8 @@ PY
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
 
-EVIDENCE_PATH=""
-if [ -z "$FAIL_RUNG" ] && [ "$BRING" != attach ]; then
+EVIDENCE_PATH="$STRATA_EVIDENCE"
+if [ "$ENGINE" != strata ] && [ -z "$FAIL_RUNG" ] && [ "$BRING" != attach ]; then
   ev_out="$LOGDIR/$NAME.evidence.json"
   ev_container="${LADDER_CID:-${A770B_COMPOSE_PROJECT}-llama-1}"
   if ev_logtext=$("$A770B_DOCKER" logs "$ev_container" 2>&1) \
@@ -441,7 +475,7 @@ if [ -z "$FAIL_RUNG" ]; then
     CTX_SWEEP_LOG="$LOGDIR/ladder-ctx-sweep-$$.log"
     SWEEP_ARGS=(--tokenize openai --model "$A770B_ALIAS" --tokenizer "$tok")
     # Those streamed rates are a client clock, not llama.cpp timings.
-    ( case "$ENGINE" in vllm|sglang) export A770B_SWEEP_STREAM=1 ;; esac
+    ( case "$ENGINE" in vllm|sglang|strata) export A770B_SWEEP_STREAM=1 ;; esac
       bash "$here/ctx_sweep.sh" "${SWEEP_ARGS[@]}" 8000 "$FAR_END" 2>&1 | tee "$CTX_SWEEP_LOG" ); rc=${PIPESTATUS[0]:-$?}
     [ "$rc" = 0 ] || { FAIL_RUNG="window"; FAIL_MSG="ctx_sweep.sh failed (exit $rc) — see $CTX_SWEEP_LOG"; }
   else
@@ -494,7 +528,7 @@ if [ -z "$FAIL_RUNG" ]; then
   # the operator named by hand keeps run_suite.sh's guard.
   { [ "$FRESH" = 1 ] || [ "$SEAT_IS_OURS" = 1 ]; } && RS_ARGS+=(--fresh)
   RS_LOG="$LOGDIR/ladder-run-suite-$$.log"
-  if [ "$BRING" != attach ]; then
+  if [ "$BRING" != attach ] && [ "$ENGINE" != strata ]; then
     A770B_LADDER_RUN=1 bash "$here/$KIT" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}
   else
     bash "$here/$KIT" "${RS_ARGS[@]}" 2>&1 | tee "$RS_LOG"; rc=${PIPESTATUS[0]}

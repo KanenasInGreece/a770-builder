@@ -17,8 +17,8 @@
 # NETWORK: --unshare-net. The sandbox has loopback only; a bridge forwards 127.0.0.1:$A770B_PORT inside to the host's
 # model server through a unix socket, so the model reaches the server and nothing else — no LAN, no internet, no other
 # loopback service on the host. PID/UTS/IPC unshared; the sandbox dies with its parent. When the host recorded
-# sglang or vllm, the host side is harness/usage_tap.py: it forwards the bytes and writes usage integers to
-# $A770B_DATA/logs/usage.json, and it does not write headers or bodies. llama.cpp keeps the socat bridge, and
+# SGLang, vLLM or Strata, the host usage tap forwards the response and records token counts in
+# $A770B_DATA/logs/usage.json. llama.cpp keeps the socat bridge, and
 # that count stays in the container log. Bridge errors go to $A770B_DATA/logs/llama-bridge.log, so a closed
 # connection never lands in the transcript. A770B_NO_BRIDGE=1 runs without any bridge (verify: tests only, no model, no key).
 # The worktree is judged by guard_path_policy before any existence check and before it is bind-mounted.
@@ -38,7 +38,7 @@ if [ "${A770B_NO_BRIDGE:-0}" != 1 ]; then
   # host side of the bridge: unix socket → the model server; lives only for this run
   rm -f "$SOCK"
   case "${A770B_SERVED_ENGINE:-}" in
-    sglang|vllm)
+    sglang|vllm|strata)
       python3 "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" 7>&- 9>&- >>"$A770B_DATA/logs/llama-bridge.log" 2>&1 & BRIDGE=$!
       ;;
     *)

@@ -105,5 +105,10 @@ def test_unknown_engine_is_refused_not_defaulted(engine, backend):
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr == (
-        f"profile row-a engine '{engine}' is not one this skill serves (llama.cpp, vllm, sglang)\n"
+        f"profile row-a engine '{engine}' is not one this skill serves (llama.cpp, vllm, sglang, strata)\n"
     )
+
+def test_strata_requires_an_explicit_matching_backend():
+    assert resolve("strata", "strata").stdout.strip() == "strata"
+    assert resolve("strata", "sycl").returncode == 2
+    assert resolve("", "strata").returncode == 2

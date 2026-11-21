@@ -14,6 +14,6 @@ prepared definitions, `verify.test` and hidden acceptance tests (see SKILL.md); 
 Judge the result by the capture (`~/local-ai/results/<label>.task.md`) and by `verify <label>`, which re-runs the tests in
 a fresh sandbox — never by exit code. Hard rules: a STANDALONE CLONE only, never a live checkout or a linked worktree
 (the script refuses both) · the VRAM cap and ubatch are the card mode's (`A770B_CARD_MODE`) — never raise them by
-hand · no speculative decoding on it · every `opencode run` from a non-TTY shell takes `< /dev/null` · a run is ended with
+hand · speculative decoding is qualified per model artifact, engine build, backend and card · every `opencode run` from a non-TTY shell takes `< /dev/null` · a run is ended with
 `local-build.sh stop-run`, never by process name.
 <!-- local-build:end -->
