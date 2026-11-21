@@ -1,8 +1,8 @@
 # a770-builder
 
 Run one local Intel Arc GPU as a coding-model seat, and measure models into profiles with the profiling kit.
-Stack: a bash + Python 3 (stdlib) harness; llama.cpp in a Docker/Podman container (vulkan or sycl backend);
-opencode inside a bubblewrap sandbox.
+The Bash and Python harness serves and measures models through the engine named in each profile. The registry
+supports llama.cpp (Vulkan and SYCL), vLLM, SGLang and Strata. OpenCode calls the model from a Bubblewrap sandbox.
 
 ## Commands
 
@@ -43,6 +43,11 @@ differs, even when the kernel is the same.
 4. Window (`ctx_sweep.sh 8000 <far end>`).
 5. Depth probe (`depth_probe.sh`) — caps `useful_ctx` when it fails.
 6. Task (`run_suite.sh`) — the standard suite.
+
+To exercise a kit stage against an externally managed Strata candidate on loopback, follow the
+[Strata attach instructions](kit/PROFILE.md#an-attached-strata-candidate). For the native lifecycle, see
+[managed Strata](docs/OPERATING.md#managed-strata). Full Strata qualification requires
+managed serving and the rest of the ladder.
 
 A builder-class row is green on the task (suite at 80% or better, or a T1 pass), every probe passed, and no engine
 reset. Speed and window are recorded, not gates.

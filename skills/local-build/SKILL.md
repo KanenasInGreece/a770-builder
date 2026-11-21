@@ -14,6 +14,8 @@ description: Use when delegating a bounded coding task to a LOCAL Intel Arc mode
 | Action | Command |
 |---|---|
 | Run | `bash <skill-dir>/scripts/local-build.sh run [<seat>] <brief.md> --profile <card> [--spec <spec.json>] [--timeout <s>]` |
+| Serve Strata | `… serve strata-candidate` uses the prepared v0.2.17 runtime, config and context from the [managed Strata operating notes](../../docs/OPERATING.md#managed-strata). The same profile works with `bench` and `run --profile`. |
+| Attach | `… run … --base-url http://127.0.0.1:<port>/v1 --served-model-name <id> [--engine strata]` — use an externally managed server. With `--engine strata`, the endpoint must use numeric loopback and report the requested text model loaded with enough context for the selected profile. |
 | Verify | `bash <skill-dir>/scripts/local-build.sh verify <label_or_patch> [<seat>] [--test "<cmd>"] [--timeout <s>]` |
 | Cards | `bash <skill-dir>/scripts/local-build.sh profiles` · `profiles --name <card>` · `menu` |
 | State | `bash <skill-dir>/scripts/local-build.sh status` |
@@ -57,7 +59,8 @@ Display-safe (`A770B_CARD_MODE=display`). Pure-inference (`A770B_CARD_MODE=infer
 ## Engine
 
 A profile names its engine. This skill serves llama.cpp on the vulkan and
-sycl backends, vllm on the vllm backend, and sglang on the sglang backend.
+sycl backends, vllm on the vllm backend, sglang on the sglang backend, and
+Strata when both the registry engine and backend are explicitly `strata`.
 A named engine this skill does not serve is refused, and so is a backend
 that contradicts the named engine. When the profile omits the engine, vulkan
 and sycl stay llama.cpp, vllm stays vllm, and sglang stays sglang. An omitted
@@ -66,7 +69,8 @@ SGLang from the profile's tool_parser and reasoning_parser and the
 sglang compose envelope, and still does not package the image. It
 does not package llama-benchy. The speed tool for sglang is llama-benchy,
 called and not copied. The model path is the row's model: a GGUF for llama.cpp, or the file
-or directory a vllm or sglang row names.
+or directory a vllm or sglang row names. A managed Strata row names its prepared
+JSON config. The config's `model_name` identifies the served model.
 
 ## Spec (optional)
 
@@ -85,7 +89,8 @@ or directory a vllm or sglang row names.
 
 - **Always:** standalone clone; judge by `verify`; end a run with `stop-run`; brief names files, the exact test, and a stop (`briefs/TEMPLATE.md`). One operator on this host.
 - **Ask:** raise a cap.
-- **Never:** live checkout or linked worktree; raise the mode cap or `-ub 512` by hand; speculative decoding; kill `bwrap` by name; install this skill for another OS account or put a service user in `docker`.
+- **Speculative decoding:** use the setting measured for the exact model artifact, engine build, backend and card. Qualify new combinations under the mode’s cap.
+- **Never:** live checkout or linked worktree; raise the mode cap or `-ub 512` by hand; kill `bwrap` by name; install this skill for another OS account or put a service user in `docker`.
 
 ## Load when needed
 

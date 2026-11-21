@@ -1,0 +1,6 @@
+{"object": "list", "data": [
+  {"id": "img-gen", "object": "model", "status": {"value": "loaded"}, "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}},
+  {"id": "other-model", "object": "model", "status": {"value": "unloaded"}, "meta": {"n_ctx": 8192}, "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}},
+  {"id": "qwen-candidate", "object": "model", "status": {"value": "loaded"}, "meta": {"n_ctx": 32768}, "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}},
+  {"id": "qwen-alias", "object": "model", "alias_of": "qwen-candidate", "status": {"value": "loaded"}, "meta": {"n_ctx": 32768}, "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}}
+]}

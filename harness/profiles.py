@@ -45,7 +45,7 @@ stays for now and must not contradict `thinking.mode` when both are set (an "aut
 contradicts either value of `reasoning`).
 
 A row may also name the serving triple that a GGUF nickname hides: `engine` (`llama.cpp`,
-`vllm`, or `sglang`), `checkpoint` (`format`, `weight_quant`, `activation_quant`), and `kernel` (`path`,
+`vllm`, `sglang`, or `strata`), `checkpoint` (`format`, `weight_quant`, `activation_quant`), and `kernel` (`path`,
 `xmx`, `evidence`). All three are optional. Omitted means untested, not "the same as the
 quant label". A GGUF K-quant or I-quant is weights-only: `activation_quant` is `none` (activations
 stay in the engine's working precision). `none` is not 4-bit local math. `kernel` is filled only
@@ -96,7 +96,8 @@ SPEED_KEYS = {"8k", "32k", "64k", "100k"}
 # bf16 records a vLLM log that says kv_cache_dtype=auto on dtype bfloat16.
 # fp8_e4m3 records an SGLang argv that sets --kv-cache-dtype fp8_e4m3.
 # llama.cpp rows stay on f16, q8_0, q4_0: that serve sends kv through as -ctk/-ctv.
-KV_ORDER = ("f16", "bf16", "fp8_e4m3", "q8_0", "q4_0")
+# int8 records the native Strata KV mode.
+KV_ORDER = ("f16", "bf16", "fp8_e4m3", "q8_0", "q4_0", "int8")
 KV_VALUES = set(KV_ORDER)
 KV_LIST = ", ".join(KV_ORDER)
 VLLM_IMAGE_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
@@ -153,7 +154,7 @@ OPTIONAL_KEYS = {
     "reasoning_parser", "vllm_image", "measured_tasks",
 }
 MEASURED_TASK_KEYS = {"quality", "wall_s", "context_tokens", "thinking"}
-ENGINE_VALUES = {"llama.cpp", "vllm", "sglang"}
+ENGINE_VALUES = {"llama.cpp", "vllm", "sglang", "strata"}
 CHECKPOINT_FORMATS = {"gguf", "gptq", "awq", "safetensors"}
 CHECKPOINT_REQUIRED_KEYS = {"format", "weight_quant", "activation_quant"}
 CHECKPOINT_KEYS = CHECKPOINT_REQUIRED_KEYS | {"evidence"}
@@ -261,8 +262,9 @@ def validate(data) -> list[str]:
         for k in prof.keys():
             if k not in PROFILE_KEYS:
                 errors.append(f"{name}: unknown key {k}")
+        optional = OPTIONAL_KEYS | {"flash_attention"} if prof.get("engine") == "strata" else OPTIONAL_KEYS
         for k in PROFILE_KEYS:
-            if k not in OPTIONAL_KEYS and k not in prof:
+            if k not in optional and k not in prof:
                 errors.append(f"{name}: missing key {k}")
 
         # The task and its evidence are required for a row measured on the KIT instrument, and optional for a
@@ -357,6 +359,8 @@ def validate(data) -> list[str]:
                 errors.append(f"{name}: {field} bf16 is only recorded when backend is vllm")
             elif prof[field] == "fp8_e4m3" and prof.get("backend") != "sglang":
                 errors.append(f"{name}: {field} fp8_e4m3 is only recorded when backend is sglang")
+            elif prof[field] == "int8" and prof.get("engine") != "strata":
+                errors.append(f"{name}: {field} int8 is only recorded for the Strata engine")
 
         extra = prof.get("extra")
         if prof.get("backend") == "sglang" and isinstance(extra, str):
@@ -688,7 +692,9 @@ def validate(data) -> list[str]:
                     errors.append(f"{name}: thinking.mode {mode!r} contradicts reasoning {reasoning!r}")
 
         if "engine" in prof and isinstance(prof["engine"], str) and prof["engine"] not in ENGINE_VALUES:
-            errors.append(f"{name}: engine must be llama.cpp, vllm, or sglang")
+            errors.append(f"{name}: engine must be llama.cpp, vllm, sglang, or strata")
+        if (prof.get("engine") == "strata") != (prof.get("backend") == "strata"):
+            errors.append(f"{name}: managed Strata requires engine and backend both strata")
 
         # auto matches ^[a-z0-9_]+$, so it is refused by name. The launch log that
         # names a parser does not turn that parser on.

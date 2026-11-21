@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Managed native Strata transport. Lifecycle mutations use the normal card lock.
+set -uo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/env.sh"; . "$here/guard.sh"
+managed=(python3 "$here/strata_managed.py")
+case "${1:-}" in
+  status|id|model|tokenizer|config-model|verify) exec "${managed[@]}" "$@" ;;
+  stop|stop-id)
+    card_lock
+    if [ "$1" = stop-id ]; then "${managed[@]}" stop "${2:?instance id}"; else "${managed[@]}" stop; fi
+    ;;
+  start)
+    config="${2:?prepared Strata config}"; ctx="${3:?context}"
+    [ "$#" -eq 3 ] || { echo "Strata engine flags belong in the prepared config" >&2; exit 2; }
+    card_lock
+    case " $A770B_FRAMEWORK_PORTS " in *" $A770B_PORT "*) echo "Strata port is reserved" >&2; exit 2;; esac
+    [ "$A770B_HOST" = 127.0.0.1 ] || {
+      echo "managed Strata requires numeric loopback 127.0.0.1" >&2; exit 2;
+    }
+    python3 -c 'import math,sys; cap,total=map(float,sys.argv[1:]); sys.exit(not (math.isfinite(total) and 0 < cap <= total))' \
+      "$A770B_VRAM_CAP_GIB" "$A770B_CARD_VRAM_TOTAL" || { echo "invalid Strata card cap" >&2; exit 2; }
+    [ "$(gpu_match_count)" = 1 ] || { echo "managed Strata requires one uniquely measured card" >&2; exit 2; }
+    existing=$("${managed[@]}" id) || {
+      rc=$?
+      [ "$rc" = 1 ] || exit "$rc"
+      existing=""
+    }
+    if [ -z "$existing" ]; then
+      # No Compose project or server is stopped here. A failed lookup is an ambiguous state.
+      containers=$("$A770B_DOCKER" ps -q \
+        --filter "label=com.docker.compose.project=$A770B_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=llama') || exit 2
+      [ -z "$containers" ] || { echo "stop the running builder container before starting Strata" >&2; exit 2; }
+      budget_gate >&2 || exit $?
+    fi
+    "${managed[@]}" tokenizer "$config" >/dev/null || exit $?
+    a770b_api_key >/dev/null || exit 2
+    export A770B_MIN_AVAIL_MB A770B_VRAM_CAP_GIB
+    evidence=$("${managed[@]}" start "$config" --ctx "$ctx" --timeout "${A770B_STRATA_READY_S:-300}") || exit $?
+    id=$("${managed[@]}" id) || exit $?
+    if ! used=$(gpu_used_gib) || ! python3 -c 'import sys; used,cap=map(float,sys.argv[1:]); sys.exit(not (0 <= used <= cap))' \
+      "$used" "$A770B_VRAM_CAP_GIB"; then
+      echo "owned Strata exceeded the configured VRAM cap or telemetry was unavailable (used: ${used:-unavailable} GiB)" >&2
+      "${managed[@]}" stop "$id" || exit 3
+      exit 3
+    fi
+    printf '%s\n' "$evidence"
+    ;;
+  *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | status | id | model | tokenizer <config> | config-model <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
+esac

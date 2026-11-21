@@ -56,7 +56,12 @@ if evidence_path:
     ev_data = load_json(evidence_path)
     row_model = os.path.basename(gguf)
     ev_model = None
-    if isinstance(ev_data, dict):
+    is_strata = isinstance(ev_data, dict) and ev_data.get("engine") == "strata"
+    if is_strata:
+        config = ev_data.get("config")
+        if isinstance(config, str) and os.path.isabs(config):
+            ev_model = config
+    elif isinstance(ev_data, dict):
         if isinstance(ev_data.get("gguf"), dict) and ev_data["gguf"].get("source"):
             ev_model = ev_data["gguf"]["source"]
         elif ev_data.get("model"):
@@ -64,7 +69,11 @@ if evidence_path:
         elif isinstance(ev_data.get("checkpoint_config"), dict) and ev_data["checkpoint_config"].get("source"):
             ev_model = ev_data["checkpoint_config"]["source"]
     ev_model_base = os.path.basename(ev_model) if ev_model else None
-    if ev_model_base and ev_model_base == row_model:
+    if is_strata:
+        matches = ev_model is not None and os.path.realpath(ev_model) == os.path.realpath(gguf)
+    else:
+        matches = ev_model_base == row_model
+    if matches:
         hb = ev_data.get("host_buffers_mib")
         if hb is not None:
             try:
@@ -260,6 +269,8 @@ ladder_doc = {
     "stopped_at_rung": fail_rung or None,
     "failure": fail_msg or None,
 }
+if evidence_path and is_strata:
+    ladder_doc["rungs"]["launch_evidence"] = evidence_path
 with open(out_path, "w") as f:
     json.dump(ladder_doc, f, indent=2)
     f.write("\n")

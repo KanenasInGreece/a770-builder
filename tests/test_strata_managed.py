@@ -1,0 +1,309 @@
+"""Managed Strata contracts with local fixture processes and no GPU."""
+import json
+import os
+from pathlib import Path
+import sys
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
+import strata_managed as managed
+
+
+def test_process_identity_rejects_stale_start_time():
+    identity = managed.process_identity(os.getpid())
+    assert identity
+    assert managed.process_alive({"pid": os.getpid(), "start": identity})
+    assert not managed.process_alive({"pid": os.getpid(), "start": "0"})
+
+
+@pytest.fixture
+def config(tmp_path, monkeypatch):
+    exe = tmp_path / "strata"
+    exe.write_text("#!/bin/sh\nexit 1\n")
+    exe.chmod(0o755)
+    for name in ("tokenizer.json", "vocab.json"):
+        (tmp_path / name).write_text("{}")
+    model = tmp_path / "strata.json"
+    model.write_text(json.dumps({"exe": str(exe), "cwd": str(tmp_path), "tokenizer": str(tmp_path),
+                                 "backend": "intel", "model_name": "flash-next", "drafting": "auto",
+                                 "env": {"STRATA_MIRROR_MIB": "0"},
+                                 "args": ["--spec", "2", "--reserve-mib", "2048"]}))
+    monkeypatch.setenv("A770B_ONEAPI_DEVICE_SELECTOR", "level_zero:1")
+    monkeypatch.setenv("A770B_STRATA_ENGINE_SHA256", managed.file_digest(exe))
+    return model
+
+
+def test_prepared_config_pins_one_card_and_preserves_native_spec(config):
+    doc, evidence = managed.prepare_config(config)
+    assert doc["env"]["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1"
+    assert doc["args"][:2] == ["--spec", "2"] and evidence["model_id"] == "flash-next"
+    assert evidence["engine_sha256"] == managed.file_digest(Path(doc["exe"]))
+
+
+@pytest.mark.parametrize("key,value", [
+    ("drafting", "dflash2"), ("args", ["--draft-model", "missing.pack"]),
+    ("gpu", [0, 1]), ("parallel", 2), ("replicas", 2), ("before_load", "some-script"),
+    ("env", {"ONEAPI_DEVICE_SELECTOR": "level_zero:*"}), ("api_key", "foreign-key"),
+    ("env", {"STRATA_PROFILE_DIR": "/other/location"}),
+])
+def test_prepared_config_refuses_unsafe_overrides(config, key, value):
+    doc = json.loads(config.read_text())
+    doc[key] = value
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError):
+        managed.prepare_config(config)
+
+
+# This substitute only implements the terminal launch boundary. It exits when
+# the supervisor closes its write end of the owner pipe.
+SERVER = """
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import argparse
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import sys
+import threading
+
+parser = argparse.ArgumentParser()
+for name in ('engine', 'config', 'host', 'port', 'parallel', 'shutdown-timeout', 'owner-fd', 'ready-file'):
+    parser.add_argument('--' + name)
+parser.add_argument('--offline', action='store_true')
+args = parser.parse_args()
+assert args.host == '127.0.0.1' and args.offline and args.parallel == '1'
+assert os.environ['STRATA_KEEP_LEFTOVERS'] == '1' and os.environ['STRATA_NO_PRESET'] == '1'
+assert os.environ['STRATA_NO_ACQUIRE'] == '1'
+assert Path(os.environ['STRATA_HOME']) == Path(args.config).parent
+assert Path(os.environ['XDG_CONFIG_HOME']).parent == Path(args.config).parent
+config = Path(args.config).read_bytes()
+model = json.loads(config)['model_name']
+argv = json.dumps(sys.argv[1:], ensure_ascii=False, separators=(',', ':')).encode()
+prefix = b'strata-owned-launch-v1' + bytes(1)
+message = prefix + len(config).to_bytes(8, 'big') + config + len(argv).to_bytes(8, 'big') + argv
+proof = hmac.new(bytes.fromhex(os.environ['STRATA_OWNER_ATTEST_KEY']), message, hashlib.sha256).hexdigest()
+key = os.environ['STRATA_API_KEY']
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        code = 200
+        if self.path == '/health':
+            body = dict(service='strata', loaded=True, model=model, max_context=32768)
+        elif self.headers.get('Authorization') != 'Bearer ' + key:
+            code, body = 401, {}
+        elif self.path == '/v1/models':
+            body = dict(data=[dict(id=model, status=dict(value='loaded'), meta=dict(n_ctx=32768),
+                                   architecture=dict(output_modalities=['text']))])
+        elif self.path == '/v1/telemetry':
+            body = dict(instance=dict(id="owned-fixture", launch_attestation=proof))
+        else:
+            code, body = 404, {}
+        self.send_response(code)
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
+with ThreadingHTTPServer((args.host, int(args.port)), Handler) as server:
+    Path(args.ready_file).write_text(json.dumps(dict(
+        pid=os.getpid(), bound_host=args.host, bound_port=int(args.port), model_id=model,
+        model_state="ready", instance_id="owned-fixture",
+    )))
+    def owner():
+        os.read(int(args.owner_fd), 1)
+        server.shutdown()
+    threading.Thread(target=owner, daemon=True).start()
+    server.serve_forever()
+"""
+
+
+def test_start_reuse_and_exact_stop_with_owned_fixture(config, tmp_path, monkeypatch):
+    import socket
+
+    terminal = tmp_path / "terminal"
+    (terminal / "serve").mkdir(parents=True)
+    (terminal / "serve/server.py").write_text(SERVER)
+    monkeypatch.setattr(managed, "source_inputs", lambda: (terminal, Path(sys.executable)))
+    monkeypatch.setenv("A770B_CARD", "b70")
+    monkeypatch.setenv("A770B_GPU_MATCH", "G31")
+    monkeypatch.setattr(managed, "level_zero_pci_ids", lambda: [(0x8086, 0xe20b), (0x8086, 0xe223)])
+    keyfile = tmp_path / "api.key"
+    keyfile.write_text("fixture-key\n")
+    monkeypatch.setenv("A770B_API_KEY_FILE", str(keyfile))
+    monkeypatch.setenv("A770B_HOST", "127.0.0.1")
+    monkeypatch.setenv("A770B_MIN_AVAIL_MB", "1")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("A770B_PORT", str(port))
+    state_path = tmp_path / "strata-instance.json"
+    try:
+        state = managed.start(state_path, config, 32768, 5)
+        assert managed.health_matches(state, "fixture-key")
+        assert not managed.health_matches({**state, "attestation": "0" * 64}, "fixture-key")
+        assert managed.start(state_path, config, 32768, 5)["pid"] == state["pid"]
+        monkeypatch.setenv("A770B_MIN_AVAIL_MB", "2")
+        with pytest.raises(ValueError, match="different launch"):
+            managed.start(state_path, config, 32768, 5)
+        evidence = (Path(state["run"]) / "evidence.json").read_text()
+        assert "fixture-key" not in evidence and "engine_sha256" in evidence
+        with pytest.raises(ValueError, match="instance changed"):
+            managed.stop(state_path, "some-other-id")
+        assert managed.process_alive(state)
+        managed.stop(state_path, state["id"])
+        assert not managed.process_alive(state) and not state_path.exists()
+    finally:
+        managed.stop(state_path)
+
+
+def test_candidate_ladder_dry_run_routes_all_rungs_without_key(config, tmp_path, monkeypatch):
+    import subprocess
+
+    root = Path(managed.__file__).resolve().parents[1]
+    env = dict(os.environ, A770B_PROJECT=str(root), A770B_DATA=str(tmp_path / "data"), A770B_CARD="b70",
+               A770B_CARD_MODE="inference", A770B_STRATA_CONFIG=str(config), A770B_STRATA_CTX="32768",
+               A770B_API_KEY_FILE=str(tmp_path / "api.key"))
+    env.pop("A770B_PROFILES_FILE", None)
+    run = subprocess.run(["bash", str(root / "harness/ladder.sh"), "strata-candidate", "--dry-run"],
+                         env=env, text=True, capture_output=True, timeout=30)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "harness/serve_strata.sh start" in run.stdout
+    assert "A770B_SWEEP_STREAM=1" in run.stdout and "--model flash-next" in run.stdout
+    assert "--served-model-name flash-next" in run.stdout
+    assert "rung 5/6: bash harness/depth_probe.sh" in run.stdout and "rung 6/6: bash harness/run_suite.sh" in run.stdout
+    assert not (tmp_path / "api.key").exists()
+
+
+def test_explicit_draft_file_needs_matching_pin(config, tmp_path):
+    draft = tmp_path / "draft.pack"
+    draft.write_bytes(b"prepared draft fixture")
+    doc = json.loads(config.read_text())
+    doc["drafting"] = "dflash2"
+    doc["args"].extend(["--draft-model", str(draft)])
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="matching draft_asset_sha256"):
+        managed.prepare_config(config)
+    doc["draft_asset_sha256"] = {str(draft): managed.file_digest(draft)}
+    config.write_text(json.dumps(doc))
+    prepared, evidence = managed.prepare_config(config)
+    assert prepared["user_args"][-2:] == ["--draft-model", str(draft)]
+    assert evidence["draft_sha256"] == doc["draft_asset_sha256"]
+
+
+def test_level_zero_selector_rejects_desktop_card(monkeypatch):
+    monkeypatch.setenv("A770B_CARD", "b70")
+    monkeypatch.setenv("A770B_GPU_MATCH", "G31")
+    monkeypatch.setattr(managed, "level_zero_pci_ids", lambda: [(0x8086, 0xe20b), (0x8086, 0xe223)])
+    with pytest.raises(ValueError, match="does not select"):
+        managed.require_selected_card("level_zero:0")
+    managed.require_selected_card("level_zero:1")
+
+
+def test_supervisor_does_not_start_without_foreground_authorization(tmp_path):
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    managed.supervise(tmp_path / "missing-launch.json", read_fd)
+
+
+@pytest.mark.parametrize("name", ["ZE_ENABLE_PCI_ID_DEVICE_ORDER", "ZE_FLAT_DEVICE_HIERARCHY",
+                                   "UR_LOADER_USE_OLD_ADAPTER", "SYCL_DEVICE_ALLOWLIST"])
+def test_config_cannot_change_device_enumeration(config, name):
+    doc = json.loads(config.read_text())
+    doc["env"] = {name: "1"}
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="card selection"):
+        managed.prepare_config(config)
+
+
+def test_partial_readiness_waits_for_complete_json(tmp_path):
+    (tmp_path / "ready.json").write_text("{")
+    state = {"run": str(tmp_path), "server_pid": os.getpid(),
+             "server_start": managed.process_identity(os.getpid())}
+    assert not managed.health_matches(state, "fixture-key")
+
+
+@pytest.mark.parametrize("name", ["SYCL_DEVICE_ALLOWLIST", "UR_ENABLE_LAYERS", "ZE_ENABLE_PCI_ID_DEVICE_ORDER"])
+def test_preflight_rejects_ambient_device_controls(monkeypatch, name):
+    monkeypatch.setenv(name, "1")
+    with pytest.raises(ValueError, match=name):
+        managed.level_zero_pci_ids()
+
+
+def test_stop_cleans_server_after_supervisor_death(tmp_path):
+    import subprocess
+
+    path = tmp_path / "instance.json"
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                          start_new_session=True) as server:
+        state = {"id": "fixture", "pid": -1, "start": None, "run": str(tmp_path),
+                 "server_pid": server.pid, "server_start": managed.process_identity(server.pid)}
+        managed.write_state(path, state)
+        try:
+            managed.stop(path, "fixture")
+            assert server.poll() is not None
+            assert not path.exists()
+        finally:
+            if server.poll() is None:
+                server.kill()
+
+
+def test_stop_retains_ownership_if_engine_survives(tmp_path, monkeypatch):
+    path = tmp_path / "instance.json"
+    state = {"id": "fixture", "pid": -1, "start": None, "run": str(tmp_path),
+             "server_pid": 100, "server_start": "abc"}
+    managed.write_state(path, state)
+    procs = tmp_path / "xdg-state" / "strata" / "procs"
+    procs.mkdir(parents=True)
+    managed.write_state(procs / "101.json", {"pid": 101, "role": "engine", "token": "l:def",
+                                             "parent": {"pid": 100, "token": "l:abc"}})
+    monkeypatch.setattr(managed, "process_identity", lambda pid: "def" if pid == 101 else None)
+    monkeypatch.setattr(managed, "STOP_TIMEOUT", 0)
+    with pytest.raises(ValueError, match="retaining ownership"):
+        managed.stop(path, "fixture")
+    assert path.exists()
+
+
+def test_server_entrypoint_waits_for_recorded_ownership(tmp_path, monkeypatch):
+    import subprocess
+
+    terminal = tmp_path / "terminal"
+    (terminal / "serve").mkdir(parents=True)
+    marker = tmp_path / "server-entrypoint-ran"
+    (terminal / "serve/server.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    state = tmp_path / "instance.json"
+    plan = tmp_path / "plan.json"
+    snapshot = tmp_path / "config.json"
+    snapshot.write_text("{}")
+    key = tmp_path / "key"
+    key.write_text("fixture-key\n")
+    monkeypatch.setenv("A770B_API_KEY_FILE", str(key))
+    managed.write_state(plan, {"run": str(tmp_path), "snapshot": str(snapshot), "port": 30261,
+                               "state": str(state), "selector": "level_zero:0", "min_ram_mib": 1,
+                               "python": sys.executable, "terminal": str(terminal)})
+    launcher = """
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import strata_managed as managed
+
+def write_state(path, state):
+    if "server_pid" in state:
+        # Give a child without an authorization gate a chance to run.
+        managed.time.sleep(0.4)
+        os._exit(42)
+    original(path, state)
+
+original = managed.write_state
+managed.write_state = write_state
+read, write = os.pipe()
+os.write(write, b"1")
+os.close(write)
+managed.supervise(Path(sys.argv[2]), read)
+"""
+    result = subprocess.run([sys.executable, "-c", launcher, str(Path(managed.__file__).parent),
+                             str(plan)], timeout=5, check=False)
+    assert result.returncode == 42
+    assert not marker.exists()

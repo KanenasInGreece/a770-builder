@@ -27,14 +27,14 @@ _profile_engine(){
         *) die "profile $name engine vllm does not match backend $backend" || return $?;;
       esac
       ;;
-    sglang)
+    sglang|strata)
       case "$backend" in
-        sglang) printf '%s\n' "sglang"; return 0;;
-        *) die "profile $name engine sglang does not match backend $backend" || return $?;;
+        "$engine") printf '%s\n' "$engine"; return 0;;
+        *) die "profile $name engine $engine does not match backend $backend" || return $?;;
       esac
       ;;
     *)
-      die "profile $name engine '$engine' is not one this skill serves (llama.cpp, vllm, sglang)" || return $?
+      die "profile $name engine '$engine' is not one this skill serves (llama.cpp, vllm, sglang, strata)" || return $?
       ;;
   esac
 }

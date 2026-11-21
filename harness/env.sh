@@ -155,6 +155,15 @@ else
   # sources this file again); only an unset list becomes empty
   : "${A770B_PROFILES:=}"
 fi
+# A prepared Strata candidate can be exercised before it earns a shipped registry row.
+if [ -n "${A770B_STRATA_CONFIG:-}" ] && [ -n "${A770B_STRATA_CTX:-}" ]; then
+  case " $A770B_PROFILES " in *" strata-candidate "*) ;; *) A770B_PROFILES="${A770B_PROFILES:+$A770B_PROFILES }strata-candidate";; esac
+  export A770B_STRATA_CANDIDATE_MODEL="$A770B_STRATA_CONFIG" A770B_STRATA_CANDIDATE_CTX="$A770B_STRATA_CTX"
+  export A770B_STRATA_CANDIDATE_ENGINE=strata A770B_STRATA_CANDIDATE_BACKEND=strata
+  export A770B_STRATA_CANDIDATE_CARD="$A770B_CARD" A770B_STRATA_CANDIDATE_MODE="$A770B_CARD_MODE"
+  export A770B_STRATA_CANDIDATE_TIMEOUT="${A770B_STRATA_TIMEOUT:-1500}"
+  export A770B_STRATA_CANDIDATE_REASONING="${A770B_STRATA_REASONING:-on}"
+fi
 : "${A770B_OUTPUT_TOKENS:=16384}"                            # opencode's per-reply output limit: a whole file goes out in one tool call, and at 4,096 a test file of two hundred lines was cut mid-JSON, so every write failed (measured 2026-09-08)
 : "${A770B_HIDDEN_ROOT:=$A770B_DATA/hidden}"                  # hidden acceptance tests a run specification may name: files the model never sees, copied into the seat by verify after the patch applies
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -250,9 +259,15 @@ a770b_curl(){
 # A770B_SPEC names a run specification, with that specification applied against the seat in A770B_RENDER_SEAT; the
 # renderer then writes <out>.echo.json saying what it rendered. Written mode 600: it carries the key. With a fourth
 # argument the key is a placeholder and no specification is applied: for runs that need no server (verify).
+# Unkeyed Strata v0.2.16 ignores the placeholder bearer. Skip key-file creation and still render the specification
+# and model ID.
 a770b_render_profile(){
   local profile="$1" ctx="$2" out="$3" key
-  if [ -n "${4:-}" ]; then key="no-key-for-this-run"; else key=$(a770b_api_key) || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; return 1; }; fi
+  if [ -n "${4:-}" ] || { [ "${A770B_SERVED_ENGINE:-}" = strata ] && [ "${A770B_STRATA_AUTH:-}" = none ]; }; then
+    key="no-key-for-this-run"
+  else
+    key=$(a770b_api_key) || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; return 1; }
+  fi
   rm -f "$out" "$out.echo.json"
   # the profile's own sampling (env.sh's TEMPERATURE/TOP_P defaults, or an override): an empty value adds no argument
   local -a sampling_args=()

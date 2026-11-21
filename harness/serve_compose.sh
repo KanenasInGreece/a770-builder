@@ -911,6 +911,9 @@ fi
 # the budget gate reads the card free (a running container's VRAM is this project's, not a foreign server) and
 # `up --force-recreate` starts from the profile just built — a profile switch must not silently keep the old model.
 card_lock
+_strata_rc=0
+python3 "$(dirname "$0")/strata_managed.py" id >/dev/null || _strata_rc=$?
+[ "$_strata_rc" = 1 ] || { echo "⛔ stop managed Strata before starting a builder container" >&2; exit 3; }
 _keep_serve_log
 if ! _compose down >/dev/null; then
   echo "⛔ compose down failed — the card is NOT free; prior ownership files retained" >&2

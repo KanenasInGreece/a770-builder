@@ -4,6 +4,98 @@
   "mode": "inference",
   "notes": "The llama.cpp rows are measurements on the Arc Pro B70 (32 GB, Xe2) with nothing else on the card, in the full-intel SYCL container, -ub 512, K/V q8_0. The vLLM row names its own image, quant flag and cache dtype in vllm_image, quant and kv; its measured_on names the engine. The ledger config/models.md holds every B70 checkpoint measured, adopted or not. builder.env and the environment override any A770B_<NAME>_* value.",
   "profiles": {
+    "qwen38-flash-next-iq3s-strata": {
+      "model": "Qwen3.8-Flash-Next-IQ3_S.strata.json",
+      "ctx": 32768,
+      "kv": "int8",
+      "kv_v": "int8",
+      "reasoning": "on",
+      "extra": "",
+      "timeout_s": 1500,
+      "vram_gib_after_load": 25.64,
+      "ram_gb_extra": 27.7,
+      "useful_ctx": 31632,
+      "speed": {
+        "decode_tps": {
+          "8k": 28.675594849636038,
+          "32k": null,
+          "64k": null,
+          "100k": null
+        },
+        "prefill_tps": {
+          "8k": 1337.1326933097464,
+          "32k": null,
+          "64k": null,
+          "100k": null
+        },
+        "bench": {
+          "tool": "llama-benchy",
+          "prompt": 8192,
+          "gen": 128,
+          "flags": "--pp 8192 --tg 128 --depth 0 --runs 3 --concurrency 1 --no-cache --skip-coherence --latency-mode generation --extra-body return_token_ids=false",
+          "at_depth": {
+            "8192": {
+              "pp": 1337.1326933097464,
+              "tg": 28.675594849636038
+            }
+          },
+          "source": "strata-candidate-http-20261121-100942.json"
+        },
+        "far_end": {
+          "tokens": 31632,
+          "decode_tps": 33.5,
+          "prefill_tps": 1675.0,
+          "ttft_s": 18.9
+        },
+        "delivered": {
+          "prefill_tps": 571.0,
+          "decode_tps": 29.5,
+          "source": "strata-candidate-suite-20261121-101157-650513.json"
+        }
+      },
+      "instrument": "SUITE-1@1",
+      "task": "code-edit",
+      "evidence": "SUITE-1@1 passed 3 of 3 counted stages (meets the builder-class threshold). The 31,522-token depth probe scored 2/3. The 31,632-token sweep reached 33.5 tok/s decode with no GPU resets. Strata reported 10,087 GPU-resident experts and 14,489 mirrored in 27.70 GiB pinned host RAM. The scope capped host memory at 36 GiB with no swap. Native suffix drafts used spec 2 without an external head.",
+      "measured_on": "Arc Pro B70 32 GB, Strata v0.2.17 with SYCL engine 0.1.63, 2026-11-21",
+      "use_for": "Text-only Flash-Next with one request at a time and CPU RAM backing the nonresident experts. Useful context was measured separately from the 8192-token HTTP benchmark.",
+      "fit": {
+        "code": "SUITE-1: 3/3 stages passed, mean wall 473.0s (this ladder run)",
+        "write": "not measured"
+      },
+      "capability": {},
+      "suite": {
+        "briefs": 3,
+        "runs": 3,
+        "passed": 3,
+        "timeouts": 0,
+        "source": "strata-candidate-suite-20261121-101157-650513.json",
+        "mean_wall_s": 473.0,
+        "instrument": "SUITE-1@1"
+      },
+      "source": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S",
+      "family": "qwen3.8",
+      "architecture": "qwen4_exp",
+      "quant": "IQ3_S",
+      "category": "moe",
+      "weight_class": "180b-a6b",
+      "params_b": {
+        "total": 180,
+        "active": 6
+      },
+      "placement": "host",
+      "card": "b70",
+      "mode": "inference",
+      "engine": "strata",
+      "backend": "strata",
+      "depth_probe_100k": "not run",
+      "capability_source": "The ISTA-DASLab model card reports its evaluation separately. The local measurements use the pinned IQ3_S checkpoint and the B70 kit.",
+      "checkpoint": {
+        "format": "gguf",
+        "weight_quant": "IQ3_S",
+        "activation_quant": "none",
+        "evidence": "Pinned ISTA-DASLab IQ3_S weights. The Strata engine log independently reports int8 prompt experts enabled on Battlemage."
+      }
+    },
     "qwen38-27b-udq6k-sycl": {
       "task": "code-edit",
       "evidence": "SUITE-1@1: 3 of 3 counted stages passed, all three reference exercises passed, depth probe 3/3 at 98,976 tokens (full ladder 2026-09-20)",

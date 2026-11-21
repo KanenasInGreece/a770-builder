@@ -48,6 +48,7 @@ import json
 import os
 import shlex
 import subprocess
+import pytest
 import sys
 from pathlib import Path
 
@@ -544,3 +545,24 @@ def test_ladder_does_not_stop_when_start_fails(tmp_path):
     for n in (2, 3, 4, 5, 6):
         assert f"▶ rung {n}/6" not in res.stdout
 
+
+
+@pytest.mark.parametrize("same_config", [True, False])
+def test_strata_ladder_evidence_matches_full_config_path(tmp_path, same_config):
+    evidence = tmp_path / "evidence.json"
+    config = tmp_path / "strata.json"
+    measured = config if same_config else tmp_path / "other" / config.name
+    evidence.write_text(json.dumps({"engine": "strata", "config": str(measured)}))
+    output = tmp_path / "ladder.json"
+    argv = [
+        str(output), "strata", str(config), "32768", "int8", "int8", "on", "", "1500",
+        "strata", "SUITE-1@test", "31744", "64000", "52000", "", "", "", "",
+        "", "", "", "", GENERATED, str(evidence),
+    ]
+    result = subprocess.run([sys.executable, str(LADDER_ROW), *argv], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    row = printed_row(result.stdout)
+    if same_config:
+        assert row["checkpoint"] == {"evidence": str(evidence)}
+    else:
+        assert "checkpoint" not in row

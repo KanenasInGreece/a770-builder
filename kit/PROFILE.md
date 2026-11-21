@@ -103,7 +103,7 @@ whether a human still writes or chooses it (**human**) — `ladder.sh`'s own out
 | `card` | **human** — stored, required | the card this row was measured on; not parsed from `measured_on` | none |
 | `backend` | **human** — stored, required | the serving backend this row was measured on; not parsed from `measured_on` | none |
 | `tool_parser` | **human** — optional | the vLLM or SGLang tool-call parser the model's chat template needs; an SGLang row also sets `reasoning_parser`; omit both on llama.cpp rows | none |
-| `engine` | **human** — optional; omitted means untested | `llama.cpp`, `vllm`, or `sglang`. The process that loads the checkpoint and schedules work. Not inferred from `backend` or the filename | none |
+| `engine` | **human** — optional; omitted means untested | `llama.cpp`, `vllm`, `sglang`, or `strata`. The process that loads the checkpoint and schedules work. Not inferred from `backend` or the filename | none |
 | `checkpoint` | **human** / **ladder** — optional; omitted means untested; if present, the three schema keys plus optional `evidence` | `format` (`gguf`, `gptq`, `awq`, `safetensors`), `weight_quant` (the file's weight encoding; on a GGUF row it must equal `quant`), `activation_quant` (`none`, `fp16`, `bf16`, `int8`, `int4`), and optional `evidence` (the path to the serve evidence file, e.g. from `ladder.sh`). `none` means the checkpoint does not quantise activations — they stay in the engine's working precision. A Q4/Q6/IQ3 GGUF is weights-only: it is not 4-bit local math, and it is not W4A16/W4A4. A different encoding of the same model (GPTQ/AWQ/AutoRound) is a different checkpoint and may need a different kernel | the maker's own statement of the file encoding, never a nickname |
 | `kernel` | **human** — optional; omit until measured. If present, all three keys | `path` (`gpu`, `cpu-like`, `untested`), `xmx` (`used`, `unavailable`, `untested`), `evidence` (non-empty, transcribed from a log or a bench). Grep: llama-bench `ggml_vulkan: … matrix cores:` (capability; A770 and B70 Mesa: `none`, `int dot: 1`); `load_backend: loaded Vulkan` / `loaded SYCL`; llama-bench JSON `backends`, `gpu_info`, `n_gpu_layers`, `model_type`; llama-server `unused tensor` (extra heads in **this** file); vLLM `XPUwNa16LinearKernel` / `gptq_gemm` / `switch to gptq_marlin` (the last is NVIDIA-only). Do not fill it from the quant label and do not invent FlashInfer/CUTLASS/Marlin lines this card does not print. Speed falling toward CPU while VRAM is occupied is a kernel miss, not a `useful_ctx` miss — that floor is a window rule. Recipe: `docs/OPERATING.md` *Engine, checkpoint, kernel* | none — this card's own observation |
 | `mode` | **human** — stored, required | display or inference; not parsed from `measured_on` | none |
@@ -210,3 +210,33 @@ so what is missing from the record is that check and not the quality score. The 
 that is not "close" or "nearly working". A card's `use_for` must say exactly that, never dressed up as a pass
 because the other rungs read well. A row is only ever as strong as its worst rung, and the suite exists precisely
 so that rung cannot be skipped or softened in the write-up.
+
+## A managed Strata candidate
+
+Prepare the runtime, Intel engine, tokenizer and per-window config in the
+[managed Strata operating notes](../docs/OPERATING.md#managed-strata).
+Set `A770B_STRATA_CONFIG` and `A770B_STRATA_CTX` for the temporary `strata-candidate` profile.
+Run `bash harness/ladder.sh strata-candidate` for load, HTTP speed, context, depth, and kit measurements,
+or `bash harness/run_suite.sh strata-candidate --stages s1-frontend` for a focused kit stage.
+The managed capture labels usage `strata (managed)`. Keep the launch evidence, prepared config identity
+and measured card and host settings with any candidate row.
+
+## An attached Strata candidate
+
+Run a kit stage against an externally managed Strata endpoint on `127.0.0.1`.
+
+```sh
+bash harness/run_suite.sh --engine strata --base-url http://127.0.0.1:PORT/v1 \
+  --served-model-name ID --ctx N --stages s1-frontend
+```
+
+The kit uses the same `run` and `verify` workflow it uses for other engines. Attach checks that Strata v0.2.16
+reports the requested text model loaded and that `--ctx` fits its advertised window. The kit detects authentication
+by checking anonymous access before sending a key. The direct `strata_attach.py attach` and `probe` commands accept `--auth`. In unkeyed mode Strata
+ignores OpenCode's placeholder bearer and the harness skips key-file creation. The usage tap records streamed
+counts when present and marks missing usage as unmeasured. The capture identifies the engine as `strata (attached)`.
+
+The optional probe takes `--checkpoint` and `--tokenizer` and checks tool calls, token counts and post-disconnect
+availability. OpenCode 1.18.35 completed the attachment workflow against a deterministic fixture. The managed
+B70 trial used the same health and model checks against Strata v0.2.17. Live external attachment and
+OpenCode v2 remain unverified. See [the operating notes](../docs/OPERATING.md#an-externally-managed-strata-candidate).
