@@ -36,11 +36,8 @@ orchestrating agent as a skill it can call with a brief.
 
 ## Where each one stops
 
-This project does not build or package a backend, and says so. Its serving line today is llama.cpp over
-Vulkan, and every number in `config/models.md` was taken there. If what you need is SYCL, OpenVINO or vLLM
-on an Intel card, a container is a faster route to a working server than this repository will ever be, and
-nothing here has been measured on those backends — a claim about them would be a guess, and this project
-does not publish guesses.
+This project does not just build or package a backend. If what you need is SYCL, OpenVINO or vLLM
+on an Intel card, a container is a faster route to a working server than this repository will ever be.
 
 A container image, in turn, gives you a server and stops. It does not tell you which of the models you could
 load still answers correctly a hundred thousand tokens into a prompt, how slowly it decodes once it is that
