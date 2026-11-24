@@ -258,6 +258,22 @@ def test_doctor_accepts_a_set_card_knob():
     assert not any(ln.startswith("MISSING input A770B_GPU_MATCH") for ln in out.splitlines()), out
 
 
+def _write_opencode_stub(path: Path, version: str, help_line: str) -> None:
+    path.write_text(
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = --version ]; then printf '%s\\n' '" + version + "'; exit 0; fi\n"
+        "if [ \"${1:-}\" = run ] && [ \"${2:-}\" = --help ]; then printf '%s\\n' '" + help_line + "'; exit 0; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def _require_opencode(tmp_path: Path, bindir: Path) -> subprocess.CompletedProcess:
+    env = dict(os.environ, A770B_DATA=str(tmp_path / "data"), A770B_OPENCODE_BIN=str(bindir))
+    return run_bash(f'. "{ENV_SH}"; a770b_require_opencode_v1', env=env)
+
+
 def test_doctor_preflights_offline_pytest_cache_and_opencode_binary(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -265,8 +281,7 @@ def test_doctor_preflights_offline_pytest_cache_and_opencode_binary(tmp_path):
     uv.write_text("#!/bin/sh\n[ \"${1:-}\" = --version ] && { echo 'uv 0.13.4'; exit 0; }\ncase \" $* \" in *' --no-project '*) ;; *) exit 1;; esac\n[ -d \"$UV_CACHE_DIR\" ] && exit 0\nexit 1\n", encoding="utf-8")
     uv.chmod(0o755)
     opencode = bindir / "opencode"
-    opencode.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    opencode.chmod(0o755)
+    _write_opencode_stub(opencode, "1.19.6", "  --dir   directory to run in")
     cache = tmp_path / "warm-cache"
     cache.mkdir()
     env = _doctor_env(tmp_path, PATH=f"{bindir}:{os.environ['PATH']}",
@@ -330,6 +345,75 @@ def test_doctor_does_not_resolve_opencode_from_current_directory(tmp_path):
                             cwd=tmp_path, env=env)
     assert "ok   offline grader: pytest + pytest-asyncio resolve from the warm cache" in result.stdout, result.stdout + result.stderr
     assert "MISSING opencode:" in result.stdout
+
+
+def test_require_opencode_v1_accepts_1_19_6_with_dir_flag(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _write_opencode_stub(bindir / "opencode", "1.19.6", "  --dir   directory to run in")
+    result = _require_opencode(tmp_path, bindir)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert str(bindir) not in result.stdout
+
+
+def test_require_opencode_v1_refuses_2_2_0_even_when_help_lists_dir(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _write_opencode_stub(bindir / "opencode", "2.2.0", "  --dir   directory to run in")
+    result = _require_opencode(tmp_path, bindir)
+    assert result.returncode == 2
+    assert "OpenCode 1 is required" in result.stderr
+    assert "1.19.6 is the qualified release" in result.stderr
+    assert "A770B_OPENCODE_BIN must be that binary's directory" in result.stderr
+    assert str(bindir) not in result.stderr
+    assert str(tmp_path) not in result.stderr
+
+
+def test_require_opencode_v1_refuses_directory_flag_without_dir_token(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _write_opencode_stub(bindir / "opencode", "1.19.6", "  --directory   directory to run in")
+    result = _require_opencode(tmp_path, bindir)
+    assert result.returncode == 2
+    assert "OpenCode 1 is required" in result.stderr
+    assert str(bindir) not in result.stderr
+
+
+def test_doctor_reports_missing_for_opencode_2(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _write_opencode_stub(bindir / "opencode", "2.2.0", "  --dir   directory to run in")
+    env = _doctor_env(tmp_path, A770B_OPENCODE_BIN=str(bindir))
+    result = _run_doctor(env)
+    assert any(ln.startswith("MISSING opencode:") and "OpenCode 1" in ln and "1.19.6" in ln for ln in result.stdout.splitlines()), result.stdout
+    assert "ok   opencode" not in result.stdout
+
+
+def test_ladder_requires_opencode_v1_before_serve_after_dry_run():
+    text = (ROOT / "harness" / "ladder.sh").read_text(encoding="utf-8")
+    marker = 'echo "[dry-run] nothing written"\n  exit 0\nfi\n'
+    assert marker in text
+    before, after = text.split(marker, 1)
+    assert "a770b_require_opencode_v1" not in before
+    require_at = after.find("a770b_require_opencode_v1")
+    serve_at = after.find('bash "$_serve"')
+    assert require_at != -1 and serve_at != -1
+    assert require_at < serve_at
+    assert require_at < after.find("card_lock")
+
+
+def test_run_branch_requires_opencode_v1_before_serve():
+    text = (ROOT / "skills" / "local-build" / "scripts" / "local-build.sh").read_text(encoding="utf-8")
+    start = text.find("\n  run)")
+    end = text.find("\n  verify)", start)
+    branch = text[start:end]
+    require_at = branch.find("a770b_require_opencode_v1")
+    serve_at = branch.find('serve "$profile"')
+    attach_at = branch.find("_attach_running_server")
+    assert require_at != -1 and serve_at != -1 and attach_at != -1
+    assert require_at < serve_at
+    assert require_at < attach_at
 
 
 # ── A770B_SERVE: compose only ───────────────────────────────────────────────────────────────────────────────

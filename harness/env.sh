@@ -298,3 +298,35 @@ a770b_opencode_bin(){
   opencode_path=$(command -v opencode) || return 1
   dirname "$(readlink -f "$opencode_path")"
 }
+# OpenCode 2 dropped `run --dir`. A run may start only a 1.x binary whose help still lists that flag.
+# 1.19.6 is the qualified release. The refusal names the selector, never a resolved path.
+a770b_require_opencode_v1(){
+  local bin ver token help re_ver re_one re_dir refused
+  refused="OpenCode 1 is required; 1.19.6 is the qualified release; A770B_OPENCODE_BIN must be that binary's directory"
+  bin=$(a770b_opencode_bin 2>/dev/null) || bin=""
+  if [ -z "$bin" ] || [ ! -d "$bin" ] || [ ! -x "$bin/opencode" ]; then
+    echo "⛔ $refused" >&2
+    return 2
+  fi
+  ver=$("$bin/opencode" --version 2>/dev/null | head -n 1 || true)
+  ver=${ver%$'\r'}
+  re_ver='(^|[^0-9])([0-9]+\.[0-9]+)'
+  re_one='^1\.[0-9]'
+  if [[ "$ver" =~ $re_ver ]]; then
+    token=${BASH_REMATCH[2]}
+  else
+    token=""
+  fi
+  if [[ ! "$token" =~ $re_one ]]; then
+    echo "⛔ $refused" >&2
+    return 2
+  fi
+  # `--dir` as its own flag: a longer flag such as `--directory` does not count.
+  re_dir='(^|[[:space:]])--dir([[:space:]]|$)'
+  help=$("$bin/opencode" run --help 2>&1 || true)
+  if ! printf '%s\n' "$help" | grep -Eq "$re_dir"; then
+    echo "⛔ $refused" >&2
+    return 2
+  fi
+  return 0
+}

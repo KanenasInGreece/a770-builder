@@ -751,8 +751,11 @@ doctor(){
     missing=$((missing+1))
   fi
   _oc_bin=$(a770b_opencode_bin 2>/dev/null || true)
-  if [ -n "$_oc_bin" ] && [ -x "$_oc_bin/opencode" ]; then
+  if [ -n "$_oc_bin" ] && [ -d "$_oc_bin" ] && [ -x "$_oc_bin/opencode" ] && a770b_require_opencode_v1 >/dev/null 2>&1; then
     echo "ok   opencode: $_oc_bin/opencode"
+  elif [ -n "$_oc_bin" ] && [ -x "$_oc_bin/opencode" ]; then
+    echo "MISSING opencode: OpenCode 1 is required; 1.19.6 is the qualified release; set A770B_OPENCODE_BIN to that binary's directory"
+    missing=$((missing+1))
   else
     echo "MISSING opencode: expected executable at \${A770B_OPENCODE_BIN:-PATH}/opencode; set A770B_OPENCODE_BIN to its directory"
     missing=$((missing+1))
@@ -993,6 +996,7 @@ case "${1:-}" in
     fi
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
+    a770b_require_opencode_v1 || exit 2
     unset A770B_ATTACHED A770B_STRATA_AUTH
     shift; profile=""; timeout=""; spec=""; profile_set=0; base_url=""; served_name=""; engine=""
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one

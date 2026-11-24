@@ -5,7 +5,7 @@ description: Use when delegating a bounded coding task to a LOCAL Intel Arc mode
 
 # local-build
 
-`<skill-dir>` is the folder that contains this SKILL.md. `opencode` must be on `PATH`. **One operator** on this host (the uid that owns Docker and the card).
+`<skill-dir>` is the folder that contains this SKILL.md. OpenCode 1 (qualified at 1.19.6) must be on `PATH`, or set `A770B_OPENCODE_BIN` to that binary's directory. **One operator** on this host (the uid that owns Docker and the card).
 
 ## Commands
 

@@ -21,6 +21,16 @@ RUN_SUITE_SH = ROOT / "harness" / "run_suite.sh"
 LADDER_SH = ROOT / "harness" / "ladder.sh"
 
 
+_OPENCODE_V1_STUB = r"""case "${1:-}" in
+  --version) printf '%s\n' '1.19.6'; exit 0 ;;
+esac
+if [ "${1:-}" = run ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' '  --dir   directory to run in'
+  exit 0
+fi
+exit 0"""
+
+
 def _make_exec(path: Path, body: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
@@ -183,7 +193,7 @@ def test_locks_ordering_canonical_aliases_reentry_forged_env_and_fd_closure(tmp_
         A770B_UV_CACHE=str(uv_cache),
         A770B_NO_BRIDGE="1",
     )
-    _make_exec(bin_ / "opencode", "exit 0")
+    _make_exec(bin_ / "opencode", _OPENCODE_V1_STUB)
     _make_exec(bin_ / "uv", 'printf "%s\\n" "uv 0.13.4 (test)"')
     r_sb = subprocess.run(
         [
@@ -330,7 +340,7 @@ def test_verify_infra_error_and_public_fail_phases_and_run_suite_measured_tasks_
     # even when the grader prints forged phase/verdict markers to stdout/stderr.
     bin_ = tmp_path / "vbin"
     _make_exec(bin_ / "socat", "exit 0")
-    _make_exec(bin_ / "opencode", "exit 0")
+    _make_exec(bin_ / "opencode", _OPENCODE_V1_STUB)
     _make_exec(bin_ / "uv", 'if [ "${1:-}" = "--version" ]; then echo "uv 0.13.4 (test)"; fi; exit 0')
     _make_exec(bin_ / "bwrap", '''
 while [ "$#" -gt 0 ]; do
@@ -397,7 +407,7 @@ exec "$@"
     # 1d. Hidden phase fails sandbox entry after public passes -> invocation infra_error, public=pass, hidden=not_run.
     bwrap_gate = tmp_path / "bwrap-gate"
     _make_exec(bwrap_gate / "socat", "exit 0")
-    _make_exec(bwrap_gate / "opencode", "exit 0")
+    _make_exec(bwrap_gate / "opencode", _OPENCODE_V1_STUB)
     _make_exec(bwrap_gate / "uv", 'if [ "${1:-}" = "--version" ]; then echo "uv 0.13.4 (test)"; fi; exit 0')
     _make_exec(bwrap_gate / "bwrap", '''
 case " $* " in
@@ -432,7 +442,7 @@ exec "$@"
     # 1e. Host timeout fires before sandbox entry completes -> invocation timeout, unstarted phase=not_run.
     bwrap_hang = tmp_path / "bwrap-hang"
     _make_exec(bwrap_hang / "socat", "exit 0")
-    _make_exec(bwrap_hang / "opencode", "exit 0")
+    _make_exec(bwrap_hang / "opencode", _OPENCODE_V1_STUB)
     _make_exec(bwrap_hang / "uv", 'if [ "${1:-}" = "--version" ]; then echo "uv 0.13.4 (test)"; fi; exit 0')
     _make_exec(bwrap_hang / "bwrap", "sleep 5")
     env_hang = dict(
@@ -1074,8 +1084,16 @@ exit 0''')
 
 def test_sandbox_reports_missing_opencode_when_resolver_returns_failure():
     source = (ROOT / "harness" / "sandbox_run.sh").read_text(encoding="utf-8")
-    assert 'OC_BIN=$(a770b_opencode_bin 2>/dev/null) || {' in source
-    assert 'sandbox: opencode binary not found' in source
+    env_sh = (ROOT / "harness" / "env.sh").read_text(encoding="utf-8")
+    # An existence check would accept OpenCode 2. The refusal is the 1.x gate, before bubblewrap.
+    assert "a770b_require_opencode_v1 || exit 2" in source
+    assert "a770b_opencode_bin 2>/dev/null) || {" not in source
+    assert "sandbox: opencode binary not found" not in source
+    assert source.index("a770b_require_opencode_v1") < source.index('["bwrap"')
+    start = env_sh.index("a770b_require_opencode_v1()")
+    body = env_sh[start:env_sh.index("\n}\n", start)]
+    assert "OpenCode 1 is required; 1.19.6 is the qualified release; A770B_OPENCODE_BIN must be that binary's directory" in body
+    assert '--dir "$HOME/.local/share/opencode"' in source
 
 
 def test_strata_floor_enforcement_starts_unknown_until_verified_supervisor_receipt():
@@ -1412,7 +1430,7 @@ PY
         _make_exec(bin_ / "pgrep", "exit 0")
         _make_exec(bin_ / "nvtop", 'echo \'[{"device_name": "Intel Arc A770 DG2", "mem_total": 17179869184, "mem_used": 0, "mem_free": 17179869184}]\'')
         _make_exec(bin_ / "socat", "exit 0")
-        _make_exec(bin_ / "opencode", "exit 0")
+        _make_exec(bin_ / "opencode", _OPENCODE_V1_STUB)
         _make_exec(bin_ / "uv", 'if [ "${1:-}" = "--version" ]; then echo "uv 0.13.4 (test)"; fi; exit 0')
         _make_exec(bin_ / "bwrap", '''
 while [ "$#" -gt 0 ]; do
@@ -1563,7 +1581,7 @@ def test_verify_publication_failure_records_infra_error_and_clears_stale_evidenc
 
     bin_ = tmp_path / "vbin"
     _make_exec(bin_ / "socat", "exit 0")
-    _make_exec(bin_ / "opencode", "exit 0")
+    _make_exec(bin_ / "opencode", _OPENCODE_V1_STUB)
     _make_exec(bin_ / "uv", 'if [ "${1:-}" = "--version" ]; then echo "uv 0.13.4 (test)"; fi; exit 0')
     _make_exec(bin_ / "bwrap", '''
 while [ "$#" -gt 0 ]; do
