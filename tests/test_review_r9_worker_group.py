@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 
-from test_review_r6_fixes import PROFILE, ROOT, _base_env, _git_seat, _lock_free, _make_exec
+from test_review_r6_fixes import PROFILE, ROOT, _base_env, _git_seat, _lock_free, _make_exec, _with_opencode_v1
 
 RUN_LEAD = ROOT / "harness" / "run_lead.py"
 GUARD = ROOT / "harness" / "guard.sh"
@@ -223,7 +223,7 @@ def _start_build(tmp_path: Path, opencode_body: str):
     seat = _git_seat(tmp_path / "seat")
     stub = tmp_path / "stubbin"
     _make_exec(stub / "curl", "exit 0")
-    _make_exec(stub / "opencode", opencode_body)
+    _make_exec(stub / "opencode", _with_opencode_v1(opencode_body))
     env.update(SANDBOX="0", PROFILE=PROFILE, PATH=f"{stub}:{env['PATH']}")
     proc = subprocess.Popen(
         ["bash", str(BUILD_LOCAL), str(seat), "brief text"],

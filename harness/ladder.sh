@@ -301,6 +301,8 @@ if [ "$DRYRUN" = 1 ]; then
   exit 0
 fi
 
+a770b_require_opencode_v1 || exit 2
+
 # Stop ONLY the exact container ID this ladder run started, never project-level compose down.
 unset A770B_OWNED_CIDS_FILE
 _serve="${A770B_SERVE_SCRIPT:-$here/serve_compose.sh}"

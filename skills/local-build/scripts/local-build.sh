@@ -751,8 +751,11 @@ doctor(){
     missing=$((missing+1))
   fi
   _oc_bin=$(a770b_opencode_bin 2>/dev/null || true)
-  if [ -n "$_oc_bin" ] && [ -x "$_oc_bin/opencode" ]; then
+  if [ -n "$_oc_bin" ] && [ -d "$_oc_bin" ] && [ -x "$_oc_bin/opencode" ] && a770b_require_opencode_v1 >/dev/null 2>&1; then
     echo "ok   opencode: $_oc_bin/opencode"
+  elif [ -n "$_oc_bin" ] && [ -x "$_oc_bin/opencode" ]; then
+    echo "MISSING opencode: OpenCode 1 is required; 1.19.6 is the qualified release; set A770B_OPENCODE_BIN to that binary's directory"
+    missing=$((missing+1))
   else
     echo "MISSING opencode: expected executable at \${A770B_OPENCODE_BIN:-PATH}/opencode; set A770B_OPENCODE_BIN to its directory"
     missing=$((missing+1))
@@ -1048,6 +1051,7 @@ if name:
 PY
 ) || { rm -f -- "$SPEC_SNAP"; die "${fit_line:-fit refused}"; }
     fi
+    a770b_require_opencode_v1 || exit 2
     card_lock                                                      # card lock before seat lock (single lock order)
     seat_lock "$WT"                                                # exclusive seat lock on canonical worktree path
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }

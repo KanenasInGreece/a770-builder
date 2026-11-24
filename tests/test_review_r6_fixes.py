@@ -26,7 +26,27 @@ LADDER_SH = ROOT / "harness" / "ladder.sh"
 PROFILE = "qwen35-9b-q4km-vulkan"
 
 
+# build_local.sh asks --version and `run --help` before the real `opencode run`. The body stays the worker.
+_OPENCODE_V1_PREFLIGHT = r"""# opencode-v1-preflight
+case "${1:-}" in
+  --version) printf '%s\n' '1.19.6'; exit 0 ;;
+esac
+if [ "${1:-}" = run ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' '  --dir   directory to run in'
+  exit 0
+fi
+"""
+
+
+def _with_opencode_v1(body: str) -> str:
+    if body.lstrip().startswith("# opencode-v1-preflight"):
+        return body
+    return _OPENCODE_V1_PREFLIGHT + body
+
+
 def _make_exec(path: Path, body: str) -> Path:
+    if path.name == "opencode":
+        body = _with_opencode_v1(body)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
     path.chmod(0o755)
@@ -192,8 +212,11 @@ def test_ladder_sampler_releases_the_card_lock_and_exits_when_the_owner_dies(tmp
 if [ "$1" = start ]; then echo "$$" > "{worker_pid}"; touch "{started}"; exec sleep 60; fi
 exit 0''')
     docker = _make_exec(tmp_path / "fake-docker.sh", "exit 99")
+    ocbin = tmp_path / "ocbin"
+    _make_exec(ocbin / "opencode", "exit 0")
     env.update(A770B_SERVE_SCRIPT=str(fake_serve), A770B_DOCKER=str(docker), A770B_CARD="a770",
-               XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+               XDG_CONFIG_HOME=str(tmp_path / "xdg"), A770B_OPENCODE_BIN=str(ocbin),
+               PATH=f"{ocbin}:{env['PATH']}")
     env.pop("A770B_PROFILES_FILE")
     proc = subprocess.Popen(["bash", str(LADDER_SH), str(weight), "--ctx", "16384"], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)

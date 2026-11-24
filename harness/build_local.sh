@@ -135,6 +135,8 @@ if _leader_proc_gone && [ -f "$A770B_WORKER_PGID_FILE" ]; then
   signal_recorded_worker_group "$A770B_WORKER_PGID_FILE" || true
   rm -f -- "$A770B_WORKER_PGID_FILE"                       # acted on, or not our group; this run's leader publishes a new file
 fi
+# Both arms run opencode. Refuse a binary that is not OpenCode 1 before either of them starts.
+a770b_require_opencode_v1 || exit 2
 _orphan_watch_loop "$$" 7>&- 9>&- >/dev/null 2>>"$LOG" &
 _orphan_watch_pid=$!
 # tee is still running after a SIGKILL of this shell, for as long as the worker holds the pipe.

@@ -24,6 +24,7 @@ import pytest
 
 from test_review_r6_fixes import (  # noqa: E402 — shared offline fixtures
     BUILD_LOCAL, LOCAL_BUILD, PROFILE, ROOT, RUN_SUITE_SH, _base_env, _make_exec, _one_stage_suite, _wait_for,
+    _with_opencode_v1,
 )
 
 RUN_LEAD = ROOT / "harness" / "run_lead.py"
@@ -159,7 +160,8 @@ def _fake_lb(tmp_path: Path, failbin: Path, fence: str) -> Path:
     stub = tmp_path / "stubbin"
     _make_exec(stub / "curl", "exit 0")
     marker = tmp_path / "worker-exit"
-    _make_exec(stub / "opencode", f"trap 'kill $! 2>/dev/null; echo 0 > \"{marker}\"; exit 0' TERM; sleep 60 & wait $!; exit 0")
+    _make_exec(stub / "opencode", _with_opencode_v1(
+        f"trap 'kill $! 2>/dev/null; echo 0 > \"{marker}\"; exit 0' TERM; sleep 60 & wait $!; exit 0"))
     fence_env = f'LOCAL_TIMEOUT="{fence}"' if fence else ""
     return _make_exec(tmp_path / "fake-lb.sh", f'''if [ "$1" = run ]; then
   (
