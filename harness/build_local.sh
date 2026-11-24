@@ -136,7 +136,7 @@ if _leader_proc_gone && [ -f "$A770B_WORKER_PGID_FILE" ]; then
   rm -f -- "$A770B_WORKER_PGID_FILE"                       # acted on, or not our group; this run's leader publishes a new file
 fi
 # Both arms run opencode. Refuse a binary that is not OpenCode 1 before either of them starts.
-a770b_require_opencode_v1 || exit 2
+A770B_OPENCODE_FETCH=1 a770b_require_opencode_v1 || exit 2
 _orphan_watch_loop "$$" 7>&- 9>&- >/dev/null 2>>"$LOG" &
 _orphan_watch_pid=$!
 # tee is still running after a SIGKILL of this shell, for as long as the worker holds the pipe.
@@ -146,7 +146,7 @@ if [ "${SANDBOX:-1}" = 1 ]; then
       opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
 else
   echo "⚠ SANDBOX=0: running opencode UNCONFINED (testing only)" | tee -a "$LOG" 7>&- 9>&-
-  ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
+  ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead "$(a770b_opencode_bin)/opencode" run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
 fi
 rc=${PIPESTATUS[0]}
 # 137: the leader was SIGKILL'd and could not forward. The other arm: it is already dead and the worker file

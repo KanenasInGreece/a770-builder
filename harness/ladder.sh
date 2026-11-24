@@ -301,7 +301,7 @@ if [ "$DRYRUN" = 1 ]; then
   exit 0
 fi
 
-a770b_require_opencode_v1 || exit 2
+A770B_OPENCODE_FETCH=1 a770b_require_opencode_v1 || exit 2
 
 # Stop ONLY the exact container ID this ladder run started, never project-level compose down.
 unset A770B_OWNED_CIDS_FILE
