@@ -358,6 +358,8 @@ def test_ladder_dry_run_mentions_evidence_step(tmp_path):
     assert "[dry-run] evidence:" in stdout
     assert "engine_evidence.py log" in stdout
     assert "qwen35-9b-q4km-vulkan.evidence.json" in stdout
+    # continuous host RAM/swap samples cover the full ladder and are kept as a timestamped receipt
+    assert "continuous timestamped RAM/swap" in stdout
 
 
 def _ladder_dry_run(tmp_path, profile, card, mode, models):
@@ -566,3 +568,137 @@ def test_strata_ladder_evidence_matches_full_config_path(tmp_path, same_config):
         assert row["checkpoint"] == {"evidence": str(evidence)}
     else:
         assert "checkpoint" not in row
+
+
+# ── host RAM and swap conditions: configured limits apart from sampled values, in the run JSON; a concise
+# clause for the row's measured_on, which the operator still writes by hand ─────────────────────────────────────
+def _host_sample(path: Path, mem_available_kib: int, swap_total_kib=0, cgroup=None) -> dict:
+    path.write_text(json.dumps({
+        "sampled_at": "2026-11-23T10:00:00",
+        "meminfo": {"source": "/proc/meminfo", "unit": "KiB", "mem_total": 65738732,
+                    "mem_available": mem_available_kib, "swap_total": swap_total_kib, "swap_free": swap_total_kib},
+        "collector_cgroup": {"source": "/sys/fs/cgroup/collector", "path": "/collector", "unit": "bytes",
+                             "memory_max": 99 * 1024 ** 3, "memory_swap_max": "max"},
+        "target": {"pid": 1234, "process": "llama-server", "cgroup": cgroup},
+        "configured": {"source": "environment", "A770B_CARD_MODE": "inference",
+                       "A770B_VRAM_CAP_GIB": {"value": 15.3, "unit": "GiB"},
+                       "A770B_MIN_AVAIL_MB": {"value": 20000, "unit": "MiB", "enforcement": "none"}},
+    }), encoding="utf-8")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run_with_conditions(tmp_path: Path, evidence="", before="", after="", host_log="", suite_json="",
+                        suite_results="", suite_execution=None, gguf="/models/a-model.gguf",
+                        engine="llama.cpp", backend="vulkan"):
+    sweep_path = tmp_path / "ctx-sweep.log"
+    sweep_path.write_text(SWEEP_TABLE, encoding="utf-8")
+    depth_path = tmp_path / "depth-probe.log"
+    depth_path.write_text(DEPTH_PASSED, encoding="utf-8")
+    out_path = tmp_path / "ladder.json"
+    if suite_execution is not None:
+        suite_results = tmp_path / "suite-results.json"
+        suite_results.write_text(json.dumps({"execution": suite_execution, "stages": []}), encoding="utf-8")
+    argv = [
+        str(out_path), "long", gguf, str(CTX), "q8_0", "q8_0", "0", "-fa on", "1800",
+        "long", "SUITE-1@test", str(FAR_END), "64000", "52000",
+        str(tmp_path / "no-bench-model.json"), "", str(sweep_path), str(depth_path),
+        suite_json, str(suite_results), "", "", GENERATED, str(evidence), str(before), str(after), str(host_log),
+        engine, backend,
+    ]
+    result = subprocess.run([sys.executable, str(LADDER_ROW)] + argv, capture_output=True, text=True)
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    return result, doc
+
+
+def test_continuous_host_samples_land_in_the_run_json_with_serving_limits(tmp_path):
+    cgroup = {"source": "/sys/fs/cgroup/user.slice/trial.scope", "path": "/user.slice/trial.scope",
+              "unit": "bytes", "memory_max": 36 * 1024 ** 3, "memory_swap_max": 0, "memory_high": "max"}
+    host_log = tmp_path / "host-memory.jsonl"
+    host_log.write_text("\n".join(json.dumps(row) for row in (
+        _host_sample(tmp_path / "before.json", 41234560, cgroup=cgroup),
+        _host_sample(tmp_path / "after.json", 30000000, cgroup={**cgroup, "memory_current": 26 * 1024 ** 3}),
+    )) + "\n", encoding="utf-8")
+    result, doc = run_with_conditions(tmp_path, host_log=host_log, engine="llama.cpp", backend="sycl")
+    assert result.returncode == 0, result.stdout + result.stderr
+    cond = doc["conditions"]
+    assert cond["configured"]["A770B_MIN_AVAIL_MB"] == {"value": 20000, "unit": "MiB", "enforcement": "none"}
+    assert cond["configured"]["A770B_VRAM_CAP_GIB"] == {"value": 15.3, "unit": "GiB"}
+    hm = cond["host_memory"]
+    assert hm["samples"] == 2 and hm["min_mem_available_kib"] == 30000000
+    assert hm["swap_total_kib"] == 0 and hm["min_swap_free_kib"] == 0
+    assert hm["serving_cgroup"]["cgroup"]["memory_swap_max"] == 0
+    assert hm["serving_cgroup"]["cgroup"]["memory_high"] == "max"
+    assert hm["serving_cgroup"]["max_sampled_memory_current_bytes"] == 26 * 1024 ** 3
+    assert hm["sample_log"] == str(host_log)
+    # the MemAvailable drop is still an observation, never ram_gb_extra
+    assert doc["computed"]["ram_gb_extra"] is None
+    row = printed_row(result.stdout)
+    assert row["ram_gb_extra"] is None
+    assert "conditions" not in row, "the registry schema is unchanged: conditions stay in the run JSON"
+    assert row["measured_on"].startswith("__TODO__")
+    assert "backend sycl, engine llama.cpp" in row["measured_on"]
+    assert "RAM 62.7 GiB" in row["measured_on"] and "swap 0.0 GiB" in row["measured_on"]
+    assert "minimum MemAvailable" in row["measured_on"] and "minimum SwapFree" in row["measured_on"]
+    assert "serving cgroup memory.max 36.0 GiB" in row["measured_on"] and "memory.swap.max 0.0 GiB" in row["measured_on"]
+    assert "configured VRAM cap 15.3 GiB" in row["measured_on"]
+
+
+def test_a_run_with_no_host_samples_records_conditions_as_missing(tmp_path):
+    result, doc = run_with_conditions(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert doc["conditions"] is None
+    assert "host memory" not in printed_row(result.stdout)["measured_on"]
+
+
+def test_strata_host_memory_settings_are_carried_as_configured(tmp_path):
+    config = tmp_path / "strata.json"
+    settings = {"env": {"STRATA_MIRROR_MIB": "28672"},
+                "args": {"--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap"}}
+    evidence = tmp_path / "evidence.json"
+    observed = {"value_bytes": round(27.70 * 1024 ** 3), "source": "engine.log",
+                "reported_text": "mirrored in 27.70 GiB of pinned host RAM"}
+    evidence.write_text(json.dumps({"engine": "strata", "config": str(config), "host_memory_settings": settings,
+                                    "observed_pinned_host_memory": observed}))
+    host_log = tmp_path / "host-memory.jsonl"
+    _host_sample(tmp_path / "host-sample.json", 30000000)
+    host_log.write_text((tmp_path / "host-sample.json").read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    result, doc = run_with_conditions(tmp_path, evidence=evidence, gguf=str(config), engine="strata", backend="strata",
+                                     host_log=host_log)
+    assert result.returncode == 0, result.stdout + result.stderr
+    engine = doc["conditions"]["engine_host_memory"]
+    assert engine["settings"] == settings and "configured" in engine["source"]
+    assert doc["conditions"]["host_memory"]["samples"] == 1
+    measured_on = printed_row(result.stdout)["measured_on"]
+    assert "STRATA_MIRROR_MIB=28672" in measured_on and "--ple-io mmap" in measured_on
+    assert "Strata reported pinned host RAM 27.70 GiB" in measured_on
+    assert doc["conditions"]["engine_host_memory"]["observed_pinned_host_memory"] == observed
+
+
+def test_a_partial_suite_is_never_presented_as_the_complete_kit(tmp_path):
+    """Two of three counted stages ran: the row says so, rather than reading as a complete 2/2 kit."""
+    suite = json.dumps({"briefs": 3, "runs": 2, "passed": 2, "timeouts": 0, "mean_wall_s": 400.0,
+                        "source": "s.json", "instrument": "SUITE-1@test"})
+    result, _ = run_with_conditions(tmp_path, suite_json=suite)
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = printed_row(result.stdout)
+    assert "partial: 2 of 3 counted stages ran" in row["fit"]["code"], row["fit"]
+    assert "partial: 2 of 3 counted stages ran" in row["evidence"], row["evidence"]
+
+    complete = json.dumps({"briefs": 3, "runs": 3, "passed": 2, "timeouts": 0, "mean_wall_s": 400.0,
+                           "source": "s.json", "instrument": "SUITE-1@test"})
+    result, _ = run_with_conditions(tmp_path, suite_json=complete)
+    row = printed_row(result.stdout)
+    assert "partial" not in row["fit"]["code"] and "partial" not in row["evidence"]
+
+
+def test_profile_evidence_carries_total_full_kit_elapsed_time(tmp_path):
+    suite = json.dumps({"briefs": 3, "runs": 3, "passed": 2, "timeouts": 0, "mean_wall_s": 400.0,
+                        "source": "s.json", "instrument": "SUITE-1@test"})
+    execution = {"status": "complete", "scope": "full_suite", "planned_stages": 6, "completed_stages": 6,
+                 "planned_counted_stages": 3, "completed_counted_stages": 3, "elapsed_s": 2719.4}
+    result, doc = run_with_conditions(tmp_path, suite_json=suite, suite_execution=execution)
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = printed_row(result.stdout)
+    assert "total kit time 2719.4s" in row["evidence"]
+    assert "total kit time 2719.4s" in row["fit"]["code"]
+    assert doc["rungs"]["task_suite_execution"] == execution

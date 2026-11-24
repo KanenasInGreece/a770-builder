@@ -266,16 +266,23 @@ def totals(doc, source_name):
     # they live in "score", never in "working", so they were never part of "passed" to begin with).
     stages = doc.get("stages") or []
     counted = [s for s in stages if s.get("counts_toward_pass", True) is not False]
+    execution = doc.get("execution") if isinstance(doc.get("execution"), dict) else None
     briefs = len(counted)
     runs = sum(1 for s in counted if s.get("label"))
     passed = sum(1 for s in counted if s.get("working") is True)
-    # a stage whose run_suite.sh outcome reads "timeout" (its wall time reached the profile's own timeout
-    # budget — see run_suite.sh's stage_outcome) is never a plain FAIL: it is a slow model, not a wrong one, and
-    # is counted here on its own so a caller does not have to re-derive it from wall_s and a profile registry.
-    timeouts = sum(1 for s in counted if s.get("outcome") == "timeout")
+    # Count either a generation timeout or a verifier timeout. Their per-stage outcome labels remain distinct in
+    # the table so callers can tell whether the model generation or the checks exceeded their deadline.
+    timeouts = sum(1 for s in counted if s.get("outcome") in {"timeout", "verify_timeout"})
     walls = [s["wall_s"] for s in counted if isinstance(s.get("wall_s"), (int, float))]
     mean_wall_s = round(sum(walls) / len(walls), 1) if walls else None
     t = {"briefs": briefs, "runs": runs, "passed": passed, "timeouts": timeouts, "source": source_name}
+    if execution:
+        planned_counted = execution.get("planned_counted_stages")
+        completed_counted = execution.get("completed_counted_stages")
+        if isinstance(planned_counted, int) and planned_counted >= 0:
+            t["briefs"] = planned_counted
+        if isinstance(completed_counted, int) and completed_counted >= 0:
+            t["runs"] = completed_counted
     if mean_wall_s is not None:
         t["mean_wall_s"] = mean_wall_s
     return t
@@ -286,7 +293,7 @@ def fmt(v, suffix=""):
 
 
 def outcome_label(s):
-    """PASS/FAIL/TIMEOUT/VERIFY_ERROR/VERIFY_TIMEOUT/RUN_ERROR/- for one stage."""
+    """PASS/FAIL/TIMEOUT/VERIFY_ERROR/VERIFY_TIMEOUT/RUN_ERROR/RUN_INTERRUPTED/- for one stage."""
     o = s.get("outcome")
     if o == "timeout":
         return "TIMEOUT"
@@ -296,6 +303,8 @@ def outcome_label(s):
         return "VERIFY_ERROR"
     if o == "run_error":
         return "RUN_ERROR"
+    if o == "run_interrupted":
+        return "RUN_INTERRUPTED"
     if o == "pass":
         return "PASS"
     if o == "fail":
@@ -342,6 +351,14 @@ def main():
     per_stage, medians = delivered(doc, a770b_data)
 
     if args.json:
+        execution = doc.get("execution")
+        if isinstance(execution, dict):
+            complete = (execution.get("status") == "complete" and execution.get("scope") == "full_suite"
+                        and execution.get("planned_stages") == execution.get("completed_stages")
+                        and execution.get("planned_counted_stages") == execution.get("completed_counted_stages"))
+            if not complete:
+                print("incomplete kit run: " + json.dumps(execution, sort_keys=True), file=sys.stderr)
+                return 3
         if instrument:
             t["instrument"] = instrument
             print(f"instrument: {instrument}", file=sys.stderr)
@@ -352,6 +369,9 @@ def main():
 
     if instrument:
         print(f"instrument: {instrument}")
+    execution = doc.get("execution")
+    if isinstance(execution, dict):
+        print("execution: " + json.dumps(execution, sort_keys=True))
     seat = doc.get("seat")
     if seat:
         print(f"seat: {seat}")
@@ -370,4 +390,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES_JSON = ROOT / "config" / "registry" / "a770.display.json"
 PROFILES_INFERENCE_JSON = ROOT / "config" / "registry" / "a770.inference.json"
@@ -3201,3 +3203,71 @@ def test_strata_profile_preserves_int8_and_can_omit_flash_attention(tmp_path):
     result = run("check", "--file", str(path))
     assert result.returncode != 0
     assert "int8" in result.stderr and "flash_attention" in result.stderr
+
+
+# ── generated speed cells: at most one decimal place; the registry keeps the raw measurement ──────────────────
+def _profiles_module():
+    sys.path.insert(0, str(ROOT / "harness"))
+    try:
+        import profiles as mod
+    finally:
+        sys.path.pop(0)
+    return mod
+
+
+@pytest.mark.parametrize("raw,shown", [
+    (28.675594849636038, "28.7"), (1337.1326933097464, "1337.1"),
+    (11.049357239111018, "11.0"), (105.97891477884406, "106.0"),
+    # decimal-text rounding, half away from zero: 19.45 reads as 19.5, not the binary float's 19.4
+    (19.45, "19.5"), (358.35, "358.4"), (9.91, "9.9"),
+    (36.8, "36.8"), (29.0, "29.0"), (60, "60"), (796, "796"),
+    # a measured zero is a number, not a missing cell
+    (0, "0"), (0.0, "0.0"), (None, "—"),
+])
+def test_speed_cell_shows_at_most_one_decimal(raw, shown):
+    assert _profiles_module()._speed_cell(raw) == shown
+
+
+@pytest.mark.parametrize("decode,prefill,shown", [
+    (None, 1893.1, "— / 1893.1"),
+    (28.675594849636038, None, "28.7 / —"),
+    (None, None, "— / —"),
+])
+def test_speed_pair_formats_each_measured_cell_independently(decode, prefill, shown):
+    assert _profiles_module()._speed_pair(decode, prefill) == shown
+
+
+def test_html_recap_keeps_measured_prefill_when_decode_is_missing():
+    result = subprocess.run(["bash", str(ROOT / "render_readme.sh")], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    html = (ROOT / "README.html").read_text(encoding="utf-8")
+    assert "— / 1893.1 tok/s" in html
+    assert "28.7 / 1337.1 tok/s" in html
+
+
+def test_catalogue_shows_the_b70_strata_row_at_one_decimal_and_keeps_raw_registry_values():
+    """The operator's row: B70 Qwen3.8 Flash-Next on Strata reads 28.7 / 1337.1 tok/s in the generated
+    catalogue, while config/registry/b70.inference.json keeps the measured floats untouched."""
+    mod = _profiles_module()
+    rows, errors = mod._catalogue_rows()
+    assert not errors, errors
+    table = mod._catalogue_table(rows)
+    strata = [ln for ln in table if "| qwen38-flash-next-iq3s-strata |" in ln]
+    assert len(strata) == 1, table
+    assert "| 28.7 / 1337.1 tok/s |" in strata[0], strata[0]
+    for ln in table[2:]:
+        cell = ln.split(" | ")[6]
+        assert not re.search(r"\d\.\d\d", cell), ln
+
+    raw = json.loads((ROOT / "config" / "registry" / "b70.inference.json").read_text(encoding="utf-8"))
+    speed = raw["profiles"]["qwen38-flash-next-iq3s-strata"]["speed"]
+    assert speed["decode_tps"]["8k"] == 28.675594849636038
+    assert speed["prefill_tps"]["8k"] == 1337.1326933097464
+
+
+def test_tracked_catalogue_documents_show_the_strata_row_at_one_decimal():
+    for rel in ("README.md", "config/models.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        section = text[text.index("<!-- catalogue:begin -->"):text.index("<!-- catalogue:end -->")]
+        assert "28.675594849636038" not in section and "1337.1326933097464" not in section, rel
+        assert "| 28.7 / 1337.1 tok/s |" in section, rel

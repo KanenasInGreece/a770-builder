@@ -198,6 +198,8 @@ case "$A770B_SERVE" in compose) ;; *) echo "⛔ A770B_SERVE must be compose — 
 : "${A770B_SERVE_SCRIPT:=$A770B_PROJECT/harness/serve_compose.sh}"
 # ── the budget gate (built in; set A770B_BUDGET_GATE to an external script to use that instead) ─────────────
 : "${A770B_BUDGET_GATE:=}"
+: "${A770B_BUDGET_GATE_RECEIPT:=}"
+export A770B_BUDGET_GATE_RECEIPT
 : "${A770B_MIN_AVAIL_MB:=20000}"; : "${A770B_MIN_VRAM_MB:=3000}"
 : "${A770B_FRAMEWORK_PORTS:=}"                           # ports the seat must never bind (another service's card), space-separated
 : "${A770B_HEALTH_URL:=}"                                # optional: a status URL read once before a server starts; its answer is printed, never a refusal (empty = skip)
@@ -224,6 +226,7 @@ mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }
 # a770b_profile_var <profile> <FIELD> — the value of A770B_<PROFILE>_<FIELD> (name upper-cased, - → _); empty if unset
 a770b_profile_var(){ local n; n=$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'); local v="A770B_${n}_$2"; printf '%s\n' "${!v:-}"; }
+uv_run_no_project(){ UV_CACHE_DIR="$A770B_UV_CACHE" uv run --offline --no-project "$@"; }
 # a770b_is_profile <name> — true when the name is in A770B_PROFILES
 a770b_is_profile(){ case " $A770B_PROFILES " in *" $1 "*) return 0;; *) return 1;; esac; }
 # profile_refusal <name> — the one refusal for a profile this card does not have: it names the card, the mode and this
@@ -286,4 +289,12 @@ a770b_render_profile(){
     python3 "$A770B_PROJECT/harness/render_profile.py" render --template "$A770B_PROFILE_TEMPLATE" --out "$out" --baseurl "http://$A770B_HOST:$A770B_PORT/v1" --apikey "$key" --ctx "$ctx" --output "$output" --name "$profile" "${model_args[@]}" "${sampling_args[@]}"
   fi
 }
-a770b_opencode_bin(){ if [ -n "$A770B_OPENCODE_BIN" ]; then printf '%s\n' "$A770B_OPENCODE_BIN"; else dirname "$(readlink -f "$(command -v opencode)")"; fi; }
+a770b_opencode_bin(){
+  if [ -n "$A770B_OPENCODE_BIN" ]; then
+    printf '%s\n' "$A770B_OPENCODE_BIN"
+    return 0
+  fi
+  local opencode_path
+  opencode_path=$(command -v opencode) || return 1
+  dirname "$(readlink -f "$opencode_path")"
+}

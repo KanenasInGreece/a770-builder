@@ -13,10 +13,13 @@ the shipped floor by test_kit.py's own test_check_passes_at_the_shipped_default)
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_SH = ROOT / "harness" / "env.sh"
@@ -253,6 +256,80 @@ def test_doctor_accepts_a_set_card_knob():
     out = r.stdout
     assert any(ln.startswith("ok   input A770B_GPU_MATCH=SomeOtherCard") for ln in out.splitlines()), out
     assert not any(ln.startswith("MISSING input A770B_GPU_MATCH") for ln in out.splitlines()), out
+
+
+def test_doctor_preflights_offline_pytest_cache_and_opencode_binary(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    uv = bindir / "uv"
+    uv.write_text("#!/bin/sh\n[ \"${1:-}\" = --version ] && { echo 'uv 0.13.4'; exit 0; }\ncase \" $* \" in *' --no-project '*) ;; *) exit 1;; esac\n[ -d \"$UV_CACHE_DIR\" ] && exit 0\nexit 1\n", encoding="utf-8")
+    uv.chmod(0o755)
+    opencode = bindir / "opencode"
+    opencode.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    opencode.chmod(0o755)
+    cache = tmp_path / "warm-cache"
+    cache.mkdir()
+    env = _doctor_env(tmp_path, PATH=f"{bindir}:{os.environ['PATH']}",
+                      A770B_UV_CACHE=str(cache), A770B_OPENCODE_BIN=str(bindir), A770B_SERVE="compose",
+                      A770B_DOCKER="docker")
+
+    good = _run_doctor(env)
+    assert "ok   offline grader: pytest + pytest-asyncio resolve from the warm cache" in good.stdout
+    assert f"ok   opencode: {opencode}" in good.stdout
+
+    opencode.unlink()
+    bad = _run_doctor(env)
+    assert "MISSING opencode: expected executable" in bad.stdout
+
+    uv.write_text("#!/bin/sh\n[ \"${1:-}\" = --version ] && { echo 'uv 0.13.4'; exit 0; }\nexit 1\n", encoding="utf-8")
+    uv.chmod(0o755)
+    bad_cache = _run_doctor(env)
+    assert "MISSING offline grader: pytest + pytest-asyncio are not resolvable from" in bad_cache.stdout
+
+
+def test_doctor_offline_uv_preflight_ignores_unrelated_project_and_does_not_create_venv(tmp_path):
+    uv = shutil.which("uv")
+    if not uv:
+        pytest.skip("real uv is required for this regression test")
+    project = tmp_path / "unrelated-project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "unrelated"\nversion = "0.0.0"\ndependencies = ["a770b-unavailable-package==0"]\n',
+        encoding="utf-8",
+    )
+    cache = tmp_path / "test-owned-uv-cache"
+    cache.mkdir()
+    python = sys.executable
+    env_sh = ROOT / "harness" / "env.sh"
+    result = subprocess.run(
+        ["bash", "-c", f'. "{env_sh}"; A770B_UV_CACHE="{cache}"; '
+         f'uv_run_no_project "{python}" -c "import sys; print(sys.version_info.major)"'],
+        cwd=project, env=dict(os.environ, PATH=f"{Path(uv).parent}:{os.environ['PATH']}"),
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (project / ".venv").exists()
+
+
+def test_doctor_does_not_resolve_opencode_from_current_directory(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    uv = bindir / "uv"
+    uv.write_text("#!/bin/sh\n[ \"${1:-}\" = --version ] && { echo 'uv 0.13.4'; exit 0; }\nexit 0\n", encoding="utf-8")
+    uv.chmod(0o755)
+    cache = tmp_path / "warm-cache"
+    cache.mkdir()
+    local_opencode = tmp_path / "opencode"
+    local_opencode.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    local_opencode.chmod(0o755)
+    env = _doctor_env(tmp_path, PATH=f"{bindir}:/usr/bin:/bin", A770B_UV_CACHE=str(cache),
+                      A770B_OPENCODE_BIN="", A770B_SERVE="compose", A770B_DOCKER="docker",
+                      A770B_COMPOSE_FILE=str(ROOT / "compose/a770-vulkan.yaml"),
+                      A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing-compose.env"))
+    result = subprocess.run(["bash", str(DOCTOR_SH), "doctor"], capture_output=True, text=True,
+                            cwd=tmp_path, env=env)
+    assert "ok   offline grader: pytest + pytest-asyncio resolve from the warm cache" in result.stdout, result.stdout + result.stderr
+    assert "MISSING opencode:" in result.stdout
 
 
 # ── A770B_SERVE: compose only ───────────────────────────────────────────────────────────────────────────────
