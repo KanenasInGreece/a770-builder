@@ -280,6 +280,8 @@ _running_image_matches(){
 # does not keep. A ladder start writes the pidfile and the mark, and writes the sidecar
 # only when A770B_LIVE_* is set. On that match the sidecar below is rewritten with the
 # requested profile: the name then means this launch, not an identity read off the server.
+# An empty live field or a failed write fails the keep, because the verifier refuses a
+# server this function would otherwise accept.
 # A RAM cap or cgroup that is not part of the argv signature is not part of the match.
 _serve_keep_unmarked(){
   local pid mark_model mark_ctx mark_hash cid files part found=0
@@ -343,13 +345,13 @@ except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
     echo "↻ the running server is not the pinned image — restarting it"
     return 1
   fi
-  # A770B_LIVE_PROFILE is the requested profile. Writing it here records a launch-equivalent name
-  # after the model, context and argv-signature match above — not a profile name the server reported.
-  if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ]; then
-    python3 "$LIVE_PY" write --path "$A770B_DATA/logs/live-backend.json" \
-      --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" \
-      --model "$req_model" --profile "$A770B_LIVE_PROFILE" --pid "$pid" || true
+  if [ -z "${A770B_LIVE_CARD:-}" ] || [ -z "${A770B_LIVE_BACKEND:-}" ] || [ -z "${A770B_LIVE_MODE:-}" ] || [ -z "${A770B_LIVE_PROFILE:-}" ]; then
+    echo "↻ no card, mode or backend to record the live identity — restarting it"
+    return 1
   fi
+  python3 "$LIVE_PY" write --path "$A770B_DATA/logs/live-backend.json" \
+    --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" \
+    --model "$req_model" --profile "$A770B_LIVE_PROFILE" --pid "$pid" || return 1
   echo "✓ $p already up ($(basename -- "$gguf"))"
   _override_warn "$p"
   return 0
@@ -372,7 +374,7 @@ _strata_serve(){
 # running is the one recorded at start (full id) whose host pid the sidecar names.
 # Strata path: there is no sidecar name to copy. SERVED_VERIFIED_PROFILE is the requested profile, meaning
 # the managed launch is launch-equivalent to it; build_local.sh re-verifies the alias and the context.
-# Unmarked-keep path: the sidecar may just have been rewritten with the requested profile after a model,
+# Unmarked-keep path: the sidecar has just been rewritten with the requested profile after a model,
 # context and argv-signature match, so the name checked here is that launch, not a separate observation.
 # Sets SERVED_VERIFIED_PROFILE, SERVED_VERIFIED_CID and SERVED_VERIFIED_PID; 1 (with the reason on stderr) otherwise.
 _verify_served_selection(){

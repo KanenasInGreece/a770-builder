@@ -1784,6 +1784,16 @@ if printf '%s\n' "$rs_model_out" | grep -q "ephemeral profile 'candidate'" && pr
 then echo "ok   run_suite: --model/--ctx builds an ephemeral 'candidate' profile and drives every stage with it, with no registry row"
 else echo "FAIL run_suite: --model/--ctx did not build the candidate profile as expected"; printf '%s\n' "$rs_model_out"; fail=1
 fi
+rs_model_live=$(A770B_CARD=a770 A770B_CARD_MODE=inference A770B_SERVED_BACKEND=sycl \
+  A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-model-live" \
+  bash "$here/harness/run_suite.sh" --model "$t/no-row-model.gguf" --ctx 8192 "$t/rs-model-live-seat" --dry-run 2>&1)
+rs_model_line=$(printf '%s\n' "$rs_model_live" | grep "ephemeral profile 'candidate'" || true)
+if printf '%s\n' "$rs_model_line" | grep -q 'card a770' \
+  && printf '%s\n' "$rs_model_line" | grep -q 'mode inference' \
+  && printf '%s\n' "$rs_model_line" | grep -q 'backend sycl'
+then echo "ok   run_suite: --model dry-run names card, mode and backend on the candidate line"
+else echo "FAIL run_suite: --model dry-run did not name card, mode and backend on the candidate line"; printf '%s\n' "$rs_model_line"; fail=1
+fi
 rs_combo_out=$(A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$t/rs-combo-data" bash "$here/harness/run_suite.sh" qwen35-9b-q4km-vulkan --model "$t/no-row-model.gguf" --ctx 8192 --dry-run 2>&1); rs_combo_rc=$?
 if [ "$rs_combo_rc" = 2 ] && printf '%s\n' "$rs_combo_out" | grep -q 'mutually exclusive'
 then echo "ok   run_suite: a registry profile name together with --model is refused (mutually exclusive)"

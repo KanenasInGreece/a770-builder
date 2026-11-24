@@ -107,6 +107,7 @@ if [ -n "$BASE_URL" ] || [ -n "$SERVED_NAME" ]; then
   RUN_ATTACH=(--base-url "$BASE_URL" --served-model-name "$SERVED_NAME")
   [ -z "$ENGINE" ] || RUN_ATTACH+=(--engine "$ENGINE")
   echo "▶ --base-url $BASE_URL --served-model-name $SERVED_NAME${ENGINE:+ --engine $ENGINE}: ephemeral profile 'candidate' (ctx $MODEL_CTX), no weight file"
+# A bare GGUF has no registry row. The three exports are the candidate card, mode and backend the sidecar records.
 elif [ -n "$MODEL_GGUF" ]; then
   [ -n "$MODEL_CTX" ] || die "--model requires --ctx <n>"
   case ${#POSITIONALS[@]} in
@@ -129,8 +130,11 @@ elif [ -n "$MODEL_GGUF" ]; then
   export A770B_CANDIDATE_THINKING_BUDGET="${MODEL_BUDGET:-}"
   export A770B_CANDIDATE_TIMEOUT="${MODEL_TIMEOUT:-1500}"
   export A770B_CANDIDATE_EXTRA="${MODEL_EXTRA:-}"
+  export A770B_CANDIDATE_CARD="$A770B_CARD"
+  export A770B_CANDIDATE_MODE="$A770B_CARD_MODE"
+  export A770B_CANDIDATE_BACKEND="${A770B_SERVED_BACKEND:-vulkan}"
   case " $A770B_PROFILES " in *" candidate "*) ;; *) export A770B_PROFILES="$A770B_PROFILES candidate" ;; esac
-  echo "▶ --model $MODEL_GGUF: this is how a new GGUF climbs the task rung before it has a registry row — ephemeral profile 'candidate' (ctx $MODEL_CTX, kv $A770B_CANDIDATE_KV/$A770B_CANDIDATE_KV_V)"
+  echo "▶ --model $MODEL_GGUF: this is how a new GGUF climbs the task rung before it has a registry row — ephemeral profile 'candidate' (ctx $MODEL_CTX, kv $A770B_CANDIDATE_KV/$A770B_CANDIDATE_KV_V, card $A770B_CANDIDATE_CARD, mode $A770B_CANDIDATE_MODE, backend $A770B_CANDIDATE_BACKEND)"
 else
   case ${#POSITIONALS[@]} in
     0) die "$USAGE" ;;
@@ -445,12 +449,6 @@ if [ -n "$BASE_URL" ]; then
 elif [ -n "$ENGINE" ]; then
   RUN_BACKEND="${A770B_SERVED_BACKEND:-}"
   case "$ENGINE" in strata|vllm|sglang) RUN_BACKEND="$ENGINE" ;; esac
-elif [ -n "$BASE_URL" ]; then
-  # Attachment discovery is authoritative. A synthetic `candidate` row has no
-  # backend, so resolving it here would silently call every external server llama.cpp.
-  RUN_ENGINE="${A770B_SERVED_ENGINE:-}"
-  RUN_BACKEND="${A770B_SERVED_BACKEND:-}"
-  case "$RUN_ENGINE" in strata|vllm|sglang) RUN_BACKEND="$RUN_ENGINE" ;; esac
 else
   . "$A770B_PROJECT/skills/local-build/scripts/profile_engine.sh"
   RUN_ENGINE=$(_profile_engine "$PROFILE" 2>/dev/null || true)
