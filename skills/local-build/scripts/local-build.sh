@@ -996,7 +996,6 @@ case "${1:-}" in
     fi
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
-    a770b_require_opencode_v1 || exit 2
     unset A770B_ATTACHED A770B_STRATA_AUTH
     shift; profile=""; timeout=""; spec=""; profile_set=0; base_url=""; served_name=""; engine=""
     # `run <brief.md>` uses the default seat; `run <worktree> <brief.md>` names one
@@ -1052,6 +1051,7 @@ if name:
 PY
 ) || { rm -f -- "$SPEC_SNAP"; die "${fit_line:-fit refused}"; }
     fi
+    a770b_require_opencode_v1 || exit 2
     card_lock                                                      # card lock before seat lock (single lock order)
     seat_lock "$WT"                                                # exclusive seat lock on canonical worktree path
     dirty=$(seat_dirty "$WT"); [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -5 >&2; die "seat $WT is not clean (ignored files count) — nothing from a previous run may pass as this one's; run: local-build.sh reset $WT"; }

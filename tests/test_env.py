@@ -434,7 +434,9 @@ def test_run_branch_requires_opencode_v1_before_serve():
     require_at = branch.find("a770b_require_opencode_v1")
     serve_at = branch.find('serve "$profile"')
     attach_at = branch.find("_attach_running_server")
-    assert require_at != -1 and serve_at != -1 and attach_at != -1
+    engine_at = branch.find("--engine needs --base-url")
+    assert require_at != -1 and serve_at != -1 and attach_at != -1 and engine_at != -1
+    assert engine_at < require_at
     assert require_at < serve_at
     assert require_at < attach_at
 

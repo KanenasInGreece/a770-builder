@@ -485,6 +485,22 @@ def _run_bare_ladder(tmp_path, *, dry_run=False, start_code=0):
         encoding="utf-8",
     )
     docker.chmod(0o755)
+    ocbin = tmp_path / "opencode1"
+    ocbin.mkdir()
+    opencode = ocbin / "opencode"
+    opencode.write_text(
+        "#!/bin/bash\n"
+        "case \"${1:-}\" in\n"
+        "  --version) printf '%s\\n' '1.19.6'; exit 0 ;;\n"
+        "esac\n"
+        "if [ \"${1:-}\" = run ] && [ \"${2:-}\" = --help ]; then\n"
+        "  printf '%s\\n' '  --dir   directory to run in'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    opencode.chmod(0o755)
     data = tmp_path / "data"
     data.mkdir()
     args = [
@@ -508,6 +524,7 @@ def _run_bare_ladder(tmp_path, *, dry_run=False, start_code=0):
             "A770B_CARD_MODE": "display",
             "A770B_SERVE_SCRIPT": str(fake),
             "A770B_DOCKER": str(docker),
+            "A770B_OPENCODE_BIN": str(ocbin),
         },
     )
     lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
