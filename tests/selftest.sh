@@ -238,6 +238,13 @@ printf '%s\n' 'k-selftest' > "$t/xdg/a770-builder/api.key"; chmod 600 "$t/xdg/a7
 printf '%s\n' '#!/bin/bash' 'exit 0' > "$t/stubbin/curl"; chmod +x "$t/stubbin/curl"
 cat > "$t/stubbin/opencode" <<'EOF'
 #!/bin/bash
+case "${1:-}" in
+  --version) printf '%s\n' '1.19.6'; exit 0 ;;
+esac
+if [ "${1:-}" = run ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' '  --dir   directory to run in'
+  exit 0
+fi
 if [ -f "$A770B_DATA/logs/run-since" ]; then cp -- "$A770B_DATA/logs/run-since" "$A770B_DATA/logs/run-since.at-opencode"; fi
 exit 0
 EOF

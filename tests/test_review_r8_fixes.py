@@ -33,7 +33,7 @@ import test_review_r7_fixes as r7
 from test_reload import _Health, _registry_with_sycl, _write_models, live_pid  # noqa: F401 — live_pid is a fixture
 from test_review_r6_fixes import (
     BUILD_LOCAL, LOCAL_BUILD, PROFILE, ROOT, RUN_SUITE_SH, _base_env, _git_seat, _make_exec, _one_stage_suite,
-    _wait_for,
+    _wait_for, _with_opencode_v1,
 )
 
 RUN_LEAD = ROOT / "harness" / "run_lead.py"
@@ -179,8 +179,8 @@ def test_stop_racing_the_fence_without_receipt_or_owner_is_not_graded_by_the_sui
     stub = tmp_path / "stubbin"
     _make_exec(stub / "curl", "exit 0")
     marker = tmp_path / "worker-exit"
-    _make_exec(stub / "opencode",
-               f"trap 'kill $! 2>/dev/null; echo 0 > \"{marker}\"; exit 0' TERM; sleep 60 & wait $!; exit 0")
+    _make_exec(stub / "opencode", _with_opencode_v1(
+        f"trap 'kill $! 2>/dev/null; echo 0 > \"{marker}\"; exit 0' TERM; sleep 60 & wait $!; exit 0"))
     fake_lb = _make_exec(tmp_path / "fake-lb.sh", f'''if [ "$1" = run ]; then
   env -u LOCAL_TIMEOUT LOCAL_TIMEOUT=1 SANDBOX=0 PROFILE={PROFILE} PATH="{stub}:$PATH" \\
     PYTHONPATH="{site}" R8_STOP_AT_FENCE="{LOCAL_BUILD}:{failbin}:{stop_out}" \\
@@ -337,7 +337,7 @@ def _run_cli(tmp_path: Path, env: dict, profile: str, *extra: str):
     brief.write_text("# task\n", encoding="utf-8")
     stub = tmp_path / "stubbin"
     opencode_marker = tmp_path / "opencode-ran"
-    _make_exec(stub / "opencode", f'touch "{opencode_marker}"; exit 0')
+    _make_exec(stub / "opencode", _with_opencode_v1(f'touch "{opencode_marker}"; exit 0'))
     selection = tmp_path / "selection.json"
     run_env = dict(env, SANDBOX="0", PATH=f"{stub}:{env['PATH']}", A770B_SERVING_SELECTION_FILE=str(selection))
     r = subprocess.run(["bash", str(LOCAL_BUILD), "run", str(seat), str(brief), "--profile", profile, *extra],
@@ -586,7 +586,7 @@ def test_run_cli_timeout_zero_is_forwarded_as_unlimited(tmp_path):
     stub = tmp_path / "stubbin"
     _make_exec(stub / "curl", 'case "$*" in *http_code*) printf 200;; esac; exit 0')
     marker = tmp_path / "opencode-finished"
-    _make_exec(stub / "opencode", f'sleep 1.2; touch "{marker}"; exit 0')
+    _make_exec(stub / "opencode", _with_opencode_v1(f'sleep 1.2; touch "{marker}"; exit 0'))
     r = subprocess.run(["bash", str(LOCAL_BUILD), "run", str(seat), str(brief), "--profile", PROFILE,
                         "--timeout", "0", "--base-url", "http://127.0.0.1:9", "--served-model-name", "m"],
                        cwd=ROOT, env=dict(env, SANDBOX="0", PATH=f"{stub}:{env['PATH']}"),
