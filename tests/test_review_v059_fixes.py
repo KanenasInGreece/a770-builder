@@ -7,8 +7,10 @@ and local bare git repositories — never touching real GPU services or live che
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -228,6 +230,25 @@ def test_attach_running_server_validates_url_before_curl(tmp_path):
         )
         assert r.returncode == 0, (good, r.stdout, r.stderr)
     assert curl_log.exists()
+
+
+def test_attach_discovers_and_exports_engine_for_suite_memory_attribution(tmp_path):
+    bin_ = tmp_path / "bin"
+    curl = _make_exec(bin_ / "curl", '''case "$*" in
+  *"-w %{http_code}"*) echo 200 ;;
+  *"/v1/models"*) echo '{"data":[{"owned_by":"sglang"}]}' ;;
+  *) echo 200 ;;
+esac''')
+    metadata = tmp_path / "attachment.json"
+    env = _base_env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_ATTACHMENT_METADATA_FILE=str(metadata))
+    Path(env["A770B_API_KEY_FILE"]).write_text("fixture-key\n", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", "-c", f'. "{LOCAL_BUILD}"; _attach_running_server "http://127.0.0.1:8080/v1" model-a >/dev/null; printf "%s %s\\n" "$A770B_SERVED_ENGINE" "$A770B_SERVED_BACKEND"'],
+        capture_output=True, text=True, env=env, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "sglang sglang"
+    assert json.loads(metadata.read_text(encoding="utf-8")) == {"engine": "sglang", "backend": "sglang"}
 
 
 def test_capture_task_binary_patch_applies_cleanly_on_disposable_seat(tmp_path):
@@ -681,7 +702,8 @@ def test_run_suite_no_capture_skips_registry_update_and_records_run_error(tmp_pa
         ["bash", str(RUN_SUITE_SH), "qwen35-9b-q4km-vulkan", str(seat), "--suite", str(suite_file), "--stages", "s1-frontend"],
         capture_output=True, text=True, env=run_env, cwd=ROOT,
     )
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "suite incomplete" in r.stdout + r.stderr
     # Prior registry row must remain byte-for-byte identical.
     assert pf.read_text(encoding="utf-8") == orig_text
     res_files = list((Path(env["A770B_DATA"]) / "results").glob("*-suite-*.json"))
@@ -696,6 +718,396 @@ def test_run_suite_no_capture_skips_registry_update_and_records_run_error(tmp_pa
     )
     assert rep.returncode == 0, rep.stderr
     assert "RUN_ERROR" in rep.stdout
+
+
+def test_run_suite_sigterm_records_interruption_and_json_report_refuses_it(tmp_path):
+    env = _base_env(tmp_path)
+    (tmp_path / "seat").mkdir()
+    (tmp_path / "seat" / "README.md").write_text("fixture kit seat\n", encoding="utf-8")
+    profile_file = tmp_path / "a770.display.json"
+    profile_file.write_text((ROOT / "config/registry/a770.display.json").read_text(encoding="utf-8"), encoding="utf-8")
+    env["A770B_PROFILES_FILE"] = str(profile_file)
+    task_dir = tmp_path / "tasks"
+    task_dir.mkdir()
+    stages = []
+    for sid in ("s1-fast", "s2-slow"):
+        brief = task_dir / f"{sid}.md"
+        spec = task_dir / f"{sid}.spec.json"
+        brief.write_text(f"# {sid}\n", encoding="utf-8")
+        spec.write_text("{}\n", encoding="utf-8")
+        stages.append({"id": sid, "language": "python", "brief": str(brief), "spec": str(spec),
+                       "grader": {"working": "true", "budget_lines": 50}})
+    suite_file = tmp_path / "suite.json"
+    suite_file.write_text(json.dumps({"suite": "SUITE-TEST", "kit_version": "1", "stages": stages}), encoding="utf-8")
+    marker = tmp_path / "slow-stage-started"
+    fake_lb = tmp_path / "fake-lb.sh"
+    _make_exec(fake_lb, f'''if [ "$1" = run ]; then
+  shift; wt="$1"; brief="$2"; label="fake-$(basename "$brief" .md)"
+  if [[ "$brief" == *s2-slow* ]]; then touch "{marker}"; sleep 30; fi
+  mkdir -p "$A770B_DATA/results"; printf '# capture\\n' > "$A770B_DATA/results/$label.task.md"
+  echo "▶ capture: $A770B_DATA/results/$label.task.md — captured"
+  exit 0
+fi
+if [ "$1" = verify ]; then exit 0; fi
+exit 0''')
+    env["A770B_LOCAL_BUILD"] = str(fake_lb)
+    proc = subprocess.Popen(["bash", str(RUN_SUITE_SH), "qwen35-9b-q4km-vulkan", str(tmp_path / "exported-seat"),
+                             "--suite", str(suite_file)], cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        for _ in range(400):
+            if marker.exists():
+                break
+            if proc.poll() is not None:
+                raise AssertionError("suite ended before the slow stage began: " + (proc.stdout.read() or ""))
+            time.sleep(0.025)
+        assert marker.exists(), "suite never entered the second stage"
+        os.killpg(proc.pid, signal.SIGTERM)
+        output, _ = proc.communicate(timeout=10)
+        assert proc.returncode != 0, output
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
+    results = list((Path(env["A770B_DATA"]) / "results").glob("*-suite-*.json"))
+    assert len(results) == 1
+    doc = json.loads(results[0].read_text(encoding="utf-8"))
+    execution = doc["execution"]
+    assert execution["status"] == "interrupted" and execution["signal"] == "SIGTERM"
+    assert execution["planned_stage_ids"] == ["s1-fast", "s2-slow"]
+    assert execution["completed_stage_ids"] == ["s1-fast"]
+    assert execution["planned_counted_stages"] == 2 and execution["completed_counted_stages"] == 1
+    memory_log = Path(execution["host_memory_log"])
+    assert memory_log.is_file()
+    sample = json.loads(memory_log.read_text(encoding="utf-8").splitlines()[0])
+    assert sample["meminfo"]["mem_available"] is not None and sample["target"] is None
+    report = subprocess.run([sys.executable, str(ROOT / "harness/suite_report.py"), str(results[0]), "--json"],
+                            capture_output=True, text=True, env=env, cwd=ROOT)
+    assert report.returncode == 3 and not report.stdout
+    assert "incomplete kit run" in report.stderr
+
+
+def test_run_suite_treats_stop_run_capture_as_incomplete_not_a_grade(tmp_path):
+    env = _base_env(tmp_path)
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    (seat / "README.md").write_text("fixture kit seat\n", encoding="utf-8")
+    profile_file = tmp_path / "a770.display.json"
+    profile_file.write_text((ROOT / "config/registry/a770.display.json").read_text(encoding="utf-8"), encoding="utf-8")
+    env["A770B_PROFILES_FILE"] = str(profile_file)
+    brief = tmp_path / "stage.md"
+    spec = tmp_path / "stage.spec.json"
+    brief.write_text("# stage\n", encoding="utf-8")
+    spec.write_text("{}\n", encoding="utf-8")
+    suite_file = tmp_path / "suite.json"
+    suite_file.write_text(json.dumps({"suite": "SUITE-TEST", "kit_version": "1", "stages": [
+        {"id": "s1-fast", "language": "python", "brief": str(brief), "spec": str(spec),
+         "grader": {"working": "true", "budget_lines": 50}},
+    ]}), encoding="utf-8")
+    fake_lb = tmp_path / "fake-lb.sh"
+    _make_exec(fake_lb, '''if [ "$1" = run ]; then
+  label=fake-stage
+  mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
+  printf '# partial capture\\n' > "$A770B_DATA/results/$label.task.md"
+  echo "▶ capture: $A770B_DATA/results/$label.task.md — captured"
+  exit 143
+fi
+if [ "$1" = verify ]; then touch "$A770B_DATA/verify-was-run"; exit 0; fi
+exit 0''')
+    env["A770B_LOCAL_BUILD"] = str(fake_lb)
+    result = subprocess.run(["bash", str(RUN_SUITE_SH), "qwen35-9b-q4km-vulkan", str(tmp_path / "exported-seat"),
+                             "--suite", str(suite_file)], cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert not (Path(env["A770B_DATA"]) / "verify-was-run").exists()
+    results = list((Path(env["A770B_DATA"]) / "results").glob("*-suite-*.json"))
+    assert len(results) == 1
+    execution = json.loads(results[0].read_text(encoding="utf-8"))["execution"]
+    stage = json.loads(results[0].read_text(encoding="utf-8"))["stages"][0]
+    assert execution["status"] == "incomplete"
+    assert execution["completed_stage_ids"] == []
+    assert execution["completed_counted_stages"] == 0
+    assert stage["outcome"] == "run_interrupted"
+    assert stage["label"] == "fake-stage"
+    report = subprocess.run([sys.executable, str(ROOT / "harness/suite_report.py"), str(results[0]), "--json"],
+                            capture_output=True, text=True, env=env, cwd=ROOT)
+    assert report.returncode == 3 and not report.stdout
+    assert "incomplete kit run" in report.stderr
+
+
+def test_build_wrappers_propagate_signal_exit_after_preserving_capture():
+    build = (ROOT / "harness" / "build_local.sh").read_text(encoding="utf-8")
+    local_build = LOCAL_BUILD.read_text(encoding="utf-8")
+    assert build.index("rc=${PIPESTATUS[0]}") < build.index('exit "$rc"')
+    assert "[ \"$rc\" -ge 128" in build and "[ \"$rc\" -le 159" in build
+    capture = local_build.index('bash "$CAPTURE" "$label" "$WT" "$BL"')
+    propagate = local_build.index('exit "$brc"', capture)
+    assert capture < propagate
+    assert '[ "$brc" -ge 128' in local_build and '[ "$brc" -le 159' in local_build
+
+
+def test_stop_run_still_signals_a_run_lead_leader_when_marker_cannot_be_written(tmp_path):
+    # No receipt and no build_local.sh owner: the run_lead.py leader is the record, so the stop still goes out and
+    # the leader reports it (143) although the worker handles TERM and exits 0. A leader that is not run_lead.py is
+    # refused in that case instead (tests/test_review_r7_fixes.py).
+    env = _base_env(tmp_path)
+    run_pid = Path(env["A770B_DATA"]) / "logs" / "run.pid"
+    fake_bin = tmp_path / "bin"
+    _make_exec(fake_bin / "mktemp", "exit 1")
+    fake_opencode = _make_exec(tmp_path / "opencode", "trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; touch \"$0.started\"; sleep 60 & child=$!; wait \"$child\"")
+    lead_pid, lead_rc = tmp_path / "lead.pid", tmp_path / "lead.rc"
+    # A parent shell that reaps the leader, as build_local.sh's subshell does: an unreaped exit is still "alive".
+    owner = subprocess.Popen(["bash", "-c", f'python3 "{ROOT}/harness/run_lead.py" -- "{fake_opencode}" run & '
+                              f'echo "$!" > "{lead_pid}"; wait "$!"; echo "$?" > "{lead_rc}"'],
+                             env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    started = Path(str(fake_opencode) + ".started")
+    for _ in range(100):
+        if started.exists() and lead_pid.exists():
+            break
+        time.sleep(0.02)
+    assert started.exists()
+    run_pid.write_text(lead_pid.read_text(encoding="ascii"), encoding="ascii")
+    try:
+        result = subprocess.run(["bash", str(LOCAL_BUILD), "stop-run"], cwd=ROOT,
+                                env=dict(env, PATH=f"{fake_bin}:{env['PATH']}"), capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not persist the interruption receipt" in result.stderr
+        assert "records the stop itself" in result.stderr
+        owner.wait(timeout=5)
+        assert lead_rc.read_text(encoding="ascii").strip() == "143"
+        assert not (Path(env["A770B_DATA"]) / "logs" / "run.interrupted").exists()
+    finally:
+        if owner.poll() is None:
+            os.killpg(owner.pid, signal.SIGKILL)
+            owner.wait(timeout=5)
+
+
+def test_run_suite_installs_cleanup_traps_before_starting_host_memory_monitor():
+    source = RUN_SUITE_SH.read_text(encoding="utf-8")
+    traps = source.index("trap 'suite_signal SIGINT 130' INT")
+    cleanup_trap = source.index("trap _suite_cleanup EXIT")
+    monitor = source.index('python3 "$here/host_memory.py" monitor')
+    assert traps < monitor and cleanup_trap < monitor
+
+
+def test_run_suite_tracks_serving_pid_during_the_blocking_generation_call():
+    source = RUN_SUITE_SH.read_text(encoding="utf-8")
+    start = source.index("suite_start_serving_pid_watcher")
+    generation = source.index('run_out=$(bash "$LOCAL_BUILD" run')
+    assert start < generation
+    assert 'kill -TERM "$HOST_PID_WATCH_PID"' in source
+
+
+def test_suite_endpoint_resolution_precedes_managed_server_fallbacks():
+    source = RUN_SUITE_SH.read_text(encoding="utf-8")
+    begin = source.index("suite_serving_pid(){")
+    end = source.index('if [ "$DRYRUN"', begin)
+    function = source[begin:end]
+    assert function.index('if [ -n "$BASE_URL" ]') < function.index('[ -s "$HOST_SELECTION_FILE" ] || return 1')
+    assert function.index('[ -s "$HOST_SELECTION_FILE" ] || return 1') < function.index('if [ "$sel_engine" = strata ]')
+    assert "endpoint_listener_pid" in function
+
+
+def test_candidate_cold_generation_gets_verified_serving_cgroup_sample(tmp_path):
+    env = _base_env(tmp_path)
+    # A suite run takes a sidecar lock beside the profiles file and may record measured_tasks in it: always a
+    # private copy, never the tracked config/registry (test_review_r7_fixes proves the registry stays untouched).
+    registry = tmp_path / "registry" / "a770.display.json"
+    registry.parent.mkdir()
+    registry.write_bytes((ROOT / "config/registry/a770.display.json").read_bytes())
+    env["A770B_PROFILES_FILE"] = str(registry)
+    model = Path(env["A770B_MODELS"]) / "candidate.gguf"
+    model.write_text("fixture model path\n", encoding="utf-8")
+    server = tmp_path / "llama-server"
+    server.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n", encoding="utf-8")
+    server.chmod(0o755)
+    pid_file = tmp_path / "server.pid"
+    during = tmp_path / "sample-during-generation"
+    docker = tmp_path / "docker"
+    _make_exec(docker, f'''if [ "$1" = inspect ]; then cat "{pid_file}"; exit 0; fi
+exit 1''')
+    fake_lb = tmp_path / "fake-lb.sh"
+    _make_exec(fake_lb, f'''if [ "$1" = run ]; then
+  python3 "{server}" >/dev/null 2>&1 &
+  echo "$!" > "{pid_file}"
+  printf '%064d\\n' 1 > "$A770B_DATA/logs/llamacpp-a770.cid"
+  printf '{{"profile":"candidate","served_profile":"candidate","engine":"llama.cpp","cid":"%064d"}}\\n' 1 \\
+    > "$A770B_SERVING_SELECTION_FILE"
+  for _ in $(seq 1 30); do
+    for sample in "$A770B_DATA"/results/*-suite-*.host-memory.jsonl; do
+      [ -f "$sample" ] || continue
+      if python3 - "$sample" "$(cat "{pid_file}")" <<'PY'
+import json, sys
+try:
+    samples = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if any((s.get("target") or {{}}).get("pid") == int(sys.argv[2]) for s in samples) else 1)
+PY
+      then touch "{during}"; break 2; fi
+    done
+    sleep 0.2
+  done
+  mkdir -p "$A770B_DATA/results"
+  printf '# capture\\n' > "$A770B_DATA/results/candidate-cold-s1.task.md"
+  printf 'diff --git a/example.py b/example.py\\n' > "$A770B_DATA/results/candidate-cold-s1.patch"
+  echo "▶ capture: $A770B_DATA/results/candidate-cold-s1.task.md — captured"
+  exit 0
+fi
+if [ "$1" = verify ]; then exit 0; fi
+exit 0''')
+    env.pop("A770B_CANDIDATE_ENGINE", None)
+    env.pop("A770B_CANDIDATE_BACKEND", None)
+    env.pop("A770B_SERVED_ENGINE", None)
+    env.update(A770B_LOCAL_BUILD=str(fake_lb), A770B_DOCKER=str(docker), FAKE_SERVER_PID_FILE=str(pid_file))
+    brief = tmp_path / "stage.md"
+    spec = tmp_path / "stage.spec.json"
+    brief.write_text("# stage\n", encoding="utf-8")
+    spec.write_text("{}\n", encoding="utf-8")
+    suite_file = tmp_path / "suite.json"
+    kit_seat = tmp_path / "seat"
+    kit_seat.mkdir()
+    (kit_seat / "README.md").write_text("candidate test seat\n", encoding="utf-8")
+    suite_file.write_text(json.dumps({"suite": "COLD-CANDIDATE", "kit_version": "1", "stages": [
+        {"id": "s1-cold", "language": "python", "brief": str(brief), "spec": str(spec),
+         "grader": {"working": "true", "budget_lines": 50}},
+    ]}), encoding="utf-8")
+    try:
+        result = subprocess.run(
+            ["bash", str(RUN_SUITE_SH), "--model", str(model), "--ctx", "8192",
+             str(tmp_path / "candidate-seat"), "--suite", str(suite_file)],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=20,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert during.exists(), "no verified serving-PID sample was recorded while the candidate builder ran"
+        results = list((Path(env["A770B_DATA"]) / "results").glob("candidate-suite-*.json"))
+        assert len(results) == 1
+        doc = json.loads(results[0].read_text(encoding="utf-8"))
+        assert doc["execution"]["engine"] == "llama.cpp"
+        assert doc["execution"]["backend"] == "vulkan"
+        assert any((sample.get("target") or {}).get("pid") == int(pid_file.read_text().strip())
+                   for sample in (json.loads(line) for line in Path(doc["execution"]["host_memory_log"]).read_text().splitlines()))
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text(encoding="ascii").strip()), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
+
+
+def test_external_suite_uses_verified_attachment_engine_and_backend(tmp_path):
+    env = _base_env(tmp_path)
+    brief = tmp_path / "stage.md"
+    spec = tmp_path / "stage.spec.json"
+    brief.write_text("# stage\n", encoding="utf-8")
+    spec.write_text("{}\n", encoding="utf-8")
+    suite_file = tmp_path / "suite.json"
+    suite_file.write_text(json.dumps({"suite": "EXTERNAL", "kit_version": "1", "stages": [
+        {"id": "s1", "language": "python", "brief": str(brief), "spec": str(spec),
+         "grader": {"working": "true", "budget_lines": 50}},
+    ]}), encoding="utf-8")
+    seat_source = tmp_path / "seat"
+    seat_source.mkdir()
+    (seat_source / "README.md").write_text("external fixture seat\n", encoding="utf-8")
+    fake_lb = tmp_path / "fake-lb.sh"
+    _make_exec(fake_lb, '''if [ "$1" = run ]; then
+  printf '{"engine":"sglang","backend":"sglang"}\\n' > "$A770B_ATTACHMENT_METADATA_FILE"
+  mkdir -p "$A770B_DATA/results"
+  printf '# capture\\n' > "$A770B_DATA/results/external-s1.task.md"
+  printf 'diff --git a/example.py b/example.py\\n' > "$A770B_DATA/results/external-s1.patch"
+  echo "▶ capture: $A770B_DATA/results/external-s1.task.md — captured"
+  exit 0
+fi
+if [ "$1" = verify ]; then exit 0; fi
+exit 0''')
+    env["A770B_LOCAL_BUILD"] = str(fake_lb)
+    result = subprocess.run(
+        ["bash", str(RUN_SUITE_SH), "--base-url", "http://127.0.0.1:18080/v1",
+         "--served-model-name", "external-model", "--ctx", "8192", str(tmp_path / "output-seat"),
+         "--suite", str(suite_file), "--stages", "s1"],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    results = [p for p in (Path(env["A770B_DATA"]) / "results").glob("candidate-suite-*.json")
+               if not p.name.endswith(".attachment.json")]
+    assert len(results) == 1
+    execution = json.loads(results[0].read_text(encoding="utf-8"))["execution"]
+    assert execution["engine"] == "sglang"
+    assert execution["backend"] == "sglang"
+
+
+def test_refused_external_attachment_does_not_trust_inherited_engine_metadata(tmp_path):
+    env = _base_env(tmp_path, A770B_SERVED_ENGINE="vllm", A770B_SERVED_BACKEND="vllm")
+    brief = tmp_path / "stage.md"
+    spec = tmp_path / "stage.spec.json"
+    brief.write_text("# stage\n", encoding="utf-8")
+    spec.write_text("{}\n", encoding="utf-8")
+    suite_file = tmp_path / "suite.json"
+    suite_file.write_text(json.dumps({"suite": "REFUSED-EXTERNAL", "kit_version": "1", "stages": [
+        {"id": "s1", "language": "python", "brief": str(brief), "spec": str(spec),
+         "grader": {"working": "true", "budget_lines": 50}},
+    ]}), encoding="utf-8")
+    seat_source = tmp_path / "seat"
+    seat_source.mkdir()
+    (seat_source / "README.md").write_text("external fixture seat\n", encoding="utf-8")
+    fake_lb = tmp_path / "fake-lb.sh"
+    _make_exec(fake_lb, '''if [ "$1" = run ]; then
+  echo "⛔ attachment refused"
+  exit 2
+fi
+exit 0''')
+    env["A770B_LOCAL_BUILD"] = str(fake_lb)
+    result = subprocess.run(
+        ["bash", str(RUN_SUITE_SH), "--base-url", "http://127.0.0.1:18081/v1",
+         "--served-model-name", "external-model", "--ctx", "8192", str(tmp_path / "output-seat"),
+         "--suite", str(suite_file), "--stages", "s1"],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    results = [p for p in (Path(env["A770B_DATA"]) / "results").glob("candidate-suite-*.json")
+               if not p.name.endswith(".attachment.json")]
+    assert len(results) == 1
+    doc = json.loads(results[0].read_text(encoding="utf-8"))
+    assert doc["execution"]["engine"] is None
+    assert doc["execution"]["backend"] is None
+    assert doc["execution"]["completed_stages"] == 0
+
+
+def test_sandbox_reports_missing_opencode_when_resolver_returns_failure():
+    source = (ROOT / "harness" / "sandbox_run.sh").read_text(encoding="utf-8")
+    assert 'OC_BIN=$(a770b_opencode_bin 2>/dev/null) || {' in source
+    assert 'sandbox: opencode binary not found' in source
+
+
+def test_strata_floor_enforcement_starts_unknown_until_verified_supervisor_receipt():
+    suite = RUN_SUITE_SH.read_text(encoding="utf-8")
+    ladder = LADDER_SH.read_text(encoding="utf-8")
+    assert "HOST_MEMORY_ENFORCEMENT=unknown" in suite
+    assert "HOST_MEMORY_ENFORCEMENT=unknown" in ladder
+    assert "if [ \"$RUN_ENGINE\" = strata ]; then HOST_MEMORY_ENFORCEMENT=continuous" not in suite
+    assert "if [ \"$ENGINE\" = strata ]; then HOST_MEMORY_ENFORCEMENT=continuous" not in ladder
+
+
+def test_run_suite_dry_run_writes_no_memory_receipt_or_results_files(tmp_path):
+    env = _base_env(tmp_path)
+    profile_file = tmp_path / "a770.display.json"
+    profile_file.write_text((ROOT / "config/registry/a770.display.json").read_text(encoding="utf-8"), encoding="utf-8")
+    env["A770B_PROFILES_FILE"] = str(profile_file)
+    brief = tmp_path / "brief.md"
+    spec = tmp_path / "spec.json"
+    brief.write_text("# task\n", encoding="utf-8")
+    spec.write_text("{}\n", encoding="utf-8")
+    suite_file = tmp_path / "suite.json"
+    suite_file.write_text(json.dumps({"suite": "SUITE-TEST", "kit_version": "1", "stages": [
+        {"id": "s1-fast", "language": "python", "brief": str(brief), "spec": str(spec),
+         "grader": {"working": "true", "budget_lines": 50}},
+    ]}), encoding="utf-8")
+    data = Path(env["A770B_DATA"])
+    result = subprocess.run(["bash", str(RUN_SUITE_SH), "qwen35-9b-q4km-vulkan", str(tmp_path / "seat"),
+                             "--suite", str(suite_file), "--dry-run"], cwd=ROOT, env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert list((data / "results").iterdir()) == []
+    assert list((data / "logs").iterdir()) == []
 
 
 def test_missing_telemetry_compatibility_in_bench_model_and_doctor(tmp_path):
@@ -896,7 +1308,8 @@ exit 0
         ["bash", str(RUN_SUITE_SH), "qwen35-9b-q4km-vulkan", str(seat), "--suite", str(suite_file), "--stages", "s1-frontend"],
         capture_output=True, text=True, env=run_env, cwd=ROOT,
     )
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "suite incomplete" in r.stdout + r.stderr
     assert pf.read_text(encoding="utf-8") == orig_text
     vj = json.loads((results / f"{reused}.verify.json").read_text(encoding="utf-8"))
     assert vj["status"] == "infra_error"

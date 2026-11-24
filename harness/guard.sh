@@ -140,8 +140,96 @@ run_pid_alive(){
   comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
   cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
   case "$cmdline" in *sandbox_run.sh*|*"opencode run"*) : ;; *) return 1;; esac
-  case "$comm" in timeout|bash|opencode|sandbox_run.sh) : ;; *) return 1;; esac
+  if ! run_lead_pid "$pid"; then
+    case "$comm" in timeout|bash|opencode|sandbox_run.sh) : ;; *) return 1;; esac
+  fi
   printf '%s\n' "$pid"
+}
+
+# run_lead_pid <pid> — true only when <pid> is THIS project's harness/run_lead.py (the leader build_local.sh starts):
+# a python3 interpreter whose script argument is that exact file by absolute path, followed by --timeout or --.
+# That leader records a stop itself (it exits 128+signal whatever the worker does), so stop-run may rely on it.
+run_lead_pid(){
+  local pid="$1" comm want got
+  local -a argv=()
+  comm=$(cat "/proc/$pid/comm" 2>/dev/null) || return 1
+  case "$comm" in python3|python3.[0-9]*) : ;; *) return 1;; esac
+  mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || return 1
+  [ "${#argv[@]}" -ge 3 ] || return 1
+  case "${argv[1]}" in /*) : ;; *) return 1;; esac
+  case "${argv[2]}" in --|--timeout) : ;; *) return 1;; esac
+  want=$(realpath -e -- "$A770B_PROJECT/harness/run_lead.py" 2>/dev/null) || return 1
+  got=$(realpath -e -- "${argv[1]}" 2>/dev/null) || return 1
+  [ "$got" = "$want" ]
+}
+
+# run_owner_pid <leader-pid> <owner-pid> — true only when <owner-pid> is a build_local.sh that supports stop-run's
+# USR1 owner channel, positively: it is bash running THIS project's harness/build_local.sh as its script (argv[1],
+# by realpath — an argument naming the file elsewhere on the line does not count), the leader's own environment
+# declares it (A770B_RUN_OWNER_PID=<owner-pid>, which only a protocol-aware build_local.sh exports), and the
+# kernel shows a USR1 handler installed (SigCgt). A legacy owner has no handler, and USR1's default action would
+# kill it; an unrelated parent is not declared. Anything unreadable is "not verified".
+run_owner_pid(){
+  local leader="$1" owner="$2" comm want got cgt
+  local -a argv=()
+  [[ "$leader" =~ ^[1-9][0-9]*$ ]] && [[ "$owner" =~ ^[1-9][0-9]*$ ]] && [ "$owner" != 1 ] || return 1
+  comm=$(cat "/proc/$owner/comm" 2>/dev/null) || return 1
+  [ "$comm" = bash ] || return 1
+  mapfile -d '' -t argv < "/proc/$owner/cmdline" 2>/dev/null || return 1
+  [ "${#argv[@]}" -ge 2 ] || return 1
+  case "${argv[0]}" in bash|*/bash) : ;; *) return 1;; esac
+  case "${argv[1]}" in /*) : ;; *) return 1;; esac
+  want=$(realpath -e -- "$A770B_PROJECT/harness/build_local.sh" 2>/dev/null) || return 1
+  got=$(realpath -e -- "${argv[1]}" 2>/dev/null) || return 1
+  [ "$got" = "$want" ] || return 1
+  tr '\0' '\n' < "/proc/$leader/environ" 2>/dev/null | grep -qx "A770B_RUN_OWNER_PID=$owner" || return 1
+  cgt=$(sed -n 's/^SigCgt:[[:space:]]*//p' "/proc/$owner/status" 2>/dev/null) || return 1
+  [[ "$cgt" =~ ^[0-9a-fA-F]+$ ]] || return 1
+  (( (16#$cgt >> 9) & 1 ))                                       # bit 9 is SIGUSR1 (10)
+}
+
+# _recorded_worker_group_pid <file> — print the pid from run_lead.py's worker-group file, or return 1.
+# The file is one line "<pid> <starttime>". The pid must still exist, lead its own process group, and
+# still have that start time (proc(5) field 22, the 20th field after the comm). A recycled pid fails the
+# start time. A symlink is not read. This is the guard; it signals nothing.
+_recorded_worker_group_pid(){
+  local file="${1:-}" line pid start extra stat
+  local -a fields=()
+  [ -n "$file" ] && [ ! -L "$file" ] && [ -f "$file" ] || return 1
+  IFS= read -r line < "$file" || return 1
+  [ -n "$line" ] || return 1
+  read -r pid start extra <<< "$line" || return 1
+  [ -n "$pid" ] && [ -n "$start" ] && [ -z "$extra" ] || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$start" =~ ^[0-9]+$ ]] || return 1
+  [ -r "/proc/$pid/stat" ] || return 1
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  stat=${stat##*)}                                             # drop the comm, which may itself contain spaces or ')'
+  read -ra fields <<< "$stat" || return 1
+  [ "${#fields[@]}" -ge 20 ] || return 1
+  [ "${fields[2]}" = "$pid" ] || return 1                      # pgrp: it leads the group a signal to -pid reaches
+  [ "${fields[19]}" = "$start" ] || return 1                   # starttime: not a pid reused since the file was written
+  printf '%s\n' "$pid"
+}
+
+# signal_recorded_worker_group <file> — the one helper build_local.sh and stop-run both use.
+# The identity is checked once, before TERM. A member that is not the recorded pid can survive that TERM
+# (the recorded pid exits and is reaped, and the old re-check then returned without a KILL). After TERM,
+# poll the group itself: kill -0 -- -pid. A pgid is not reused while any member lives. KILL that group if
+# it is still there. Nothing is signalled by process name. A live run_lead.py leader forwards its own TERM.
+signal_recorded_worker_group(){
+  local file="${1:-}" pid i
+  pid=$(_recorded_worker_group_pid "$file") || return 1
+  echo "▶ recorded worker group $pid matches $file; signaling that group" >&2
+  kill -s TERM -- "-$pid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 10 ]; do
+    kill -0 -- "-$pid" 2>/dev/null || return 0                 # no member of that group is left
+    sleep 0.05
+    i=$((i + 1))
+  done
+  kill -0 -- "-$pid" 2>/dev/null || return 0
+  kill -s KILL -- "-$pid" 2>/dev/null || return 1
 }
 
 # Lock ordering (single order across the entire harness): card_lock (FD 9) MUST be acquired before seat_lock (FD 7).
@@ -480,10 +568,24 @@ compose_project_running(){
 # budget_gate — the built-in gate: host RAM, no stray llama-server, VRAM on the builder card, optional health URL, port.
 # Replaced entirely by A770B_BUDGET_GATE when that is set.
 budget_gate(){
-  if [ -n "$A770B_BUDGET_GATE" ]; then bash "$A770B_BUDGET_GATE" check; return $?; fi
+  if [ -n "$A770B_BUDGET_GATE" ]; then
+    env -u A770B_BUDGET_GATE_RECEIPT bash "$A770B_BUDGET_GATE" check
+    return $?
+  fi
   local ok=1 avail free
   require_vram_readings || return 1
   avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
+  if [ -n "$A770B_BUDGET_GATE_RECEIPT" ]; then
+    local receipt_tmp="${A770B_BUDGET_GATE_RECEIPT}.tmp.$$"
+    if mkdir -p "$(dirname "$A770B_BUDGET_GATE_RECEIPT")" 2>/dev/null \
+        && printf '{"enforcement":"launch","sampled_at":"%s"}\n' "$(date -Is)" > "$receipt_tmp" \
+        && mv -f -- "$receipt_tmp" "$A770B_BUDGET_GATE_RECEIPT"; then
+      :
+    else
+      rm -f -- "$receipt_tmp" 2>/dev/null || true
+      echo "⚠ could not record the built-in host RAM guard receipt" >&2
+    fi
+  fi
   if [ "$avail" -ge "$A770B_MIN_AVAIL_MB" ]; then printf '  %-30s %s\n' "host MemAvailable (MB)" "$avail ≥ $A770B_MIN_AVAIL_MB"; else printf '⛔ %-30s %s\n' "host MemAvailable (MB)" "$avail < $A770B_MIN_AVAIL_MB"; ok=0; fi
   if [ "$A770B_SERVE" = compose ]; then
     # a llama-server that is not one of THIS project's containers is foreign; this project's own container is ours

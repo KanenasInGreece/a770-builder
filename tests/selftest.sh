@@ -1524,7 +1524,8 @@ fi
 # the ladder's inline instrument computation: a present kit_version must yield SUITE@V, and an absent one must refuse.
 # The old form, `raise SystemExit(...) if not (...) else None`, parsed as `raise (X if cond else None)` and raised
 # None -> TypeError whenever kit_version WAS present, killing every non-dry-run ladder at the final step.
-if ! grep -q 'raise SystemExit' "$here/harness/ladder.sh" \
+if grep -Fq 'INSTRUMENT=$(python3 -c' "$here/harness/ladder.sh" \
+  && grep -Fq 'print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "$here/harness/ladder.sh" \
   && grep -q '\[ -n "\$INSTRUMENT" \]' "$here/harness/ladder.sh" \
   && [ "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "$here/kit/suite.json")" = "SUITE-1@1" ] \
   && [ -z "$(printf '{"suite":"X"}' | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")')" ]

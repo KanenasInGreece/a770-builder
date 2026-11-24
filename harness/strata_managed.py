@@ -132,7 +132,40 @@ def prepare_config(path):
     doc["env"] = {**env, "ONEAPI_DEVICE_SELECTOR": selector}
     return doc, {"engine": "strata", "source_commit": PIN, "engine_sha256": engine_sha,
                  "config_sha256": hashlib.sha256(raw).hexdigest(), "tokenizer_sha256": file_digest(tok / "tokenizer.json"),
-                 "model_id": doc["model_name"], "selector": selector, "config": str(path), "draft_sha256": drafts}
+                 "model_id": doc["model_name"], "selector": selector, "config": str(path), "draft_sha256": drafts,
+                 "host_memory_settings": host_memory_settings(env, args)}
+
+
+# The config's host-memory knobs (docs/OPERATING.md, Managed Strata): the pinned host mirror and its guard, and the
+# engine flags that place experts and per-layer embeddings in host memory. A VRAM reserve is not one of them.
+HOST_MEMORY_ENV = ("STRATA_MIRROR_MIB", "STRATA_VERIFY_NO_HOST")
+HOST_MEMORY_FLAGS = ("--expert-cache", "--stream-experts", "--ple-io")
+
+
+def host_memory_settings(env, args):
+    """The host-memory settings as the config writes them: values verbatim, a bare flag True, an absent one absent."""
+    found = {}
+    for i, item in enumerate(args):
+        flag, equal, inline = item.partition("=")
+        if flag not in HOST_MEMORY_FLAGS:
+            continue
+        following = args[i + 1] if i + 1 < len(args) else None
+        if equal:
+            found[flag] = inline
+        elif following is not None and not following.startswith("--"):
+            found[flag] = following
+        else:
+            found[flag] = True
+    return {"env": {k: env[k] for k in HOST_MEMORY_ENV if k in env}, "args": found}
+
+
+def launch_evidence_matches(old, current):
+    """Compare launch identity while allowing older state files to lack reporting-only metadata.
+
+    The complete prepared config digest remains part of the identity, so changes to Strata memory knobs still
+    require a restart. ``host_memory_settings`` is a derived explanation of that already-hashed config.
+    """
+    return all(old.get(key) == value for key, value in current.items() if key != "host_memory_settings")
 
 
 def level_zero_pci_ids():
@@ -266,6 +299,40 @@ def signal_and_wait(pid, started, signum, timeout):
         os.close(fd)
 
 
+def observed_pinned_host_memory(log_path):
+    """Read a Strata-reported pinned host-RAM allocation, keeping its source text and bytes."""
+    try:
+        lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    pattern = re.compile(r"(?P<amount>[\d,]+(?:\.\d+)?)\s*(?P<unit>KiB|MiB|GiB)\s+of pinned host RAM", re.I)
+    scale = {"kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3}
+    for line in reversed(lines):
+        match = pattern.search(line)
+        if match:
+            amount = float(match.group("amount").replace(",", ""))
+            unit = match.group("unit").lower()
+            return {"value_bytes": round(amount * scale[unit]), "source": str(log_path),
+                    "reported_text": line.strip()[-300:]}
+    return None
+
+
+def observe_host_memory(evidence_path):
+    """Persist Strata's reported pinned allocation before the ladder renders its profile row."""
+    path = Path(evidence_path)
+    evidence = read_state(path)
+    if not isinstance(evidence, dict) or evidence.get("engine") != "strata":
+        raise ValueError("Strata evidence is missing or belongs to another engine")
+    log_dir = evidence.get("log_dir")
+    if not isinstance(log_dir, str) or not Path(log_dir).is_absolute():
+        raise ValueError("Strata evidence has no absolute log directory")
+    observed = observed_pinned_host_memory(Path(log_dir) / "engine.log")
+    if observed is not None:
+        evidence["observed_pinned_host_memory"] = observed
+        write_state(path, evidence)
+    return path
+
+
 def stop(path, expected=None):
     state = read_state(path)
     if state is None:
@@ -287,6 +354,12 @@ def stop(path, expected=None):
         time.sleep(0.1)
     if occupied(current):
         raise ValueError("owned Strata processes remain alive; retaining ownership record")
+    evidence_path = Path(current["run"]) / "evidence.json"
+    evidence = read_state(evidence_path)
+    observed = observed_pinned_host_memory(Path(current["run"]) / "engine.log")
+    if evidence is not None and observed is not None:
+        evidence["observed_pinned_host_memory"] = observed
+        write_state(evidence_path, evidence)
     path.unlink(missing_ok=True)
 
 
@@ -327,6 +400,36 @@ def health_matches(state, key):
 def ram_ok(minimum):
     with open("/proc/meminfo", encoding="ascii") as stream:
         return any(line.startswith("MemAvailable:") and int(line.split()[1]) >= minimum * 1024 for line in stream)
+
+
+def write_enforcement_receipt(enforcement):
+    """Atomically report a Strata memory-floor check to the active kit monitor, if requested."""
+    if enforcement not in {"launch", "continuous"}:
+        raise ValueError("unsupported memory-floor enforcement receipt")
+    target = os.environ.get("A770B_BUDGET_GATE_RECEIPT")
+    if not target:
+        return False
+    path = Path(target)
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"enforcement": enforcement, "recorded_at": time.time()}, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        return True
+    except OSError as exc:
+        print(f"Strata could not record the host RAM floor receipt: {exc}", file=sys.stderr, flush=True)
+        return False
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 
 def supervise(plan_path, gate_fd):
@@ -412,12 +515,13 @@ def start(path, config, ctx, timeout):
         raise ValueError("invalid port, host memory floor or ready timeout")
     if not ram_ok(minimum):
         raise ValueError("host MemAvailable is below the configured floor")
+    write_enforcement_receipt("launch")
     key = read_key()
     if not key:
         raise ValueError("managed Strata requires the builder key")
     old = read_state(path)
     if old and occupied(old):
-        same = all(old.get(k) == v for k, v in evidence.items())
+        same = launch_evidence_matches(old, evidence)
         requested = (port, ctx, minimum, str(python), str(terminal))
         recorded = (old["port"], old["ctx"], old["min_ram_mib"], old["python"], old["terminal"])
         if same and recorded == requested and process_alive(old) and health_matches(old, key):
@@ -477,9 +581,22 @@ def start(path, config, ctx, timeout):
                 os.close(fd)
 
 
+def admit(path):
+    """Record continuous floor enforcement only after the supervised server is verified ready."""
+    state = read_state(path)
+    key = read_key()
+    if not state or not process_alive(state) or not health_matches(state, key):
+        raise ValueError("managed Strata instance is not verified healthy")
+    if not ram_ok(state["min_ram_mib"]):
+        return False
+    write_enforcement_receipt("continuous")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("start", "status", "stop", "id", "model", "tokenizer", "config-model", "verify", "supervise"))
+    parser.add_argument("command", choices=("start", "status", "stop", "id", "pid", "model", "tokenizer",
+                                             "config-model", "verify", "observe", "admit", "supervise"))
     parser.add_argument("value", nargs="?")
     parser.add_argument("--gate-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--ctx", type=int, default=0)
@@ -495,7 +612,12 @@ def main():
             config, _ = prepare_config(Path(args.value).resolve())
             print(config["tokenizer" if args.command == "tokenizer" else "model_name"])
             return 0
+        if args.command == "observe":
+            print(observe_host_memory(Path(args.value).resolve()))
+            return 0
         path = Path(os.environ["A770B_DATA"]).resolve() / "logs/strata-instance.json"
+        if args.command == "admit":
+            return 0 if admit(path) else 1
         if args.command == "start":
             state = start(path, Path(args.value).resolve(), args.ctx, args.timeout)
             print(Path(state["run"]) / "evidence.json")
@@ -508,6 +630,11 @@ def main():
             return 1
         if args.command in ("id", "model"):
             print(state["id" if args.command == "id" else "model_id"])
+            return 0
+        if args.command == "pid":
+            if not server_alive(state):
+                return 1
+            print(state["server_pid"])
             return 0
         ready = process_alive(state) and health_matches(state, read_key())
         if args.command == "verify":

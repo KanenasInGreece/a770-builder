@@ -5,7 +5,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"; . "$here/guard.sh"
 managed=(python3 "$here/strata_managed.py")
 case "${1:-}" in
-  status|id|model|tokenizer|config-model|verify) exec "${managed[@]}" "$@" ;;
+  status|id|pid|model|tokenizer|config-model|verify|observe) exec "${managed[@]}" "$@" ;;
   stop|stop-id)
     card_lock
     if [ "$1" = stop-id ]; then "${managed[@]}" stop "${2:?instance id}"; else "${managed[@]}" stop; fi
@@ -44,7 +44,12 @@ case "${1:-}" in
       "${managed[@]}" stop "$id" || exit 3
       exit 3
     fi
+    if ! "${managed[@]}" admit; then
+      echo "managed Strata did not pass post-start admission; continuous host RAM enforcement was not recorded" >&2
+      "${managed[@]}" stop "$id" || exit 3
+      exit 3
+    fi
     printf '%s\n' "$evidence"
     ;;
-  *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | status | id | model | tokenizer <config> | config-model <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
+  *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | status | id | pid | model | tokenizer <config> | config-model <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
 esac

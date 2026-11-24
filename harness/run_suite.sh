@@ -432,10 +432,197 @@ fi
 # pid makes every run's OUTFILE distinct regardless of how close together two runs land.
 OUTFILE="$A770B_DATA/results/${PROFILE}-suite-$(date +%Y%m%d-%H%M%S)-$$.json"
 RESULTS_NDJSON=$(mktemp)
+SUITE_STARTED_EPOCH=$(date +%s.%N)
+SUITE_STARTED_AT=$(date -Is)
+HOST_ATTACHMENT_METADATA_FILE="${OUTFILE%.json}.attachment.json"
+export A770B_ATTACHMENT_METADATA_FILE="$HOST_ATTACHMENT_METADATA_FILE"
+RUN_ENGINE="$ENGINE"
+RUN_BACKEND=""
+if [ -n "$BASE_URL" ]; then
+  # External identity is unknown until this invocation's attachment handshake writes its receipt.
+  RUN_ENGINE=""
+  RUN_BACKEND=""
+elif [ -n "$ENGINE" ]; then
+  RUN_BACKEND="${A770B_SERVED_BACKEND:-}"
+  case "$ENGINE" in strata|vllm|sglang) RUN_BACKEND="$ENGINE" ;; esac
+elif [ -n "$BASE_URL" ]; then
+  # Attachment discovery is authoritative. A synthetic `candidate` row has no
+  # backend, so resolving it here would silently call every external server llama.cpp.
+  RUN_ENGINE="${A770B_SERVED_ENGINE:-}"
+  RUN_BACKEND="${A770B_SERVED_BACKEND:-}"
+  case "$RUN_ENGINE" in strata|vllm|sglang) RUN_BACKEND="$RUN_ENGINE" ;; esac
+else
+  . "$A770B_PROJECT/skills/local-build/scripts/profile_engine.sh"
+  RUN_ENGINE=$(_profile_engine "$PROFILE" 2>/dev/null || true)
+  RUN_BACKEND=$(a770b_profile_var "$PROFILE" BACKEND 2>/dev/null || true)
+  if [ -z "$RUN_BACKEND" ] && [ "$RUN_ENGINE" = llama.cpp ]; then RUN_BACKEND=vulkan; fi
+fi
+HOST_MEMORY_LOG="${OUTFILE%.json}.host-memory.jsonl"
+HOST_PID_FILE="${OUTFILE%.json}.serving-pid"
+# local-build.sh run writes this receipt only after serve has selected the stage's profile, naming the container it
+# serves. Until then the recorded container may still be the previous stage's or the reviewer's model.
+HOST_SELECTION_FILE="${OUTFILE%.json}.serving-selection.json"
+export A770B_SERVING_SELECTION_FILE="$HOST_SELECTION_FILE"
+HOST_PID_WATCH_PID=""
+HOST_MEMORY_ENFORCEMENT_FILE="${OUTFILE%.json}.budget-gate-receipt"
+export A770B_BUDGET_GATE_RECEIPT="$HOST_MEMORY_ENFORCEMENT_FILE"
+rm -f -- "$HOST_MEMORY_ENFORCEMENT_FILE"
+HOST_MONITOR_PID=""
+SUITE_HAD_INCOMPLETE_STAGE=0
+suite_refresh_attachment_metadata(){
+  [ -n "$BASE_URL" ] || return 0
+  if [ ! -s "$HOST_ATTACHMENT_METADATA_FILE" ]; then
+    RUN_ENGINE=""
+    RUN_BACKEND=""
+    return 0
+  fi
+  local attached_engine attached_backend
+  attached_engine=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("engine") or "")' "$HOST_ATTACHMENT_METADATA_FILE" 2>/dev/null) || return 0
+  attached_backend=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("backend") or "")' "$HOST_ATTACHMENT_METADATA_FILE" 2>/dev/null) || return 0
+  if [ -n "$attached_engine" ]; then RUN_ENGINE="$attached_engine"; elif [ -z "$ENGINE" ]; then RUN_ENGINE=""; fi
+  if [ -n "$attached_backend" ]; then RUN_BACKEND="$attached_backend"; elif [ -z "$ENGINE" ]; then RUN_BACKEND=""; fi
+}
+suite_pid_matches_engine(){
+  python3 - "$here/host_memory.py" "$1" "$RUN_ENGINE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])
+import host_memory
+raise SystemExit(0 if host_memory.process_matches_engine(sys.argv[2], sys.argv[3]) else 1)
+PY
+}
+suite_serving_pid(){
+  local pid="" cid=""
+  if [ -n "$BASE_URL" ]; then
+    suite_refresh_attachment_metadata
+    command -v ss >/dev/null 2>&1 || return 1
+    pid=$(ss -H -lptn "sport = :$(python3 -c 'from urllib.parse import urlsplit; import sys; u=urlsplit(sys.argv[1]); print(u.port or (443 if u.scheme == "https" else 80))' "$BASE_URL")" 2>/dev/null \
+      | python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import host_memory; print(host_memory.endpoint_listener_pid(sys.argv[2], sys.stdin.read()) or "")' "$here" "$BASE_URL") || return 1
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null && suite_pid_matches_engine "$pid" || return 1
+    printf '%s\n' "$pid"; return 0
+  fi
+  # A managed server is this stage's only once local-build has selected $PROFILE and recorded its container.
+  # A770B_SERVING_PID (manual, managed runs only; ignored with --base-url) never replaces that identity: it is
+  # read only after the selected container's own pid is verified below, and is sampled only when it IS that pid or
+  # one of its descendants (the real server under a container init) and matches the engine. Anything else is
+  # refused and nothing is sampled, so a stale or mistyped pid cannot attribute another model's process.
+  local sel_profile="" sel_served="" sel_engine="" sel_cid=""
+  [ -s "$HOST_SELECTION_FILE" ] || return 1
+  IFS=$'\x1f' read -r sel_profile sel_served sel_engine sel_cid < <(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+print("\x1f".join(str(d.get(k) or "") for k in ("profile", "served_profile", "engine", "cid")))
+' "$HOST_SELECTION_FILE" 2>/dev/null) || return 1
+  [ "$sel_profile" = "$PROFILE" ] && [ "$sel_served" = "$PROFILE" ] || return 1
+  [ -z "$RUN_ENGINE" ] || [ "$sel_engine" = "$RUN_ENGINE" ] || return 1
+  if [ "$sel_engine" = strata ]; then
+    pid=$(bash "$here/serve_strata.sh" pid 2>/dev/null || true)
+  else
+    [[ "$sel_cid" =~ ^[0-9a-f]{64}$ ]] || return 1
+    cid=$(tr -d '[:space:]' < "$A770B_DATA/logs/llamacpp-a770.cid" 2>/dev/null || true)
+    [ "$cid" = "$sel_cid" ] || return 1
+    pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$sel_cid" 2>/dev/null || true)
+  fi
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  if [ -n "${A770B_SERVING_PID:-}" ]; then
+    if [[ "$A770B_SERVING_PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$A770B_SERVING_PID" 2>/dev/null \
+        && suite_pid_descends_from "$A770B_SERVING_PID" "$pid" && suite_pid_matches_engine "$A770B_SERVING_PID"; then
+      printf '%s\n' "$A770B_SERVING_PID"; return 0
+    fi
+    echo "⚠ A770B_SERVING_PID=$A770B_SERVING_PID is not a live $RUN_ENGINE process inside the selected container (pid $pid) — refused; no serving process is sampled while it is set" >&2
+    return 1
+  fi
+  suite_pid_matches_engine "$pid" || return 1
+  printf '%s\n' "$pid"
+}
+# suite_pid_descends_from <pid> <ancestor> — true when <pid> is <ancestor> or a process below it (parent chain in /proc).
+suite_pid_descends_from(){
+  python3 - "$1" "$2" <<'PY'
+import sys
+pid, root = int(sys.argv[1]), int(sys.argv[2])
+for _ in range(256):
+    if pid == root:
+        raise SystemExit(0)
+    if pid <= 1:
+        break
+    try:
+        stat = open(f"/proc/{pid}/stat", encoding="ascii", errors="replace").read()
+        pid = int(stat.rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        break
+raise SystemExit(1)
+PY
+}
+suite_publish_serving_pid(){
+  local pid="${1:-}" tmp="${HOST_PID_FILE}.tmp.$$"
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$pid" > "$tmp"
+  else : > "$tmp"; fi
+  mv -f -- "$tmp" "$HOST_PID_FILE"
+}
+# suite_owner_alive <pid> — true while the suite shell exists and is not a zombie.
+suite_owner_alive(){
+  local stat
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  stat=${stat##*) }
+  case "${stat%% *}" in Z|X) return 1 ;; esac
+  return 0
+}
+# 7>&- 9>&-: the watcher and everything it starts must not hold the card or seat lock. The loop also ends once
+# the suite shell ($$) is gone, so a suite killed before its exit trap cannot leave the watcher running.
+suite_start_serving_pid_watcher(){
+  (
+    while suite_owner_alive "$$"; do
+      local pid=""
+      pid=$(suite_serving_pid 2>/dev/null || true)
+      suite_publish_serving_pid "$pid"
+      sleep 0.5
+    done
+  ) 7>&- 9>&- &
+  HOST_PID_WATCH_PID=$!
+}
+if [ "$DRYRUN" != 1 ]; then
+  mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results"
+  : > "$HOST_PID_FILE"
+  if pid=$(suite_serving_pid); then printf '%s\n' "$pid" > "$HOST_PID_FILE"; fi
+fi
+SUITE_STATUS=running
+SUITE_SIGNAL=""
+SUITE_EXIT_CODE=""
+SUITE_PLANNED_IDS=("${MAIN_IDS[@]}" "${REF_IDS[@]}")
+SUITE_SCOPE=full_suite
+[ -z "$STAGES_FILTER" ] || SUITE_SCOPE=selected_stages
+SUITE_PLANNED_COUNTED=$(python3 - "$SUITE" "$REFFILE" "${SUITE_PLANNED_IDS[*]}" <<'PY'
+import json, sys
+suite_path, ref_path, selected_raw = sys.argv[1:]
+selected = set(selected_raw.split())
+count = 0
+for path, key in ((suite_path, "stages"), (ref_path, "entries")):
+    try:
+        items = json.load(open(path, encoding="utf-8")).get(key, [])
+    except (OSError, ValueError):
+        items = []
+    count += sum(1 for item in items if item.get("id") in selected and item.get("counts_toward_pass") is not False)
+print(count)
+PY
+)
+suite_signal(){
+  SUITE_SIGNAL="$1"
+  SUITE_EXIT_CODE="$2"
+  SUITE_STATUS=interrupted
+  exit "$2"
+}
 _suite_cleanup(){
   local rc=$? stop_rc=0 serve_script cid inv seen=" " line idx
   local -a entries=()
-  rm -f "$RESULTS_NDJSON"
+  if [ -n "$HOST_MONITOR_PID" ]; then
+    kill -TERM "$HOST_MONITOR_PID" 2>/dev/null || true
+    wait "$HOST_MONITOR_PID" 2>/dev/null || true
+    HOST_MONITOR_PID=""
+  fi
+  if [ -n "$HOST_PID_WATCH_PID" ]; then
+    kill -TERM "$HOST_PID_WATCH_PID" 2>/dev/null || true
+    wait "$HOST_PID_WATCH_PID" 2>/dev/null || true
+    HOST_PID_WATCH_PID=""
+  fi
   if [ -n "$SUITE_OWNED_CIDS_FILE" ] && [ -f "$SUITE_OWNED_CIDS_FILE" ]; then
     serve_script="${A770B_SERVE_SCRIPT:-$here/serve_compose.sh}"
     while IFS= read -r line; do
@@ -462,25 +649,70 @@ _suite_cleanup(){
     echo "⚠ could not stop a server started by this suite run" >&2
     [ "$rc" -eq 0 ] && rc=1
   fi
+  if [ "$SUITE_STATUS" = running ]; then
+    if [ "$SUITE_HAD_INCOMPLETE_STAGE" = 1 ]; then SUITE_STATUS=incomplete
+    elif [ "$rc" -eq 0 ]; then SUITE_STATUS=complete
+    else SUITE_STATUS=runner_error
+    fi
+  fi
+  SUITE_EXIT_CODE="$rc"
+  write_results || { echo "⚠ could not write final suite execution record: $OUTFILE" >&2; [ "$rc" -ne 0 ] || rc=1; }
+  rm -f "$RESULTS_NDJSON"
+  rm -f "$HOST_PID_FILE" "$HOST_SELECTION_FILE"
   exit "$rc"
 }
-trap _suite_cleanup EXIT
 
 write_results(){
   [ "$DRYRUN" = 1 ] && return 0
+  suite_refresh_attachment_metadata
   mkdir -p "$A770B_DATA/results"
-  python3 - "$RESULTS_NDJSON" "$OUTFILE" "$PROFILE" "$SEAT_ID" "$INSTRUMENT" "${REVIEWER:-}" <<'PY'
-import json, sys, datetime
-ndjson, outfile, profile, seat, instrument, reviewer = sys.argv[1:]
+  python3 - "$RESULTS_NDJSON" "$OUTFILE" "$PROFILE" "$SEAT_ID" "$INSTRUMENT" "${REVIEWER:-}" \
+    "$SUITE_STATUS" "$SUITE_STARTED_AT" "$SUITE_STARTED_EPOCH" "$SUITE_EXIT_CODE" "$SUITE_SIGNAL" "${SUITE_PLANNED_IDS[*]}" "$SUITE_SCOPE" "$SUITE_PLANNED_COUNTED" "$HOST_MEMORY_LOG" "$RUN_ENGINE" "$RUN_BACKEND" <<'PY'
+import json, sys, datetime, time
+ndjson, outfile, profile, seat, instrument, reviewer, status, started_at, started_epoch, exit_code, signal_name, planned, scope, planned_counted, host_memory_log, engine, backend = sys.argv[1:]
 stages = []
 with open(ndjson) as f:
     for line in f:
         line = line.strip()
         if line:
             stages.append(json.loads(line))
+memory_samples = 0
+try:
+    with open(host_memory_log, encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                json.loads(line)
+                memory_samples += 1
+            except ValueError:
+                pass
+except OSError:
+    pass
+planned_ids = planned.split() if planned else []
+incomplete_outcomes = {"run_error", "run_interrupted", "verify_error", "verify_timeout", "timeout"}
+completed = [s for s in stages if s.get("id") and s.get("outcome") not in incomplete_outcomes]
+completed_ids = [s.get("id") for s in completed]
 doc = {
     "instrument": instrument, "seat": seat, "profile": profile,
     "reviewer": reviewer or None, "generated": datetime.datetime.now().isoformat(timespec="seconds"),
+    "execution": {
+        "status": status,
+        "started_at": started_at,
+        "ended_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds") if status != "running" else None,
+        "elapsed_s": round(time.time() - float(started_epoch), 1),
+        "exit_code": int(exit_code) if exit_code.lstrip("-").isdigit() else None,
+        "signal": signal_name or None,
+        "scope": scope,
+        "planned_stage_ids": planned_ids,
+        "completed_stage_ids": completed_ids,
+        "planned_stages": len(planned_ids),
+        "completed_stages": len(completed_ids),
+        "planned_counted_stages": int(planned_counted),
+        "completed_counted_stages": sum(1 for s in completed if s.get("counts_toward_pass", True) is not False),
+        "host_memory_log": host_memory_log,
+        "host_memory_samples": memory_samples,
+        "engine": engine or None,
+        "backend": backend or None,
+    },
     "stages": stages,
 }
 with open(outfile, "w") as f:
@@ -489,7 +721,25 @@ with open(outfile, "w") as f:
 PY
 }
 
+# Install cleanup before starting any background sampler. An interruption during setup must not orphan the monitor.
+trap 'suite_signal SIGINT 130' INT
+trap 'suite_signal SIGTERM 143' TERM
+trap _suite_cleanup EXIT
+if [ "$DRYRUN" != 1 ]; then
+  HOST_MEMORY_ENFORCEMENT=unknown
+  [ -z "${BASE_URL:-}" ] || HOST_MEMORY_ENFORCEMENT=none
+  python3 "$here/host_memory.py" monitor --out "$HOST_MEMORY_LOG" --interval 1 --pid-file "$HOST_PID_FILE" \
+    --min-floor-mib "$A770B_MIN_AVAIL_MB" --min-floor-enforcement "$HOST_MEMORY_ENFORCEMENT" \
+    --enforcement-file "$HOST_MEMORY_ENFORCEMENT_FILE" --owner-pid "$$" \
+    >/dev/null 2>&1 7>&- 9>&- & HOST_MONITOR_PID=$!
+  if ! kill -0 "$HOST_MONITOR_PID" 2>/dev/null; then
+    echo "⚠ host memory monitor did not start; the kit run will continue without continuous samples" >&2
+    HOST_MONITOR_PID=""
+  fi
+fi
+
 emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome [counters_json] [serve_evidence] [verify_json]
+  case "${17:-}" in *error*|*timeout*|*interrupted*) SUITE_HAD_INCOMPLETE_STAGE=1 ;; esac
   python3 - "$@" >> "$RESULTS_NDJSON" <<'PY'
 import json, sys
 def num(s):
@@ -815,7 +1065,16 @@ process_task(){
   WT=$(guard_worktree "$SEAT") || exit 2
   SECONDS=0
   local run_out rrc
+  rm -f -- "$A770B_DATA/logs/run.interrupted" "$HOST_SELECTION_FILE"
+  suite_publish_serving_pid ""
+  suite_start_serving_pid_watcher
   run_out=$(bash "$LOCAL_BUILD" run "$WT" "$briefpath" --spec "$specpath" --profile "$PROFILE" "${RUN_ATTACH[@]}" 2>&1); rrc=$?
+  kill -TERM "$HOST_PID_WATCH_PID" 2>/dev/null || true
+  wait "$HOST_PID_WATCH_PID" 2>/dev/null || true
+  HOST_PID_WATCH_PID=""
+  if pid=$(suite_serving_pid); then suite_publish_serving_pid "$pid"
+  else suite_publish_serving_pid ""
+  fi
   local wall_s=$SECONDS
   case "$rrc" in
     2|3)
@@ -835,7 +1094,7 @@ process_task(){
     [ -n "$serve_ev_path" ] && [ -f "$serve_ev_path" ] || serve_ev_path=""
   fi
   local label="" capline croot
-  if [ "$rrc" = 0 ]; then
+  if [ "$rrc" = 0 ] || { [ "$rrc" -ge 128 ] 2>/dev/null && [ "$rrc" -le 159 ] 2>/dev/null; }; then
     capline=$(printf '%s\n' "$run_out" | grep -m1 'capture:')
     croot=$(printf '%s' "$capline" | grep -oE '[^ ]+\.task\.md' | head -1)
     [ -n "$croot" ] && label=$(basename "$croot" .task.md)
@@ -846,6 +1105,28 @@ process_task(){
     write_results
     echo "stage $id: working=null outcome=run_error quality=unknown (no capture, run exit $rrc)"
     return 0
+  fi
+  if [ -f "$A770B_DATA/logs/run.interrupted" ] || { [ "$rrc" -ge 128 ] 2>/dev/null && [ "$rrc" -le 159 ] 2>/dev/null; }; then
+    rm -f -- "$A770B_DATA/logs/run.interrupted"
+    echo "⚠ stage $id: local-build stop-run interrupted the builder; preserving capture without verification or registry update" >&2
+    emit_stage "$id" "$S_LANGUAGE" "$label" "" "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "run_interrupted" "null" "${serve_ev_path:-}"
+    write_results
+    echo "stage $id: working=null outcome=run_interrupted quality=unknown (captured but not graded)"
+    return 0
+  fi
+  # local-build.sh refuses to dispatch to a server that is not verifiably $PROFILE. A receipt that nonetheless names
+  # another served profile (or is unreadable) means this capture is not $PROFILE's: it is never graded.
+  if [ -z "$BASE_URL" ] && [ -e "$HOST_SELECTION_FILE" ]; then
+    local sel_served=""
+    sel_served=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(d.get("served_profile") or "")' \
+      "$HOST_SELECTION_FILE" 2>/dev/null) || sel_served=""
+    if [ "$sel_served" != "$PROFILE" ]; then
+      echo "⚠ stage $id: the serving selection names served profile '${sel_served:-unreadable}', not $PROFILE — preserving capture without verification or registry update" >&2
+      emit_stage "$id" "$S_LANGUAGE" "$label" "" "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "run_error" "null" "${serve_ev_path:-}"
+      write_results
+      echo "stage $id: working=null outcome=run_error quality=unknown (served profile not $PROFILE; captured but not graded)"
+      return 0
+    fi
   fi
   local counters_json="null"
   if [ -n "$label" ] && [ -f "$A770B_DATA/results/$label.counters.json" ]; then
@@ -1039,5 +1320,9 @@ fi
 if [ "$rc" = 2 ] || [ "$rc" = 3 ]; then
   echo "⛔ suite stopped early (exit $rc) — partial results: $OUTFILE" >&2
   exit "$rc"
+fi
+if [ "$SUITE_HAD_INCOMPLETE_STAGE" = 1 ]; then
+  echo "⛔ suite incomplete — results: $OUTFILE" >&2
+  exit 4
 fi
 echo "✓ suite complete: $OUTFILE"

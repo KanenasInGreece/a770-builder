@@ -278,7 +278,9 @@ _running_image_matches(){
 # this context, and this argv signature, the override file hashes the same, the compose
 # file is this envelope, and /health is ready. A missing mark line or a missing override
 # does not keep. A ladder start writes the pidfile and the mark, and writes the sidecar
-# only when A770B_LIVE_* is set.
+# only when A770B_LIVE_* is set. On that match the sidecar below is rewritten with the
+# requested profile: the name then means this launch, not an identity read off the server.
+# A RAM cap or cgroup that is not part of the argv signature is not part of the match.
 _serve_keep_unmarked(){
   local pid mark_model mark_ctx mark_hash cid files part found=0
   local quant tool_parser reasoning_parser sig_out sig_ctx sig_hash ov ov_hash
@@ -341,6 +343,8 @@ except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
     echo "↻ the running server is not the pinned image — restarting it"
     return 1
   fi
+  # A770B_LIVE_PROFILE is the requested profile. Writing it here records a launch-equivalent name
+  # after the model, context and argv-signature match above — not a profile name the server reported.
   if [ -n "${A770B_LIVE_CARD:-}" ] && [ -n "${A770B_LIVE_BACKEND:-}" ] && [ -n "${A770B_LIVE_MODE:-}" ] && [ -n "${A770B_LIVE_PROFILE:-}" ]; then
     python3 "$LIVE_PY" write --path "$A770B_DATA/logs/live-backend.json" \
       --card "$A770B_LIVE_CARD" --backend "$A770B_LIVE_BACKEND" --mode "$A770B_LIVE_MODE" \
@@ -363,7 +367,68 @@ _strata_serve(){
   printf '%s\n' "$evidence" > "$A770B_DATA/logs/serve-evidence.path"
   echo "✓ $p serving $A770B_ALIAS on $A770B_HOST:$A770B_PORT · Strata"
 }
+# _verify_served_selection <profile> — before anything is dispatched, refuse a rollback to another profile.
+# Compose path: the live sidecar (pid-checked by live_backend.py) names <profile>, and the container now
+# running is the one recorded at start (full id) whose host pid the sidecar names.
+# Strata path: there is no sidecar name to copy. SERVED_VERIFIED_PROFILE is the requested profile, meaning
+# the managed launch is launch-equivalent to it; build_local.sh re-verifies the alias and the context.
+# Unmarked-keep path: the sidecar may just have been rewritten with the requested profile after a model,
+# context and argv-signature match, so the name checked here is that launch, not a separate observation.
+# Sets SERVED_VERIFIED_PROFILE, SERVED_VERIFIED_CID and SERVED_VERIFIED_PID; 1 (with the reason on stderr) otherwise.
+_verify_served_selection(){
+  local p="$1" live_json live_profile live_pid short full recorded host
+  SERVED_VERIFIED_PROFILE=""; SERVED_VERIFIED_CID=""; SERVED_VERIFIED_PID=""
+  if [ -n "${A770B_SERVE_ROLLED_BACK_TO:-}" ] && [ "$A770B_SERVE_ROLLED_BACK_TO" != "$p" ]; then
+    echo "the reload of $p failed and the server rolled back to $A770B_SERVE_ROLLED_BACK_TO" >&2; return 1
+  fi
+  if [ "${A770B_SERVED_ENGINE:-}" = strata ]; then
+    # No sidecar names this profile. The requested name is recorded as launch-equivalent; build_local.sh
+    # re-verifies the managed launch (alias and context) before dispatch.
+    SERVED_VERIFIED_PROFILE="$p"; SERVED_VERIFIED_PID=$(bash "$A770B_PROJECT/harness/serve_strata.sh" pid 2>/dev/null || true)
+    return 0
+  fi
+  live_json=$(python3 "$A770B_PROJECT/harness/live_backend.py" read --path "$A770B_DATA/logs/live-backend.json" --pidfile "$PIDF" 2>/dev/null) || live_json=""
+  [ -n "$live_json" ] && [ "$live_json" != null ] || { echo "no live server identity (sidecar) names the server that is up" >&2; return 1; }
+  IFS=$'\t' read -r live_profile live_pid < <(printf '%s' "$live_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["profile"], d["pid"], sep="\t")') \
+    || { echo "the live server identity could not be read" >&2; return 1; }
+  [ "$live_profile" = "$p" ] || { echo "the server that is up is profile $live_profile, not $p" >&2; return 1; }
+  short=$(_compose_container_id) || { echo "the running container could not be read" >&2; return 1; }
+  [ -n "$short" ] || { echo "no container of this project is running" >&2; return 1; }
+  full=$("$A770B_DOCKER" inspect -f '{{.Id}}' "$short" 2>/dev/null | tr -d '[:space:]') || full=""
+  full=${full#sha256:}
+  [[ "$full" =~ ^[0-9a-f]{64}$ ]] || { echo "the running container's id could not be read" >&2; return 1; }
+  recorded=$(tr -d '[:space:]' < "$A770B_DATA/logs/llamacpp-a770.cid" 2>/dev/null || true)
+  [ "$recorded" = "$full" ] || { echo "the running container ${full:0:12} is not the one recorded at start (${recorded:0:12})" >&2; return 1; }
+  host=$("$A770B_DOCKER" inspect -f '{{.State.Pid}}' "$full" 2>/dev/null | tr -d '[:space:]') || host=""
+  [ -n "$host" ] && [ "$host" = "$live_pid" ] || { echo "the running container's host pid (${host:-unknown}) is not the server the sidecar names ($live_pid)" >&2; return 1; }
+  SERVED_VERIFIED_PROFILE="$live_profile"; SERVED_VERIFIED_CID="$full"; SERVED_VERIFIED_PID="$live_pid"
+}
+# _publish_serving_selection <profile> — for a caller sampling this run's server (run_suite.sh sets
+# A770B_SERVING_SELECTION_FILE): written only after _verify_served_selection. served_profile is the name that
+# check accepted. On the compose path that name was read from the sidecar. On the Strata path and the
+# unmarked-keep path it is the requested profile and means launch-equivalent to that profile (see
+# _verify_served_selection), not a name copied from a separate identity. The container id and host pid are
+# what the check verified.
+_publish_serving_selection(){
+  local f="${A770B_SERVING_SELECTION_FILE:-}" tmp
+  [ -n "$f" ] || return 0
+  tmp="$f.tmp.$$"
+  if python3 -c 'import json, sys
+keys = ("profile", "served_profile", "engine", "cid", "pid")
+doc = dict(zip(keys, sys.argv[1:6]))
+doc["verified"] = True
+with open(sys.argv[6], "w", encoding="utf-8") as fh:
+    json.dump(doc, fh)
+    fh.write("\n")' \
+      "$1" "$SERVED_VERIFIED_PROFILE" "${A770B_SERVED_ENGINE:-}" "$SERVED_VERIFIED_CID" "$SERVED_VERIFIED_PID" "$tmp" 2>/dev/null \
+      && mv -f -- "$tmp" "$f"; then
+    return 0
+  fi
+  rm -f -- "$tmp" 2>/dev/null || true
+  echo "⚠ could not record the serving selection for $1 — the kit run will not sample this server's cgroup" >&2
+}
 serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
+  A770B_SERVE_ROLLED_BACK_TO=""                                   # set below only when a reload rolls back to the old profile
   local thinking_mode thinking_effort thinking_budget thinking_budget_message thinking_preserve
   local live_json live_backend live_model live_profile req_backend req_model
   local lock_held run_alive msg old_profile LIVE_PY health_word skip_unmarked_keep=0 cid crc=0
@@ -399,7 +464,12 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
     live_backend=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["backend"])')
     live_model=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model"])')
     live_profile=$(printf '%s' "$live_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["profile"])')
-    if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ]; then
+    # The profile is part of the identity: two rows can share the weights, the backend and the image and still
+    # differ in their serve settings (a RAM tier). Another profile's container is never reused as this one.
+    if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ] && [ "$live_profile" != "$p" ]; then
+      echo "↻ the running server is profile ${live_profile:-unknown}, not $p — restarting it"
+    fi
+    if [ "$live_backend" = "$req_backend" ] && [ "$live_model" = "$req_model" ] && [ "$live_profile" = "$p" ]; then
       health_word=$(bash "$SERVE" health 2>/dev/null) || true
       if [ "$health_word" = ready ]; then
         if a770b_curl -sf --max-time 3 "http://$A770B_HOST:$A770B_PORT/v1/models" >/dev/null; then
@@ -447,6 +517,7 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
       bash "$SERVE" stop >/dev/null 2>&1
       if ! a770b_is_profile "$old_profile"; then echo "rollback failed: server is down"; return 1; fi
       p=$old_profile
+      A770B_SERVE_ROLLED_BACK_TO=$old_profile
       profile_vars "$p"
       A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
       export A770B_SERVED_ENGINE
@@ -516,6 +587,28 @@ bench_profile(){
 # Requires a plain http://host:port or http://host:port/v1 URL; health is the origin /health.
 # The explicit engine argument accepts strata. Validate its v0.2.16 health and model endpoints, context and auth
 # mode through strata_attach.py. Strata uses 127.0.0.1.
+_write_attachment_metadata(){
+  [ -n "${A770B_ATTACHMENT_METADATA_FILE:-}" ] || return 0
+  python3 - "$A770B_ATTACHMENT_METADATA_FILE" "${A770B_SERVED_ENGINE:-}" "${A770B_SERVED_BACKEND:-}" <<'PY'
+import json, os, sys, tempfile
+path = sys.argv[1]
+parent = os.path.dirname(path) or "."
+os.makedirs(parent, exist_ok=True)
+fd, tmp = tempfile.mkstemp(prefix=".attachment.", dir=parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"engine": sys.argv[2] or None, "backend": sys.argv[3] or None}, stream)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(tmp, path)
+finally:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+PY
+}
 _attach_running_server(){
   local url="$1" name="$2" engine="${3:-}" ctx="${4:-}" origin code ev_logs ev_base parsed
   [ -n "$url" ] && [ -n "$name" ] || die "--base-url and --served-model-name are required together"
@@ -563,7 +656,8 @@ print(f"http://{u.netloc}\t{host}\t{port}")
     verdict=$(python3 "$A770B_PROJECT/harness/strata_attach.py" attach --base-url "$origin" --model "$name" --ctx "$ctx") \
       || die "Strata candidate refused at $origin: ${verdict:-the attach check failed}"
     read -r _ok auth usable <<<"$verdict"
-    export A770B_STRATA_AUTH="$auth" A770B_SERVED_ENGINE=strata
+    export A770B_STRATA_AUTH="$auth" A770B_SERVED_ENGINE=strata A770B_SERVED_BACKEND=strata
+    _write_attachment_metadata || echo "⚠ could not publish verified attachment engine metadata" >&2
     _clear_serve_evidence_pointer
     export A770B_ATTACHED=1
     echo "▶ attached $A770B_HOST:$A770B_PORT model $A770B_ALIAS · engine strata (explicit, externally managed; auth $auth; ctx $ctx ≤ usable $usable) — not starting or stopping a server"
@@ -579,6 +673,7 @@ print(f"http://{u.netloc}\t{host}\t{port}")
   # and the capture then does not read a container log.
   local models_body="" owned=""
   A770B_SERVED_ENGINE=""
+  A770B_SERVED_BACKEND=""
   if [ -s "$A770B_API_KEY_FILE" ]; then
     models_body=$(a770b_curl -sS --max-time 5 "$origin/v1/models" 2>/dev/null || true)
     owned=$(printf '%s' "$models_body" | python3 -c 'import json,sys
@@ -594,12 +689,13 @@ if isinstance(name, str):
     sys.stdout.write(name)
 ')
     case "$owned" in
-      sglang) A770B_SERVED_ENGINE=sglang ;;
-      vllm) A770B_SERVED_ENGINE=vllm ;;
+      sglang) A770B_SERVED_ENGINE=sglang; A770B_SERVED_BACKEND=sglang ;;
+      vllm) A770B_SERVED_ENGINE=vllm; A770B_SERVED_BACKEND=vllm ;;
       llama.cpp|llamacpp|llama-cpp) A770B_SERVED_ENGINE=llama.cpp ;;
     esac
   fi
   export A770B_SERVED_ENGINE
+  _write_attachment_metadata || echo "⚠ could not publish verified attachment engine metadata" >&2
   if [ -z "$A770B_SERVED_ENGINE" ]; then
     echo "served engine was not named; this capture will not read a container log" >&2
   fi
@@ -636,11 +732,29 @@ status(){ local c cid strata_rc=0; c=$(current); version 2>&1
 }
 # doctor — what this machine lacks to run the seat, one line per check; never stops at the first MISSING. No run lock, no server.
 doctor(){
-  local missing=0 t p m mp n warn_list w u hint _cap_default _vsel_n _envfile_ok _v _img
+  local missing=0 t p m mp n warn_list w u hint _cap_default _vsel_n _envfile_ok _v _img _oc_bin
   command -v python3 >/dev/null 2>&1 && echo "ok   python3: on PATH" || { echo "MISSING python3: install Python 3 (the registry, the renderer and the capture use it)"; missing=$((missing+1)); }
   for t in bwrap socat uv curl git flock timeout; do
     command -v "$t" >/dev/null 2>&1 && echo "ok   $t: on PATH" || { echo "MISSING $t: install $t"; missing=$((missing+1)); }
   done
+  if [ -d "$A770B_UV_CACHE" ] && command -v uv >/dev/null 2>&1; then
+    if uv_run_no_project --with pytest --with pytest-asyncio python -c 'import pytest, pytest_asyncio' >/dev/null 2>&1; then
+      echo "ok   offline grader: pytest + pytest-asyncio resolve from the warm cache"
+    else
+      echo "MISSING offline grader: pytest + pytest-asyncio are not resolvable from $A770B_UV_CACHE; run bash harness/warm_cache.sh"
+      missing=$((missing+1))
+    fi
+  else
+    echo "MISSING offline grader: uv cache is absent at $A770B_UV_CACHE; run bash harness/warm_cache.sh"
+    missing=$((missing+1))
+  fi
+  _oc_bin=$(a770b_opencode_bin 2>/dev/null || true)
+  if [ -n "$_oc_bin" ] && [ -x "$_oc_bin/opencode" ]; then
+    echo "ok   opencode: $_oc_bin/opencode"
+  else
+    echo "MISSING opencode: expected executable at \${A770B_OPENCODE_BIN:-PATH}/opencode; set A770B_OPENCODE_BIN to its directory"
+    missing=$((missing+1))
+  fi
   if [ "$A770B_SERVE" = compose ]; then
     # compose mode: the server is the container, so a host llama-server is NOT required; the
     # container runtime and its compose plugin are. The envelope and its gitignored env file are checked too.
@@ -819,13 +933,45 @@ case "${1:-}" in
       *) die "managed Strata ownership could not be read" ;;
     esac ;;
   stop-run)
-    # end exactly the run in progress, through its own pid. The pid file names the process-group leader:
-    # `timeout` when this run has a caller fence, the sandbox when it has no clock. One TERM to that leader
-    # (and to its group, when the pid leads one) ends the run — the capture is written, the seat reset.
-    # Never by process name: bwrap is also every Flatpak app on the desktop.
+    # end exactly the run in progress, through its own pid. The pid file names the process-group leader,
+    # harness/run_lead.py (which also keeps a caller fence). One TERM to that leader (and to its group, when
+    # the pid leads one) ends the run — the capture is written, the seat reset. A live run_lead.py leader
+    # forwards that TERM to the worker group. The worker group is a second group, recorded in
+    # logs/run.worker-pgid; it is signalled only by signal_recorded_worker_group, and only if this leader
+    # is still alive after the wait below. Never by process name: bwrap is also every Flatpak app on the desktop.
     RUNPID="$A770B_DATA/logs/run.pid"
     pid=$(run_pid_alive "$RUNPID") || die "no run to stop: $RUNPID names no live run leader of this harness (a finished run removes the file; a stale or foreign pid is refused, never signalled)"
-    echo "▶ ending run pid $pid (the process-group leader): one TERM, then up to 30 s for the capture and the reset to follow"
+    mkdir -p "$A770B_DATA/logs"
+    _interrupt_tmp=""
+    _interrupt_tmp=$(mktemp "$A770B_DATA/logs/.run-interrupted.XXXXXX" 2>/dev/null) || _interrupt_tmp=""
+    if [ -n "$_interrupt_tmp" ]; then
+      if ! printf '%s\n' "$pid" > "$_interrupt_tmp" || ! mv -f -- "$_interrupt_tmp" "$A770B_DATA/logs/run.interrupted"; then
+        rm -f -- "$_interrupt_tmp" 2>/dev/null || true
+        _interrupt_tmp=""
+      fi
+    fi
+    # The owner channel: build_local.sh, the leader's parent, marks the run stopped on USR1 whatever the
+    # receipt did, so a worker that handles TERM and exits 0 is still not graded. USR1 goes only to an owner
+    # run_owner_pid verifies (this project's build_local.sh, declared by the leader, with its USR1 handler
+    # installed): a legacy owner or an unrelated parent would be killed by it, so neither is ever signalled.
+    _owner=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+    _owner_told=0
+    if run_owner_pid "$pid" "$_owner"; then
+      kill -USR1 "$_owner" 2>/dev/null && _owner_told=1
+    fi
+    # The third channel, and the one that needs neither a file nor a lookup: a run_lead.py leader exits 128+signal
+    # on this TERM whatever the worker does. A leader that is not run_lead.py with no other channel would let a
+    # worker that handles TERM and exits 0 be graded, so that one stop is refused before anything is signalled.
+    if [ -z "$_interrupt_tmp" ]; then
+      if [ "$_owner_told" = 1 ]; then
+        echo "⚠ could not persist the interruption receipt; the run's owner (build_local.sh pid $_owner) was told directly, signaling the verified run" >&2
+      elif run_lead_pid "$pid"; then
+        echo "⚠ could not persist the interruption receipt and found no verified build_local.sh owner to tell; the run's leader (run_lead.py pid $pid) records the stop itself, signaling the verified run" >&2
+      else
+        die "stop-run refused: the interruption receipt could not be written, no verified build_local.sh owner was found, and run pid $pid is not a run_lead.py leader that records a stop itself — a worker that exits 0 on TERM would be graded, so nothing was signalled. Make $A770B_DATA/logs writable and run stop-run again"
+      fi
+    fi
+    echo "▶ ending run pid $pid (the leader group): one TERM, then up to 30 s for the capture and the reset to follow"
     _pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
     if [ -n "$_pgid" ] && [ "$_pgid" = "$pid" ]; then
       kill -TERM -- "-$pid" 2>/dev/null || die "could not signal pid $pid"
@@ -833,7 +979,16 @@ case "${1:-}" in
       kill -TERM "$pid" 2>/dev/null || die "could not signal pid $pid"
     fi
     for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-    kill -0 "$pid" 2>/dev/null && die "run pid $pid is still alive after 30 s — nothing escalated; read the build log before ending anything by hand, and never by process name"
+    if kill -0 "$pid" 2>/dev/null; then
+      # The leader is still alive, so it did not reap the worker. Signal the group the leader published
+      # (TERM, then KILL if that same group is still there). A mismatch signals nothing. Not by process name.
+      _worker_pgid="${A770B_WORKER_PGID_FILE:-$A770B_DATA/logs/run.worker-pgid}"
+      signal_recorded_worker_group "$_worker_pgid" || true
+      for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    fi
+    if kill -0 "$pid" 2>/dev/null; then
+      die "run pid $pid is still alive after 30 s. The recorded worker group (${A770B_WORKER_PGID_FILE:-$A770B_DATA/logs/run.worker-pgid}) was signalled only if its pid still existed, led its own group, and its start time matched; nothing was signalled by process name. Read the build log before ending anything by hand"
+    fi
     echo "✓ run pid $pid ended; the local-build.sh run that owns it is now capturing what the seat did and resetting the seat" ;;
   run)
     unset A770B_ATTACHED A770B_STRATA_AUTH
@@ -847,6 +1002,7 @@ case "${1:-}" in
     # An explicit engine describes the attachment. A named profile selects a managed engine.
     [ -z "$engine" ] || [ -n "$base_url" ] || die "--engine needs --base-url: --engine strata attaches to an externally managed endpoint and never starts a server"
     WT=$(guard_worktree "$WT_RAW") || exit 2                       # BEFORE anything is touched
+    mkdir -p "$A770B_DATA/logs"
     [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
     # the run specification: checked against the seat BEFORE the run lock and before any server starts, then snapshotted
     # so nothing re-reads the caller's file later; a flag on the command line wins over a key in the specification
@@ -898,6 +1054,13 @@ PY
       _attach_running_server "$base_url" "$served_name" "$engine" "$ctx"   # exports host, port, alias and engine; does not call serve or stop
     else
       serve "$profile" || exit $?
+      # Nothing is dispatched (or graded) unless the server that is up is verifiably this profile.
+      if ! _verify_served_selection "$profile"; then
+        [ -z "${A770B_SERVING_SELECTION_FILE:-}" ] || rm -f -- "$A770B_SERVING_SELECTION_FILE"
+        echo "⛔ run refused: the server that is up is not verifiably $profile — nothing was dispatched" >&2
+        exit 3
+      fi
+      _publish_serving_selection "$profile"
     fi
     label="$profile-$(date +%Y%m%d-%H%M%S)"
     # The profile's timeout_s is recorded headroom, not a clock. No --timeout and no spec timeout
@@ -925,7 +1088,11 @@ PY
     _stage_counters "$label"
     A770B_SPEC="$SPEC_SNAP" bash "$CAPTURE" "$label" "$WT" "$BL" | tail -2; crc=${PIPESTATUS[0]}
     [ "$crc" = 0 ] || { echo "⛔ the capture failed (exit $crc) and the seat was NOT reset: read $A770B_DATA/results/$label.task.md, then run: local-build.sh reset $WT" >&2; exit "$crc"; }
-    echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean." ;;
+    echo "▶ capture: $A770B_DATA/results/$label.task.md — review it before merging; the worktree has been reset to clean."
+    if [ "$brc" -ge 128 ] 2>/dev/null && [ "$brc" -le 159 ] 2>/dev/null; then
+      echo "⚠ builder process ended by signal (exit $brc); preserving capture without treating it as a completed run" >&2
+      exit "$brc"
+    fi ;;
   verify)
     # Re-apply what a run produced (<label>.patch beside the capture) to a CLEAN seat and run public + hidden phases
     # inside the same boundary the model had — no server, no bridge, no key. Emits explicit phase status to both

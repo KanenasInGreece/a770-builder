@@ -21,9 +21,11 @@ bash skills/local-build/scripts/local-build.sh reset                            
 bash skills/local-build/scripts/local-build.sh serve <profile> · profiles [--name <profile>] · menu · status · stop · stop-run · --version · check-update
 ```
 
-A run with no `--timeout` and no spec `timeout` has no clock. It runs until it finishes. An explicit `--timeout` or a spec `timeout` is a caller fence for that one run. The profile's `timeout_s` is recorded headroom, not a clock the skill wraps the run in.
+A run with no `--timeout` and no spec `timeout` has no clock. It runs until it finishes. An explicit `--timeout` or a spec `timeout` is a caller fence for that one run; `--timeout 0` means no clock, as it does for GNU `timeout`. The profile's `timeout_s` is recorded headroom, not a clock the skill wraps the run in.
 
-`stop-run` ends the run in progress. The pid file names the process-group leader: the `timeout` process when a caller fence is set, and the sandbox when no clock was set. `stop-run` checks that pid is this harness's leader, then sends one TERM to it, and to its group when the pid leads one. The run then captures what the seat did and resets the seat. Never end a run by process name: `bwrap` is also every Flatpak application on the desktop.
+`stop-run` ends the run in progress. The pid file names the process-group leader, `harness/run_lead.py`, which starts the sandbox and also keeps the caller fence when one is set (exit 124, `timeout`'s convention). `stop-run` checks that pid is this harness's leader, writes the `run.interrupted` receipt, tells the leader's `build_local.sh` owner directly (USR1), then sends one TERM to the leader, and to its group when the pid leads one. USR1 goes only to an owner verified to support it: a `bash` process whose script is this project's `harness/build_local.sh`, declared by the leader's own environment (`A770B_RUN_OWNER_PID`), with a USR1 handler installed. A legacy owner (USR1 would kill it) or a parent whose arguments merely name `build_local.sh` is never signalled. The run is two process groups: the leader group, and the worker group. The worker (the sandbox, or opencode when `SANDBOX=0`) is started in a group of its own, with the stop signals held and default dispositions restored before it runs, so the leader never receives its own forwarded TERM: a stop that lands together with the fence's TERM is still a stop, and a stop during the worker's start still reaches the worker. As soon as that worker exists, the leader publishes its pid — which is its process-group id — and its `/proc` start time in `logs/run.worker-pgid` (or `A770B_WORKER_PGID_FILE`). It removes that file only after it has reaped the worker. A SIGKILL, an OOM kill or an interpreter crash leaves the file in place; the worker would otherwise keep holding the capture pipe, and a kill of the leader group does not reach it. There are windows in which no record can end that orphan: a SIGKILL between posix_spawnp and the publish, a failed publish, and reuse of the leader's pid while the worker is still running (the watch only checks that the pid in run.pid is absent from /proc, not that pid's start time). Those windows are not closed. A guarded helper signals that recorded group only when the pid still exists, its process-group id is itself, and its start time matches the file; otherwise it does nothing, and it never signals by process name. If the leader's pipeline returns 137, or the leader is already dead while the worker file remains, `build_local.sh` uses that helper (TERM, then KILL if the same group is still alive) so the pipe can unblock, then continues the capture path. `stop-run`'s own TERM still goes only to a live leader, and a live `run_lead.py` leader is what forwards it to the worker. If that leader is still alive after 30 s, `stop-run` signals the recorded worker group with the same helper instead of stopping there. The run then captures what the seat did and resets the seat. The leader itself records the stop: it forwards the TERM, waits for the worker and exits 143 whatever the worker's own status, so a stopped stage is reported as interrupted and never graded even when the receipt could not be written, the owner could not be found, and the worker exited 0 on the TERM. If none of the three can carry the stop (no receipt, no owner, a leader that is not `run_lead.py`), `stop-run` refuses and signals nothing. Never end a run by process name: `bwrap` is also every Flatpak application on the desktop. Every stop and fence integration test runs with `SANDBOX=0`. The production `SANDBOX=1` path — TERM to the worker group, then `sandbox_run.sh`, then `bwrap --new-session --die-with-parent` — is not exercised end to end.
+
+On the Strata path and the unmarked-keep path, `served_profile` means launch-equivalent to the requested profile. Strata records the requested name; the managed launch is re-checked (alias and context) before dispatch, and there is no separate sidecar name to copy. An empty or stale sidecar is rewritten with the requested profile only after the model, the context and the argv signature match. A future RAM tier that is a compose or cgroup setting outside that argv signature must be added to the signature, or two profiles that differ only by that setting would be kept and recorded as the same launch.
 
 `run` refuses anything but the root of a standalone clone that is not a live checkout (including ancestors/descendants of protected paths), refuses a seat that is not clean
 (ignored files included, so nothing from an earlier run can pass as this one's; `reset` clears it), takes the card lock (`local-build.lock`, FD 9) before the canonical per-seat lock (FD 7), starts or
@@ -233,6 +235,19 @@ is committed the kernel kills it under memory pressure, and the kill reads as a 
 the machine, so check free memory first and keep a build or another memory-heavy process off the machine while it
 runs.
 
+The ladder records host conditions under `conditions` in its results JSON: the configured MemAvailable floor, VRAM
+cap and card mode; continuous timestamped `/proc/meminfo` RAM and swap samples across every rung; and the serving
+process's cgroup v2 limits and sampled charge when its PID is known. The collector's cgroup is kept separate and is
+never reported as the server's limit. In a kit run of a managed server, `A770B_SERVING_PID` is a manual pointer to
+the real server process inside the selected container (for a server below a container init). It never replaces the
+selected container's identity: it is sampled only when it is that container's main process or one of its
+descendants, and matches the engine. Any other value is refused with a warning, and no serving process is
+sampled while it is set. With `--base-url` it is ignored; the endpoint's listener is sampled. A cgroup charge can
+include sibling processes in the same serving cgroup.
+Strata's configured host-memory flags are recorded separately from observed host counters. These counters do not
+derive the model's RAM requirement or replace `ram_gb_extra`, which comes from the engine's own logs. The full JSONL
+receipt is named in the results JSON. The printed `measured_on` placeholder carries a concise summary to copy.
+
 **The key.** The server starts with `--api-key-file A770B_API_KEY_FILE` (default `~/.config/a770-builder/api.key`). The
 file is created on the first serve, one line, mode 600; the rendered profile carries the key into the sandbox, and every
 harness script that talks to the server reads it from the file. Delete the file to rotate: the next `serve` creates a
@@ -269,9 +284,9 @@ cmake -B build -DGGML_VULKAN=ON && cmake --build build --config Release -j
 **The kit's own toolchain.** `harness/run_suite.sh` needs nothing installed beyond what a normal development host
 already has on its path: `node` (the system one; a version manager an interactive shell layers on top of it is not
 what the sandbox sees), `cmake`, `make`, `g++` and `python` with the warm uv cache (`harness/warm_cache.sh`
-pre-fills whatever `pytest` needs). No package is installed at run time or at grading time, and no network is used;
-`local-build.sh doctor` and `tests/kit_selftest.sh` both check the sandboxed toolchain is actually reachable before
-a row is trusted.
+pre-fills `pytest` and `pytest-asyncio`). No package is installed at run time or at grading time, and no network is
+used. `local-build.sh doctor` checks that the exact offline pytest command resolves and that the configured
+OpenCode binary is executable; `tests/kit_selftest.sh` checks the sandboxed build toolchain before a row is trusted.
 
 **The models.** These are the exact files each row below was measured with; a different quantisation of the same
 model is a different row, and the registry's own `model` and `source` fields (`config/registry/<card>.<mode>.json`)

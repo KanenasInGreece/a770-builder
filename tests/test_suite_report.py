@@ -73,10 +73,70 @@ def test_json_publishes_instrument_in_the_totals(tmp_path):
     assert out["instrument"] == "SUITE-TEST"
 
 
+def test_human_totals_count_verifier_timeouts(tmp_path):
+    results, env = make_run(tmp_path)
+    doc = json.loads(results.read_text(encoding="utf-8"))
+    doc["stages"][0].update(working=None, outcome="verify_timeout", wall_s=42.0)
+    results.write_text(json.dumps(doc), encoding="utf-8")
+    result = subprocess.run([sys.executable, str(SUITE_REPORT_PY), str(results)],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "timeouts=1" in result.stdout
+
+
+def test_human_stage_table_labels_run_interrupted(tmp_path):
+    results, env = make_run(tmp_path)
+    doc = json.loads(results.read_text(encoding="utf-8"))
+    doc["stages"][0].update(working=None, outcome="run_interrupted")
+    results.write_text(json.dumps(doc), encoding="utf-8")
+    result = subprocess.run([sys.executable, str(SUITE_REPORT_PY), str(results)],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "RUN_INTERRUPTED" in result.stdout
+
+
 def test_json_omits_delivered_when_no_capture_was_read(tmp_path):
     results, env = make_run(tmp_path, with_capture=False)
     out = json.loads(run_json(results, env).stdout)
     assert "delivered" not in out
+
+
+def test_json_refuses_interrupted_or_filtered_runs_as_profile_results(tmp_path):
+    results, env = make_run(tmp_path, with_capture=False)
+    original = json.loads(results.read_text(encoding="utf-8"))
+    original["execution"] = {
+        "status": "interrupted", "scope": "full_suite", "planned_stages": 5, "completed_stages": 2,
+        "planned_counted_stages": 3, "completed_counted_stages": 2,
+    }
+    results.write_text(json.dumps(original), encoding="utf-8")
+    interrupted = run_json(results, env)
+    assert interrupted.returncode == 3 and interrupted.stdout == ""
+    assert '"status": "interrupted"' in interrupted.stderr
+
+    original["execution"].update(status="complete", scope="selected_stages", planned_stages=1,
+                                  completed_stages=1, planned_counted_stages=1, completed_counted_stages=1)
+    results.write_text(json.dumps(original), encoding="utf-8")
+    filtered = run_json(results, env)
+    assert filtered.returncode == 3 and filtered.stdout == ""
+    assert '"scope": "selected_stages"' in filtered.stderr
+
+
+def test_complete_full_run_reports_elapsed_execution_without_changing_profile_keys(tmp_path):
+    results, env = make_run(tmp_path, with_capture=False)
+    original = json.loads(results.read_text(encoding="utf-8"))
+    original["execution"] = {
+        "status": "complete", "scope": "full_suite", "planned_stages": 1, "completed_stages": 1,
+        "planned_counted_stages": 1, "completed_counted_stages": 1, "elapsed_s": 17.3,
+    }
+    results.write_text(json.dumps(original), encoding="utf-8")
+    result = run_json(results, env)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert set(out) <= TOTALS_KEYS
+    assert out["briefs"] == out["runs"] == 1
+    human = subprocess.run([sys.executable, str(SUITE_REPORT_PY), str(results)],
+                           capture_output=True, text=True, env=env)
+    assert '"elapsed_s": 17.3' in human.stdout
 
 
 def test_a_timings_body_without_the_heading_still_parses(tmp_path):
@@ -291,6 +351,7 @@ def test_contamination_pair_reports_not_run_infra_error_and_ambiguous_legacy(tmp
     assert r.returncode == 0, r.stderr
     assert "VERIFY_ERROR" in r.stdout
     assert "VERIFY_TIMEOUT" in r.stdout
+    assert "timeouts=1" in r.stdout
     assert "RUN_ERROR" in r.stdout
     assert "contamination (ref-pubfail, cpp): public FAIL · hidden NOT_RUN" in r.stdout
     assert "contamination (ref-infra, python): public NOT_RUN · hidden NOT_RUN" in r.stdout

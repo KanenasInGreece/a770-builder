@@ -651,9 +651,23 @@ def _budget_gate(env):
 
 def test_budget_gate_compose_treats_its_own_container_as_not_foreign(tmp_path):
     bin_, _ = _fake_runtime(tmp_path, ps_id="cid", host_pid="4242")
-    r = _budget_gate(_env(tmp_path, bin_, FAKE_PGREP="4242"))
+    receipt = tmp_path / "gate.json"
+    r = _budget_gate(_env(tmp_path, bin_, FAKE_PGREP="4242", A770B_BUDGET_GATE_RECEIPT=str(receipt)))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "other llama-server" in r.stdout and "none" in r.stdout
+    assert json.loads(receipt.read_text(encoding="utf-8"))["enforcement"] == "launch"
+
+
+def test_external_budget_gate_does_not_claim_builtin_ram_enforcement(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    gate = tmp_path / "external-gate.sh"
+    gate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    gate.chmod(0o755)
+    receipt = tmp_path / "gate.json"
+    result = _budget_gate(_env(tmp_path, bin_, A770B_BUDGET_GATE=str(gate),
+                               A770B_BUDGET_GATE_RECEIPT=str(receipt)))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not receipt.exists()
 
 
 def test_budget_gate_compose_flags_a_foreign_llama_server(tmp_path):

@@ -16,11 +16,19 @@
 
 import json, os, re, sys
 
+import host_memory
+
 (out_path, name, gguf, ctx_s, kv, kv_v, reasoning, extra, timeout_s, profile_name,
  instrument, far_end_s, avail_before_s, avail_after_s,
  bench_model_path, bench_speed_path, ctx_sweep_log, depth_log,
  suite_json_s, suite_results_path, fail_rung, fail_msg, generated) = sys.argv[1:24]
+# Optional, in order: the serve evidence file, then host_memory.py's samples before and after the load.
 evidence_path = sys.argv[24] if len(sys.argv) > 24 and sys.argv[24] else None
+host_before_path = sys.argv[25] if len(sys.argv) > 25 and sys.argv[25] else None
+host_after_path = sys.argv[26] if len(sys.argv) > 26 and sys.argv[26] else None
+host_memory_log = sys.argv[27] if len(sys.argv) > 27 and sys.argv[27] else None
+engine_name = sys.argv[28] if len(sys.argv) > 28 and sys.argv[28] else None
+backend_name = sys.argv[29] if len(sys.argv) > 29 and sys.argv[29] else None
 
 ctx = int(ctx_s)
 far_end = int(far_end_s)
@@ -52,6 +60,7 @@ bench_speed = load_json(bench_speed_path) if bench_speed_path else None
 # When no evidence file is provided, it is printed null and transcribed by hand.
 # memavailable_drop_gb is still the host MemAvailable drop across the load (rung 1), in GB.
 ram_gb_extra = None
+engine_host_memory = None
 if evidence_path:
     ev_data = load_json(evidence_path)
     row_model = os.path.basename(gguf)
@@ -74,6 +83,15 @@ if evidence_path:
     else:
         matches = ev_model_base == row_model
     if matches:
+        if is_strata:
+            # The configured settings and Strata's own measurement are carried independently: evidence from a reused
+            # server started before host_memory_settings existed still has the pinned allocation observed since.
+            settings = ev_data.get("host_memory_settings")
+            observed = ev_data.get("observed_pinned_host_memory")
+            settings = settings if isinstance(settings, dict) else None
+            observed = observed if isinstance(observed, dict) else None
+            if settings is not None or observed is not None:
+                engine_host_memory = {"settings": settings, "observed_pinned_host_memory": observed}
         hb = ev_data.get("host_buffers_mib")
         if hb is not None:
             try:
@@ -88,6 +106,27 @@ try:
     memavailable_drop_gb = round((int(avail_before_s) - int(avail_after_s)) / 1024.0, 2)
 except (ValueError, TypeError):
     pass
+
+# Host RAM and swap: the ladder's timestamped samples, the serving process's cgroup when identified, configured
+# limits and the Strata config's host-memory settings. Nothing below derives ram_gb_extra or a RAM need from them.
+host_samples = []
+if host_memory_log and os.path.isfile(host_memory_log):
+    try:
+        with open(host_memory_log, encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    host_samples.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+if host_memory_log:
+    conditions = host_memory.conditions_from_samples(host_samples, engine_host_memory, host_memory_log)
+else:
+    # Compatibility when re-reading an older ladder's two-point receipts. Their collector cgroup is never
+    # attributed to the serving engine.
+    conditions = host_memory.conditions(load_json(host_before_path), load_json(host_after_path), engine_host_memory)
+host_clause = host_memory.clause(conditions)
 
 vram_gib_after_load = (bench_model or {}).get("vram_gib_after_load")
 
@@ -242,18 +281,28 @@ if pfar:
 suite = json.loads(suite_json_s) if suite_json_s else None
 if suite is not None and suite_results_path:
     suite["source"] = os.path.basename(suite_results_path)
+suite_results_doc = load_json(suite_results_path)
+suite_execution = (suite_results_doc.get("execution")
+                   if isinstance(suite_results_doc, dict) and isinstance(suite_results_doc.get("execution"), dict)
+                   else None)
 
 flash_attention = "off" if re.search(r'(?:^|\s)-fa\s+off(?:\s|$)', extra) else "on"
 
 # ── the ladder JSON: every rung's own numbers, whatever ran ─────────────────────────────────────────────────
+input_doc = {
+    "profile": profile_name or None, "model": gguf, "ctx": ctx, "kv": kv, "kv_v": kv_v,
+    "reasoning": reasoning, "extra": extra, "timeout_s": int(timeout_s) if timeout_s.isdigit() else timeout_s,
+    "far_end": far_end,
+}
+if engine_name:
+    input_doc["engine"] = engine_name
+if backend_name:
+    input_doc["backend"] = backend_name
+
 ladder_doc = {
     "instrument": instrument,
     "generated": generated,
-    "input": {
-        "profile": profile_name or None, "model": gguf, "ctx": ctx, "kv": kv, "kv_v": kv_v,
-        "reasoning": reasoning, "extra": extra, "timeout_s": int(timeout_s) if timeout_s.isdigit() else timeout_s,
-        "far_end": far_end,
-    },
+    "input": input_doc,
     "rungs": {
         "load_and_probes": bench_model,
         "standard_speed": bench_speed,
@@ -266,11 +315,14 @@ ladder_doc = {
         "useful_ctx": useful_ctx, "ram_gb_extra": ram_gb_extra, "memavailable_drop_gb": memavailable_drop_gb,
         "vram_gib_after_load": vram_gib_after_load, "speed": speed,
     },
+    "conditions": conditions,
     "stopped_at_rung": fail_rung or None,
     "failure": fail_msg or None,
 }
 if evidence_path and is_strata:
     ladder_doc["rungs"]["launch_evidence"] = evidence_path
+if suite_execution:
+    ladder_doc["rungs"]["task_suite_execution"] = suite_execution
 with open(out_path, "w") as f:
     json.dump(ladder_doc, f, indent=2)
     f.write("\n")
@@ -290,6 +342,31 @@ if row_suite is not None:
     if row_delivered is not None:
         row_speed["delivered"] = row_delivered
 
+# A suite with fewer stages run than counted is a partial kit: its pass ratio and mean wall describe the stages
+# that ran, never the whole kit, and the row says so.
+suite_partial = ""
+if suite and suite.get("runs") and isinstance(suite.get("briefs"), int) and suite["runs"] < suite["briefs"]:
+    suite_partial = f" (partial: {suite['runs']} of {suite['briefs']} counted stages ran)"
+if suite_execution and (suite_execution.get("status") != "complete"
+                         or suite_execution.get("scope") != "full_suite"
+                         or suite_execution.get("planned_stages") != suite_execution.get("completed_stages")):
+    completed = suite_execution.get("completed_counted_stages", 0)
+    planned = suite_execution.get("planned_counted_stages", 0)
+    elapsed = suite_execution.get("elapsed_s")
+    suite_partial = f" (incomplete: {completed} of {planned} counted stages completed"
+    if elapsed is not None:
+        suite_partial += f", elapsed {elapsed}s"
+    suite_partial += ")"
+elif suite_execution and suite_execution.get("elapsed_s") is not None:
+    suite_partial = f" (total kit time {suite_execution['elapsed_s']}s)"
+
+measured_on = ("__TODO__ — the card and build this was measured on, e.g. \"Arc A770 16 GB, llama.cpp b10805 Vulkan\" "
+               "(kit/PROFILE.md: never filled by ladder.sh)")
+if backend_name or engine_name:
+    measured_on += f"; backend {backend_name or 'not recorded'}, engine {engine_name or 'not recorded'}"
+if host_clause:
+    measured_on += f"; add the {host_clause} (this ladder run; the detail is under conditions in its results JSON)"
+
 row = {
     "model": os.path.basename(gguf), "ctx": ctx, "kv": kv, "kv_v": kv_v,
     "flash_attention": flash_attention, "reasoning": reasoning, "extra": extra,
@@ -298,16 +375,18 @@ row = {
     "useful_ctx": useful_ctx, "speed": row_speed, "instrument": instrument,
     "task": "__TODO__ — the task class this row wins (code-edit, code-read, debug-test, prose-docs, os-ops, data-structured, instruction-agentic); see kit/PROFILE.md §2",
     "evidence": (
-        f"{instrument}: {suite['passed']}/{suite['runs']} stages passed (this ladder run)"
+        f"{instrument}: {suite['passed']}/{suite['runs']} stages passed{suite_partial} (this ladder run)"
         if suite and suite.get("runs") else
+        f"{instrument}: {suite_partial.strip(' ()')} (see run JSON)" if suite_partial else
         "__TODO__ — the class test that qualified this row and its pass result"
     ),
-    "measured_on": "__TODO__ — the card and build this was measured on, e.g. \"Arc A770 16 GB, llama.cpp b10805 Vulkan\" (kit/PROFILE.md: never filled by ladder.sh)",
+    "measured_on": measured_on,
     "use_for": "__TODO__ — write by hand from what this ladder run showed (kit/PROFILE.md: never derived from a measurement)",
     "fit": {
         "code": (
             f"SUITE-1: {suite['passed']}/{suite['runs']} stages passed"
             + (f", mean wall {suite['mean_wall_s']}s" if suite.get("mean_wall_s") is not None else "")
+            + suite_partial
             + " (this ladder run)"
         ) if suite and suite.get("runs") else "not measured",
         "write": "__TODO__ — a reviewer-graded prose brief, or state 'not measured'",

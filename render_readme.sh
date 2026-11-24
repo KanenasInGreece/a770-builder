@@ -8,9 +8,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 - <<'PY'
-import json, re, subprocess, html as _html, pathlib
+import json, re, subprocess, sys, html as _html, pathlib
 
 root = pathlib.Path(".")
+# The catalogue's own speed cell (at most one decimal place), so this recap and README.md show the same numbers.
+sys.path.insert(0, str(root.resolve() / "harness"))
+from profiles import _speed_pair as speed_pair
 
 
 def esc(s):
@@ -79,7 +82,7 @@ for cfg in sorted(pathlib.Path("config/registry").glob("*.json")):
         vram_s = f"{vram} GiB" if vram is not None else "—"
         dec = p.get("speed", {}).get("decode_tps", {}).get("8k")
         pre = p.get("speed", {}).get("prefill_tps", {}).get("8k")
-        speed = f"{dec} / {pre} tok/s" if dec is not None and pre is not None else "—"
+        speed = f"{speed_pair(dec, pre)} tok/s"
         instrument = p.get("instrument", "—")
         rows.append((card, mode, name, p.get("model", "—"), window, vram_s, speed, instrument))
 

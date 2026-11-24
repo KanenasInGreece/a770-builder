@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 import strata_managed as managed
 
@@ -39,6 +40,114 @@ def test_prepared_config_pins_one_card_and_preserves_native_spec(config):
     assert doc["env"]["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1"
     assert doc["args"][:2] == ["--spec", "2"] and evidence["model_id"] == "flash-next"
     assert evidence["engine_sha256"] == managed.file_digest(Path(doc["exe"]))
+
+
+def test_prepared_config_records_its_host_memory_settings_as_configured(config):
+    """The config's host-memory knobs are carried into the launch evidence as written: a configured 0 stays
+    "0", a bare flag is True, and an absent knob is absent — not a default the harness guessed."""
+    _, evidence = managed.prepare_config(config)
+    assert evidence["host_memory_settings"] == {"env": {"STRATA_MIRROR_MIB": "0"}, "args": {}}
+
+    doc = json.loads(config.read_text())
+    doc["env"] = {"STRATA_MIRROR_MIB": "28672", "STRATA_VERIFY_NO_HOST": "1", "UNRELATED": "x"}
+    doc["args"] = ["--spec", "2", "--expert-cache", "auto", "--stream-experts", "--ple-io=mmap",
+                   "--vram-reserve-mib", "5120"]
+    config.write_text(json.dumps(doc))
+    _, evidence = managed.prepare_config(config)
+    assert evidence["host_memory_settings"] == {
+        "env": {"STRATA_MIRROR_MIB": "28672", "STRATA_VERIFY_NO_HOST": "1"},
+        "args": {"--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap"},
+    }
+
+
+def test_launch_identity_ignores_reporting_only_host_memory_metadata():
+    old = {"config_sha256": "same-config", "engine_sha256": "same-engine", "model_id": "m"}
+    new = {**old, "host_memory_settings": {"env": {"STRATA_MIRROR_MIB": "28672"}, "args": {}}}
+    assert managed.launch_evidence_matches(old, new)
+    assert not managed.launch_evidence_matches(old, {**new, "config_sha256": "different-config"})
+
+
+def test_observed_pinned_host_memory_is_parsed_from_engine_output(tmp_path):
+    log = tmp_path / "engine.log"
+    log.write_text("loaded experts; mirrored in 27.70 GiB of pinned host RAM\n", encoding="utf-8")
+    observed = managed.observed_pinned_host_memory(log)
+    assert observed == {"value_bytes": round(27.70 * 1024 ** 3), "source": str(log),
+                        "reported_text": "loaded experts; mirrored in 27.70 GiB of pinned host RAM"}
+    log.write_text("no pinned allocation line\n", encoding="utf-8")
+    assert managed.observed_pinned_host_memory(log) is None
+
+
+def test_observe_host_memory_persists_the_measurement_before_profile_rendering(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "engine.log").write_text("mirrored in 27.70 GiB of pinned host RAM\n", encoding="utf-8")
+    evidence = run / "evidence.json"
+    evidence.write_text(json.dumps({"engine": "strata", "log_dir": str(run), "host_memory_settings": {"env": {}, "args": {}}}))
+    assert managed.observe_host_memory(evidence) == evidence
+    saved = json.loads(evidence.read_text(encoding="utf-8"))
+    assert saved["observed_pinned_host_memory"]["value_bytes"] == round(27.70 * 1024 ** 3)
+
+
+def test_continuous_enforcement_receipt_is_written_atomically_only_when_requested(tmp_path, monkeypatch):
+    receipt = tmp_path / "ram-guard.receipt"
+    monkeypatch.setenv("A770B_BUDGET_GATE_RECEIPT", str(receipt))
+    assert managed.write_enforcement_receipt("continuous") is True
+    assert json.loads(receipt.read_text(encoding="utf-8"))["enforcement"] == "continuous"
+    assert not list(tmp_path.glob("*.tmp.*"))
+
+
+def test_post_check_refusal_does_not_promote_launch_receipt_to_continuous(tmp_path, monkeypatch):
+    receipt = tmp_path / "ram-guard.receipt"
+    monkeypatch.setenv("A770B_BUDGET_GATE_RECEIPT", str(receipt))
+    assert managed.write_enforcement_receipt("launch") is True
+    monkeypatch.setattr(managed, "read_state", lambda _path: {"min_ram_mib": 20000})
+    monkeypatch.setattr(managed, "read_key", lambda: "key")
+    monkeypatch.setattr(managed, "process_alive", lambda _state: True)
+    monkeypatch.setattr(managed, "health_matches", lambda _state, _key: True)
+    monkeypatch.setattr(managed, "ram_ok", lambda _minimum: False)
+    assert managed.admit(tmp_path / "state.json") is False
+    assert json.loads(receipt.read_text(encoding="utf-8"))["enforcement"] == "launch"
+
+
+def test_verified_healthy_admission_promotes_receipt_to_continuous(tmp_path, monkeypatch):
+    receipt = tmp_path / "ram-guard.receipt"
+    monkeypatch.setenv("A770B_BUDGET_GATE_RECEIPT", str(receipt))
+    assert managed.write_enforcement_receipt("launch") is True
+    monkeypatch.setattr(managed, "read_state", lambda _path: {"min_ram_mib": 20000})
+    monkeypatch.setattr(managed, "read_key", lambda: "key")
+    monkeypatch.setattr(managed, "process_alive", lambda _state: True)
+    monkeypatch.setattr(managed, "health_matches", lambda _state, _key: True)
+    monkeypatch.setattr(managed, "ram_ok", lambda _minimum: True)
+    assert managed.admit(tmp_path / "state.json") is True
+    assert json.loads(receipt.read_text(encoding="utf-8"))["enforcement"] == "continuous"
+
+
+def test_continuous_enforcement_is_written_only_after_admission():
+    source = (ROOT / "harness" / "strata_managed.py").read_text(encoding="utf-8")
+    supervisor = source[source.index("def supervise("):source.index("def start(")]
+    assert 'write_enforcement_receipt("continuous")' not in supervisor
+    start = source[source.index("def start("):source.index("def admit(")]
+    assert 'write_enforcement_receipt("continuous")' not in start
+    admit = source[source.index("def admit("):source.index("def main(")]
+    assert admit.index("not health_matches(state, key)") < admit.index('write_enforcement_receipt("continuous")')
+    serve = (ROOT / "harness" / "serve_strata.sh").read_text(encoding="utf-8")
+    vram_check = serve.index('"$used" "$A770B_VRAM_CAP_GIB"')
+    assert vram_check < serve.index('"${managed[@]}" admit')
+
+
+def test_strata_shell_dispatches_the_supported_pid_command(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    recorder = tmp_path / "called.txt"
+    python3 = fake_bin / "python3"
+    python3.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" > '{recorder}'\nexit 0\n", encoding="utf-8")
+    python3.chmod(0o755)
+    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ.get('PATH', '')}", A770B_PROJECT=str(Path(__file__).resolve().parents[1]),
+               A770B_DATA=str(tmp_path / "data"), A770B_MODELS=str(tmp_path / "models"), A770B_CARD="b70")
+    result = __import__("subprocess").run(["bash", str(Path(__file__).resolve().parents[1] / "harness/serve_strata.sh"),
+                                           "pid"], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "strata_managed.py pid" in recorder.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("key,value", [

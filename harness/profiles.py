@@ -58,6 +58,7 @@ import json
 import os
 import re
 import sys
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -1312,8 +1313,21 @@ def _catalogue_rows() -> tuple[list[dict], list[str]]:
 
 
 def _speed_cell(value) -> str:
-    """A catalogue speed cell. A missing 8k sample stays blank rather than becoming another depth's number."""
-    return "—" if value is None else str(value)
+    """A catalogue speed cell, shown to at most one decimal place; the registry keeps the raw measurement.
+
+    A missing 8k sample stays blank rather than becoming another depth's number. An integer stays an integer
+    (a measured 0 is "0", never blank). A float is rounded half away from zero on its decimal text, so 19.45
+    reads 19.5 rather than the binary float's 19.4, and always shows its one decimal (29.0, 106.0)."""
+    if value is None:
+        return "—"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return str(Decimal(repr(float(value))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def _speed_pair(decode, prefill) -> str:
+    """Format catalogue speeds independently so one missing measurement does not hide the other."""
+    return f"{_speed_cell(decode)} / {_speed_cell(prefill)}"
 
 
 def _catalogue_table(rows: list[dict]) -> list[str]:

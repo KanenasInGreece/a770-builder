@@ -49,6 +49,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
+serving_pid_matches_engine(){
+  python3 - "$here/host_memory.py" "$1" "$ENGINE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])
+import host_memory
+raise SystemExit(0 if host_memory.process_matches_engine(sys.argv[2], sys.argv[3]) else 1)
+PY
+}
 # shellcheck disable=SC1091
 . "$here/serve_envelope.sh"
 # tokenizer_dir <model> — directory containing tokenizer.json or tokenizer_config.json.
@@ -236,7 +244,8 @@ if [ "$DRYRUN" = 1 ]; then
     load_preview+=" ${_image_prefix}${_live_prefix}KV_K=$KV KV_V=$KV_V REASONING=$REAS THINKING_MODE=$REAS"
     load_preview+=" THINKING_BUDGET=$BUDGET bash harness/serve_compose.sh start $GGUF $CTX${EXTRA:+ $EXTRA}"
     if [ "$ENGINE" = strata ]; then load_preview="bash harness/serve_strata.sh start $GGUF $CTX"; fi
-    echo "[dry-run] rung 1/6: $load_preview — MemAvailable sampled before and after; VRAM sampled after load"
+    echo "[dry-run] rung 1/6: $load_preview — host RAM/swap sampled continuously; VRAM sampled after load"
+    echo "[dry-run] host memory: continuous timestamped RAM/swap and serving-process cgroup samples through all six rungs -> $LOGDIR/$NAME.host-memory.jsonl"
     _pp=$(initial_pp || true)
     if [ -z "$_pp" ]; then
       echo "[dry-run] rung 2/6: STOPPED — no standard prompt size fits the served window ($CTX, far end $FAR_END)"
@@ -299,8 +308,20 @@ if [ "$ENGINE" = strata ]; then _serve="$here/serve_strata.sh"; fi
 STRATA_EVIDENCE=""
 _ladder_started=0
 LADDER_CID=""
+HOST_MEMORY_LOG=""
+HOST_PID_FILE=""
+HOST_MONITOR_PID=""
+stop_host_monitor(){
+  if [ -n "$HOST_MONITOR_PID" ]; then
+    kill -TERM "$HOST_MONITOR_PID" 2>/dev/null || true
+    wait "$HOST_MONITOR_PID" 2>/dev/null || true
+    HOST_MONITOR_PID=""
+  fi
+}
 _ladder_stop() {
   local rc=$? stop_rc=0
+  stop_host_monitor
+  [ -z "$HOST_PID_FILE" ] || rm -f -- "$HOST_PID_FILE"
   [ "$_ladder_started" = 1 ] || return 0
   _ladder_started=0
   if [ -n "$LADDER_CID" ]; then
@@ -326,6 +347,25 @@ fi
 mkdir -p "$A770B_DATA/results" "$A770B_DATA/logs"
 LOGDIR="$A770B_DATA/logs"
 FAIL_RUNG=""; FAIL_MSG=""
+HOST_MEMORY_LOG="$LOGDIR/$NAME.host-memory-$DATE-$$.jsonl"
+HOST_PID_FILE="$LOGDIR/$NAME.serving-pid-$$"
+HOST_MEMORY_ENFORCEMENT_FILE="$LOGDIR/$NAME.budget-gate-$DATE-$$.receipt"
+: > "$HOST_PID_FILE"
+HOST_MEMORY_ENFORCEMENT=unknown
+[ "$BRING" != attach ] || HOST_MEMORY_ENFORCEMENT=none
+export A770B_BUDGET_GATE_RECEIPT="$HOST_MEMORY_ENFORCEMENT_FILE"
+rm -f -- "$HOST_MEMORY_ENFORCEMENT_FILE"
+HOST_MEMORY_GUARDS=(--min-floor-mib "$A770B_MIN_AVAIL_MB" --min-floor-enforcement "$HOST_MEMORY_ENFORCEMENT")
+# 7>&- 9>&-: the sampler must not hold the card or seat lock. --owner-pid: it ends on its own if this shell dies
+# without running its exit trap (OOM kill, SIGKILL), so it never outlives the run it measures.
+python3 "$here/host_memory.py" monitor --out "$HOST_MEMORY_LOG" --interval 1 --pid-file "$HOST_PID_FILE" \
+  "${HOST_MEMORY_GUARDS[@]}" --enforcement-file "$HOST_MEMORY_ENFORCEMENT_FILE" --owner-pid "$$" \
+  >/dev/null 2>&1 7>&- 9>&- & HOST_MONITOR_PID=$!
+sleep 0.1
+if ! kill -0 "$HOST_MONITOR_PID" 2>/dev/null; then
+  echo "⚠ host memory monitor did not start; this ladder will lack continuous RAM/swap samples" >&2
+  HOST_MONITOR_PID=""
+fi
 # An attach bring with no A770B_ATTACHED=1 fails before serve_compose.sh, before the speed
 # script, and before any container command. Dry-run never reaches this branch.
 if [ "$BRING" = attach ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
@@ -354,6 +394,10 @@ echo "═══ ladder: ${PROFILE_NAME:-$GGUF} — ctx $CTX kv $KV/$KV_V — $(d
 # ── rung 1: load and VRAM. rung 2: one llama-benchy call. The server stays up for rung 3. ──
 BENCH_MODEL_JSON=""
 avail_before=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
+# Keep the server PID separate from the monitor's own cgroup. The monitor started before the load and reads this
+# PID file on each sample so its receipt covers the load and every later rung.
+HOST_BEFORE=""
+HOST_AFTER=""
 if [ -z "$FAIL_RUNG" ]; then
   echo "▶ rung 1/6 — load ($(basename "$_serve")); MemAvailable and VRAM"
   if [ "$BRING" = attach ]; then
@@ -388,9 +432,15 @@ if [ -z "$FAIL_RUNG" ]; then
       _ladder_started=1
       if [ "$ENGINE" = strata ]; then
         LADDER_CID=$(bash "$_serve" id) || die "managed Strata instance disappeared after startup"
+        serving_pid=$(bash "$_serve" pid 2>/dev/null || true)
       else
         LADDER_CID=$(cat "$A770B_DATA/logs/llamacpp-a770.cid" 2>/dev/null || true)
+        serving_pid=""
+        if [[ "$LADDER_CID" =~ ^[0-9a-f]{64}$ ]]; then
+          serving_pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$LADDER_CID" 2>/dev/null || true)
+        fi
       fi
+      if [[ "${serving_pid:-}" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$serving_pid" > "$HOST_PID_FILE"; fi
       if _vram=$(gpu_used_gib); then
         _vram_val="$_vram"
         _vram_ok=1
@@ -433,6 +483,17 @@ PY
   fi
 fi
 avail_after=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "")
+if [ -z "$(cat "$HOST_PID_FILE" 2>/dev/null)" ] && [ "$BRING" = attach ]; then
+  serving_pid=""
+  if command -v ss >/dev/null 2>&1; then
+    serving_pid=$(ss -H -lptn "sport = :$A770B_PORT" 2>/dev/null | sed -nE 's/.*pid=([0-9]+).*/\1/p' | head -1)
+  fi
+  if [[ "${serving_pid:-}" =~ ^[1-9][0-9]*$ ]] && serving_pid_matches_engine "$serving_pid"; then
+    printf '%s\n' "$serving_pid" > "$HOST_PID_FILE"
+  else
+    echo "⚠ attached listener process does not identify as $ENGINE; serving cgroup will remain unmeasured" >&2
+  fi
+fi
 
 EVIDENCE_PATH="$STRATA_EVIDENCE"
 if [ "$ENGINE" != strata ] && [ -z "$FAIL_RUNG" ] && [ "$BRING" != attach ]; then
@@ -547,10 +608,19 @@ SUITE_JSON=""
 if [ -n "$SUITE_RESULTS_JSON" ] && [ -f "$SUITE_RESULTS_JSON" ]; then
   SUITE_JSON=$(python3 "$here/suite_report.py" "$SUITE_RESULTS_JSON" --json 2>/dev/null || true)
 fi
+stop_host_monitor
 
 INSTRUMENT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1";
 print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "${SUITE:-$A770B_PROJECT/kit/suite.json}") || { echo "⛔ suite.json is not readable or not valid JSON: ${SUITE:-$A770B_PROJECT/kit/suite.json}" >&2; exit 1; }
 [ -n "$INSTRUMENT" ] || { echo "⛔ kit_version missing from suite.json" >&2; exit 1; }
+
+if [ "$ENGINE" = strata ] && [ -n "${EVIDENCE_PATH:-}" ]; then
+  if observed=$(bash "$here/serve_strata.sh" observe "$EVIDENCE_PATH"); then
+    EVIDENCE_PATH="$observed"
+  else
+    echo "⚠ could not capture Strata pinned-host-memory evidence before row rendering" >&2
+  fi
+fi
 
 # ── the last step: read every rung's own output, compute what no single rung produces (useful_ctx by the
 # four-tokens-a-second rule, memavailable_drop_gb from rung 1's MemAvailable sampling, the speed table — ram_gb_extra
@@ -564,7 +634,7 @@ python3 "$here/ladder_row.py" "$OUT" "$NAME" "$GGUF" "$CTX" "$KV" "$KV_V" "$REAS
   "$INSTRUMENT" "$FAR_END" "${avail_before:-}" "${avail_after:-}" \
   "$BENCH_MODEL_JSON" "${BENCH_SPEED_JSON:-}" "${CTX_SWEEP_LOG:-}" "${DEPTH_LOG:-}" \
   "${SUITE_JSON:-}" "${SUITE_RESULTS_JSON:-}" "${FAIL_RUNG:-}" "${FAIL_MSG:-}" "$(date +%Y-%m-%dT%H:%M:%S)" \
-  "${EVIDENCE_PATH:-}"
+  "${EVIDENCE_PATH:-}" "${HOST_BEFORE:-}" "${HOST_AFTER:-}" "${HOST_MEMORY_LOG:-}" "$ENGINE" "$BACKEND"
 grc=$?
 [ "$grc" = 0 ] && echo "✓ ladder complete" || echo "⛔ ladder incomplete — read the note above" >&2
 exit "$grc"
