@@ -527,12 +527,35 @@ def _bash_unquote(word: str) -> str:
     return result.stdout
 
 
+def _candidate_signature_row(env: dict) -> dict:
+    """Candidate fields serve() reads from the environment. Not a registry row."""
+    return {
+        "model": env.get("A770B_CANDIDATE_MODEL") or "",
+        "ctx": env.get("A770B_CANDIDATE_CTX") or "",
+        "kv": env.get("A770B_CANDIDATE_KV") or "",
+        "kv_v": env.get("A770B_CANDIDATE_KV_V") or env.get("A770B_CANDIDATE_KV") or "",
+        "extra": env.get("A770B_CANDIDATE_EXTRA") or "",
+        "backend": env.get("A770B_CANDIDATE_BACKEND") or "",
+        "reasoning": env.get("A770B_CANDIDATE_REASONING") or "",
+        "quant": env.get("A770B_CANDIDATE_QUANT") or "",
+        "tool_parser": env.get("A770B_CANDIDATE_TOOL_PARSER") or "",
+        "reasoning_parser": env.get("A770B_CANDIDATE_REASONING_PARSER") or "",
+    }
+
+
 def _signature_call(env: dict, profile: str = "qwen35-9b-q4km-vulkan"):
     """The env and argv serve() passes to serve_compose.sh signature for this profile."""
-    row = json.loads(Path(env["A770B_PROFILES_FILE"]).read_text(encoding="utf-8"))["profiles"][profile]
+    if profile == "candidate":
+        row = _candidate_signature_row(env)
+    else:
+        row = json.loads(Path(env["A770B_PROFILES_FILE"]).read_text(encoding="utf-8"))["profiles"][profile]
     thinking = row.get("thinking") or {}
     preserve = thinking.get("preserve")
-    gguf = str(Path(env["A770B_MODELS"]) / row["model"])
+    model = str(row["model"])
+    if profile == "candidate" and model.startswith("/"):
+        gguf = model
+    else:
+        gguf = str(Path(env["A770B_MODELS"]) / model)
     ctx = str(row["ctx"])
     extra = str(row.get("extra") or "").split()
     sig_env = dict(env)
@@ -563,14 +586,14 @@ def _run_serve_compose(env: dict, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _ready_marked_server(env: dict, live_pid: int):
+def _ready_marked_server(env: dict, live_pid: int, profile: str = "qwen35-9b-q4km-vulkan"):
     """Pidfile, mark, and override matching signature, plus a container inspect.
 
     The sidecar is not claimed to name this pid.
     """
     logs = Path(env["A770B_DATA"]) / "logs"
     (logs / "llamacpp-a770.pid").write_text(f"{live_pid}\n", encoding="utf-8")
-    sig_env, gguf, ctx, extra = _signature_call(env)
+    sig_env, gguf, ctx, extra = _signature_call(env, profile)
     signature = _run_serve_compose(sig_env, "signature", gguf, ctx, *extra)
     assert signature.returncode == 0, signature.stdout + signature.stderr
     sig_lines = signature.stdout.splitlines()
@@ -633,6 +656,82 @@ def test_serve_keeps_a_ready_server_when_the_sidecar_is_missing(tmp_path, live_p
     assert sidecar["backend"] == "vulkan"
     assert sidecar["profile"] == "qwen35-9b-q4km-vulkan"
     assert sidecar["pid"] == live_pid
+
+
+CANDIDATE_GGUF = "bare-candidate.gguf"
+CANDIDATE_CTX = "4096"
+CANDIDATE_CARD = "b70"
+CANDIDATE_MODE = "inference"
+CANDIDATE_BACKEND = "sycl"
+
+
+def _arm_candidate(env: dict) -> None:
+    """Export the ephemeral profile so env.sh's ${VAR:=…} assignments leave it in place."""
+    data = json.loads(Path(env["A770B_PROFILES_FILE"]).read_text(encoding="utf-8"))
+    names = list(data["profiles"])
+    if "candidate" not in names:
+        names.append("candidate")
+    env["A770B_PROFILES"] = " ".join(names)
+    (Path(env["A770B_MODELS"]) / CANDIDATE_GGUF).write_text("dummy\n", encoding="utf-8")
+    env.update(
+        A770B_CANDIDATE_MODEL=CANDIDATE_GGUF,
+        A770B_CANDIDATE_CTX=CANDIDATE_CTX,
+        A770B_CANDIDATE_KV="q8_0",
+        A770B_CANDIDATE_KV_V="q8_0",
+        A770B_CANDIDATE_REASONING="off",
+        A770B_CANDIDATE_CARD=CANDIDATE_CARD,
+        A770B_CANDIDATE_MODE=CANDIDATE_MODE,
+        A770B_CANDIDATE_BACKEND=CANDIDATE_BACKEND,
+    )
+
+
+def test_serve_keeps_a_ready_candidate_when_the_sidecar_is_missing(tmp_path, live_pid):
+    """No registry row. The keep writes the sidecar from the candidate card, mode and backend."""
+    env = _serve_env(tmp_path)
+    _arm_candidate(env)
+    httpd, thread = _ready_marked_server(env, live_pid, "candidate")
+    try:
+        result = _run_serve(env, "candidate", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "already up" in result.stdout
+    lines = _log_lines(env)
+    assert "stop" not in lines
+    assert not any(line.startswith("start ") for line in lines)
+    sidecar = json.loads(
+        (Path(env["A770B_DATA"]) / "logs" / "live-backend.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["profile"] == "candidate"
+    assert sidecar["card"] == CANDIDATE_CARD
+    assert sidecar["mode"] == CANDIDATE_MODE
+    assert sidecar["backend"] == CANDIDATE_BACKEND
+    assert sidecar["model"] == CANDIDATE_GGUF
+    assert sidecar["pid"] == live_pid
+    mark = (Path(env["A770B_DATA"]) / "logs" / "llamacpp-a770.model").read_text(encoding="utf-8").splitlines()
+    assert mark[0].endswith("/" + CANDIDATE_GGUF)
+    assert mark[1] == CANDIDATE_CTX
+
+
+def test_serve_does_not_keep_a_ready_candidate_when_the_card_is_empty(tmp_path, live_pid):
+    """The same ready server is not kept when the candidate card is empty."""
+    env = _serve_env(tmp_path)
+    _arm_candidate(env)
+    httpd, thread = _ready_marked_server(env, live_pid, "candidate")
+    env.pop("A770B_CANDIDATE_CARD", None)
+    try:
+        result = _run_serve(env, "candidate", timeout=30)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert "already up" not in result.stdout
+    assert not (Path(env["A770B_DATA"]) / "logs" / "live-backend.json").is_file()
+    lines = _log_lines(env)
+    assert "stop" in lines
+    assert "start profile=candidate card= backend=sycl mode=inference" in lines
 
 
 def test_serve_keeps_a_ready_server_when_the_sidecar_names_an_older_pid(tmp_path, live_pid):
