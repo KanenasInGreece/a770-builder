@@ -30,7 +30,7 @@ WT=$(guard_path_policy "$WT")
 [ -d "$WT" ] || { echo "⛔ sandbox: worktree missing $WT" >&2; exit 2; }
 [ -f "$CFG" ] || { echo "⛔ sandbox: config missing $CFG" >&2; exit 2; }
 for t in bwrap socat uv; do command -v "$t" >/dev/null || { echo "⛔ sandbox: $t not installed" >&2; exit 2; }; done
-a770b_require_opencode_v1 || exit 2
+A770B_OPENCODE_FETCH=1 a770b_require_opencode_v1 || exit 2
 OC_BIN=$(a770b_opencode_bin)
 UV=$(readlink -f "$(command -v uv)")
 [ -d "$A770B_UV_CACHE" ] || { echo "⛔ sandbox: uv cache $A770B_UV_CACHE missing — run harness/warm_cache.sh once (the sandbox has no network)" >&2; exit 2; }

@@ -337,14 +337,27 @@ def test_doctor_does_not_resolve_opencode_from_current_directory(tmp_path):
     local_opencode = tmp_path / "opencode"
     local_opencode.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     local_opencode.chmod(0o755)
+    home = tmp_path / "oc-home"
+    home.mkdir()
     env = _doctor_env(tmp_path, PATH=f"{bindir}:/usr/bin:/bin", A770B_UV_CACHE=str(cache),
-                      A770B_OPENCODE_BIN="", A770B_SERVE="compose", A770B_DOCKER="docker",
+                      A770B_OPENCODE_BIN="", A770B_OPENCODE_HOME=str(home), A770B_OPENCODE_FETCH="0",
+                      A770B_SERVE="compose", A770B_DOCKER="docker",
                       A770B_COMPOSE_FILE=str(ROOT / "compose/a770-vulkan.yaml"),
                       A770B_COMPOSE_ENV_FILE=str(tmp_path / "missing-compose.env"))
     result = subprocess.run(["bash", str(DOCTOR_SH), "doctor"], capture_output=True, text=True,
                             cwd=tmp_path, env=env)
     assert "ok   offline grader: pytest + pytest-asyncio resolve from the warm cache" in result.stdout, result.stdout + result.stderr
-    assert "MISSING opencode:" in result.stdout
+    assert str(local_opencode) not in result.stdout
+    supported = subprocess.run(
+        [sys.executable, str(ROOT / "harness" / "opencode_pin.py"), "asset"],
+        capture_output=True, text=True,
+    )
+    if supported.returncode == 0:
+        assert "ok   opencode: a profile run installs OpenCode 1.19.6 when PATH is not OpenCode 1" in result.stdout
+        assert "MISSING opencode:" not in result.stdout
+    else:
+        assert "MISSING opencode:" in result.stdout
+    assert "could not install" not in result.stderr
 
 
 def test_require_opencode_v1_accepts_1_19_6_with_dir_flag(tmp_path):

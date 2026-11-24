@@ -712,7 +712,7 @@ For the named B70 profile, place the prepared JSON at
   `usage_tap.py`. The capture is labelled `engine: strata (attached)`. A stream that carries no usage is recorded as
   unmeasured, never as zero. The coordinator verified OpenCode 1.18.35 through the ordinary `run` and `verify`, inside
   Bubblewrap, against a deterministic fixture endpoint, and no key file was created. That is a fixture run, not a
-  live Strata measurement. A run refuses any `opencode` that is not 1.x or whose `run --help` has no `--dir`; 1.19.6 is the qualified release.
+  live Strata measurement. A run uses OpenCode 1.19.6. When `A770B_OPENCODE_BIN` is empty and `PATH` is not that release, the run installs it and does not grade the profile for the mismatch. An explicit directory is used as given. A binary that is not 1.x, or whose `run --help` has no `--dir`, is refused.
 - **Probe before long prompts.** Run `strata_attach.py probe` once against the live endpoint. `--tokenizer DIR` and
   `--checkpoint REF` (for example `repo@revision`) are both required. The probe counts the local tokenizer first,
   through `prompt_budget.py`'s path, so that path's one `uv` re-exec for `tokenizers` happens before any traffic.

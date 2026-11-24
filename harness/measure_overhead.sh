@@ -7,9 +7,10 @@ set -uo pipefail
 WT=$(guard_worktree "$A770B_SEAT") || exit 2; LOG=$A770B_DATA/logs/llamacpp-a770.log
 CFG=$A770B_DATA/logs/opencode.overhead.jsonc; a770b_render_profile gemma4-8b-e4b-q4km-vulkan "$A770B_GEMMA4_8B_E4B_Q4KM_VULKAN_CTX" "$CFG" || exit 2
 export OPENCODE_CONFIG=$CFG
-a770b_require_opencode_v1 || exit 2
+A770B_OPENCODE_FETCH=1 a770b_require_opencode_v1 || exit 2
+OC_RUN="$(a770b_opencode_bin)/opencode"
 run(){ label="$1"; shift; n0=$(grep -c 'prompt eval time' "$LOG"); t0=$(date +%s)
-  ( cd "$WT" && timeout 900 opencode run --dir "$WT" -m local-a770/local-builder "$@" "Reply with the single word OK and nothing else." < /dev/null >/dev/null 2>&1 )
+  ( cd "$WT" && timeout 900 "$OC_RUN" run --dir "$WT" -m local-a770/local-builder "$@" "Reply with the single word OK and nothing else." < /dev/null >/dev/null 2>&1 )
   t1=$(date +%s); tot=$(grep 'prompt eval time' "$LOG" | tail -n +$((n0+1)) | grep -oE '/ +[0-9]+ tokens' | grep -oE '[0-9]+' | paste -sd+ | bc)
   printf '%-34s first-request prompt tokens=%-6s wall=%ss\n' "$label" "${tot:-?}" "$((t1-t0))"; }
 run "V1 as-is (MCP+skills off)"

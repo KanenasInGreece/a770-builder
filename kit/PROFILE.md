@@ -239,4 +239,4 @@ counts when present and marks missing usage as unmeasured. The capture identifie
 The optional probe takes `--checkpoint` and `--tokenizer` and checks tool calls, token counts and post-disconnect
 availability. OpenCode 1.18.35 completed the attachment workflow against a deterministic fixture. The managed
 B70 trial used the same health and model checks against Strata v0.2.17. Live external attachment remains
-unverified. A kit run uses the same OpenCode 1 gate. See [the operating notes](../docs/OPERATING.md#an-externally-managed-strata-candidate).
+unverified. A kit run uses the same OpenCode 1 gate and installs 1.19.6 when `PATH` is not OpenCode 1 and no directory was selected. See [the operating notes](../docs/OPERATING.md#an-externally-managed-strata-candidate).

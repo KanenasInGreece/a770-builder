@@ -204,7 +204,9 @@ export A770B_BUDGET_GATE_RECEIPT
 : "${A770B_FRAMEWORK_PORTS:=}"                           # ports the seat must never bind (another service's card), space-separated
 : "${A770B_HEALTH_URL:=}"                                # optional: a status URL read once before a server starts; its answer is printed, never a refusal (empty = skip)
 # ── opencode + sandbox ───────────────────────────────────────────────────────────────────────────────────────
-: "${A770B_OPENCODE_BIN:=}"                              # directory holding `opencode`; empty = found on PATH
+: "${A770B_OPENCODE_BIN:=}"                              # directory holding `opencode`; empty = PATH, or the qualified install
+: "${A770B_OPENCODE_HOME:=${XDG_DATA_HOME:-$HOME/.local/share}/a770-builder/opencode/1.19.6}"
+: "${A770B_OPENCODE_FETCH:=0}"                           # 1 on a profile entry point: install 1.19.6 when PATH is not OpenCode 1
 : "${A770B_OPENCODE_MODELS:=$HOME/.cache/opencode/models.json}"
 : "${A770B_PROFILE_TEMPLATE:=$A770B_PROJECT/config/opencode.profile.template.jsonc}"
 : "${A770B_UV_CACHE:=$A770B_DATA/seat-cache/uv}"        # pre-warmed by harness/warm_cache.sh; mounted READ-ONLY, the sandbox has no network
@@ -298,35 +300,78 @@ a770b_opencode_bin(){
   opencode_path=$(command -v opencode) || return 1
   dirname "$(readlink -f "$opencode_path")"
 }
-# OpenCode 2 dropped `run --dir`. A run may start only a 1.x binary whose help still lists that flag.
-# 1.19.6 is the qualified release. The refusal names the selector, never a resolved path.
-a770b_require_opencode_v1(){
-  local bin ver token help re_ver re_one re_dir refused
-  refused="OpenCode 1 is required; 1.19.6 is the qualified release; A770B_OPENCODE_BIN must be that binary's directory"
-  bin=$(a770b_opencode_bin 2>/dev/null) || bin=""
-  if [ -z "$bin" ] || [ ! -d "$bin" ] || [ ! -x "$bin/opencode" ]; then
-    echo "⛔ $refused" >&2
-    return 2
-  fi
+# True when this machine has an upstream 1.19.6 tarball. Prints nothing.
+a770b_opencode_pin_supported(){
+  python3 "$A770B_PROJECT/harness/opencode_pin.py" asset >/dev/null 2>&1
+}
+# The selected binary is OpenCode 1 and its help lists a standalone --dir. No message.
+a770b_opencode_v1_ok(){
+  local bin ver token help re_ver re_one re_dir
+  bin=$(a770b_opencode_bin 2>/dev/null) || return 1
+  [ -n "$bin" ] && [ -d "$bin" ] && [ -x "$bin/opencode" ] || return 1
   ver=$("$bin/opencode" --version 2>/dev/null | head -n 1 || true)
   ver=${ver%$'\r'}
   re_ver='(^|[^0-9])([0-9]+\.[0-9]+)'
   re_one='^1\.[0-9]'
-  if [[ "$ver" =~ $re_ver ]]; then
-    token=${BASH_REMATCH[2]}
-  else
-    token=""
-  fi
-  if [[ ! "$token" =~ $re_one ]]; then
-    echo "⛔ $refused" >&2
-    return 2
-  fi
-  # `--dir` as its own flag: a longer flag such as `--directory` does not count.
+  if [[ "$ver" =~ $re_ver ]]; then token=${BASH_REMATCH[2]}; else token=""; fi
+  [[ "$token" =~ $re_one ]] || return 1
   re_dir='(^|[[:space:]])--dir([[:space:]]|$)'
   help=$("$bin/opencode" run --help 2>&1 || true)
-  if ! printf '%s\n' "$help" | grep -Eq "$re_dir"; then
-    echo "⛔ $refused" >&2
+  printf '%s\n' "$help" | grep -Eq "$re_dir"
+}
+# Install 1.19.6 when this call was asked to fetch. An explicit directory is left as given.
+# PATH wins when it already qualifies. The install directory is not ~/.opencode/bin.
+a770b_prepare_opencode_v1(){
+  local share tarball sha url asset_line rc
+  [ "${1:-}" = "--fetch" ] || return 0
+  [ -n "${A770B_OPENCODE_BIN:-}" ] && return 0
+  if a770b_opencode_v1_ok; then return 0; fi
+  share="$A770B_OPENCODE_HOME"
+  if [ -x "$share/opencode" ] && A770B_OPENCODE_BIN="$share" a770b_opencode_v1_ok; then
+    export A770B_OPENCODE_BIN="$share"
+    return 0
+  fi
+  asset_line=$(python3 "$A770B_PROJECT/harness/opencode_pin.py" asset) || {
+    echo "⛔ OpenCode 1 is required; 1.19.6 is the qualified release; this machine has no upstream tarball" >&2
+    return 2
+  }
+  url=$(printf '%s\n' "$asset_line" | sed -n '3p')
+  sha=$(printf '%s\n' "$asset_line" | sed -n '2p')
+  # A test points these at a local tarball. A profile run leaves them unset.
+  [ -n "${A770B_OPENCODE_SHA256:-}" ] && sha="$A770B_OPENCODE_SHA256"
+  [ -n "${A770B_OPENCODE_URL:-}" ] && url="$A770B_OPENCODE_URL"
+  tarball=$(mktemp)
+  rc=0
+  curl -fsSL --retry 2 --max-time 180 -o "$tarball" "$url" || rc=$?
+  if [ "$rc" != 0 ]; then
+    rm -f -- "$tarball"
+    echo "⛔ OpenCode 1 is required; 1.19.6 is the qualified release; the harness could not install it" >&2
     return 2
   fi
+  if ! python3 "$A770B_PROJECT/harness/opencode_pin.py" install --tarball "$tarball" --dest "$share" --sha256 "$sha"; then
+    rm -f -- "$tarball"
+    echo "⛔ OpenCode 1 is required; 1.19.6 is the qualified release; the harness could not install it" >&2
+    return 2
+  fi
+  rm -f -- "$tarball"
+  export A770B_OPENCODE_BIN="$share"
+  if ! a770b_opencode_v1_ok; then
+    echo "⛔ OpenCode 1 is required; 1.19.6 is the qualified release; the harness could not install it" >&2
+    return 2
+  fi
+  echo "OpenCode 1.19.6 installed for profile runs" >&2
   return 0
+}
+# OpenCode 2 dropped `run --dir`. A run may start only a 1.x binary whose help still lists that flag.
+# 1.19.6 is the qualified release. The refusal names the selector, never a resolved path.
+# A770B_OPENCODE_FETCH=1 installs that release when PATH is not already OpenCode 1.
+a770b_require_opencode_v1(){
+  local refused
+  refused="OpenCode 1 is required; 1.19.6 is the qualified release; A770B_OPENCODE_BIN must be that binary's directory"
+  if [ "${A770B_OPENCODE_FETCH:-0}" = 1 ]; then
+    a770b_prepare_opencode_v1 --fetch || return $?
+  fi
+  if a770b_opencode_v1_ok; then return 0; fi
+  echo "⛔ $refused" >&2
+  return 2
 }
