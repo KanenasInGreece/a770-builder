@@ -367,6 +367,16 @@ def test_require_opencode_v1_refuses_opencode_v2_2_0_line_without_dir(tmp_path):
     assert str(bindir) not in result.stderr
 
 
+def test_require_opencode_v1_refuses_opencode_v2_2_0_line_even_when_help_lists_dir(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _write_opencode_stub(bindir / "opencode", "opencode v2.2.0", "  --dir   directory to run in")
+    result = _require_opencode(tmp_path, bindir)
+    assert result.returncode == 2
+    assert "OpenCode 1 is required" in result.stderr
+    assert str(bindir) not in result.stderr
+
+
 def test_require_opencode_v1_refuses_2_2_0_even_when_help_lists_dir(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -396,9 +406,11 @@ def test_doctor_reports_missing_for_opencode_2(tmp_path):
     _write_opencode_stub(bindir / "opencode", "2.2.0", "  --dir   directory to run in")
     env = _doctor_env(tmp_path, A770B_OPENCODE_BIN=str(bindir))
     result = _run_doctor(env)
-    assert any(ln.startswith("MISSING opencode:") and "OpenCode 1" in ln and "1.19.6" in ln for ln in result.stdout.splitlines()), result.stdout
+    lines = result.stdout.splitlines()
+    assert any(ln.startswith("MISSING opencode:") and "OpenCode 1" in ln and "1.19.6" in ln for ln in lines), result.stdout
     assert "ok   opencode" not in result.stdout
-    assert any(ln.startswith("ok   python3:") for ln in result.stdout.splitlines()), result.stdout
+    assert "ok   A770B_REFUSE: set" in lines
+    assert any(ln.startswith("MISSING doctor:") for ln in lines), result.stdout
 
 
 def test_ladder_requires_opencode_v1_before_serve_after_dry_run():
