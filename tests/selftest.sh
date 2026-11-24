@@ -8,6 +8,23 @@ for f in "$here"/harness/*.sh "$here"/skills/local-build/scripts/local-build.sh 
   [ -f "$f" ] || continue; bash -n "$f" || { echo "FAIL syntax: $f"; fail=1; }
 done
 t=$(mktemp -d)
+# The host PATH may be OpenCode 2, which the version gate refuses before the check under test. This stub is OpenCode 1
+# with `run --dir`. _iso drops exported A770B_* names, so the directory is selected by PATH, not A770B_OPENCODE_BIN.
+# The start-stamp check prefixes its own stub and stays first for that one call.
+mkdir -p "$t/opencode1"
+cat > "$t/opencode1/opencode" <<'EOF'
+#!/bin/bash
+case "${1:-}" in
+  --version) printf '%s\n' '1.19.6'; exit 0 ;;
+esac
+if [ "${1:-}" = run ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' '  --dir   directory to run in'
+  exit 0
+fi
+exit 0
+EOF
+chmod 755 "$t/opencode1/opencode"
+export PATH="$t/opencode1:$PATH"
 # the shipped registry is read-only for this script: every writer is pointed at a copy under $t. The directory
 # listing, including a dot-prefixed leftover, and the sha256 of every file are recorded here and compared again
 # at the very end, so a check that published a row into config/registry/ fails the run.
