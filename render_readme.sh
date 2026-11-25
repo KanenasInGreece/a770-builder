@@ -13,7 +13,7 @@ import json, re, subprocess, sys, html as _html, pathlib
 root = pathlib.Path(".")
 # The catalogue's own speed cell (at most one decimal place), so this recap and README.md show the same numbers.
 sys.path.insert(0, str(root.resolve() / "harness"))
-from profiles import _speed_pair as speed_pair
+from profiles import _8k_cell, _far_end_cell, _served_vram_cell
 
 
 def esc(s):
@@ -78,26 +78,23 @@ for cfg in sorted(pathlib.Path("config/registry").glob("*.json")):
         ctx = p.get("ctx")
         useful = p.get("useful_ctx")
         window = f"{ctx:,} (~{useful:,})" if ctx and useful else "—"
-        vram = p.get("vram_gib_after_load")
-        if vram is None:
-            vram_s = "—"
-        elif ctx:
-            vram_s = f"{vram} GiB at {ctx:,} served"
-        else:
-            vram_s = f"{vram} GiB"
-        dec = p.get("speed", {}).get("decode_tps", {}).get("8k")
-        pre = p.get("speed", {}).get("prefill_tps", {}).get("8k")
-        speed = f"{speed_pair(dec, pre)} tok/s at 8k"
+        speed = p.get("speed") if isinstance(p.get("speed"), dict) else {}
+        vram_s = _served_vram_cell(p.get("vram_gib_after_load"), ctx)
+        at_8k = _8k_cell(speed)
+        far = _far_end_cell(speed)
+        measured = p.get("measured_on") or "—"
         instrument = p.get("instrument", "—")
-        rows.append((card, mode, name, p.get("model", "—"), window, vram_s, speed, instrument))
+        rows.append((card, mode, name, p.get("model", "—"), window, vram_s, at_8k, far, measured, instrument))
 
 table_html = ['<table>', '<thead><tr><th>card</th><th>mode</th><th>profile</th><th>model</th>'
-              '<th>window (useful)</th><th>VRAM at served context</th><th>decode / prefill at 8k</th><th>instrument</th></tr></thead>',
+              '<th>window (useful)</th><th>VRAM at served context</th><th>decode / prefill at 8k</th>'
+              '<th>decode / prefill at far end</th><th>measured_on</th><th>instrument</th></tr></thead>',
               '<tbody>']
-for card, mode, name, model, window, vram_s, speed, instrument in rows:
+for card, mode, name, model, window, vram_s, at_8k, far, measured, instrument in rows:
     table_html.append(
         f"<tr><td>{esc(card)}</td><td>{esc(mode)}</td><td>{esc(name)}</td><td>{esc(model)}</td>"
-        f"<td>{esc(window)}</td><td>{esc(vram_s)}</td><td>{esc(speed)}</td><td>{esc(instrument)}</td></tr>"
+        f"<td>{esc(window)}</td><td>{esc(vram_s)}</td><td>{esc(at_8k)}</td><td>{esc(far)}</td>"
+        f"<td>{esc(measured)}</td><td>{esc(instrument)}</td></tr>"
     )
 table_html.append("</tbody></table>")
 table_html = "\n".join(table_html)

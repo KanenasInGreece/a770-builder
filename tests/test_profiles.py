@@ -3249,9 +3249,79 @@ def _catalogue_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def _catalogue_label_gaps(mod, rows: list[dict], table: list[str]) -> list[str]:
+    """One entry per catalogue cell whose figure is not tied to that row's own depth or served context.
+
+    An 8k cell is a single em dash when both rates are missing, never a pair of dashes with a unit.
+    A far-end cell is an em dash when the row has no usable far-end measurement, and otherwise ends
+    with that row's own token depth. One bad cell is enough: the caller fails on a non-empty list.
+    """
+    gaps = []
+    body = table[2:]
+    if len(body) != len(rows):
+        return [f"{len(body)} rendered rows for {len(rows)} profiles"]
+    for row, line in zip(rows, body):
+        name = row.get("name", "?")
+        cells = _catalogue_cells(line)
+        if len(cells) != 9:
+            gaps.append(f"{name}: {len(cells)} cells")
+            continue
+        prof = row["prof"]
+        vram, at_8k, far = cells[5], cells[6], cells[7]
+        ctx = prof.get("ctx")
+        if not isinstance(ctx, int) or isinstance(ctx, bool):
+            gaps.append(f"{name}: vram {vram!r}")
+        else:
+            expected = f"{prof['vram_gib_after_load']} GiB at {ctx:,} served"
+            if vram != expected:
+                gaps.append(f"{name}: vram {vram!r}")
+        speed = prof.get("speed") if isinstance(prof.get("speed"), dict) else {}
+        decode = speed.get("decode_tps")
+        prefill = speed.get("prefill_tps")
+        if not isinstance(decode, dict):
+            decode = {}
+        if not isinstance(prefill, dict):
+            prefill = {}
+        dec, pre = decode.get("8k"), prefill.get("8k")
+        if dec is None and pre is None:
+            if at_8k != "—":
+                gaps.append(f"{name}: 8k {at_8k!r}")
+        else:
+            expected = f"{mod._speed_pair(dec, pre)} tok/s at 8k"
+            if at_8k != expected:
+                gaps.append(f"{name}: 8k {at_8k!r}")
+        far_end = speed.get("far_end")
+        tokens = far_end.get("tokens") if isinstance(far_end, dict) else None
+        usable = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0
+        if usable:
+            pair = mod._speed_pair(far_end.get("decode_tps"), far_end.get("prefill_tps"))
+            if pair == "— / —":
+                if far != "—":
+                    gaps.append(f"{name}: far {far!r}")
+            elif far != f"{pair} tok/s at {mod._depth_k(tokens)}":
+                gaps.append(f"{name}: far {far!r}")
+        elif far != "—":
+            gaps.append(f"{name}: far {far!r}")
+    return gaps
+
+
+def _one_catalogue_row(speed: dict, **prof) -> dict:
+    body = {
+        "ctx": 8192,
+        "useful_ctx": 8000,
+        "model": "m.gguf",
+        "vram_gib_after_load": 1.0,
+        "speed": speed,
+        "measured_on": "x",
+    }
+    body.update(prof)
+    return {"card": "c", "mode": "inference", "name": "n", "prof": body}
+
+
 def test_catalogue_labels_every_speed_and_vram_with_its_depth():
     """A rendered catalogue cell that holds a speed or a VRAM figure also names the depth or the served
-    context that figure was read at. The far-end cell uses that row's own measured depth."""
+    context that figure was read at. The far-end cell uses that row's own measured depth. One unlabelled
+    cell, on any row, fails this check."""
     mod = _profiles_module()
     rows, errors = mod._catalogue_rows()
     assert not errors, errors
@@ -3259,18 +3329,7 @@ def test_catalogue_labels_every_speed_and_vram_with_its_depth():
     assert "at 8k" in table[0]
     assert "far end" in table[0]
     assert "served" in table[0]
-    dashes = 0
-    for line in table[2:]:
-        cells = _catalogue_cells(line)
-        assert len(cells) == 9, line
-        vram, at_8k, far = cells[5], cells[6], cells[7]
-        assert re.fullmatch(r"\d[\d.]*(?:\.\d+)? GiB at [\d,]+ served", vram), vram
-        assert re.search(r"tok/s at 8k$", at_8k), at_8k
-        if far == "—":
-            dashes += 1
-        else:
-            assert re.fullmatch(r"(?:—|\d[\d.]*) / (?:—|\d[\d.]*) tok/s at \d+\.\d+k", far), far
-    assert dashes >= 1
+    assert _catalogue_label_gaps(mod, rows, table) == []
     flash = [line for line in table if "| flashnext |" in line]
     assert len(flash) == 1, table
     assert "9.9 / 1418.3 tok/s at 8k" in flash[0]
@@ -3281,6 +3340,67 @@ def test_catalogue_labels_every_speed_and_vram_with_its_depth():
     assert _catalogue_cells(gemma[0])[7] == "—"
     assert "60 / 796 tok/s at 8k" in gemma[0]
     assert "8.1 GiB at 131,072 served" in gemma[0]
+    # A synthetic row proves one unlabelled cell is enough. The other cells stay labelled.
+    synthetic = _one_catalogue_row({
+        "decode_tps": {"8k": 4},
+        "prefill_tps": {"8k": 80},
+        "far_end": {"tokens": 50000, "decode_tps": 3, "prefill_tps": 9},
+    })
+    rendered = mod._catalogue_table([synthetic])
+    assert _catalogue_label_gaps(mod, [synthetic], rendered) == []
+    cells = _catalogue_cells(rendered[-1])
+    cells[7] = "3 / 9 tok/s"
+    unlabelled = "| " + " | ".join(cells) + " |"
+    assert _catalogue_label_gaps(mod, [synthetic], rendered[:2] + [unlabelled])
+    bare_8k = list(cells)
+    bare_8k[6] = "— / — tok/s at 8k"
+    bare_8k[7] = "3 / 9 tok/s at 50.0k"
+    unlabelled_8k = "| " + " | ".join(bare_8k) + " |"
+    assert _catalogue_label_gaps(mod, [synthetic], rendered[:2] + [unlabelled_8k])
+    missing = _one_catalogue_row({"decode_tps": {"8k": None}, "prefill_tps": {"8k": None}})
+    missing_table = mod._catalogue_table([missing])
+    assert _catalogue_cells(missing_table[-1])[6] == "—"
+    assert "— / — tok/s at 8k" not in missing_table[-1]
+    assert _catalogue_label_gaps(mod, [missing], missing_table) == []
+
+
+def test_8k_cell_is_one_dash_when_both_speeds_are_missing():
+    """Both 8k rates missing is one em dash. One measured rate still names the 8k depth."""
+    mod = _profiles_module()
+    assert mod._8k_cell({"decode_tps": {"8k": None}, "prefill_tps": {"8k": None}}) == "—"
+    assert mod._8k_cell({"decode_tps": {"8k": None}, "prefill_tps": {"8k": 20}}) == "— / 20 tok/s at 8k"
+    assert mod._8k_cell({"decode_tps": {"8k": 4}, "prefill_tps": {"8k": None}}) == "4 / — tok/s at 8k"
+    row = _one_catalogue_row({"decode_tps": {"8k": None}, "prefill_tps": {"8k": None}})
+    assert _catalogue_cells(mod._catalogue_table([row])[-1])[6] == "—"
+
+
+def test_served_vram_cell_never_drops_the_context():
+    """A VRAM figure names the served context, or says that context was not recorded."""
+    mod = _profiles_module()
+    assert mod._served_vram_cell(1.5, 8192) == "1.5 GiB at 8,192 served"
+    assert mod._served_vram_cell(1.5, None) == "1.5 GiB (served context not recorded)"
+    assert mod._served_vram_cell(None, 8192) == "—"
+    assert mod._served_vram_cell(1.5, None) != "1.5 GiB"
+
+
+def test_html_recap_shows_the_catalogue_columns():
+    """The local recap uses the catalogue's columns, far-end cell, and served-context VRAM label."""
+    script = (ROOT / "render_readme.sh").read_text(encoding="utf-8")
+    assert "_8k_cell" in script and "_far_end_cell" in script and "_served_vram_cell" in script
+    assert 'f"{vram} GiB"' not in script
+    result = subprocess.run(["bash", str(ROOT / "render_readme.sh")], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    html = (ROOT / "README.html").read_text(encoding="utf-8")
+    mod = _profiles_module()
+    names = [cell.strip() for cell in mod.CATALOGUE_HEADER.strip().strip("|").split("|")]
+    assert "".join(f"<th>{name}</th>" for name in names) in html
+    rows, errors = mod._catalogue_rows()
+    assert not errors, errors
+    for line in mod._catalogue_table(rows)[2:]:
+        for cell in _catalogue_cells(line)[5:9]:
+            assert cell in html, cell
+    assert "— / — tok/s at 8k" not in html
+    assert re.search(r">\d[\d.]*(?:\.\d+)? GiB<", html) is None
 
 
 def test_catalogue_far_end_without_a_measurement_is_a_dash():

@@ -1466,9 +1466,38 @@ def _depth_k(tokens: int) -> str:
     return f"{shown}k"
 
 
+def _8k_cell(speed: dict) -> str:
+    """Decode and prefill at an 8k prompt.
+
+    Both missing is one em dash, not a pair of dashes with a unit."""
+    if not isinstance(speed, dict):
+        return "—"
+    decode = speed.get("decode_tps")
+    prefill = speed.get("prefill_tps")
+    if not isinstance(decode, dict):
+        decode = {}
+    if not isinstance(prefill, dict):
+        prefill = {}
+    pair = _speed_pair(decode.get("8k"), prefill.get("8k"))
+    if pair == "— / —":
+        return "—"
+    return f"{pair} tok/s at 8k"
+
+
+def _served_vram_cell(vram, ctx) -> str:
+    """VRAM after load at the context the server was started with.
+
+    No served context is labelled as not recorded, never a bare GiB figure."""
+    if vram is None:
+        return "—"
+    if ctx:
+        return f"{vram} GiB at {ctx:,} served"
+    return f"{vram} GiB (served context not recorded)"
+
+
 def _vram_cell(prof: dict) -> str:
     """VRAM after load, named at the context the server was started with."""
-    return f"{prof['vram_gib_after_load']} GiB at {prof['ctx']:,} served"
+    return _served_vram_cell(prof["vram_gib_after_load"], prof["ctx"])
 
 
 def _far_end_cell(speed: dict) -> str:
@@ -1488,18 +1517,16 @@ def _far_end_cell(speed: dict) -> str:
 def _catalogue_table(rows: list[dict]) -> list[str]:
     """The catalogue table: one row per profile, with the window, the served-context VRAM, both speeds, and measured_on.
 
-    The 8k speed names that depth in the column and again in the cell. The far-end speed names the depth that
-    row actually measured. A row with no far-end measurement shows an em dash."""
+    The 8k cell names that depth, and is one em dash when both rates are missing. The far-end cell names the
+    depth that row measured, or an em dash when that measurement is absent."""
     lines = [CATALOGUE_HEADER, CATALOGUE_SEPARATOR]
     for r in rows:
         prof = r["prof"]
         ctx_fmt = f"{prof['ctx']:,}"
         useful_k = prof["useful_ctx"] // 1000
-        decode8k = prof["speed"]["decode_tps"]["8k"]
-        prefill8k = prof["speed"]["prefill_tps"]["8k"]
         lines.append(
             f"| {r['card']} | {r['mode']} | {r['name']} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{_vram_cell(prof)} | {_speed_pair(decode8k, prefill8k)} tok/s at 8k | "
+            f"{_vram_cell(prof)} | {_8k_cell(prof['speed'])} | "
             f"{_far_end_cell(prof['speed'])} | {prof.get('measured_on', '')} |"
         )
     return lines
