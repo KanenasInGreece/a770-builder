@@ -2917,6 +2917,18 @@ def test_i2_forbidden_and_duplicate_flags_refuse_before_a_container(tmp_path):
             "A770B_SERVED_BACKEND": "vllm", "A770B_CARD_VRAM_TOTAL": "32",
             "A770B_VRAM_CAP_GIB": "16.0", "A770B_QUANT": "gptq", "TOOL_PARSER": "qwen3_coder",
         }, ["--enable-per-request-metrics"]),
+        ("vllm-underscore", {
+            "A770B_SERVED_BACKEND": "vllm", "A770B_CARD_VRAM_TOTAL": "32",
+            "A770B_VRAM_CAP_GIB": "16.0", "A770B_QUANT": "gptq", "TOOL_PARSER": "qwen3_coder",
+        }, ["--disable_log_stats"]),
+        ("vllm-underscore-no", {
+            "A770B_SERVED_BACKEND": "vllm", "A770B_CARD_VRAM_TOTAL": "32",
+            "A770B_VRAM_CAP_GIB": "16.0", "A770B_QUANT": "gptq", "TOOL_PARSER": "qwen3_coder",
+        }, ["--no_enable_per_request_metrics=1"]),
+        ("vllm-underscore-dup", {
+            "A770B_SERVED_BACKEND": "vllm", "A770B_CARD_VRAM_TOTAL": "32",
+            "A770B_VRAM_CAP_GIB": "16.0", "A770B_QUANT": "gptq", "TOOL_PARSER": "qwen3_coder",
+        }, ["--enable_per_request_metrics"]),
         ("sglang", {
             "A770B_SERVED_BACKEND": "sglang", "A770B_QUANT": "exl3",
             "TOOL_PARSER": "qwen3_coder", "REASONING_PARSER": "qwen3",

@@ -107,7 +107,20 @@ def flags(engine):
     return list(TABLE[engine]["flags"])
 
 
-def _matches(token, name):
+# vLLM and SGLang fold "_" and "-" in a long option before the value. llama.cpp does not.
+_FOLD_UNDERSCORES = {"vllm", "sglang"}
+
+
+def _long_name(token):
+    head = token.split("=", 1)[0]
+    if head.startswith("--"):
+        return "--" + head[2:].replace("_", "-")
+    return head
+
+
+def _matches(token, name, fold_underscores=False):
+    if fold_underscores and token.startswith("--") and name.startswith("--"):
+        return _long_name(token) == _long_name(name)
     return token == name or token.startswith(name + "=")
 
 
@@ -115,15 +128,17 @@ def refusal(engine, argv):
     """A message naming the flag and the engine, or None when the extra is allowed.
 
     A token matches a forbidden flag as itself or as --flag=value. A longer
-    name such as --metrics-extra does not match --metrics.
+    name such as --metrics-extra does not match --metrics. On vLLM and SGLang
+    a long option's underscores are hyphens, for the name before "=" only.
     """
     if engine not in TABLE:
         return None
+    fold = engine in _FOLD_UNDERSCORES
     for token in argv:
         if not isinstance(token, str):
             continue
         for name in TABLE[engine]["forbidden"]:
-            if _matches(token, name):
+            if _matches(token, name, fold):
                 return f"{engine} refuses {name}"
     return None
 

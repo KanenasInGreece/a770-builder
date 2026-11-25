@@ -73,6 +73,19 @@ def test_refusal_matches_the_flag_and_the_equals_form_only():
     logs = pc.refusal("sglang", ["--log-requests"])
     assert "sglang" in logs and "--log-requests" in logs
     assert pc.refusal("sglang", ["--log-requests=true"])
+    assert pc.refusal("sglang", ["--log_requests"])
+    assert pc.refusal("sglang", ["--log_requests=true"])
+    for token in (
+        "--disable_log_stats",
+        "--disable_log_stats=true",
+        "--no_enable_per_request_metrics",
+        "--no_enable_per_request_metrics=1",
+        "--enable_per_request_metrics",
+        "--enable_per_request_metrics=true",
+    ):
+        message = pc.refusal("vllm", [token])
+        assert message and "vllm" in message, token
+    assert pc.refusal("llama.cpp", ["--log_disable"]) is None
     assert pc.refusal("strata", ["--anything"]) is None
     # glued -lv4 is not the --flag or --flag=value form
     assert pc.refusal("llama.cpp", ["-lv4"]) is None
