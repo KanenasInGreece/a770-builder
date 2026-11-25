@@ -176,6 +176,12 @@ _write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4)
       && printf '%s\n' "$logtext" | python3 "$A770B_PROJECT/harness/engine_evidence.py" \
            log --engine "$engine" --log - --model "$model" --out "$out"
   then
+    python3 - "$A770B_PROJECT/harness" "$out" "$A770B_DATA/logs/profiling.json" <<'PY' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+profiling_contract.merge_receipt_file(sys.argv[2], sys.argv[3])
+PY
     printf '%s\n' "$out" > "$A770B_DATA/logs/serve-evidence.path"
   else
     _clear_serve_evidence_pointer

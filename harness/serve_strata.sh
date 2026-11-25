@@ -37,6 +37,18 @@ case "${1:-}" in
     a770b_api_key >/dev/null || exit 2
     export A770B_MIN_AVAIL_MB A770B_VRAM_CAP_GIB
     evidence=$("${managed[@]}" start "$config" --ctx "$ctx" --timeout "${A770B_STRATA_READY_S:-300}") || exit $?
+    python3 - "$here" "$evidence" "$A770B_DATA" <<'PY' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import os
+import profiling_contract
+evidence, data = sys.argv[2], sys.argv[3]
+receipt_path = os.path.join(data, "logs", "profiling.json")
+profiling_contract.write_receipt(
+    receipt_path, profiling_contract.receipt("strata", {}),
+)
+profiling_contract.merge_receipt_file(evidence, receipt_path)
+PY
     id=$("${managed[@]}" id) || exit $?
     if ! used=$(gpu_used_gib) || ! python3 -c 'import sys; used,cap=map(float,sys.argv[1:]); sys.exit(not (0 <= used <= cap))' \
       "$used" "$A770B_VRAM_CAP_GIB"; then

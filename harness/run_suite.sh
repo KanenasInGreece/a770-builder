@@ -725,10 +725,12 @@ PY
 }
 
 # After the suite document is assembled, set this profile's requests object from counted stages.
-# A missing profiles file, or a profile that is not in it, is left alone. speed, speed.delivered,
-# and measured_tasks are not touched. source is the results file's base name.
-# No positive prompt peak, no positive completion peak, no length_stops number, and no
-# positive rate leaves the file unchanged. A length_stops of 0 is still written.
+# A missing profiles file, or a profile that is not in it, is left alone. measured_tasks are not
+# touched. source is the results file's base name. A profiling receipt, when one was written at
+# start, is copied onto the row. An unconfirmed llama.cpp verbosity switch nulls the three
+# request fields and speed.delivered that the log would have supplied.
+# No positive prompt peak, no positive completion peak, no length_stops number, no positive
+# rate, and no profiling receipt leaves the file unchanged. A length_stops of 0 is still written.
 record_suite_requests(){
   local pf="${A770B_PROFILES_FILE:-}"
   if [ ! -e "$pf" ]; then
@@ -779,6 +781,7 @@ if not source or "/" in source:
 harness_dir = os.path.dirname(os.path.abspath(checker))
 sys.path.insert(0, harness_dir)
 import suite_report
+import profiling_contract
 
 stages = doc.get("stages") if isinstance(doc.get("stages"), list) else []
 counted = [s for s in stages if isinstance(s, dict) and s.get("counts_toward_pass", True) is not False]
@@ -801,11 +804,13 @@ requests = {
     "decode_tps": median_rate(decodes),
     "source": source,
     }
-if (requests["max_prompt_tokens"] is None
+saved_profiling = profiling_contract.load_saved_profiling(data_dir)
+requests_empty = (requests["max_prompt_tokens"] is None
         and requests["max_completion_tokens"] is None
         and requests["length_stops"] is None
         and requests["prefill_tps"] is None
-        and requests["decode_tps"] is None):
+        and requests["decode_tps"] is None)
+if requests_empty and saved_profiling is None:
     sys.exit(0)
 
 dest = os.path.abspath(path)
@@ -839,7 +844,11 @@ try:
     if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
         sys.exit(0)
     prof = profiles[profile]
-    prof["requests"] = requests
+    if not requests_empty:
+        prof["requests"] = requests
+    if saved_profiling is not None:
+        prof["profiling"] = saved_profiling
+    profiling_contract.null_unconfirmed_verbosity(prof)
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     fd, tmp = tempfile.mkstemp(prefix=".requests-", suffix=".json", dir=dest_dir)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
