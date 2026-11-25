@@ -155,7 +155,10 @@ def receipt(engine, confirmed):
 
 def confirm_llama(status, body, log_text):
     metrics_ok = status == 200 and isinstance(body, str) and "llamacpp:" in body
-    verbose_ok = bool(re.search(r"verbosity\s*=\s*4\b", log_text or ""))
+    verbose_ok = False
+    match = re.search(r"verbosity\s*=\s*(\d+)\b", log_text or "")
+    if match:
+        verbose_ok = int(match.group(1)) >= 4
     return {"--metrics": metrics_ok, VERBOSITY_SWITCH: verbose_ok}
 
 

@@ -91,6 +91,14 @@ def test_refusal_matches_the_flag_and_the_equals_form_only():
     assert pc.refusal("llama.cpp", ["-lv4"]) is None
 
 
+def test_confirm_llama_accepts_verbosity_at_least_4():
+    body = "llamacpp:prompt_tokens_total 1\n"
+    for text in ("verbosity = 4\n", "verbosity = 5\n", "verbosity = 2147483647\n"):
+        confirmed = pc.confirm_llama(200, body, text)
+        assert confirmed["-lv 4"] is True, text
+    assert pc.confirm_llama(200, body, "verbosity = 3\n")["-lv 4"] is False
+
+
 def test_fetch_metrics_does_not_use_a_proxy(monkeypatch):
     seen = {}
 
