@@ -2464,6 +2464,24 @@ else
   echo "FAIL contract: applied flags leaked or a deferred engine applies one"; printf '%s\n' "$pc_hits"; fail=1
 fi
 
+# qualify moves with the header, the case, the single usage line, the skill index, the
+# operating article, and the snippet call. A second usage line is a miss.
+q_ok=1
+sed -n '1,16p' "$lb_sh" | grep -q 'qualify' || q_ok=0
+grep -q '^  qualify)' "$lb_sh" || q_ok=0
+usage_n=$(grep -c 'usage: local-build.sh' "$lb_sh" || true)
+grep 'usage: local-build.sh' "$lb_sh" | grep -q 'qualify start' || q_ok=0
+[ "$usage_n" = 1 ] || q_ok=0
+grep -q 'qualify start' "$here/skills/local-build/SKILL.md" || q_ok=0
+grep -q 'Unattended qualification runs' "$here/docs/OPERATING.md" || q_ok=0
+grep -q 'local-build.sh qualify start' "$here/docs/OPERATING.md" || q_ok=0
+grep -q 'qualify start' "$here/skills/local-build/CONSTITUTION_SNIPPET.md" || q_ok=0
+if [ "$q_ok" = 1 ]; then
+  echo "ok   qualify: the subcommand is in the header, the case, the one usage line, the skill, the operating notes, and the snippet"
+else
+  echo "FAIL qualify: the subcommand is not wired in every place a new command moves"; fail=1
+fi
+
 # the run is over: every shipped registry file must be the bytes the run started with, and the directory listing
 # must be the same, including a dot-prefixed leftover. A difference means a check published into the seat's registry.
 ship_registry_manifest_end=$(registry_manifest)

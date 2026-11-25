@@ -23,6 +23,7 @@ description: Use when delegating a bounded coding task to a LOCAL Intel Arc mode
 | Server | `bash <skill-dir>/scripts/local-build.sh serve <card>` · `stop` |
 | Bench | `bash <skill-dir>/scripts/local-build.sh bench <profile> [--pp <sizes>]` |
 | Stop run | `bash <skill-dir>/scripts/local-build.sh stop-run` |
+| Qualify | `bash <skill-dir>/scripts/local-build.sh qualify start --engine <llama or llama.cpp, vllm, sglang, or strata> --model <name> …` · `qualify status [job]` · `qualify wait <job>` · `qualify result <job>` · `qualify export <job>` · `qualify stop <job>` · `qualify list` |
 | Reset | `bash <skill-dir>/scripts/local-build.sh reset [<seat>]` |
 | Version | `bash <skill-dir>/scripts/local-build.sh --version` · `check-update` |
 

@@ -519,6 +519,48 @@ repository's idioms) are read straight off the ledger row; when the row changes,
 agent that has a GGUF and this harness and wants a model on the list — what a profile is, the ladder as commands in
 order, the bar, and the submission — is [`AGENTS.md`](../AGENTS.md) at the repository root.
 
+## Unattended qualification runs
+
+A qualification takes hours, and the caller that starts it may be gone before the report exists.
+The launch is `local-build.sh qualify start`, with the engine and the model as arguments. It checks
+those arguments, probes the card lock without holding it, and starts a runner that does not need the
+caller to stay alive. When someone comes back, `qualify result` prints the report and `qualify export`
+writes a profile row next to the job. The runner records facts and named checks. The verdict is always
+`needs-review`. Nothing in the runner adds a profile: merging an exported row into the registry is a
+separate, deliberate act.
+
+`--engine` is `llama`, `llama.cpp`, `vllm`, `sglang`, or `strata`. The name `llama` is recorded as
+`llama.cpp`, and that canonical name is the only one passed to the profiling contract. A bare GGUF is a
+llama.cpp candidate and needs `--ctx`. vLLM, SGLang, and Strata take a registry profile name. A model
+on one of those engines that has no row yet has no kit path from a GGUF: write the candidate row
+outside the checkout, in the registry format, and pass it with `--profiles-file`. The measurement
+switches for the engine come from the profiling contract, and the result says whether the start receipt
+confirmed each one. A statistic the engine cannot yield is `unknown`, with the reason, never a zero
+standing in for a missing measurement. `--dry-run` prints the plan and starts nothing.
+
+The job lives at `$A770B_DATA/qualify/<job-id>/`, mode 0700, with files mode 0600. `job.json` holds the
+inputs and the resolved serve arguments, with key material removed. `status.json` holds the phase.
+`result.json` and `report.md` hold the same facts, and every speed or memory figure names the context
+or prompt depth it was measured at. `qualify result <job>` exits 0 when the job finished, 3 while it is
+still running, and 4 when it failed, was stopped, or was lost. `qualify wait <job>` waits for a terminal
+state. `qualify stop <job>` signals that runner only after its pid, its start time, and its command line
+match this project's `harness/qualify.sh`.
+
+`A770B_QUALIFY_PRE` and `A770B_QUALIFY_POST` are optional paths to executables outside the tracked tree,
+set in the host's own configuration, for another service that shares the card. Each receives the job
+directory as its first argument. If the pre-hook is started and exits non-zero, the job fails before it
+uses the card, and the post-hook still runs. The post-hook runs after success, failure, and a stop
+whenever the pre-hook was started. If the pre-hook was never started, the post-hook does not run and
+the check `post-hook-ok` is `unknown` with reason `not-run`.
+
+The runner refuses a symlink on a path it writes, refuses `--api-key` inside `--extra` or a profile's
+extra, and never places a key on a command line, in `job.json`, in the report, or in the launch
+arguments. Authentication stays in the harness key file. The environment is not recorded. The
+qualification scripts do not use `eval`. A combination that cannot leave the kit a usable window is
+refused before the long run, unless `--fit-only`. A fit-only report says so in its first line and is
+not a quality pass. `A770B_QUALIFY_KIT_PROMPT_TOKENS` supplies the kit prompt budget when the checkout
+cannot count it.
+
 ## What is hardcoded now
 
 Linux. The sandbox is bubblewrap, so the harness needs a kernel with unprivileged user namespaces; the VRAM readings
