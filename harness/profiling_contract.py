@@ -373,6 +373,17 @@ def applied_spellings():
     return found
 
 
+def _hash_is_comment(text, index):
+    """A # starts a comment at the beginning of a line or after a separator.
+
+    $# and ${#name} are length forms. A # after $ or inside ${...} is not a
+    comment, or the spelling scan would drop the rest of that line.
+    """
+    if index == 0 or text[index - 1] == "\n":
+        return True
+    return text[index - 1] in " \t;&|()"
+
+
 def _bash_code(text):
     out = []
     i = 0
@@ -395,7 +406,7 @@ def _bash_code(text):
             out.append(ch)
             i += 1
             continue
-        if ch == "#":
+        if ch == "#" and _hash_is_comment(text, i):
             while i < n and text[i] != "\n":
                 i += 1
             continue

@@ -170,6 +170,16 @@ def test_i5_unconfirmed_verbosity_nulls_exactly_four_fields():
     assert numeric["speed"]["delivered"] is None
 
 
+def test_bash_code_keeps_a_flag_on_a_length_line():
+    count = "if [ $# -gt 0 ]; then ARGV=(--metrics -lv 4); fi\n"
+    items = "n=${#arr[@]}; printf %s --metrics\n"
+    assert "--metrics" in pc._bash_code(count)
+    assert "--metrics" in pc._bash_code(items)
+    assert pc._spelling_hits(pc._bash_code(count), "--metrics") == ["--metrics"]
+    assert "--metrics" not in pc._bash_code("printf ok # --metrics\n")
+    assert "--metrics" not in pc._bash_code("printf ok; # --metrics\n")
+
+
 def test_i3_applied_flags_are_spelled_only_in_the_contract():
     hits = pc.spellings_outside_contract(str(ROOT / "harness"))
     assert hits == [], hits
