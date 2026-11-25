@@ -3191,7 +3191,7 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
 def test_strata_profile_preserves_int8_and_can_omit_flash_attention(tmp_path):
     registry = json.loads((ROOT / "config/registry/b70.inference.json").read_text())
     entry = registry["profiles"]["flashnext"]
-    entry.update(engine="strata", backend="strata", kv="int8")
+    entry.update(engine="strata", backend="strata", kv="int8", extra="")
     for field in ("flash_attention", "tool_parser", "reasoning_parser"):
         entry.pop(field)
     path = write_json(tmp_path / "strata-registry.json", registry)
