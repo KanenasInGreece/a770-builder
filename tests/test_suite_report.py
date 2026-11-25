@@ -466,6 +466,111 @@ def test_record_suite_requests_aggregates_counted_stages(tmp_path):
     assert pf.read_text(encoding="utf-8") == frozen
 
 
+def _profiling_registry(tmp_path, delivered=True):
+    registry = json.loads((ROOT / "config" / "registry" / "a770.display.json").read_text(encoding="utf-8"))
+    row = registry["profiles"]["qwen35-9b-q4km-vulkan"]
+    if delivered:
+        row["speed"]["delivered"] = {"prefill_tps": 9.0, "decode_tps": 8.0, "source": "kept.json"}
+    path = tmp_path / "a770.display.json"
+    path.write_text(json.dumps(registry), encoding="utf-8")
+    return path
+
+
+def _receipt(engine, confirmed):
+    flags = {
+        "llama.cpp": ["--metrics", "-lv", "4"],
+        "vllm": ["--enable-per-request-metrics"],
+    }[engine]
+    return {"contract": 1, "engine": engine, "flags": flags, "confirmed": confirmed}
+
+
+def _record_profiling_case(tmp_path, profiling, *, reviewer=None):
+    """One counted stage whose serve evidence carries profiling. A reviewer receipt, when given,
+    is what the global pointer and profiling.json say after the reviewer serve."""
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "logs").mkdir()
+    (data / "results" / "s1.task.md").write_text(
+        "## server-side timings during the run\n"
+        "prefill tok/s over all prompts=100\n"
+        "TPOT ms: median=1   decode tok/s median=10\n",
+        encoding="utf-8",
+    )
+    evidence = data / "logs" / "serve-builder.evidence.json"
+    evidence.write_text(json.dumps({"profiling": profiling}), encoding="utf-8")
+    if reviewer is not None:
+        reviewer_evidence = data / "logs" / "serve-reviewer.evidence.json"
+        reviewer_evidence.write_text(json.dumps({"profiling": reviewer}), encoding="utf-8")
+        (data / "logs" / "serve-evidence.path").write_text(str(reviewer_evidence) + "\n", encoding="utf-8")
+        (data / "logs" / "profiling.json").write_text(json.dumps(reviewer) + "\n", encoding="utf-8")
+    else:
+        (data / "logs" / "profiling.json").write_text(
+            json.dumps(_receipt("vllm", {"--enable-per-request-metrics": True})) + "\n",
+            encoding="utf-8",
+        )
+        (data / "logs" / "serve-evidence.path").write_text(
+            str(data / "logs" / "not-the-builder.evidence.json") + "\n", encoding="utf-8",
+        )
+    outfile = tmp_path / "kit-run.json"
+    outfile.write_text(json.dumps({"stages": [{
+        "id": "s1", "label": "s1", "counts_toward_pass": True,
+        "max_prompt_tokens": 100, "max_completion_tokens": 20, "length_stops": 1,
+        "serve_evidence": str(evidence),
+    }]}), encoding="utf-8")
+    pf = _profiling_registry(tmp_path)
+    env = dict(os.environ)
+    env.update({
+        "A770B_PROJECT": str(ROOT),
+        "A770B_DATA": str(data),
+        "A770B_PROFILES_FILE": str(pf),
+        "PROFILE": "qwen35-9b-q4km-vulkan",
+        "OUTFILE": str(outfile),
+    })
+    result = _record_requests(env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(pf.read_text(encoding="utf-8"))["profiles"]["qwen35-9b-q4km-vulkan"]
+
+
+def test_record_suite_requests_keeps_a_confirmed_builder_receipt(tmp_path):
+    confirmed = _receipt("llama.cpp", {"--metrics": True, "-lv 4": True})
+    row = _record_profiling_case(tmp_path, confirmed)
+    assert row["profiling"] == confirmed
+    assert row["requests"]["prefill_tps"] == 100.0
+    assert row["requests"]["decode_tps"] == 10.0
+    assert row["requests"]["length_stops"] == 1
+    assert row["speed"]["delivered"]["decode_tps"] == 8.0
+
+
+def test_record_suite_requests_nulls_from_the_builder_receipt_when_verbosity_is_unconfirmed(tmp_path):
+    unconfirmed = _receipt("llama.cpp", {"--metrics": False, "-lv 4": False})
+    row = _record_profiling_case(tmp_path, unconfirmed)
+    assert row["profiling"] == unconfirmed
+    assert row["requests"]["prefill_tps"] is None
+    assert row["requests"]["decode_tps"] is None
+    assert row["requests"]["length_stops"] is None
+    assert row["requests"]["max_prompt_tokens"] == 100
+    assert row["speed"]["delivered"] is None
+    assert row["profiling"]["engine"] == "llama.cpp"
+
+
+def test_record_suite_requests_ignores_a_reviewer_receipt_on_the_global_files(tmp_path):
+    builder = _receipt("llama.cpp", {"--metrics": True, "-lv 4": False})
+    reviewer = _receipt("vllm", {"--enable-per-request-metrics": True})
+    row = _record_profiling_case(tmp_path, builder, reviewer=reviewer)
+    assert row["profiling"]["engine"] == "llama.cpp"
+    assert row["profiling"]["confirmed"]["-lv 4"] is False
+    assert row["requests"]["prefill_tps"] is None
+    assert row["speed"]["delivered"] is None
+
+
+def test_record_suite_requests_does_not_copy_a_receipt_for_another_engine(tmp_path):
+    foreign = _receipt("vllm", {"--enable-per-request-metrics": True})
+    row = _record_profiling_case(tmp_path, foreign)
+    assert "profiling" not in row
+    assert row["requests"]["prefill_tps"] == 100.0
+    assert row["speed"]["delivered"]["decode_tps"] == 8.0
+
+
 def test_emit_stage_keeps_a_printed_zero_and_an_absent_line_null():
     emit = subprocess.run(
         ["awk", r"/^emit_stage\(\)\{/{p=1} p{print} p && /^PY$/{py=1} py && /^}$/{exit}",

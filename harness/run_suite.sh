@@ -726,11 +726,12 @@ PY
 
 # After the suite document is assembled, set this profile's requests object from counted stages.
 # A missing profiles file, or a profile that is not in it, is left alone. measured_tasks are not
-# touched. source is the results file's base name. A profiling receipt, when one was written at
-# start, is copied onto the row. An unconfirmed llama.cpp verbosity switch nulls the three
-# request fields and speed.delivered that the log would have supplied.
+# touched. source is the results file's base name. The profiling object is read from the builder
+# stage's own serve evidence, which was stored before a reviewer serve replaced the global
+# receipt. It is written, and verbosity nulling runs, only when that object's engine is this
+# row's measurement engine. The global pointer and profiling.json are not read.
 # No positive prompt peak, no positive completion peak, no length_stops number, no positive
-# rate, and no profiling receipt leaves the file unchanged. A length_stops of 0 is still written.
+# rate, and no builder receipt leaves the file unchanged. A length_stops of 0 is still written.
 record_suite_requests(){
   local pf="${A770B_PROFILES_FILE:-}"
   if [ ! -e "$pf" ]; then
@@ -782,8 +783,29 @@ harness_dir = os.path.dirname(os.path.abspath(checker))
 sys.path.insert(0, harness_dir)
 import suite_report
 import profiling_contract
+import profiles as profile_schema
+
+def builder_profiling(stages):
+    # The last stage evidence that carries a receipt is the builder's latest serve.
+    # A reviewer start is not on these stages: the path was stored before that serve.
+    saved = None
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        path = stage.get("serve_evidence")
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                evidence = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(evidence, dict) and isinstance(evidence.get("profiling"), dict):
+            saved = evidence["profiling"]
+    return saved
 
 stages = doc.get("stages") if isinstance(doc.get("stages"), list) else []
+saved_profiling = builder_profiling(stages)
 counted = [s for s in stages if isinstance(s, dict) and s.get("counts_toward_pass", True) is not False]
 prompts = [s["max_prompt_tokens"] for s in counted if positive_int(s.get("max_prompt_tokens"))]
 completions = [s["max_completion_tokens"] for s in counted if positive_int(s.get("max_completion_tokens"))]
@@ -804,7 +826,6 @@ requests = {
     "decode_tps": median_rate(decodes),
     "source": source,
     }
-saved_profiling = profiling_contract.load_saved_profiling(data_dir)
 requests_empty = (requests["max_prompt_tokens"] is None
         and requests["max_completion_tokens"] is None
         and requests["length_stops"] is None
@@ -846,9 +867,16 @@ try:
     prof = profiles[profile]
     if not requests_empty:
         prof["requests"] = requests
-    if saved_profiling is not None:
+    # A receipt for another engine must not be copied and must not null this row.
+    same_engine = (
+        isinstance(saved_profiling, dict)
+        and saved_profiling.get("engine") == profile_schema._measurement_engine(prof)
+    )
+    if same_engine:
         prof["profiling"] = saved_profiling
-    profiling_contract.null_unconfirmed_verbosity(prof)
+        profiling_contract.null_unconfirmed_verbosity(prof)
+    elif requests_empty:
+        sys.exit(0)
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     fd, tmp = tempfile.mkstemp(prefix=".requests-", suffix=".json", dir=dest_dir)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
