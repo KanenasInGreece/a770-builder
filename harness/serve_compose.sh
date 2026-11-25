@@ -64,6 +64,12 @@ _write_profiling_receipt(){
   cid="${CREATED_CID:-}"
   mkdir -p "$A770B_DATA/logs"
   logfile="$A770B_DATA/logs/profiling-start.log"
+  receipt="$A770B_DATA/logs/profiling.json"
+  # `: >` follows a symlink. Leave a planted link in place and do not remove it.
+  if [ -L "$logfile" ] || [ -L "$receipt" ]; then
+    echo "⛔ profiling receipt path is a symlink" >&2
+    return 2
+  fi
   : >"$logfile"
   if [ -n "$cid" ]; then
     "$A770B_DOCKER" logs "$cid" >"$logfile" 2>&1 || : >"$logfile"

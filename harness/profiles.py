@@ -599,28 +599,33 @@ def validate(data) -> list[str]:
                 for kk in allowed:
                     if kk not in profiling:
                         errors.append(f"{where}: missing key {kk}")
-                if not _is_pos_int(profiling.get("contract")):
+                # A missing key is already one error. The type check is the second
+                # report only when the key is present and wrong.
+                if "contract" in profiling and not _is_pos_int(profiling["contract"]):
                     errors.append(f"{where}.contract must be a positive int")
-                if profiling.get("engine") not in ENGINE_VALUES:
-                    errors.append(f"{where}.engine must be one of {sorted(ENGINE_VALUES)}")
-                elif profiling["engine"] != _measurement_engine(prof):
-                    errors.append(
-                        f"{where}.engine {profiling['engine']!r} is not this row's "
-                        f"measurement engine {_measurement_engine(prof)!r}"
-                    )
-                flags = profiling.get("flags")
-                if not isinstance(flags, list) or any(not isinstance(item, str) for item in flags):
-                    errors.append(f"{where}.flags must be a list of strings")
-                confirmed = profiling.get("confirmed")
-                if not isinstance(confirmed, dict):
-                    errors.append(f"{where}.confirmed must be an object")
-                else:
-                    for ck, cv in confirmed.items():
-                        # 1 == True, so membership would accept a number. Only a real bool counts.
-                        if not isinstance(ck, str) or not (isinstance(cv, bool) or cv == "pending"):
-                            errors.append(
-                                f"{where}.confirmed.{ck} must be true, false, or pending"
-                            )
+                if "engine" in profiling:
+                    if profiling["engine"] not in ENGINE_VALUES:
+                        errors.append(f"{where}.engine must be one of {sorted(ENGINE_VALUES)}")
+                    elif profiling["engine"] != _measurement_engine(prof):
+                        errors.append(
+                            f"{where}.engine {profiling['engine']!r} is not this row's "
+                            f"measurement engine {_measurement_engine(prof)!r}"
+                        )
+                if "flags" in profiling:
+                    flags = profiling["flags"]
+                    if not isinstance(flags, list) or any(not isinstance(item, str) for item in flags):
+                        errors.append(f"{where}.flags must be a list of strings")
+                if "confirmed" in profiling:
+                    confirmed = profiling["confirmed"]
+                    if not isinstance(confirmed, dict):
+                        errors.append(f"{where}.confirmed must be an object")
+                    else:
+                        for ck, cv in confirmed.items():
+                            # 1 == True, so membership would accept a number. Only a real bool counts.
+                            if not isinstance(ck, str) or not (isinstance(cv, bool) or cv == "pending"):
+                                errors.append(
+                                    f"{where}.confirmed.{ck} must be true, false, or pending"
+                                )
 
         if "suite" in prof:
             suite = prof["suite"]

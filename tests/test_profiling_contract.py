@@ -91,6 +91,21 @@ def test_refusal_matches_the_flag_and_the_equals_form_only():
     assert pc.refusal("llama.cpp", ["-lv4"]) is None
 
 
+def test_write_receipt_leaves_a_symlink_in_place(tmp_path):
+    target = tmp_path / "real.json"
+    target.write_text("kept\n", encoding="utf-8")
+    link = tmp_path / "profiling.json"
+    link.symlink_to(target)
+    try:
+        pc.write_receipt(str(link), {"contract": 1})
+    except OSError:
+        pass
+    else:
+        raise AssertionError("a symlink was replaced")
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == "kept\n"
+
+
 def test_confirm_llama_accepts_verbosity_at_least_4():
     body = "llamacpp:prompt_tokens_total 1\n"
     for text in ("verbosity = 4\n", "verbosity = 5\n", "verbosity = 2147483647\n"):

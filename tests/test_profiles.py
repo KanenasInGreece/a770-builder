@@ -3358,6 +3358,21 @@ def test_i4_profiling_validates_when_present_and_absence_stays_valid(tmp_path):
     assert "profiling: unknown key note" in result.stderr
 
 
+def test_missing_profiling_key_is_reported_once(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "engine": "llama.cpp",
+        "flags": ["--metrics", "-lv", "4"],
+        "confirmed": {"--metrics": True, "-lv 4": True},
+    }
+    path = write_json(tmp_path / "missing-contract.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert result.stderr.count("missing key contract") == 1
+    assert "contract must be a positive int" not in result.stderr
+
+
 def test_profiling_confirmed_rejects_numeric_standins_for_booleans(tmp_path):
     data = load_base()
     row = data["profiles"]["qwen35-9b-q4km-vulkan"]

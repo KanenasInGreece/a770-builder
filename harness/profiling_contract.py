@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import tokenize
 import urllib.error
 import urllib.request
@@ -204,12 +205,29 @@ def confirm_started(engine, host, port, log_text, key_file=None, timeout=2.0):
 
 
 def write_receipt(path, obj):
+    """Write the receipt by replace. A symlink is left where it is.
+
+    os.replace would remove a symlink and put the file in its place. The link
+    is refused instead, and it is not deleted.
+    """
+    if os.path.islink(path):
+        raise OSError("refusing to replace a symlink")
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(obj, handle, indent=2)
-        handle.write("\n")
+    directory = parent or "."
+    fd, tmp = tempfile.mkstemp(prefix=".profiling-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(obj, handle, indent=2)
+            handle.write("\n")
+        if os.path.islink(path):
+            raise OSError("refusing to replace a symlink")
+        os.replace(tmp, path)
+        tmp = ""
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def merge_receipt_file(evidence_path, receipt_path):

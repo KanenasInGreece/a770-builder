@@ -2949,6 +2949,25 @@ def test_i2_forbidden_and_duplicate_flags_refuse_before_a_container(tmp_path):
             assert not log.exists() or " up " not in log.read_text(encoding="utf-8"), label
 
 
+def test_start_leaves_profiling_symlinks_untouched(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_)
+    logs = Path(env["A770B_DATA"]) / "logs"
+    logs.mkdir(parents=True)
+    receipt_target = logs / "receipt-target.json"
+    log_target = logs / "log-target.txt"
+    receipt_target.write_text("kept-receipt\n", encoding="utf-8")
+    log_target.write_text("kept-log\n", encoding="utf-8")
+    (logs / "profiling.json").symlink_to(receipt_target)
+    (logs / "profiling-start.log").symlink_to(log_target)
+    result = _run(env, "start", GGUF, "8192")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (logs / "profiling.json").is_symlink()
+    assert (logs / "profiling-start.log").is_symlink()
+    assert receipt_target.read_text(encoding="utf-8") == "kept-receipt\n"
+    assert log_target.read_text(encoding="utf-8") == "kept-log\n"
+
+
 def test_start_records_an_unconfirmed_receipt_and_still_starts(tmp_path):
     bin_, _ = _fake_runtime(tmp_path)
     env = _env(tmp_path, bin_)
