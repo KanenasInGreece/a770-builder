@@ -58,7 +58,7 @@ PY
 # The receipt is merged into the serve evidence later, because that file does not exist yet.
 # The log goes to a file: a heredoc already owns this python's stdin.
 _write_profiling_receipt(){
-  local harness engine cid logfile rc
+  local harness engine cid logfile rc receipt
   harness=$(dirname "$0")
   engine="$1"
   cid="${CREATED_CID:-}"

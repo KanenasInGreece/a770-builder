@@ -2968,6 +2968,28 @@ def test_start_leaves_profiling_symlinks_untouched(tmp_path):
     assert log_target.read_text(encoding="utf-8") == "kept-log\n"
 
 
+def test_profiling_receipt_path_is_a_local_variable():
+    """The receipt path stays inside the function that writes it."""
+    text = SERVE.read_text(encoding="utf-8")
+    start = text.index("_write_profiling_receipt(){")
+    local_line = text[start:].splitlines()[1]
+    names = local_line.removeprefix("  local ").split()
+    assert "receipt" in names, local_line
+
+
+def test_candidate_extra_words_are_marked_for_shellcheck():
+    """The candidate extra is a word list, expanded unquoted, and marked as such for shellcheck."""
+    script = ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    lines = script.read_text(encoding="utf-8").splitlines()
+    hits = [
+        i for i, line in enumerate(lines)
+        if "$extra" in line and "A770B_SERVED_ENGINE" in line
+        and line.strip().startswith("python3 ")
+    ]
+    assert len(hits) == 1, hits
+    assert "shellcheck disable=SC2086" in lines[hits[0] - 1]
+
+
 def test_start_records_an_unconfirmed_receipt_and_still_starts(tmp_path):
     bin_, _ = _fake_runtime(tmp_path)
     env = _env(tmp_path, bin_)

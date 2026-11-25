@@ -446,6 +446,8 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   export A770B_SERVED_ENGINE
   # Refuse a forbidden measurement flag before any docker or card command.
   if [ -n "$extra" ]; then
+    # extra is a deliberate word list, expanded unquoted on purpose so each word is an argument
+    # shellcheck disable=SC2086
     python3 - "$A770B_PROJECT/harness" "$A770B_SERVED_ENGINE" $extra <<'PY' || return $?
 import sys
 sys.path.insert(0, sys.argv[1])
