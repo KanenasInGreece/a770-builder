@@ -20,9 +20,9 @@
 # deadline the curve could not produce, because that sub-process failed or printed something that is not a number,
 # is never used as one: the fallback in force is named in the line that reports it.
 #
-# A point that returns no answer FAILS THE SWEEP (exit 1) after the remaining points are tried. The old code let a
-# timeout or a rejected prompt exit 0, so the ladder recorded a passing window rung with the far end missing and
-# then filled useful_ctx from what little was left — the MoE's row read 8,000 for a model served at 131,072.
+# A point that returns no answer FAILS THE SWEEP (exit 1) after the remaining points are tried. A missing
+# far point leaves the ladder with no measured window, so useful_ctx stays unset instead of being filled
+# from the shallow point alone.
 #
 # A point is filed under the size the SERVER SAYS IT RECEIVED, not the size asked for: one that landed outside the
 # tolerance below measured some other depth, and is reported as not measured rather than as a reading at a depth

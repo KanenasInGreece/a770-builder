@@ -17,6 +17,7 @@
 import json, os, re, sys
 
 import host_memory
+import profiling_contract
 
 (out_path, name, gguf, ctx_s, kv, kv_v, reasoning, extra, timeout_s, profile_name,
  instrument, far_end_s, avail_before_s, avail_after_s,
@@ -32,6 +33,8 @@ backend_name = sys.argv[29] if len(sys.argv) > 29 and sys.argv[29] else None
 
 ctx = int(ctx_s)
 far_end = int(far_end_s)
+# A bad limit refuses before any results file is written. Empty is the same as unset.
+absorb_max_s = profiling_contract.parse_absorb_limit()
 
 
 def load_json(path):
@@ -61,6 +64,7 @@ bench_speed = load_json(bench_speed_path) if bench_speed_path else None
 # memavailable_drop_gb is still the host MemAvailable drop across the load (rung 1), in GB.
 ram_gb_extra = None
 engine_host_memory = None
+profiling_from_evidence = None
 if evidence_path:
     ev_data = load_json(evidence_path)
     row_model = os.path.basename(gguf)
@@ -83,6 +87,9 @@ if evidence_path:
     else:
         matches = ev_model_base == row_model
     if matches:
+        raw_profiling = ev_data.get("profiling") if isinstance(ev_data, dict) else None
+        if isinstance(raw_profiling, dict):
+            profiling_from_evidence = raw_profiling
         if is_strata:
             # The configured settings and Strata's own measurement are carried independently: evidence from a reused
             # server started before host_memory_settings existed still has the pinned allocation observed since.
@@ -157,29 +164,14 @@ depth_pass = None if depth_score is None else depth_score >= 2
 m_nm = re.search(r'depth probe at \d+: not measured — (.+)', depth_text)
 depth_not_measured = m_nm.group(1).strip() if m_nm else None
 
-# ── useful_ctx: the four-tokens-a-second rule (AGENTS.md) — decode time-per-token at 8k and the far end,
-# extended linearly between them, capped at 8,000 when the far probe failed. The graded probe runs only at the
-# far end, so a failure leaves no depth whose quality passed; 8,000 is the sweep's own shallow point, a measured
-# throughput point, and the row claims no further than the shallow point this run actually measured ──────────
-useful_ctx = None
-if p8 and pfar and p8["decode_tps"] > 0 and pfar["decode_tps"] > 0:
-    t1, t2 = 1.0 / p8["decode_tps"], 1.0 / pfar["decode_tps"]
-    if far_end == 8000 or t2 <= t1:
-        useful_ctx = far_end if t2 <= 0.25 else 8000
-    else:
-        slope = (t2 - t1) / (far_end - 8000)
-        d_star = 8000 + (0.25 - t1) / slope
-        useful_ctx = max(0, int(d_star))
-# a failed probe caps a measured window; it does not invent one. With no usable pair of sweep points there is
-# nothing to cap, and the failure leaves the field unset rather than publishing an 8,000 no rung measured
-if depth_pass is False and useful_ctx is not None:
-    useful_ctx = min(useful_ctx, 8000)
-# a probe the server never answered measured nothing at all, so no window here has any quality behind it:
-# report none rather than the sweep's own figure, which would read as if the depth had been checked
-if depth_not_measured:
-    useful_ctx = None
-if useful_ctx is not None:
-    useful_ctx = max(0, min(useful_ctx, ctx))
+# useful_ctx is prefill-absorb-v1. With no limit it is the served context. A failed probe
+# still caps a measured window at 8,000, and an unanswered probe or a missing sweep point
+# leaves it unset. Decode is not read. Depths are the sweep targets, not the token counts.
+ttft_8k = p8["ttft_s"] if p8 else None
+ttft_far = pfar["ttft_s"] if pfar else None
+useful_ctx, absorb_s, absorb_limit = profiling_contract.absorb_window(
+    ctx, far_end, ttft_8k, ttft_far, absorb_max_s, depth_pass, bool(depth_not_measured),
+)
 
 # ── speed.bench: llama-bench's own at_depth, re-derived from bench_speed.sh's raw output the same way it built it
 def bench_at_depth(bench):
@@ -277,6 +269,7 @@ if pfar:
         "tokens": pfar["tokens"], "decode_tps": pfar["decode_tps"],
         "prefill_tps": pfar["prefill_tps"], "ttft_s": pfar["ttft_s"],
     }
+speed["absorb_s"] = absorb_s
 
 suite = json.loads(suite_json_s) if suite_json_s else None
 if suite is not None and suite_results_path:
@@ -312,13 +305,17 @@ ladder_doc = {
         "task_suite": suite,
     },
     "computed": {
-        "useful_ctx": useful_ctx, "ram_gb_extra": ram_gb_extra, "memavailable_drop_gb": memavailable_drop_gb,
+        "useful_ctx": useful_ctx,
+        "useful_ctx_rule": profiling_contract.RULE_NAME,
+        "ram_gb_extra": ram_gb_extra, "memavailable_drop_gb": memavailable_drop_gb,
         "vram_gib_after_load": vram_gib_after_load, "speed": speed,
     },
     "conditions": conditions,
     "stopped_at_rung": fail_rung or None,
     "failure": fail_msg or None,
 }
+if absorb_limit is not None:
+    ladder_doc["computed"]["absorb_max_s"] = absorb_limit
 if evidence_path and is_strata:
     ladder_doc["rungs"]["launch_evidence"] = evidence_path
 if suite_execution:
@@ -372,7 +369,9 @@ row = {
     "flash_attention": flash_attention, "reasoning": reasoning, "extra": extra,
     "timeout_s": int(timeout_s) if timeout_s.isdigit() else timeout_s,
     "vram_gib_after_load": vram_gib_after_load, "ram_gb_extra": ram_gb_extra,
-    "useful_ctx": useful_ctx, "speed": row_speed, "instrument": instrument,
+    "useful_ctx": useful_ctx,
+    "useful_ctx_rule": profiling_contract.RULE_NAME,
+    "speed": row_speed, "instrument": instrument,
     "task": "__TODO__ — the task class this row wins (code-edit, code-read, debug-test, prose-docs, os-ops, data-structured, instruction-agentic); see kit/PROFILE.md §2",
     "evidence": (
         f"{instrument}: {suite['passed']}/{suite['runs']} stages passed{suite_partial} (this ladder run)"
@@ -393,6 +392,11 @@ row = {
     },
     "capability": "__TODO__ — the model's or the quantiser's own published evaluation, quoted verbatim, never re-measured here",
 }
+if absorb_limit is not None:
+    row["absorb_max_s"] = absorb_limit
+if profiling_from_evidence is not None:
+    row["profiling"] = profiling_from_evidence
+profiling_contract.null_unconfirmed_verbosity(row)
 if row_suite is not None:
     row["suite"] = row_suite
 if far_end >= 90000 and depth_score is not None:
@@ -411,7 +415,7 @@ print(
     "placeholders (__TODO__) rather than omitted, so a row pasted straight from this output still has the keys "
     "check requires on a kit instrument — set task to the class this row wins and measured_on to the card and "
     "the serving build; evidence carries the suite's pass result when the task rung ran, else set it by hand. "
-    "ram_gb_extra: the sum of the *_Host buffer sizes (MiB / 1024) in the server's log at -lv 4 — not the "
+    "ram_gb_extra: the sum of the *_Host buffer sizes (MiB / 1024) in the server's log at verbosity 4 — not the "
     "MemAvailable drop."
 )
 if not (far_end >= 90000 and depth_score is not None):

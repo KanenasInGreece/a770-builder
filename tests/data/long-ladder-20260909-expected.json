@@ -542,6 +542,7 @@
   },
   "computed": {
     "useful_ctx": 262144,
+    "useful_ctx_rule": "prefill-absorb-v1",
     "ram_gb_extra": null,
     "memavailable_drop_gb": null,
     "vram_gib_after_load": 9.485649108886719,
@@ -588,6 +589,10 @@
         "decode_tps": 11.5,
         "prefill_tps": 159.0,
         "ttft_s": 580.7
+      },
+      "absorb_s": {
+        "8k": 14.0,
+        "far_end": 580.7
       }
     }
   },

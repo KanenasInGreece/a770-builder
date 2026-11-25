@@ -20,16 +20,14 @@ during rung 6, before `ladder.sh` ever reached this step; its rung outputs survi
 
 The two ladder-state arguments, the failed rung and its message, are passed empty: all five rung files are
 present, so this is the document the step writes when every rung handed it something. What the fixtures pin down:
-`useful_ctx` 262144 — computed from the two sweep points and clamped to the served window because the graded probe
-passed 3/3; the far end, 99,847 tokens at 11.5 tokens a second decoding and 159.0 prefilling after 580.7 seconds;
+`useful_ctx` 262144 — the served window, because no prefill limit is set and the graded probe passed 3/3; the far
+end, 99,847 tokens at 11.5 tokens a second decoding and 159.0 prefilling after 580.7 seconds;
 `vram_gib_after_load` 9.485649108886719; and the suite's as-delivered medians under `speed.delivered` and *not*
 under `suite`, which `harness/profiles.py` would refuse.
 
-**`useful_ctx` is never filled from something that was not measured.** It is the largest depth at which decode
-stays above four tokens a second: the ladder reads decode time-per-token at the shallow point and at the far end
-out of the window rung's own table, extends it linearly between them, and caps the result at the depth probe's
-last passing depth. Every input is a measurement, so every case where a measurement is missing has to leave the
-field unset rather than fill it from something else. The two that matter:
+**`useful_ctx` is never filled from something that was not measured.** With no absorb limit it is the served
+context. A failed depth probe caps that window at 8,000. An unanswered probe, or a sweep with no far point,
+leaves the field unset. Decode speed is not an input. The two that matter:
 
   * a depth probe the server never answered reports "not measured", not a score. The model was never asked, so
     no window has any quality behind it and `useful_ctx` is unset. A number carried over from the requested
@@ -79,8 +77,16 @@ DEPTH_FAILED = f"depth probe at {FAR_END}: 1/3\n"
 GENERATED = "2026-09-09T23:15:00"
 
 
+def _row_env(extra=None):
+    env = os.environ.copy()
+    env.pop("A770B_ABSORB_MAX_S", None)
+    if extra:
+        env.update(extra)
+    return env
+
+
 def run_row(tmp_path: Path, sweep_table: str, depth_log: str, fail_rung: str = "",
-            fail_msg: str = "") -> tuple:
+            fail_msg: str = "", env_extra=None) -> tuple:
     """Drive the computation with one set of rung outputs; return its result and the ladder JSON it wrote."""
     sweep_path = tmp_path / "ctx-sweep.log"
     sweep_path.write_text(sweep_table, encoding="utf-8")
@@ -95,9 +101,9 @@ def run_row(tmp_path: Path, sweep_table: str, depth_log: str, fail_rung: str = "
     ]
     result = subprocess.run(
         [sys.executable, str(LADDER_ROW)] + argv,
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=_row_env(env_extra),
     )
-    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    doc = json.loads(out_path.read_text(encoding="utf-8")) if out_path.is_file() else None
     return result, doc
 
 
@@ -133,7 +139,7 @@ def run_salvaged_row(out_path: Path):
     ]
     result = subprocess.run(
         [sys.executable, str(LADDER_ROW)] + argv,
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT, capture_output=True, text=True, env=_row_env(),
     )
     doc = json.loads(out_path.read_text(encoding="utf-8"))
     return result, doc
@@ -622,7 +628,10 @@ def run_with_conditions(tmp_path: Path, evidence="", before="", after="", host_l
         suite_json, str(suite_results), "", "", GENERATED, str(evidence), str(before), str(after), str(host_log),
         engine, backend,
     ]
-    result = subprocess.run([sys.executable, str(LADDER_ROW)] + argv, capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, str(LADDER_ROW)] + argv,
+        capture_output=True, text=True, env=_row_env(),
+    )
     doc = json.loads(out_path.read_text(encoding="utf-8"))
     return result, doc
 
@@ -719,3 +728,123 @@ def test_profile_evidence_carries_total_full_kit_elapsed_time(tmp_path):
     assert "total kit time 2719.4s" in row["evidence"]
     assert "total kit time 2719.4s" in row["fit"]["code"]
     assert doc["rungs"]["task_suite_execution"] == execution
+
+
+def _sweep(decode_8k, decode_far, ttft_8k, ttft_far):
+    return (
+        "target   tokens   ttft_s    prefill_tps decode_tps vram_max  resets\n"
+        f"8000     7993     {ttft_8k}      571.0       {decode_8k}       10.60GiB  0\n"
+        f"{FAR_END}    38970    {ttft_far}     147.0       {decode_far}       10.90GiB  0\n"
+    )
+
+
+def test_i6_without_a_limit_useful_ctx_ignores_decode_and_prefill(tmp_path):
+    """Slow decode and a huge time to first token both leave the served context."""
+    slow, doc = run_row(tmp_path, _sweep("2.0", "2.0", "14.0", "265.0"), DEPTH_PASSED)
+    assert slow.returncode == 0, slow.stderr
+    assert doc["computed"]["useful_ctx"] == CTX
+    assert printed_row(slow.stdout)["useful_ctx"] == CTX
+    huge_dir = tmp_path / "huge"
+    huge_dir.mkdir()
+    huge, huge_doc = run_row(huge_dir, _sweep("40.0", "40.0", "9000.0", "9000.0"), DEPTH_PASSED)
+    assert huge_doc["computed"]["useful_ctx"] == CTX
+    assert doc["computed"]["useful_ctx"] == huge_doc["computed"]["useful_ctx"]
+
+
+def test_i7_with_a_limit_useful_ctx_follows_measured_ttft(tmp_path):
+    """Limit 600 on the salvaged sweep shrinks the window. Probe rules still apply."""
+    result, doc = run_salvaged_row(tmp_path / "ladder.json")
+    assert result.returncode == 0
+    # default fixture stays the served context; the limited run is separate
+    assert doc["computed"]["useful_ctx"] == 262144
+    limited = subprocess.run(
+        [sys.executable, str(LADDER_ROW)] + _salvaged_argv(tmp_path / "limited.json"),
+        cwd=ROOT, capture_output=True, text=True,
+        env=_row_env({"A770B_ABSORB_MAX_S": "600"}),
+    )
+    assert limited.returncode == 0, limited.stderr
+    limited_doc = json.loads((tmp_path / "limited.json").read_text(encoding="utf-8"))
+    assert limited_doc["computed"]["useful_ctx"] == 103133
+    assert limited_doc["computed"]["absorb_max_s"] == 600
+    row = printed_row(limited.stdout)
+    assert row["useful_ctx"] == 103133 and row["absorb_max_s"] == 600
+    assert row["useful_ctx_rule"] == "prefill-absorb-v1"
+    assert row["speed"]["absorb_s"] == {"8k": 14.0, "far_end": 580.7}
+
+    (tmp_path / "flat").mkdir()
+    flat, flat_doc = run_row(
+        tmp_path / "flat", _sweep("2.0", "2.0", "100.0", "100.0"), DEPTH_PASSED,
+        env_extra={"A770B_ABSORB_MAX_S": "600"},
+    )
+    assert flat_doc["computed"]["useful_ctx"] == CTX
+
+    falling_dir = tmp_path / "falling"
+    falling_dir.mkdir()
+    falling, falling_doc = run_row(
+        falling_dir, _sweep("2.0", "2.0", "200.0", "50.0"), DEPTH_PASSED,
+        env_extra={"A770B_ABSORB_MAX_S": "80"},
+    )
+    assert falling_doc["computed"]["useful_ctx"] == CTX
+
+    over_dir = tmp_path / "over"
+    over_dir.mkdir()
+    over, over_doc = run_row(
+        over_dir, _sweep("2.0", "2.0", "700.0", "900.0"), DEPTH_PASSED,
+        env_extra={"A770B_ABSORB_MAX_S": "600"},
+    )
+    assert over_doc["computed"]["useful_ctx"] == 6857
+
+    miss_dir = tmp_path / "miss"
+    miss_dir.mkdir()
+    missing, missing_doc = run_row(
+        miss_dir, SWEEP_SHALLOW_ONLY, DEPTH_PASSED,
+        env_extra={"A770B_ABSORB_MAX_S": "600"},
+    )
+    assert missing_doc["computed"]["useful_ctx"] is None
+
+    cap_dir = tmp_path / "cap"
+    cap_dir.mkdir()
+    capped, capped_doc = run_row(
+        cap_dir, SWEEP_TABLE, DEPTH_FAILED,
+        env_extra={"A770B_ABSORB_MAX_S": "600"},
+    )
+    assert capped_doc["computed"]["useful_ctx"] == 8000
+
+    none_dir = tmp_path / "none"
+    none_dir.mkdir()
+    unanswered, unanswered_doc = run_row(
+        none_dir, SWEEP_TABLE, DEPTH_NEVER_ANSWERED,
+        fail_rung="depth-no-answer", fail_msg="unanswered",
+        env_extra={"A770B_ABSORB_MAX_S": "600"},
+    )
+    assert unanswered.returncode == 1
+    assert unanswered_doc["computed"]["useful_ctx"] is None
+
+
+def test_i8_invalid_absorb_limit_exits_2(tmp_path):
+    assert run_row(tmp_path, SWEEP_TABLE, DEPTH_PASSED, env_extra={"A770B_ABSORB_MAX_S": ""})[0].returncode == 0
+    for bad in ("0", "-5", "600.0", " 600 ", "abc"):
+        bad_dir = tmp_path / f"bad-{bad.strip() or 'empty'}"
+        bad_dir.mkdir()
+        result, doc = run_row(
+            bad_dir, SWEEP_TABLE, DEPTH_PASSED, env_extra={"A770B_ABSORB_MAX_S": bad},
+        )
+        assert result.returncode == 2, bad
+        assert "A770B_ABSORB_MAX_S" in result.stderr
+        assert doc is None
+
+
+def _salvaged_argv(out_path: Path):
+    suite_json = subprocess.run(
+        [sys.executable, str(ROOT / "harness" / "suite_report.py"),
+         "tests/data/long-suite-20260909-224236.json", "--json"],
+        cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return [
+        str(out_path), "long", "/models/Qwen3.5-9B-Q4_K_M.gguf", "262144", "q8_0", "q8_0", "off",
+        "--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --presence-penalty 1.5", "1500", "long",
+        "SUITE-1@0.1.5", "100000", "", "",
+        "tests/data/long-rungs12-20260909-215915.json", "tests/data/long-bench-20260909-222214.json",
+        "tests/data/ladder-ctx-sweep-20260909.log", "tests/data/ladder-depth-probe-20260909.log",
+        suite_json, "tests/data/long-suite-20260909-224236.json", "", "", GENERATED,
+    ]
