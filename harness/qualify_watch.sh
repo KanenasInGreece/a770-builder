@@ -105,6 +105,9 @@ tripped_log=""
 prev_cid=""
 
 while [ -e "$job/WATCH" ]; do
+  if [ -n "${QUALIFY_WATCH_PARENT:-}" ]; then
+    kill -0 "$QUALIFY_WATCH_PARENT" 2>/dev/null || break
+  fi
   [ "${WD_NOSLEEP:-0}" = 1 ] || sleep "$poll"
   polls=$((polls + 1))
   [ -z "${WD_MAX_POLLS:-}" ] || [ "$polls" -le "$WD_MAX_POLLS" ] || break

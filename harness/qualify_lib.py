@@ -529,6 +529,7 @@ def build_plan(argv: list[str]) -> dict:
         "row_fields": _row_fields(row),
         "job_id": job_id,
         "useful_ctx_rule": profiling_contract.RULE_NAME,
+        "reference_ids": sorted(ref_ids),
     }
 
 
@@ -661,11 +662,18 @@ def status_merge(job: str, patch: dict) -> dict:
         if marked and not patch.get("_allow_terminal"):
             return current
         trip = patch.get("trip")
-        data = {key: value for key, value in patch.items() if key not in ("trip", "_allow_terminal")}
+        event = patch.get("event")
+        data = {
+            key: value
+            for key, value in patch.items()
+            if key not in ("trip", "_allow_terminal", "event")
+        }
         current.update(data)
         current["updated"] = _now()
         if "heartbeat" not in data:
             current.setdefault("heartbeat", current["updated"])
+        if event:
+            _append_event(job, f"{current['updated']} {event}")
         if trip:
             current.setdefault("trips", [])
             current["trips"].append(trip)
@@ -1727,10 +1735,181 @@ def _load_patch(argv: list[str]) -> tuple[str, dict]:
     return args.job, patch
 
 
+_SECRET_NAME = re.compile(r"(?:^|_)(KEY|TOKEN|SECRET|PASSWORD)$")
+
+
+def iter_forward_env():
+    """PATH, HOME, and A770B_* except a secret name that is not a file path."""
+    chosen = []
+    for name in os.environ:
+        if name not in ("PATH", "HOME") and not name.startswith("A770B_"):
+            continue
+        if name.endswith("_FILE"):
+            chosen.append(name)
+            continue
+        if _SECRET_NAME.search(name):
+            continue
+        chosen.append(name)
+    for name in sorted(chosen):
+        value = os.environ.get(name, "")
+        if "\n" in value or "\0" in value:
+            continue
+        yield name, value
+
+
+def pick_job(data_root: str) -> str:
+    """The active job, or the latest one when none is running."""
+    root = os.path.join(data_root, "qualify")
+    if not os.path.isdir(root) or os.path.islink(root):
+        raise QualifyError("no qualification job")
+    names = []
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if JOB_ID_RE.match(name) and os.path.isdir(path) and not os.path.islink(path):
+            names.append(name)
+    if not names:
+        raise QualifyError("no qualification job")
+    names.sort()
+    active = []
+    for name in names:
+        path = os.path.join(root, name)
+        if _terminal(path):
+            continue
+        state = _read_status(os.path.join(path, "status.json")).get("state")
+        if state in ("queued", "running"):
+            active.append(name)
+    return active[-1] if active else names[-1]
+
+
+def _evidence(job: str, name: str) -> dict:
+    if "/" in name or name.startswith("."):
+        raise QualifyError("bad evidence name")
+    path = os.path.join(job, "evidence", name)
+    if not os.path.isfile(path) or os.path.islink(path):
+        return {}
+    try:
+        data = _load_json(path)
+    except QualifyError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_note(job: str, name: str, body: dict) -> None:
+    """Write one evidence JSON file. A symlink is refused."""
+    if not name.endswith(".json") or "/" in name or name.startswith("."):
+        raise QualifyError("bad evidence name")
+    path = os.path.join(job, "evidence", name)
+    _write_private(path, json.dumps(body, indent=2) + "\n")
+
+
+def set_image(job: str, text: str) -> None:
+    """Record a digest when the gate printed one, otherwise the gate's own word."""
+    found = re.search(r"sha256:[0-9a-fA-F]+", text or "")
+    value = found.group(0) if found else (text or "").strip().splitlines()[-1:] or ["unknown"]
+    image = value if isinstance(value, str) else value[0]
+    if not image:
+        image = "unknown"
+    path = os.path.join(job, "job.json")
+    if os.path.islink(path):
+        raise QualifyError("refusing a symlink job file")
+    document = _load_json(path)
+    document["image"] = image[:200]
+    _write_private(path, json.dumps(document, indent=2) + "\n")
+
+
+def _json_line(text: str) -> dict:
+    for line in reversed((text or "").splitlines()):
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            try:
+                parsed = json.loads(stripped)
+            except ValueError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
+    """Store one phase's JSON line. The shell does not interpret the numbers."""
+    body = _json_line(text)
+    body["rc"] = rc
+    if phase == "gate":
+        set_image(job, text)
+        write_note(job, "gate.json", body)
+        return
+    if phase == "serve":
+        cid = str(body.get("cid") or "")
+        if cid and re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", cid):
+            _write_private(os.path.join(job, "cid"), cid + "\n")
+        write_note(job, "serve.json", body)
+        return
+    if phase == "suite":
+        previous = _evidence(job, "suite.json")
+        attempts = int(previous.get("attempts") or 0) + 1
+        body["attempts"] = attempts
+        write_note(job, "suite.json", body)
+        return
+    write_note(job, f"{phase}.json", body)
+
+
+def assemble(job: str) -> None:
+    """Build evidence/collected.json from the phase notes. Missing stays absent."""
+    serve = _evidence(job, "serve.json")
+    smoke = _evidence(job, "smoke.json")
+    speed = _evidence(job, "speed.json")
+    window = _evidence(job, "window.json")
+    depth = _evidence(job, "depth.json")
+    suite = _evidence(job, "suite.json")
+    hooks = _evidence(job, "hooks.json")
+    collected = {
+        "load_ok": serve.get("load_ok"),
+        "vram_after_load": serve.get("vram_after_load"),
+        "vram_cap": serve.get("vram_cap"),
+        "vram_peak": serve.get("vram_peak"),
+        "load_s": serve.get("load_s"),
+        "smoke": {
+            "models": smoke.get("models"),
+            "completion": smoke.get("completion"),
+            "tool": smoke.get("tool"),
+        },
+        "speed": speed.get("rows") if isinstance(speed.get("rows"), list) else [],
+        "window_resets": window.get("resets"),
+        "depth_pass": depth.get("passed"),
+        "depth_score": depth.get("score"),
+        "depth_tokens": depth.get("depth_tokens"),
+        "suite": {
+            "completed": suite.get("completed"),
+            "stages": suite.get("stages") if isinstance(suite.get("stages"), list) else [],
+            "references": suite.get("references")
+            if isinstance(suite.get("references"), dict)
+            else {},
+        },
+        "requests": suite.get("requests") if isinstance(suite.get("requests"), dict) else {},
+        "delivered": serve.get("delivered", "unknown"),
+        "hooks": hooks,
+        "statistics": suite.get("statistics") if isinstance(suite.get("statistics"), dict) else {},
+    }
+    write_note(job, "collected.json", collected)
+
+
+def _flag(argv: list[str], name: str) -> str | None:
+    if name not in argv:
+        return None
+    index = argv.index(name)
+    if index + 1 >= len(argv):
+        raise QualifyError(f"{name} needs a value")
+    return argv[index + 1]
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
-        print("usage: qualify_lib.py plan|flags|status-merge|status-show|init-job|summarise|export|preflight|confirm|identity", file=sys.stderr)
+        print(
+            "usage: qualify_lib.py plan|flags|status-merge|status-show|init-job|"
+            "summarise|export|preflight|confirm|identity|forward-env|job-dir|pick|"
+            "apply-phase|assemble|set-image",
+            file=sys.stderr,
+        )
         return 2
     cmd, rest = argv[0], argv[1:]
     try:
@@ -1794,6 +1973,40 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if cmd == "starttime":
             print(proc_starttime(rest[0]) or "")
+            return 0
+        if cmd == "forward-env":
+            for name, value in iter_forward_env():
+                sys.stdout.buffer.write(f"{name}={value}\0".encode())
+            return 0
+        if cmd == "job-dir":
+            print(job_dir(os.environ["A770B_DATA"], rest[0]))
+            return 0
+        if cmd == "pick":
+            print(pick_job(os.environ["A770B_DATA"]))
+            return 0
+        if cmd == "apply-phase":
+            job = _flag(rest, "--job")
+            phase = _flag(rest, "--phase")
+            rc_text = _flag(rest, "--rc") or "0"
+            if not job or not phase:
+                raise QualifyError("apply-phase needs --job and --phase")
+            apply_phase(job, phase, sys.stdin.read(), int(rc_text))
+            return 0
+        if cmd == "assemble":
+            assemble(_flag(rest, "--job") or "")
+            return 0
+        if cmd == "set-image":
+            set_image(_flag(rest, "--job") or "", sys.stdin.read())
+            return 0
+        if cmd == "note":
+            job = _flag(rest, "--job")
+            name = _flag(rest, "--name")
+            if not job or not name:
+                raise QualifyError("note needs --job and --name")
+            body = json.loads(sys.stdin.read() or "{}")
+            if not isinstance(body, dict):
+                raise QualifyError("note body must be a JSON object")
+            write_note(job, name, body)
             return 0
         raise QualifyError(f"unknown qualify_lib command {cmd}")
     except QualifyError as exc:

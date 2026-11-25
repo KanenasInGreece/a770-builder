@@ -13,10 +13,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(HERE)
 WATCH = os.path.join(PROJECT, "harness", "qualify_watch.sh")
 FAKE = os.path.join(HERE, "fixtures", "qualify", "fakedocker.sh")
-BASE = datetime.now(timezone.utc) + timedelta(seconds=90)
+BASE = None
+
+
+def arm_clock():
+    """Stamp synthetic engine lines ahead of the scanner clock for this test."""
+    global BASE
+    BASE = datetime.now(timezone.utc) + timedelta(minutes=30)
 
 
 def ts(off):
+    if BASE is None:
+        arm_clock()
     return (BASE + timedelta(seconds=off)).strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
 
 
@@ -132,6 +140,7 @@ def test_watch_script_has_no_eval_or_pgrep():
 
 
 def test_i7_ported_cases(tmp_path):
+    arm_clock()
     stale = f"{ts(-3600)} ERROR UR_RESULT_ERROR_OUT_OF_RESOURCES in graph capture"
     fresh = lambda i: [vl(i, 19.7, 1)] + (
         [f"{ts(i + 0.5)} ERROR UR_RESULT_ERROR_OUT_OF_RESOURCES graph capture failed"] if i == 3 else []
@@ -167,6 +176,7 @@ def test_i7_ported_cases(tmp_path):
 
 
 def test_i7_no_run_and_identity(tmp_path):
+    arm_clock()
     fresh = [vl(1, 19.7, 1), f"{ts(2)} ERROR UR_RESULT_ERROR_OUT_OF_RESOURCES graph capture failed"]
     run_case(tmp_path, "R2", [fresh + [vl(i, 0.0, 1) for i in range(3, 15)]] * 12, build=PROSE, step=400, running=None, expect=0)
     script = tmp_path / "sandbox_run.sh"
@@ -192,6 +202,7 @@ def test_i7_no_run_and_identity(tmp_path):
 
 
 def test_i7_driver_ends_suite_prose_does_not(tmp_path):
+    arm_clock()
     sleeper = subprocess.Popen(["sleep", "120"])
     try:
         fresh = [vl(1, 19.7, 1), f"{ts(2)} ERROR SIGSEGV in the driver"]
@@ -221,6 +232,7 @@ def test_i7_driver_ends_suite_prose_does_not(tmp_path):
 
 
 def test_old_stage_log_is_ignored(tmp_path):
+    arm_clock()
     future = int(time.time()) + 100000
     run_case(
         tmp_path,
