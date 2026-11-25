@@ -37,7 +37,7 @@ differs, even when the kernel is the same.
 
 `ladder.sh` runs six rungs in order and stops at the first failure:
 
-1. Load + VRAM (`bench_model.sh`) under the mode's cap (13.0 display / 15.3 inference).
+1. Load + VRAM (`bench_model.sh`) under the mode's cap (13.0 GiB display / 15.3 GiB inference, a memory budget, not a prompt depth).
 2. Probes + 17k summary.
 3. Speed (`harness/bench_http.sh`) at prompt sizes 8192, 32768, 65536 and 100000. Every admitted engine leaves the server up and calls that script. The tool is llama-benchy, called and not packaged. An older row keeps the tool name it was measured with; that number is not this one.
 4. Window (`ctx_sweep.sh 8000 <far end>`).
@@ -68,7 +68,7 @@ When qualifying models on a card that has no rows in the registry, do not measur
 6. **Classify**:
    - **Compute-bound**: If decode tok/s stays flat across quantizations (e.g. Q4 vs Q6), higher precision is essentially free — densify to the larger quant for quality.
    - **Bandwidth-bound**: If decode speed drops proportionally with larger weights, memory bandwidth is the bottleneck — stay at the faster quant and record the ceiling.
-   - **Kernel miss**: decode in a CPU-like band while VRAM is occupied (same Q6_K: Vulkan ~5 t/s vs SYCL ~21 t/s). Try the other backend or another user's checkpoint before a ladder.
+   - **Kernel miss**: decode in a CPU-like band while VRAM is occupied (same Q6_K: Vulkan ~5 t/s at 893 tokens vs SYCL ~21 t/s, the SYCL figure measured under the earlier test matrix; depth not recorded). Try the other backend or another user's checkpoint before a ladder.
 7. **Suggest next tests**: Use the classification to pick the candidate for the full ladder (`harness/ladder.sh`). Only the full ladder measurement ships a profile row.
 
 ## Submit a profile
