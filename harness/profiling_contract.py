@@ -177,7 +177,9 @@ def fetch_metrics(host, port, key_file=None, timeout=2.0):
         if key:
             req.add_header("Authorization", "Bearer " + key)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # An empty proxy map keeps a loopback GET off http_proxy.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
             raw = resp.read(65536)
             return int(resp.status), raw.decode("utf-8", "replace")
     except (OSError, urllib.error.URLError, ValueError, TimeoutError):

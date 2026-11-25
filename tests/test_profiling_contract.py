@@ -91,6 +91,44 @@ def test_refusal_matches_the_flag_and_the_equals_form_only():
     assert pc.refusal("llama.cpp", ["-lv4"]) is None
 
 
+def test_fetch_metrics_does_not_use_a_proxy(monkeypatch):
+    seen = {}
+
+    class Response:
+        status = 200
+
+        def read(self, _n):
+            return b"llamacpp:prompt_tokens_total 1\n"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def build_opener(handler):
+        seen["proxies"] = handler.proxies
+
+        class Opener:
+            def open(self, req, timeout):
+                seen["url"] = req.full_url
+                seen["timeout"] = timeout
+                return Response()
+
+        return Opener()
+
+    def urlopen(*_args, **_kwargs):
+        raise AssertionError("urlopen must not be used for loopback metrics")
+
+    monkeypatch.setattr(pc.urllib.request, "build_opener", build_opener)
+    monkeypatch.setattr(pc.urllib.request, "urlopen", urlopen)
+    status, body = pc.fetch_metrics("127.0.0.1", 9, timeout=0.4)
+    assert status == 200 and "llamacpp:" in body
+    assert seen["proxies"] == {}
+    assert seen["url"] == "http://127.0.0.1:9/metrics"
+    assert seen["timeout"] == 0.4
+
+
 def test_absorb_window_zero_under_a_limit_is_unset():
     useful, _, limit = pc.absorb_window(40000, 38976, 10000.0, 20000.0, 1, True, False)
     assert useful is None and limit == 1
