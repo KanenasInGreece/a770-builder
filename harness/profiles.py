@@ -609,7 +609,8 @@ def validate(data) -> list[str]:
                     errors.append(f"{where}.confirmed must be an object")
                 else:
                     for ck, cv in confirmed.items():
-                        if not isinstance(ck, str) or cv not in (True, False, "pending"):
+                        # 1 == True, so membership would accept a number. Only a real bool counts.
+                        if not isinstance(ck, str) or not (isinstance(cv, bool) or cv == "pending"):
                             errors.append(
                                 f"{where}.confirmed.{ck} must be true, false, or pending"
                             )

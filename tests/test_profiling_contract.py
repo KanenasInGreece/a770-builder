@@ -146,6 +146,15 @@ def test_i5_unconfirmed_verbosity_nulls_exactly_four_fields():
     absent = {"requests": {"prefill_tps": 5, "decode_tps": 6, "length_stops": 1}}
     pc.null_unconfirmed_verbosity(absent)
     assert absent["requests"]["prefill_tps"] == 5
+    # A number compares equal to True and False. It is not a confirmation.
+    numeric = {
+        "profiling": {"engine": "llama.cpp", "confirmed": {"-lv 4": 1}},
+        "requests": {"prefill_tps": 4, "decode_tps": 3, "length_stops": 1},
+        "speed": {"delivered": {"decode_tps": 3}},
+    }
+    pc.null_unconfirmed_verbosity(numeric)
+    assert numeric["requests"]["prefill_tps"] is None
+    assert numeric["speed"]["delivered"] is None
 
 
 def test_i3_applied_flags_are_spelled_only_in_the_contract():

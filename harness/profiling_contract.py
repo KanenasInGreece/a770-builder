@@ -251,6 +251,8 @@ def null_unconfirmed_verbosity(row):
     if not isinstance(confirmed, dict):
         confirmed = {}
     state = confirmed.get(VERBOSITY_SWITCH)
+    # Same rule as the row validator: only a real True or "pending" keeps the fields.
+    # The number 1 compares equal to True and must still null.
     if state is True or state == "pending":
         return row
     requests = row.get("requests")

@@ -3358,6 +3358,23 @@ def test_i4_profiling_validates_when_present_and_absence_stays_valid(tmp_path):
     assert "profiling: unknown key note" in result.stderr
 
 
+def test_profiling_confirmed_rejects_numeric_standins_for_booleans(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "contract": 1,
+        "engine": "llama.cpp",
+        "flags": ["--metrics", "-lv", "4"],
+        "confirmed": {"--metrics": True, "-lv 4": False},
+    }
+    for bad in (0, 1, 0.0, 1.0):
+        row["profiling"]["confirmed"] = {"--metrics": bad, "-lv 4": False}
+        path = write_json(tmp_path / f"num-{bad}.json", data)
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2, bad
+        assert "must be true, false, or pending" in result.stderr, bad
+
+
 def test_i2_profiles_check_refuses_a_forbidden_extra(tmp_path):
     data = load_base()
     row = data["profiles"]["qwen35-9b-q4km-vulkan"]
