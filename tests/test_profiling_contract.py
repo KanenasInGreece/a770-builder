@@ -217,9 +217,11 @@ def test_absorb_window_limit_examples():
     )
     assert useful == 103133 and limit == 600
     assert absorb == {"8k": 14.0, "far_end": 580.7}
-    # falling ttft must not extrapolate a negative slope
-    falling, _, _ = pc.absorb_window(40000, 38976, 200.0, 50.0, 80, True, False)
-    assert falling == 40000
+    # The limit is below the far time. Holding the far time, or extrapolating the
+    # falling slope out to the context, would both be wrong: the window is the
+    # shallow depth where time, scaled from zero, meets the limit.
+    falling, _, _ = pc.absorb_window(60000, 38976, 200.0, 50.0, 40, True, False)
+    assert falling == 1600
     flat, _, _ = pc.absorb_window(40000, 38976, 100.0, 100.0, 600, True, False)
     assert flat == 40000
     over, _, _ = pc.absorb_window(40000, 38976, 700.0, 900.0, 600, True, False)
@@ -278,27 +280,44 @@ def test_i10_old_rule_wording_is_only_on_legacy_rows():
     assert bad == [], bad
 
 
-def test_i11_the_diff_has_no_record_ids_or_private_names():
-    chunks = []
-    for args in (
-        ["git", "diff", "main"],
-        ["git", "diff", "--cached"],
-        ["git", "diff"],
-    ):
-        result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
-        chunks.append(result.stdout.lower())
-    diff = "\n".join(chunks)
-    needles = (
-        "xeno" + "fon",
-        "claw" + "ee",
-        "cl" + "oe",
-        "/home" + "/",
-        "fact" + ":",
-        "decision" + ":",
-        "retro" + ":",
+def test_i11_tracked_files_have_no_record_ids_or_private_names():
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, check=True,
     )
-    found = [needle for needle in needles if needle in diff]
-    assert found == [], found
+    names = ("xeno" + "fon", "claw" + "ee", "cl" + "oe")
+    other = ("/home" + "/", "fact" + ":", "decision" + ":", "retro" + ":")
+    skip = {"LICENSE", "tests/test_profiling_contract.py"}
+    bad = []
+    for rel in listed.stdout.split("\0"):
+        if not rel or rel in skip:
+            continue
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if b"\0" in raw:
+            continue
+        text = raw.decode("utf-8", "replace")
+        for number, line in enumerate(text.splitlines(), 1):
+            lower = line.lower()
+            # The root licence is excluded. A copyright line in a derived file
+            # still has to name its holder; any other line may not.
+            copyright = "copyright" in lower
+            for needle in names:
+                if needle in lower and not copyright:
+                    bad.append(f"{rel}:{number}: {needle}")
+            checked = lower
+            for needle in other:
+                if needle == "/ho" + "me/":
+                    # "$sb/home" is a sandbox directory. An assertion that the
+                    # absolute path is absent has to spell that path.
+                    checked = lower.replace("$sb/home", "")
+                    stripped = checked.strip()
+                    if stripped.startswith("assert ") and "not in" in stripped:
+                        continue
+                if needle in checked:
+                    bad.append(f"{rel}:{number}: {needle}")
+    assert bad == [], bad
 
 
 def test_i6_without_a_limit_the_window_is_the_context():

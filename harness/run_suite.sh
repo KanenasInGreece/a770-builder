@@ -41,6 +41,41 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
 
+# A candidate --extra is refused here, before a stage, a seat, or a container.
+# The same words are refused again at serve time. This is the early exit.
+_refuse_candidate_measurement_extra(){
+  [ -n "${MODEL_EXTRA:-}" ] || return 0
+  [ -n "$MODEL_GGUF" ] || [ -n "$BASE_URL" ] || return 0
+  local engine=llama.cpp backend
+  if [ -n "$BASE_URL" ] && [ "$ENGINE" = strata ]; then
+    engine=strata
+  else
+    backend="${A770B_SERVED_BACKEND:-vulkan}"
+    case "$backend" in
+      vllm|sglang|strata) engine=$backend ;;
+    esac
+  fi
+  python3 - "$here" "$engine" "$MODEL_EXTRA" <<'PY' || return $?
+import shlex, sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+try:
+    words = shlex.split(sys.argv[3])
+except ValueError as exc:
+    print("⛔ extra could not be read (" + str(exc) + ")", file=sys.stderr)
+    raise SystemExit(2)
+if sys.argv[2] == "strata":
+    if words:
+        print("⛔ Strata engine flags belong in the prepared config", file=sys.stderr)
+        raise SystemExit(2)
+    raise SystemExit(0)
+message = profiling_contract.refusal(sys.argv[2], words)
+if message:
+    print("⛔ " + message, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
 USAGE="usage: run_suite.sh <profile>|--model <gguf> --ctx <n>|--base-url URL --served-model-name NAME [--engine strata] --ctx <n> [--kv <type>] [--kv-v <type>] [--extra \"<flags>\"] [--timeout <s>] [<seat>] [--suite kit/suite.json] [--stages s0,s1] [--reviewer <profile>] [--fresh] [--dry-run]"
 [ $# -ge 1 ] || die "$USAGE"
 SUITE="$A770B_PROJECT/kit/suite.json"
@@ -107,6 +142,7 @@ if [ -n "$BASE_URL" ] || [ -n "$SERVED_NAME" ]; then
   RUN_ATTACH=(--base-url "$BASE_URL" --served-model-name "$SERVED_NAME")
   [ -z "$ENGINE" ] || RUN_ATTACH+=(--engine "$ENGINE")
   echo "▶ --base-url $BASE_URL --served-model-name $SERVED_NAME${ENGINE:+ --engine $ENGINE}: ephemeral profile 'candidate' (ctx $MODEL_CTX), no weight file"
+  _refuse_candidate_measurement_extra || exit $?
 # A bare GGUF has no registry row. The three exports are the candidate card, mode and backend the sidecar records.
 elif [ -n "$MODEL_GGUF" ]; then
   [ -n "$MODEL_CTX" ] || die "--model requires --ctx <n>"
@@ -135,6 +171,7 @@ elif [ -n "$MODEL_GGUF" ]; then
   export A770B_CANDIDATE_BACKEND="${A770B_SERVED_BACKEND:-vulkan}"
   case " $A770B_PROFILES " in *" candidate "*) ;; *) export A770B_PROFILES="$A770B_PROFILES candidate" ;; esac
   echo "▶ --model $MODEL_GGUF: this is how a new GGUF climbs the task rung before it has a registry row — ephemeral profile 'candidate' (ctx $MODEL_CTX, kv $A770B_CANDIDATE_KV/$A770B_CANDIDATE_KV_V, card $A770B_CANDIDATE_CARD, mode $A770B_CANDIDATE_MODE, backend $A770B_CANDIDATE_BACKEND)"
+  _refuse_candidate_measurement_extra || exit $?
 else
   case ${#POSITIONALS[@]} in
     0) die "$USAGE" ;;

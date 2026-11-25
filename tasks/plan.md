@@ -49,7 +49,7 @@ The gemma weight segment mirrors the registry's `weight_class` (`8b-e4b`).
 
 ### Phase 5: re-measure (GPU campaign — measurement, not code)
 - [ ] T10: run SUITE-1@1 (`harness/run_suite.sh <card>`) on each inference card, record the suite object and
-      task-fit into the registry rows; expected per fact:2422 that no row clears 80% — record honestly.
+      task-fit into the registry rows; the earlier measurement expected that no row clears 80% — record honestly.
 
 ## OOM guard (operator instruction)
 

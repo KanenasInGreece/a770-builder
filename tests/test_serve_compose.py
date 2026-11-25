@@ -14,6 +14,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -305,7 +307,7 @@ if args and args[0] == "logs":
     if c is None:
         print(f"Error: No such container: {{cid}}", file=sys.stderr)
         sys.exit(1)
-    print("engine refused the model")
+    print(os.environ.get("FAKE_DOCKER_LOG_TEXT", "engine refused the model"))
     sys.exit(0)
 
 if args and args[0] == "stop":
@@ -2959,3 +2961,97 @@ def test_start_records_an_unconfirmed_receipt_and_still_starts(tmp_path):
     assert receipt["flags"] == ["--metrics", "-lv", "4"]
     assert receipt["confirmed"]["--metrics"] is False
     assert receipt["confirmed"]["-lv 4"] is False
+
+
+def _metrics_server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"llamacpp:prompt_tokens_total 1\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def test_start_records_a_confirmed_llama_receipt(tmp_path):
+    server = _metrics_server()
+    try:
+        bin_, _ = _fake_runtime(tmp_path)
+        env = _env(
+            tmp_path, bin_,
+            A770B_PORT=str(server.server_address[1]),
+            FAKE_DOCKER_LOG_TEXT="verbosity = 4\n",
+        )
+        result = _run(env, "start", GGUF, "8192")
+        assert result.returncode == 0, result.stdout + result.stderr
+        receipt = json.loads((Path(env["A770B_DATA"]) / "logs" / "profiling.json").read_text(encoding="utf-8"))
+        assert receipt["confirmed"]["--metrics"] is True
+        assert receipt["confirmed"]["-lv 4"] is True
+    finally:
+        server.shutdown()
+
+
+def test_start_records_a_confirmed_vllm_receipt(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    by_path = tmp_path / "by-path"
+    by_path.mkdir()
+    echo = "{'enable_per_request_metrics': True}"
+    env = _env(
+        tmp_path, bin_,
+        A770B_SERVED_BACKEND="vllm", A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0", A770B_QUANT="gptq", TOOL_PARSER="qwen3_coder",
+        A770B_COMPOSE_FILE=str(VLLM_ENVELOPE),
+        A770B_VLLM_IMAGE="example.invalid/vllm:local",
+        A770B_BY_PATH_DIR=str(by_path),
+        FAKE_DOCKER_LOG_TEXT="non-default args: " + echo,
+    )
+    result = _run(env, "start", GGUF, "8192")
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads((Path(env["A770B_DATA"]) / "logs" / "profiling.json").read_text(encoding="utf-8"))
+    assert receipt["engine"] == "vllm"
+    assert receipt["confirmed"]["--enable-per-request-metrics"] is True
+
+
+def test_candidate_extra_refuses_before_docker(tmp_path):
+    touched = tmp_path / "docker-was-called"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        "#!/bin/bash\ntouch \"$DOCKER_TOUCH\"\nexit 99\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / GGUF).write_text("dummy\n", encoding="utf-8")
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    env = dict(os.environ)
+    env.update({
+        "PATH": f"{tmp_path}:{env.get('PATH', '')}",
+        "A770B_PROJECT": str(ROOT),
+        "A770B_DATA": str(tmp_path / "data"),
+        "A770B_MODELS": str(models),
+        "A770B_DOCKER": str(docker),
+        "A770B_SERVE": "compose",
+        "A770B_CARD": "",
+        "A770B_SERVED_BACKEND": "vulkan",
+        "XDG_CONFIG_HOME": str(xdg),
+        "A770B_REFUSE": "/nonexistent",
+        "DOCKER_TOUCH": str(touched),
+    })
+    result = subprocess.run(
+        ["bash", str(ROOT / "harness" / "run_suite.sh"),
+         "--model", GGUF, "--ctx", "8192", "--extra", "--no-metrics"],
+        cwd=ROOT, capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "llama.cpp refuses --no-metrics" in result.stderr
+    assert not touched.exists()

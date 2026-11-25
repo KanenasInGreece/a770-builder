@@ -86,7 +86,7 @@ def _row_env(extra=None):
 
 
 def run_row(tmp_path: Path, sweep_table: str, depth_log: str, fail_rung: str = "",
-            fail_msg: str = "", env_extra=None) -> tuple:
+            fail_msg: str = "", env_extra=None, ctx: int = CTX) -> tuple:
     """Drive the computation with one set of rung outputs; return its result and the ladder JSON it wrote."""
     sweep_path = tmp_path / "ctx-sweep.log"
     sweep_path.write_text(sweep_table, encoding="utf-8")
@@ -94,7 +94,7 @@ def run_row(tmp_path: Path, sweep_table: str, depth_log: str, fail_rung: str = "
     depth_path.write_text(depth_log, encoding="utf-8")
     out_path = tmp_path / "ladder.json"
     argv = [
-        str(out_path), "long", "/models/a-model.gguf", str(CTX), "q8_0", "q8_0", "0", "-fa on", "1800",
+        str(out_path), "long", "/models/a-model.gguf", str(ctx), "q8_0", "q8_0", "0", "-fa on", "1800",
         "long", "SUITE-1@test", str(FAR_END), "64000", "52000",
         str(tmp_path / "no-bench-model.json"), "", str(sweep_path), str(depth_path),
         "", "", fail_rung, fail_msg, GENERATED,
@@ -310,6 +310,47 @@ def test_ladder_row_with_evidence_path_computes_ram_gb_extra_and_checkpoint_evid
     row = printed_row(result.stdout)
     assert row["ram_gb_extra"] == 1.09
     assert row["checkpoint"] == {"evidence": str(evidence_file)}
+
+
+def test_ladder_row_copies_profiling_and_nulls_unconfirmed_delivered(tmp_path):
+    """Evidence profiling lands on the row. Unconfirmed verbosity nulls speed.delivered."""
+    evidence_file = tmp_path / "serve.evidence.json"
+    profiling = {
+        "contract": 1,
+        "engine": "llama.cpp",
+        "flags": ["--metrics", "-lv", "4"],
+        "confirmed": {"--metrics": True, "-lv 4": False},
+    }
+    evidence_file.write_text(json.dumps({
+        "engine": "llama.cpp",
+        "gguf": {"source": "/models/a-model.gguf"},
+        "profiling": profiling,
+    }), encoding="utf-8")
+    suite = json.dumps({
+        "briefs": 1, "runs": 1, "passed": 1, "timeouts": 0, "mean_wall_s": 10.0,
+        "source": "s.json", "instrument": "SUITE-1@test",
+        "delivered": {"prefill_tps": 12.0, "decode_tps": 4.0, "source": "s.json"},
+    })
+    sweep_path = tmp_path / "ctx-sweep.log"
+    sweep_path.write_text(SWEEP_TABLE, encoding="utf-8")
+    depth_path = tmp_path / "depth-probe.log"
+    depth_path.write_text(DEPTH_PASSED, encoding="utf-8")
+    out_path = tmp_path / "ladder.json"
+    argv = [
+        str(out_path), "long", "/models/a-model.gguf", str(CTX), "q8_0", "q8_0", "0", "-fa on", "1800",
+        "long", "SUITE-1@test", str(FAR_END), "64000", "52000",
+        str(tmp_path / "no-bench-model.json"), "", str(sweep_path), str(depth_path),
+        suite, "", "", "", GENERATED,
+        str(evidence_file),
+    ]
+    result = subprocess.run(
+        [sys.executable, str(LADDER_ROW)] + argv,
+        capture_output=True, text=True, env=_row_env(),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    row = printed_row(result.stdout)
+    assert row["profiling"] == profiling
+    assert row["speed"]["delivered"] is None
 
 
 def test_ladder_row_with_different_model_evidence_leaves_ram_extra_null_and_prints_note(tmp_path):
@@ -782,9 +823,10 @@ def test_i7_with_a_limit_useful_ctx_follows_measured_ttft(tmp_path):
     falling_dir.mkdir()
     falling, falling_doc = run_row(
         falling_dir, _sweep("2.0", "2.0", "200.0", "50.0"), DEPTH_PASSED,
-        env_extra={"A770B_ABSORB_MAX_S": "80"},
+        env_extra={"A770B_ABSORB_MAX_S": "40"}, ctx=60000,
     )
-    assert falling_doc["computed"]["useful_ctx"] == CTX
+    assert falling.returncode == 0, falling.stderr
+    assert falling_doc["computed"]["useful_ctx"] == 1600
 
     over_dir = tmp_path / "over"
     over_dir.mkdir()

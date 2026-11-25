@@ -444,6 +444,23 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
   export A770B_SERVED_ENGINE
+  # Refuse a forbidden measurement flag before any docker or card command.
+  if [ -n "$extra" ]; then
+    python3 - "$A770B_PROJECT/harness" "$A770B_SERVED_ENGINE" $extra <<'PY' || return $?
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+if sys.argv[2] == "strata":
+    if len(sys.argv) > 3:
+        print("⛔ Strata engine flags belong in the prepared config", file=sys.stderr)
+        raise SystemExit(2)
+    raise SystemExit(0)
+message = profiling_contract.refusal(sys.argv[2], sys.argv[3:])
+if message:
+    print("⛔ " + message, file=sys.stderr)
+    raise SystemExit(2)
+PY
+  fi
   if [ "$A770B_SERVED_ENGINE" = strata ]; then _strata_serve; return $?; fi
   local strata_rc=0
   bash "$A770B_PROJECT/harness/serve_strata.sh" id >/dev/null || strata_rc=$?
