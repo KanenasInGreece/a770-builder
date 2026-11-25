@@ -1709,18 +1709,21 @@ def _load_patch(argv: list[str]) -> tuple[str, dict]:
     parser.add_argument("--trip-rule")
     args, rest = parser.parse_known_args(argv)
     raw = sys.stdin.read()
+    if args.trip_rule:
+        line = raw.strip()
+        if line.startswith("{"):
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict) and "line" in parsed:
+                line = str(parsed["line"])
+        return args.job, {
+            "trip": {"time": _now(), "rule": args.trip_rule, "line": line},
+        }
     patch = json.loads(raw) if raw.strip() else {}
     if not isinstance(patch, dict):
         raise QualifyError("status patch must be a JSON object")
-    if args.trip_rule:
-        line = patch.get("line", "")
-        patch = {
-            "trip": {
-                "time": _now(),
-                "rule": args.trip_rule,
-                "line": line,
-            }
-        }
     return args.job, patch
 
 
