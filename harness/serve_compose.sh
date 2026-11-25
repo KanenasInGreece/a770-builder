@@ -33,13 +33,82 @@ _compose(){
   [ -f "$OVERRIDE" ] && files+=(-f "$OVERRIDE")
   "$A770B_DOCKER" compose "${envf[@]}" -p "$A770B_COMPOSE_PROJECT" "${files[@]}" "$@"
 }
+# _apply_contract <engine> [extra…] — refuse a forbidden extra, then print the applied flags, one per line.
+# The words come from profiling_contract.py. A duplicate of an applied flag is refused there too.
+_apply_contract(){
+  local harness engine
+  harness=$(dirname "$0")
+  engine="$1"
+  shift
+  python3 - "$harness" "$engine" "$@" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+message = profiling_contract.refusal(sys.argv[2], sys.argv[3:])
+if message:
+    print("⛔ " + message, file=sys.stderr)
+    raise SystemExit(2)
+words = profiling_contract.flags(sys.argv[2])
+if words:
+    sys.stdout.write("\n".join(words) + "\n")
+PY
+}
+
+# _write_profiling_receipt <engine> — after a healthy start, record which switches took effect.
+# The receipt is merged into the serve evidence later, because that file does not exist yet.
+# The log goes to a file: a heredoc already owns this python's stdin.
+_write_profiling_receipt(){
+  local harness engine cid logfile rc
+  harness=$(dirname "$0")
+  engine="$1"
+  cid="${CREATED_CID:-}"
+  mkdir -p "$A770B_DATA/logs"
+  logfile="$A770B_DATA/logs/profiling-start.log"
+  : >"$logfile"
+  if [ -n "$cid" ]; then
+    "$A770B_DOCKER" logs "$cid" >"$logfile" 2>&1 || : >"$logfile"
+  fi
+  set +e
+  python3 - "$harness" "$engine" "$A770B_HOST" "$A770B_PORT" \
+      "${A770B_API_KEY_FILE:-}" "$A770B_DATA/logs/profiling.json" "$logfile" 0.4 <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+engine, host, port, key_file, out, log_path, timeout_s = sys.argv[2:9]
+try:
+    with open(log_path, encoding="utf-8", errors="replace") as handle:
+        log_text = handle.read()
+except OSError:
+    log_text = ""
+try:
+    timeout = float(timeout_s)
+except ValueError:
+    timeout = 0.4
+confirmed = profiling_contract.confirm_started(
+    engine, host, port, log_text, key_file or None, timeout=timeout,
+)
+profiling_contract.write_receipt(
+    out, profiling_contract.receipt(engine, confirmed),
+)
+PY
+  rc=$?
+  set -e
+  rm -f -- "$logfile"
+  return "$rc"
+}
+
 # _build_argv_llama <model-in-container> <ctx> [extra…] — the measured Vulkan flag set, with the container differences
 # only: the /models path and the in-container host/port/key path (the envelope mounts the key). The binary is NOT
 # an argv word here: it is the container's ENTRYPOINT (/app/llama-server), and compose runs entrypoint + command,
 # so a binary in `command` too would exec `/app/llama-server /app/llama-server …`.
 _build_argv_llama(){
   local model="$1" ctx="$2"; shift 2
-  local -a thinking=()
+  local -a thinking=() meas=()
+  local meas_text
+  meas_text=$(_apply_contract llama.cpp "$@")
+  if [ -n "$meas_text" ]; then
+    mapfile -t meas <<< "$meas_text"
+  fi
   local rmode="${THINKING_MODE:-${REASONING:-off}}"
   [ -n "$rmode" ] && thinking+=(--reasoning "$rmode")
   [ -n "${THINKING_EFFORT:-}" ] && thinking+=(--reasoning-effort "$THINKING_EFFORT")
@@ -48,17 +117,22 @@ _build_argv_llama(){
   # truncation marker llama-server injects is deterministic and bench_model.sh / depth_probe.sh can grep for it
   [ -n "${THINKING_BUDGET:-}" ] && [ -n "${THINKING_BUDGET_MESSAGE:-$A770B_BUDGET_MESSAGE}" ] && thinking+=(--reasoning-budget-message "${THINKING_BUDGET_MESSAGE:-$A770B_BUDGET_MESSAGE}")
   [ "${THINKING_PRESERVE:-}" = "false" ] && thinking+=(--no-reasoning-preserve)
-  # --metrics -lv 4: /metrics for the stage-counter diff (C11), and verbosity 4 for the engine-evidence log lines
-  # (host buffer sizes, tensor counts, the sampler block, …) — both llama.cpp backends this harness serves
-  # (vulkan, sycl), never the vLLM argv (_build_argv_vllm, above, is a separate function)
+  # Measurement switches come from the profiling contract, before the caller's extra words.
+  # Both llama.cpp backends this harness serves (vulkan, sycl) take that list.
   ARGV=(-m "$model" --alias "$A770B_ALIAS" --host 0.0.0.0 --port 8080 --api-key-file "$KCONTAINER" \
     -ngl 99 -c "$ctx" -b "$A770B_BATCH" -ub "$A770B_UBATCH" --parallel 1 -fa on --load-mode none -ctk "${KV_K:-q8_0}" -ctv "${KV_V:-q8_0}" \
-    --metrics -lv 4 --jinja "${thinking[@]}" --reasoning-format deepseek "$@")
+    "${meas[@]}" --jinja "${thinking[@]}" --reasoning-format deepseek "$@")
 }
 
 # _build_argv_vllm <model-in-container> <ctx> [extra…] — the vLLM flag set.
 _build_argv_vllm(){
   local model="$1" ctx="$2"; shift 2
+  local -a meas=()
+  local meas_text
+  meas_text=$(_apply_contract vllm "$@")
+  if [ -n "$meas_text" ]; then
+    mapfile -t meas <<< "$meas_text"
+  fi
   local quant="${QUANT:-${A770B_QUANT:-}}"
   [ -n "$quant" ] || { echo "⛔ quantization must be set for the vllm backend (e.g. awq, gptq, auto-round) — set QUANT or the profile row's quant field" >&2; exit 2; }
   [ -n "${A770B_VRAM_CAP_GIB:-}" ] || { echo "⛔ A770B_VRAM_CAP_GIB must be set before a vLLM start" >&2; exit 2; }
@@ -122,6 +196,7 @@ _build_argv_vllm(){
     --enable-auto-tool-choice
     --tool-call-parser "$tool_parser"
     "${reasoning_argv[@]}"
+    "${meas[@]}"
     "$@"
   )
 }
@@ -148,6 +223,12 @@ _refuse_sglang_parser(){
 # are not the profile's model, context, name, quant, or parsers.
 _build_argv_sglang(){
   local model="$1" ctx="$2"; shift 2
+  local -a meas=()
+  local meas_text
+  meas_text=$(_apply_contract sglang "$@")
+  if [ -n "$meas_text" ]; then
+    mapfile -t meas <<< "$meas_text"
+  fi
   local quant="${QUANT:-${A770B_QUANT:-}}"
   local tool_parser="${TOOL_PARSER:-}"
   local reasoning_parser="${REASONING_PARSER:-}"
@@ -163,6 +244,7 @@ _build_argv_sglang(){
     --port "$A770B_PORT"
     --tool-call-parser "$tool_parser"
     --reasoning-parser "$reasoning_parser"
+    "${meas[@]}"
     "$@"
   )
 }
@@ -925,6 +1007,10 @@ if ! _down_other_worktree_llama; then exit 3; fi
 if [ -f "$EVPATHFILE" ] && [ ! -L "$EVPATHFILE" ]; then
   rm -f -- "$EVPATHFILE"
 fi
+# A previous start's confirmation must not be copied onto this start's evidence.
+if [ -f "$A770B_DATA/logs/profiling.json" ] && [ ! -L "$A770B_DATA/logs/profiling.json" ]; then
+  rm -f -- "$A770B_DATA/logs/profiling.json"
+fi
 budget_gate || exit 1
 a770b_api_key >/dev/null || { echo "⛔ cannot create the API key file $A770B_API_KEY_FILE" >&2; exit 2; }
 _ep_arg=()
@@ -1052,6 +1138,17 @@ fi
 limit_note=""
 if [ "$limit_why" != cap ] || [ "$limit" != "$A770B_VRAM_CAP_GIB" ]; then
   limit_note=" · ${limit_why} ${limit} GiB"
+fi
+# Confirmation runs once the server is healthy and the cap has accepted it.
+# A failed read records false and does not fail the start. pending is unused:
+# both proofs are on the log or on /metrics at this moment.
+_profiling_engine=""
+case "${A770B_SERVED_BACKEND:-}" in
+  vulkan|sycl) _profiling_engine="llama.cpp" ;;
+  vllm|sglang) _profiling_engine="${A770B_SERVED_BACKEND}" ;;
+esac
+if [ -n "$_profiling_engine" ]; then
+  _write_profiling_receipt "$_profiling_engine" || true
 fi
 echo "▶ started server container ($A770B_COMPOSE_PROJECT) on $A770B_HOST:$A770B_PORT — model $(basename "$MODEL") ctx $CTX ub $A770B_UBATCH kv ${KV_K:-q8_0}/${KV_V:-q8_0} · mode $A770B_CARD_MODE · cap $A770B_VRAM_CAP_GIB GiB${limit_note} — host pid $CPID"
 echo "$vram_note"

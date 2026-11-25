@@ -70,6 +70,8 @@ from typing import Optional
 
 from live_backend import read
 
+import profiling_contract
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # The project these commands read and render. --root points them at another tree (tests use a temp copy, so they
 # never write the tracked registry or documents).
@@ -146,6 +148,7 @@ STRING_KEYS = (
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
     "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
     "task", "evidence", "engine", "tool_parser", "reasoning_parser", "vllm_image",
+    "useful_ctx_rule",
 )
 # The task classes a row competes in. The organizing axis of a registry is now the task,
 # not the window: a row is a (model, quant, KV, context, sampling) cell that wins one of these.
@@ -153,17 +156,18 @@ TASK_VALUES = {
     "code-edit", "code-read", "debug-test", "prose-docs", "os-ops", "data-structured",
     "instruction-agentic",
 }
-INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
+INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens", "absorb_max_s")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
     "instrument", "thinking", "operator_override", "checkpoint", "kernel", "measured_tasks",
-    "requests",
+    "requests", "profiling",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {
     "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
     "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
-    "reasoning_parser", "vllm_image", "measured_tasks", "requests",
+    "reasoning_parser", "vllm_image", "measured_tasks", "requests", "profiling",
+    "useful_ctx_rule", "absorb_max_s",
 }
 MEASURED_TASK_KEYS = {"quality", "wall_s", "context_tokens", "thinking"}
 ENGINE_VALUES = {"llama.cpp", "vllm", "sglang", "strata"}
@@ -233,6 +237,24 @@ def _reasoning_switch(prof) -> str:
     if isinstance(reasoning, str):
         return reasoning
     return "off"
+
+
+def _measurement_engine(prof: dict) -> str:
+    """Which contract row a profile's extra is checked against.
+
+    An engine already in the table wins. vulkan and sycl are llama.cpp.
+    A backend that names an engine (vllm, sglang, strata) is that engine.
+    Anything else is llama.cpp, which is what an omitted engine has always been.
+    """
+    engine = prof.get("engine")
+    backend = prof.get("backend")
+    if engine in profiling_contract.TABLE:
+        return engine
+    if backend in ("vulkan", "sycl"):
+        return "llama.cpp"
+    if backend in profiling_contract.TABLE:
+        return backend
+    return "llama.cpp"
 
 
 def validate(data) -> list[str]:
@@ -311,6 +333,12 @@ def validate(data) -> list[str]:
             if prof["useful_ctx"] > prof["ctx"]:
                 errors.append(f"{name}: useful_ctx must be <= ctx")
 
+        rule = prof.get("useful_ctx_rule")
+        if "useful_ctx_rule" in prof and rule != profiling_contract.RULE_NAME:
+            errors.append(
+                f"{name}: useful_ctx_rule must be {profiling_contract.RULE_NAME}"
+            )
+
         if "vram_gib_after_load" in prof:
             v = prof["vram_gib_after_load"]
             if not _is_number(v) or v <= 0:
@@ -375,6 +403,10 @@ def validate(data) -> list[str]:
                 errors.append(f"{name}: {field} int8 is only recorded for the Strata engine")
 
         extra = prof.get("extra")
+        if isinstance(extra, str) and extra.strip():
+            refused = profiling_contract.refusal(_measurement_engine(prof), extra.split())
+            if refused:
+                errors.append(f"{name}: {refused}")
         if prof.get("backend") == "sglang" and isinstance(extra, str):
             served_kv = re.search(r"(?:^|\s)--kv-cache-dtype(?:=|\s+)(\S+)", extra)
             if served_kv and prof.get("kv") != served_kv.group(1):
@@ -388,7 +420,7 @@ def validate(data) -> list[str]:
 
         if "speed" in prof:
             speed = prof["speed"]
-            speed_allowed = {"decode_tps", "prefill_tps", "far_end", "bench", "delivered"}
+            speed_allowed = {"decode_tps", "prefill_tps", "far_end", "bench", "delivered", "absorb_s"}
             if not isinstance(speed, dict) or not {"decode_tps", "prefill_tps"} <= set(speed.keys()) or set(speed.keys()) - speed_allowed:
                 errors.append(f"{name}: speed must be an object with decode_tps and prefill_tps")
             else:
@@ -440,9 +472,23 @@ def validate(data) -> list[str]:
                                         if vv is not None and not _is_number(vv):
                                             errors.append(f"{name}: speed.bench.at_depth.{dk}.{vk} must be a number or null")
 
+                if "absorb_s" in speed:
+                    absorb = speed["absorb_s"]
+                    if not isinstance(absorb, dict) or set(absorb.keys()) != {"8k", "far_end"}:
+                        errors.append(f"{name}: speed.absorb_s must be an object with 8k and far_end")
+                    else:
+                        for kk in ("8k", "far_end"):
+                            vv = absorb[kk]
+                            if vv is not None and (not _is_number(vv) or vv < 0):
+                                errors.append(
+                                    f"{name}: speed.absorb_s.{kk} must be a number of at least 0, or null"
+                                )
+
                 if "delivered" in speed:
                     delivered = speed["delivered"]
-                    if not isinstance(delivered, dict) or set(delivered.keys()) != DELIVERED_KEYS:
+                    if delivered is None:
+                        pass
+                    elif not isinstance(delivered, dict) or set(delivered.keys()) != DELIVERED_KEYS:
                         errors.append(f"{name}: speed.delivered must be an object with prefill_tps, decode_tps, source")
                     else:
                         for kk in ("prefill_tps", "decode_tps"):
@@ -537,6 +583,36 @@ def validate(data) -> list[str]:
                     src = req["source"]
                     if not isinstance(src, str) or not src or "/" in src:
                         errors.append(f"{name}: requests.source must be a non-empty string with no slash")
+
+        if "profiling" in prof:
+            profiling = prof["profiling"]
+            where = f"{name}: profiling"
+            allowed = {"contract", "engine", "flags", "confirmed"}
+            if not isinstance(profiling, dict):
+                errors.append(f"{where} must be an object")
+            else:
+                for kk in profiling.keys():
+                    if kk not in allowed:
+                        errors.append(f"{where}: unknown key {kk}")
+                for kk in allowed:
+                    if kk not in profiling:
+                        errors.append(f"{where}: missing key {kk}")
+                if not _is_pos_int(profiling.get("contract")):
+                    errors.append(f"{where}.contract must be a positive int")
+                if profiling.get("engine") not in ENGINE_VALUES:
+                    errors.append(f"{where}.engine must be one of {sorted(ENGINE_VALUES)}")
+                flags = profiling.get("flags")
+                if not isinstance(flags, list) or any(not isinstance(item, str) for item in flags):
+                    errors.append(f"{where}.flags must be a list of strings")
+                confirmed = profiling.get("confirmed")
+                if not isinstance(confirmed, dict):
+                    errors.append(f"{where}.confirmed must be an object")
+                else:
+                    for ck, cv in confirmed.items():
+                        if not isinstance(ck, str) or cv not in (True, False, "pending"):
+                            errors.append(
+                                f"{where}.confirmed.{ck} must be true, false, or pending"
+                            )
 
         if "suite" in prof:
             suite = prof["suite"]

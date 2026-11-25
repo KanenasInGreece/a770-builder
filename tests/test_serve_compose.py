@@ -369,7 +369,8 @@ def _env(tmp_path: Path, bin_=None, **overrides) -> dict:
         A770B_RENDER_GID="105",
         A770B_VIDEO_GID="39",
         A770B_DOCKER="docker",
-        A770B_PORT="7890",
+        A770B_HOST="127.0.0.1",
+        A770B_PORT="9",
         A770B_PROFILES_FILE="",
         FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
         FAKE_PGREP="",
@@ -2857,3 +2858,92 @@ PY
     assert r4_start.returncode == 0, r4_start.stdout + r4_start.stderr
     ov = json.loads((Path(e4["A770B_DATA"]) / "logs" / "compose-argv.override.json").read_text(encoding="utf-8"))
     assert ov["services"]["llama"]["pull_policy"] == "never"
+
+
+def _once(argv, flag):
+    return sum(1 for word in argv if word == flag)
+
+
+def test_i1_each_engine_argv_carries_its_applied_flags_once(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    vulkan = _run(_env(tmp_path, bin_, A770B_SERVED_BACKEND="vulkan"), "plan", GGUF, "8192")
+    assert vulkan.returncode == 0, vulkan.stderr
+    argv = _argv_lines(vulkan.stdout)
+    assert _once(argv, "--metrics") == 1
+    assert argv[argv.index("-lv") + 1] == "4" and _once(argv, "-lv") == 1
+
+    sycl_dir = tmp_path / "sycl"
+    sycl_dir.mkdir()
+    sycl_bin, _ = _fake_runtime(sycl_dir)
+    sycl = _run(_env(sycl_dir, sycl_bin, A770B_SERVED_BACKEND="sycl"), "plan", GGUF, "8192")
+    assert sycl.returncode == 0, sycl.stderr
+    sycl_argv = _argv_lines(sycl.stdout)
+    assert _once(sycl_argv, "--metrics") == 1 and sycl_argv[sycl_argv.index("-lv") + 1] == "4"
+
+    vllm_dir = tmp_path / "vllm"
+    vllm_dir.mkdir()
+    vllm_bin, _ = _fake_runtime(vllm_dir)
+    vllm = _run(_env(
+        vllm_dir, vllm_bin, A770B_SERVED_BACKEND="vllm", A770B_CARD_VRAM_TOTAL="32",
+        A770B_VRAM_CAP_GIB="16.0", A770B_QUANT="gptq", TOOL_PARSER="qwen3_coder",
+    ), "plan", GGUF, "8192")
+    assert vllm.returncode == 0, vllm.stderr
+    vllm_argv = _argv_lines(vllm.stdout)
+    assert _once(vllm_argv, "--enable-per-request-metrics") == 1
+    assert "--metrics" not in vllm_argv and "-lv" not in vllm_argv
+
+    sg_dir = tmp_path / "sglang"
+    sg_dir.mkdir()
+    sg_bin, _ = _fake_runtime(sg_dir)
+    sglang = _run(_env(
+        sg_dir, sg_bin, A770B_SERVED_BACKEND="sglang", A770B_QUANT="exl3",
+        TOOL_PARSER="qwen3_coder", REASONING_PARSER="qwen3", A770B_PORT="30000",
+    ), "plan", GGUF, "8192")
+    assert sglang.returncode == 0, sglang.stderr
+    sg_argv = _argv_lines(sglang.stdout)
+    assert "--export-metrics-to-file" not in sg_argv
+    assert "--log-requests" not in sg_argv
+
+
+def test_i2_forbidden_and_duplicate_flags_refuse_before_a_container(tmp_path):
+    cases = [
+        ("vulkan", {"A770B_SERVED_BACKEND": "vulkan"}, ["--metrics"]),
+        ("vulkan-equals", {"A770B_SERVED_BACKEND": "vulkan"}, ["--log-disable=1"]),
+        ("vllm", {
+            "A770B_SERVED_BACKEND": "vllm", "A770B_CARD_VRAM_TOTAL": "32",
+            "A770B_VRAM_CAP_GIB": "16.0", "A770B_QUANT": "gptq", "TOOL_PARSER": "qwen3_coder",
+        }, ["--disable-log-stats"]),
+        ("vllm-dup", {
+            "A770B_SERVED_BACKEND": "vllm", "A770B_CARD_VRAM_TOTAL": "32",
+            "A770B_VRAM_CAP_GIB": "16.0", "A770B_QUANT": "gptq", "TOOL_PARSER": "qwen3_coder",
+        }, ["--enable-per-request-metrics"]),
+        ("sglang", {
+            "A770B_SERVED_BACKEND": "sglang", "A770B_QUANT": "exl3",
+            "TOOL_PARSER": "qwen3_coder", "REASONING_PARSER": "qwen3",
+        }, ["--log-requests"]),
+        # the candidate path is this same argv, with the row extra expanded as words
+        ("candidate", {"A770B_SERVED_BACKEND": "vulkan"}, ["--no-metrics"]),
+    ]
+    for label, overrides, extra in cases:
+        for mode in ("plan", "signature", "start"):
+            slot = tmp_path / f"{label}-{mode}"
+            slot.mkdir()
+            bin_, log = _fake_runtime(slot)
+            result = _run(_env(slot, bin_, **overrides), mode, GGUF, "8192", *extra)
+            assert result.returncode == 2, (label, mode, result.stderr)
+            assert "refuses" in result.stderr, (label, mode, result.stderr)
+            assert not log.exists() or " up " not in log.read_text(encoding="utf-8"), label
+
+
+def test_start_records_an_unconfirmed_receipt_and_still_starts(tmp_path):
+    bin_, _ = _fake_runtime(tmp_path)
+    env = _env(tmp_path, bin_)
+    result = _run(env, "start", GGUF, "8192")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "started server container" in result.stdout
+    receipt = json.loads((Path(env["A770B_DATA"]) / "logs" / "profiling.json").read_text(encoding="utf-8"))
+    assert receipt["engine"] == "llama.cpp"
+    assert receipt["contract"] == 1
+    assert receipt["flags"] == ["--metrics", "-lv", "4"]
+    assert receipt["confirmed"]["--metrics"] is False
+    assert receipt["confirmed"]["-lv 4"] is False

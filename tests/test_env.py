@@ -690,7 +690,7 @@ def test_env_resolves_only_the_installed_cards_registry(tmp_path):
     proj = tmp_path / "proj"
     (proj / "config" / "registry").mkdir(parents=True)
     (proj / "harness").mkdir(parents=True)
-    for rel in ("harness/profiles.py", "harness/live_backend.py"):
+    for rel in ("harness/profiles.py", "harness/profiling_contract.py", "harness/live_backend.py"):
         (proj / rel).write_bytes((ROOT / rel).read_bytes())
     display = json.loads((ROOT / "config" / "registry" / "a770.display.json").read_text(encoding="utf-8"))
 
@@ -746,7 +746,7 @@ def _one_card_project(tmp_path, registry_text: str) -> Path:
     proj = tmp_path / "proj"
     (proj / "config" / "registry").mkdir(parents=True)
     (proj / "harness").mkdir(parents=True)
-    for rel in ("harness/profiles.py", "harness/live_backend.py"):
+    for rel in ("harness/profiles.py", "harness/profiling_contract.py", "harness/live_backend.py"):
         (proj / rel).write_bytes((ROOT / rel).read_bytes())
     (proj / "config" / "cards.json").write_text(
         json.dumps({"schema": 1, "cards": {"a770": {"role": "builder"}}}), encoding="utf-8")

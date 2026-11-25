@@ -3332,6 +3332,51 @@ def test_requests_rejects_an_unknown_key_and_a_bad_value(tmp_path):
     assert "requests: missing key source" in result.stderr
 
 
+def test_i4_profiling_validates_when_present_and_absence_stays_valid(tmp_path):
+    data = load_base()
+    path = write_json(tmp_path / "absent.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "contract": 1,
+        "engine": "llama.cpp",
+        "flags": ["--metrics", "-lv", "4"],
+        "confirmed": {"--metrics": True, "-lv 4": "pending"},
+    }
+    row["useful_ctx_rule"] = "prefill-absorb-v1"
+    row["absorb_max_s"] = 600
+    row["speed"]["absorb_s"] = {"8k": 14.0, "far_end": None}
+    row["speed"]["delivered"] = None
+    path = write_json(tmp_path / "present.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    row["profiling"]["note"] = "typed"
+    path = write_json(tmp_path / "unknown.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiling: unknown key note" in result.stderr
+
+
+def test_i2_profiles_check_refuses_a_forbidden_extra(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["extra"] = row["extra"] + " --metrics"
+    path = write_json(tmp_path / "dup.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "llama.cpp refuses --metrics" in result.stderr
+    row["extra"] = "--log-requests"
+    row["backend"] = "sglang"
+    row["engine"] = "sglang"
+    row["kv"] = "fp8_e4m3"
+    row["kv_v"] = "fp8_e4m3"
+    path = write_json(tmp_path / "sglang.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "sglang refuses --log-requests" in result.stderr
+
+
 def test_tracked_catalogue_documents_show_the_strata_row_at_one_decimal():
     for rel in ("README.md", "config/models.md"):
         text = (ROOT / rel).read_text(encoding="utf-8")
