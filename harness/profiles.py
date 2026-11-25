@@ -44,6 +44,12 @@ an unknown key or a wrong type is refused. The older top-level `reasoning` field
 stays for now and must not contradict `thinking.mode` when both are set (an "auto" mode never
 contradicts either value of `reasoning`).
 
+A row's `requests` object is optional. It records the suite's peak request, not a speed:
+`max_prompt_tokens` and `max_completion_tokens` (a positive int or null), `length_stops`
+(an int of at least 0, or null), `prefill_tps` and `decode_tps` (a positive number or null),
+and `source` (a non-empty string with no slash, the results file's base name). The keys are
+exact. An unknown key is refused. It is not `speed`, `speed.delivered`, or `measured_tasks`.
+
 A row may also name the serving triple that a GGUF nickname hides: `engine` (`llama.cpp`,
 `vllm`, `sglang`, or `strata`), `checkpoint` (`format`, `weight_quant`, `activation_quant`), and `kernel` (`path`,
 `xmx`, `evidence`). All three are optional. Omitted means untested, not "the same as the
@@ -118,6 +124,10 @@ FAR_END_KEYS = {"tokens", "decode_tps", "prefill_tps", "ttft_s"}
 BENCH_KEYS = {"tool", "prompt", "gen", "flags", "at_depth", "source"}
 BENCH_AT_DEPTH_VALUE_KEYS = {"pp", "tg"}
 DELIVERED_KEYS = {"prefill_tps", "decode_tps", "source"}
+REQUEST_KEYS = {
+    "max_prompt_tokens", "max_completion_tokens", "length_stops",
+    "prefill_tps", "decode_tps", "source",
+}
 FIT_KEYS = {"code", "think", "write"}
 SUITE_KEYS = {"briefs", "runs", "passed", "timeouts", "mean_wall_s", "source", "instrument", "stages", "reviewer"}
 SUITE_REQUIRED_KEYS = {"briefs", "runs", "passed", "source"}
@@ -147,12 +157,13 @@ INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
     "instrument", "thinking", "operator_override", "checkpoint", "kernel", "measured_tasks",
+    "requests",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {
     "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
     "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
-    "reasoning_parser", "vllm_image", "measured_tasks",
+    "reasoning_parser", "vllm_image", "measured_tasks", "requests",
 }
 MEASURED_TASK_KEYS = {"quality", "wall_s", "context_tokens", "thinking"}
 ENGINE_VALUES = {"llama.cpp", "vllm", "sglang", "strata"}
@@ -499,6 +510,33 @@ def validate(data) -> list[str]:
                             errors.append(f"{where}: context_tokens must be a positive int or null")
                     if "thinking" in entry and entry["thinking"] not in ("on", "off"):
                         errors.append(f"{where}: thinking must be on or off")
+
+        if "requests" in prof:
+            req = prof["requests"]
+            if not isinstance(req, dict):
+                errors.append(f"{name}: requests must be an object")
+            else:
+                for kk in req.keys():
+                    if kk not in REQUEST_KEYS:
+                        errors.append(f"{name}: requests: unknown key {kk}")
+                for kk in REQUEST_KEYS:
+                    if kk not in req:
+                        errors.append(f"{name}: requests: missing key {kk}")
+                if set(req.keys()) == REQUEST_KEYS:
+                    for kk in ("max_prompt_tokens", "max_completion_tokens"):
+                        vv = req[kk]
+                        if vv is not None and not _is_pos_int(vv):
+                            errors.append(f"{name}: requests.{kk} must be a positive int or null")
+                    stops = req["length_stops"]
+                    if stops is not None and not (_is_int(stops) and stops >= 0):
+                        errors.append(f"{name}: requests.length_stops must be an int of at least 0, or null")
+                    for kk in ("prefill_tps", "decode_tps"):
+                        vv = req[kk]
+                        if vv is not None and (not _is_number(vv) or vv <= 0):
+                            errors.append(f"{name}: requests.{kk} must be a positive number or null")
+                    src = req["source"]
+                    if not isinstance(src, str) or not src or "/" in src:
+                        errors.append(f"{name}: requests.source must be a non-empty string with no slash")
 
         if "suite" in prof:
             suite = prof["suite"]

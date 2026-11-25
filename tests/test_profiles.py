@@ -3265,6 +3265,73 @@ def test_catalogue_shows_the_b70_strata_row_at_one_decimal_and_keeps_raw_registr
     assert speed["prefill_tps"]["8k"] == 1337.1326933097464
 
 
+def _requests(**overrides):
+    obj = {
+        "max_prompt_tokens": 21346,
+        "max_completion_tokens": 100,
+        "length_stops": 0,
+        "prefill_tps": 571.0,
+        "decode_tps": 29.5,
+        "source": "suite.json",
+    }
+    obj.update(overrides)
+    return obj
+
+
+def test_requests_object_is_optional_and_exact(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["requests"] = _requests()
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["requests"] = _requests(
+        max_prompt_tokens=None, max_completion_tokens=None,
+        length_stops=None, prefill_tps=None, decode_tps=None,
+    )
+    path = write_json(tmp_path / "nulls.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+
+def test_requests_rejects_an_unknown_key_and_a_bad_value(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["requests"] = _requests(note="x")
+    path = write_json(tmp_path / "p.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "requests: unknown key note" in result.stderr
+    row["bogus"] = 1
+    path = write_json(tmp_path / "profile.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "unknown key bogus" in result.stderr
+    row.pop("bogus")
+    for bad, needle in (
+        ({"max_prompt_tokens": 0}, "max_prompt_tokens"),
+        ({"max_prompt_tokens": True}, "max_prompt_tokens"),
+        ({"max_completion_tokens": -1}, "max_completion_tokens"),
+        ({"length_stops": -1}, "length_stops"),
+        ({"length_stops": True}, "length_stops"),
+        ({"prefill_tps": 0}, "prefill_tps"),
+        ({"decode_tps": -2.5}, "decode_tps"),
+        ({"source": ""}, "source"),
+        ({"source": "results/suite.json"}, "source"),
+        ({"source": 1}, "source"),
+    ):
+        row["requests"] = _requests(**bad)
+        path = write_json(tmp_path / "bad.json", data)
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2, bad
+        assert needle in result.stderr, bad
+    row["requests"] = _requests()
+    del row["requests"]["source"]
+    path = write_json(tmp_path / "missing.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "requests: missing key source" in result.stderr
+
+
 def test_tracked_catalogue_documents_show_the_strata_row_at_one_decimal():
     for rel in ("README.md", "config/models.md"):
         text = (ROOT / rel).read_text(encoding="utf-8")

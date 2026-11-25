@@ -358,3 +358,136 @@ def test_contamination_pair_reports_not_run_infra_error_and_ambiguous_legacy(tmp
     assert "contamination (ref-legfail, js): public UNKNOWN · hidden UNKNOWN" in r.stdout
     assert "contamination (ref-legpass, javascript): public PASS · hidden PASS" in r.stdout
     assert "contamination (ref-forged, python): public UNKNOWN · hidden UNKNOWN" in r.stdout
+
+
+def _record_requests(env):
+    script = r'''
+set -euo pipefail
+eval "$(sed -n '/^record_suite_requests(){/,/^}$/p' "$1/harness/run_suite.sh")"
+record_suite_requests
+'''
+    return subprocess.run(
+        ["bash", "-c", script, "req", env["A770B_PROJECT"]],
+        capture_output=True, text=True, env=env,
+    )
+
+
+def test_record_suite_requests_aggregates_counted_stages(tmp_path):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    (data / "results" / "s1.task.md").write_text(
+        "## model diff\nprefill tok/s over all prompts=9999\n"
+        "## server-side timings during the run\n"
+        "prefill tok/s over all prompts=100\n"
+        "TPOT ms: median=1   decode tok/s median=10\n",
+        encoding="utf-8",
+    )
+    (data / "results" / "s2.task.md").write_text(
+        "## server-side timings during the run\nprefill_tps=300 decode_tps=30\n",
+        encoding="utf-8",
+    )
+    (data / "results" / "note.task.md").write_text(
+        "## server-side timings during the run\n"
+        "prefill tok/s over all prompts=9000\n"
+        "TPOT ms: median=1   decode tok/s median=90\n",
+        encoding="utf-8",
+    )
+    outfile = tmp_path / "kit-run.json"
+    outfile.write_text(json.dumps({"stages": [
+        {"id": "s1", "label": "s1", "counts_toward_pass": True,
+         "max_prompt_tokens": 1200, "max_completion_tokens": 40, "length_stops": 1},
+        {"id": "s2", "label": "s2",
+         "max_prompt_tokens": 800, "max_completion_tokens": 10, "length_stops": 0},
+        {"id": "note", "label": "note", "counts_toward_pass": False,
+         "max_prompt_tokens": 99999, "max_completion_tokens": 99999, "length_stops": 7},
+        {"id": "bare", "label": "bare",
+         "max_prompt_tokens": None, "max_completion_tokens": None, "length_stops": None},
+    ]}), encoding="utf-8")
+    registry = json.loads((ROOT / "config" / "registry" / "a770.display.json").read_text(encoding="utf-8"))
+    row0 = registry["profiles"]["qwen35-9b-q4km-vulkan"]
+    speed = json.loads(json.dumps(row0["speed"]))
+    measured = json.loads(json.dumps(row0.get("measured_tasks")))
+    pf = tmp_path / "a770.display.json"
+    pf.write_text(json.dumps(registry), encoding="utf-8")
+    env = dict(os.environ)
+    env.update({
+        "A770B_PROJECT": str(ROOT),
+        "A770B_DATA": str(data),
+        "A770B_PROFILES_FILE": str(pf),
+        "PROFILE": "qwen35-9b-q4km-vulkan",
+        "OUTFILE": str(outfile),
+    })
+    result = _record_requests(env)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(pf.read_text(encoding="utf-8"))
+    row = updated["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert row["speed"] == speed
+    assert row.get("measured_tasks") == measured
+    assert row["requests"] == {
+        "max_prompt_tokens": 1200,
+        "max_completion_tokens": 40,
+        "length_stops": 1,
+        "prefill_tps": 200.0,
+        "decode_tps": 20.0,
+        "source": "kit-run.json",
+    }
+    assert str(tmp_path) not in json.dumps(row["requests"])
+    assert "/" not in row["requests"]["source"]
+
+    before = pf.read_text(encoding="utf-8")
+    env["PROFILE"] = "not-a-row"
+    result = _record_requests(env)
+    assert result.returncode == 0, result.stderr
+    assert pf.read_text(encoding="utf-8") == before
+
+    env["PROFILE"] = "qwen35-9b-q4km-vulkan"
+    outfile.write_text(json.dumps({"stages": [
+        {"id": "none", "label": "missing", "max_prompt_tokens": 0, "length_stops": None},
+        {"id": "zero", "label": "also-missing", "length_stops": 0},
+    ]}), encoding="utf-8")
+    result = _record_requests(env)
+    assert result.returncode == 0, result.stderr
+    row = json.loads(pf.read_text(encoding="utf-8"))["profiles"]["qwen35-9b-q4km-vulkan"]
+    assert row["requests"]["max_prompt_tokens"] is None
+    assert row["requests"]["max_completion_tokens"] is None
+    assert row["requests"]["length_stops"] == 0
+    assert row["requests"]["prefill_tps"] is None
+    assert row["requests"]["decode_tps"] is None
+    assert row["requests"]["source"] == "kit-run.json"
+    assert row["speed"] == speed
+
+    frozen = pf.read_text(encoding="utf-8")
+    outfile.write_text(json.dumps({"stages": [
+        {"id": "none", "label": "missing",
+         "max_prompt_tokens": 0, "max_completion_tokens": 0, "length_stops": None},
+    ]}), encoding="utf-8")
+    result = _record_requests(env)
+    assert result.returncode == 0, result.stderr
+    assert pf.read_text(encoding="utf-8") == frozen
+
+
+def test_emit_stage_keeps_a_printed_zero_and_an_absent_line_null():
+    emit = subprocess.run(
+        ["awk", r"/^emit_stage\(\)\{/{p=1} p{print} p && /^PY$/{py=1} py && /^}$/{exit}",
+         str(ROOT / "harness" / "run_suite.sh")],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    script = f"""
+set -euo pipefail
+RESULTS_NDJSON=$(mktemp)
+trap 'rm -f "$RESULTS_NDJSON"' EXIT
+{emit}
+emit_stage "s" "py" "lbl" "true" "0" "1" "2" "true" "null" "3" \\
+  "1" "2" "3" "[]" "true" "[]" "pass" "null" "" "null" "" "0" "4"
+emit_stage "t" "py" "lbl" "true" "0" "1" "2" "true" "null" "3" \\
+  "1" "2" "3" "[]" "true" "[]" "pass" "null" "" "null"
+cat "$RESULTS_NDJSON"
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    first, second = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert first["max_prompt_tokens"] is None
+    assert first["max_completion_tokens"] == 0
+    assert first["length_stops"] == 4
+    assert second["max_prompt_tokens"] is None
+    assert second["max_completion_tokens"] is None
+    assert second["length_stops"] is None

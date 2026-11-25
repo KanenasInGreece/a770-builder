@@ -21,12 +21,15 @@ a gap that rounds to zero milliseconds is left out. One JSON body has no split,
 so it stays counts only. A missing clock is not a zero rate.
 A write that fails removes the usage file, so an older complete list
 cannot be read as this run.
+A finish_reason that is a short token is kept with those integers.
+Message text is not.
 '''
 
 import argparse
 import json
 import os
 import queue
+import re
 import socket
 import sys
 import threading
@@ -39,6 +42,7 @@ _COUNT_KEYS = ('prompt_tokens', 'completion_tokens', 'total_tokens', 'reasoning_
 _CLOCK_KEYS = ('prefill_ms', 'decode_ms')
 _POISON_KEY = 'poison'
 _TEXT_DELTA_KEYS = ('content', 'reasoning_content', 'reasoning')
+_FINISH_RE = re.compile(r'^[a-z0-9_]{1,32}$')
 
 
 def is_count(value):
@@ -63,6 +67,22 @@ def usage_fields(usage):
         if isinstance(details, dict) and is_count(details.get('reasoning_tokens')):
             found['reasoning_tokens'] = details['reasoning_tokens']
     return found
+
+
+def finish_reason_of(obj):
+    '''choices[0].finish_reason when it is a short token, else None.
+
+    Message text is not a reason and is not returned.
+    '''
+    if not isinstance(obj, dict):
+        return None
+    choices = obj.get('choices')
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    reason = choices[0].get('finish_reason')
+    if isinstance(reason, str) and _FINISH_RE.fullmatch(reason):
+        return reason
+    return None
 
 
 def sse_text_delta(line):
@@ -99,13 +119,14 @@ def record_from_body(body, content_type):
 
     An empty dict means the call carried no integer count. A stream keeps the
     last usage object. A number that appears only inside message text is not
-    a field of that object.
+    a field of that object. A finish_reason token is kept only beside a count.
     '''
     if not isinstance(body, (bytes, bytearray)):
         return {}
     ctype = content_type.lower() if isinstance(content_type, str) else ''
     if 'text/event-stream' in ctype or bytes(body).lstrip().startswith(b'data:'):
         last = None
+        reason = None
         for line in bytes(body).splitlines():
             stripped = line.strip()
             if not stripped.startswith(b'data:'):
@@ -119,7 +140,14 @@ def record_from_body(body, content_type):
                 continue
             if isinstance(event, dict) and isinstance(event.get('usage'), dict):
                 last = usage_fields(event['usage'])
-        return {} if last is None else last
+            found = finish_reason_of(event)
+            if found is not None:
+                reason = found
+        if not last:
+            return {}
+        if reason is not None:
+            last['finish_reason'] = reason
+        return last
     try:
         obj = json.loads(bytes(body).decode('utf-8'))
     except (UnicodeDecodeError, ValueError):
@@ -131,7 +159,13 @@ def record_from_body(body, content_type):
     usage = obj.get('usage')
     if not isinstance(usage, dict):
         return {}
-    return usage_fields(usage)
+    found = usage_fields(usage)
+    if not found:
+        return {}
+    reason = finish_reason_of(obj)
+    if reason is not None:
+        found['finish_reason'] = reason
+    return found
 
 
 def _status_code(start):
@@ -374,6 +408,12 @@ class UsageStore:
             elif key in _COUNT_KEYS or key == 'cached_tokens':
                 if is_count(value):
                     clean[key] = value
+        # A finish token stays only beside a count. Message text is not a
+        # count, and the poison return above does not reach this.
+        reason = row.get('finish_reason')
+        has_count = any(key in clean for key in _COUNT_KEYS) or 'cached_tokens' in clean
+        if has_count and isinstance(reason, str) and _FINISH_RE.fullmatch(reason):
+            clean['finish_reason'] = reason
         return clean
 
     def add(self, row):

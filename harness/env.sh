@@ -164,7 +164,7 @@ if [ -n "${A770B_STRATA_CONFIG:-}" ] && [ -n "${A770B_STRATA_CTX:-}" ]; then
   export A770B_STRATA_CANDIDATE_TIMEOUT="${A770B_STRATA_TIMEOUT:-1500}"
   export A770B_STRATA_CANDIDATE_REASONING="${A770B_STRATA_REASONING:-on}"
 fi
-: "${A770B_OUTPUT_TOKENS:=16384}"                            # opencode's per-reply output limit: a whole file goes out in one tool call, and at 4,096 a test file of two hundred lines was cut mid-JSON, so every write failed (measured 2026-09-08)
+: "${A770B_OUTPUT_TOKENS:=}"
 : "${A770B_HIDDEN_ROOT:=$A770B_DATA/hidden}"                  # hidden acceptance tests a run specification may name: files the model never sees, copied into the seat by verify after the patch applies
 # ── the server ───────────────────────────────────────────────────────────────────────────────────────────────
 : "${A770B_LLAMA_BIN:=${LLAMA_BIN:-$HOME/llama.cpp/build/bin/llama-server}}"
@@ -281,8 +281,19 @@ a770b_render_profile(){
   top_p=$(a770b_profile_var "$profile" TOP_P)
   [ -n "$temp" ] && sampling_args+=(--temperature "$temp")
   [ -n "$top_p" ] && sampling_args+=(--top-p "$top_p")
-  # the profile's own output_tokens (U2d) when set, else the global A770B_OUTPUT_TOKENS
-  output=$(a770b_profile_var "$profile" OUTPUT_TOKENS); [ -n "$output" ] || output="$A770B_OUTPUT_TOKENS"
+  # The number is also max_tokens, so it stays within half the served context and never above 32000.
+  output=$(a770b_profile_var "$profile" OUTPUT_TOKENS)
+  if [ -z "$output" ]; then
+    output="${A770B_OUTPUT_TOKENS:-}"
+  fi
+  if [ -z "$output" ]; then
+    output=$((ctx / 2))
+    if [ "$output" -gt 32000 ]; then
+      output=32000
+    elif [ "$output" -lt 4096 ] && [ "$ctx" -ge 8192 ]; then
+      output=4096
+    fi
+  fi
   # A770B_ALIAS is the id the server expects. Unset, that is local-builder; an attached run exports the served name.
   local -a model_args=(--model-id "${A770B_ALIAS:-local-builder}")
   if [ -n "${A770B_SPEC:-}" ] && [ -z "${4:-}" ]; then
