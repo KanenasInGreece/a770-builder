@@ -611,6 +611,8 @@ class CaptureChecks(TempTree):
         self.assertTrue(any(line.startswith("TTFT ms (prompt eval):") for line in lines), lines)
         self.assertTrue(any(line.startswith("prefill tok/s over all prompts=") for line in lines),
                         lines)
+        self.assertNotIn("max_prompt_tokens=", out)
+        self.assertNotIn("length_stops=", out)
         self.assertNotIn("99999", out)                       # the build log was not read
         self.assertNotIn(NO_TOKEN_LINE, out)
         self.assertFalse([line for line in lines
@@ -835,6 +837,76 @@ class CaptureChecks(TempTree):
         self.assertNotIn("1000", out)         # the build-log timings are not the rate here
         self.assertNotIn("prefill_tps=", out)
 
+    def test_a_paired_slot_line_is_the_prompt_not_the_prompt_eval(self):
+        # task 7: n_tokens 21446, n_gen 100, so the prompt is 21346. truncated = 0.
+        container = "\n".join([NGEN_LINE, SLOT_LINE, PROMPT_EVAL_LINE, EVAL_LINE]) + "\n"
+        code, out, err, lines = self.capture(container, '{"usage":{"prompt_tokens":1}}\n')
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("max_prompt_tokens=21346", lines)
+        self.assertIn("max_completion_tokens=100", lines)
+        self.assertIn("length_stops=0", lines)
+        self.assertTrue(any("largest prompt=1601 tokens" in line for line in lines), lines)
+        self.assertNotIn("max_prompt_tokens=1601", out)
+
+    def test_slot_pairs_use_the_n_gen_already_printed_for_that_task(self):
+        first = "slot release: id  0 | task 7 | stop processing: n_tokens = 500, truncated = 0"
+        second = "slot release: id  0 | task 9 | stop processing: n_tokens = 80, truncated = 1"
+        container = "\n".join([
+            "print_timing: id  0 | task 7 | n_gen =   100, tg =   4.49 t/s",
+            first,
+            "print_timing: id  0 | task 9 | n_gen =    20, tg =   4.49 t/s",
+            second,
+            "slot release: id  2 | task 3 | stop processing: n_tokens = 99999, truncated = 1",
+            PROMPT_EVAL_LINE, EVAL_LINE,
+        ]) + "\n"
+        code, out, err, lines = self.capture(container, "")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("max_prompt_tokens=400", lines)
+        self.assertIn("max_completion_tokens=100", lines)
+        self.assertIn("length_stops=1", lines)
+        self.assertNotIn("99999", out)
+
+    def test_a_slot_without_n_gen_prints_no_machine_lines(self):
+        container = "\n".join([SLOT_LINE, PROMPT_EVAL_LINE, EVAL_LINE]) + "\n"
+        code, out, err, lines = self.capture(container, "")
+        self.assertEqual((code, err), (0, ""))
+        self.assertNotIn("max_prompt_tokens=", out)
+        self.assertNotIn("max_completion_tokens=", out)
+        self.assertNotIn("length_stops=", out)
+        self.assertTrue(any("largest prompt=1601 tokens" in line for line in lines), lines)
+
+    def test_n_tokens_below_n_gen_is_not_a_pair(self):
+        slot = "slot release: id  0 | task 7 | stop processing: n_tokens = 50, truncated = 1"
+        container = "\n".join([NGEN_LINE, slot, PROMPT_EVAL_LINE, EVAL_LINE]) + "\n"
+        code, out, err, _lines = self.capture(container, "")
+        self.assertEqual((code, err), (0, ""))
+        self.assertNotIn("max_prompt_tokens=", out)
+        self.assertNotIn("length_stops=", out)
+
+    def test_slot_pairs_without_prompt_eval_are_not_the_build_log(self):
+        container = "\n".join([NGEN_LINE, SLOT_LINE]) + "\n"
+        code, out, err, lines = self.capture(container, '{"usage":{"prompt_tokens":4}}\n')
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(lines, [
+            NO_RATE_LINE,
+            "prompt_tokens_total=4",
+            "max_prompt_tokens=21346",
+            "max_completion_tokens=100",
+            "length_stops=0",
+        ])
+
+    def test_a_slot_before_its_n_gen_still_pairs_as_n_tokens_minus_n_gen(self):
+        container = "\n".join([SLOT_LINE, NGEN_LINE]) + "\n"
+        code, out, err, lines = self.capture(container, '{"usage":{"prompt_tokens":4}}\n')
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(lines, [
+            NO_RATE_LINE,
+            "prompt_tokens_total=4",
+            "max_prompt_tokens=21346",
+            "max_completion_tokens=100",
+            "length_stops=0",
+        ])
+
 
 class WindowChecks(unittest.TestCase):
     """Brief checks 17-19 and 27 on `window`: one line, and 0 0 0 0 is never it."""
@@ -973,7 +1045,10 @@ class UsageFileCapture(TempTree):
             "rates not measured",
             "requests=2 prompt_tokens_total=14 gen_tokens_total=5",
             "reasoning_tokens_total=1",
+            "max_prompt_tokens=10",
+            "max_completion_tokens=3",
         ])
+        self.assertNotIn("length_stops=", "\n".join(lines))
         self.assertNotIn("llama.cpp", "\n".join(lines))
 
     def test_cached_tokens_sum_only_when_every_row_has_them(self):
@@ -994,7 +1069,9 @@ class UsageFileCapture(TempTree):
             {"prompt_tokens": 10, "completion_tokens": 2},
             {"prompt_tokens": 4},
         ]))
-        self.assertEqual(lines, ["rates not measured", "prompt_tokens_total=14"])
+        self.assertEqual(lines, [
+            "rates not measured", "prompt_tokens_total=14", "max_prompt_tokens=10",
+        ])
 
     def test_a_missing_prompt_count_is_unmeasured(self):
         lines = self.lines_of(json.dumps([
@@ -1011,6 +1088,8 @@ class UsageFileCapture(TempTree):
         self.assertEqual(lines, [
             "rates not measured",
             "requests=1 prompt_tokens_total=11 gen_tokens_total=2",
+            "max_prompt_tokens=11",
+            "max_completion_tokens=2",
         ])
         self.assertNotIn("prefill_tps=", "\n".join(lines))
         self.assertNotIn("decode_tps=0", "\n".join(lines))
@@ -1050,6 +1129,8 @@ class UsageFileCapture(TempTree):
         self.assertEqual(nested, [
             "rates not measured",
             "requests=1 prompt_tokens_total=3 gen_tokens_total=1",
+            "max_prompt_tokens=3",
+            "max_completion_tokens=1",
         ])
 
     def test_a_boolean_and_a_float_are_not_counts(self):
@@ -1065,6 +1146,8 @@ class UsageFileCapture(TempTree):
         self.assertEqual(lines, [
             "rates not measured",
             "requests=1 prompt_tokens_total=0 gen_tokens_total=0",
+            "max_prompt_tokens=0",
+            "max_completion_tokens=0",
         ])
 
     def test_an_empty_list_and_a_missing_file_are_unmeasured(self):
@@ -1093,6 +1176,8 @@ class UsageFileCapture(TempTree):
         # (20 + 50) prompt tokens / 1.5 s. The decode median is unchanged.
         self.assertEqual(lines[0], "prefill_tps=47 decode_tps=2.7")
         self.assertIn("requests=2 prompt_tokens_total=150 gen_tokens_total=14", lines)
+        self.assertIn("max_prompt_tokens=100", lines)
+        self.assertNotIn("max_prompt_tokens=20", "\n".join(lines))
 
     def test_a_cache_larger_than_the_prompt_is_not_a_rate(self):
         lines = self.lines_of(json.dumps([
@@ -1118,6 +1203,26 @@ class UsageFileCapture(TempTree):
         ]))
         self.assertEqual(lines[0], "rates not measured")
         self.assertNotIn("prefill_tps=", "\n".join(lines))
+
+    def test_length_stops_counts_only_a_real_finish_reason(self):
+        lines = self.lines_of(json.dumps([
+            {"prompt_tokens": 100, "completion_tokens": 4, "cached_tokens": 80,
+             "finish_reason": "stop"},
+            {"prompt_tokens": 50, "completion_tokens": 10, "cached_tokens": 0,
+             "finish_reason": "length"},
+        ]))
+        self.assertIn("max_prompt_tokens=100", lines)
+        self.assertIn("max_completion_tokens=10", lines)
+        self.assertIn("length_stops=1", lines)
+        none = self.lines_of(json.dumps([
+            {"prompt_tokens": 4, "completion_tokens": 1, "finish_reason": "stop"},
+            {"prompt_tokens": 3, "completion_tokens": 1, "finish_reason": "tool_calls"},
+        ]))
+        self.assertIn("length_stops=0", none)
+        junk = self.lines_of(json.dumps([
+            {"prompt_tokens": 4, "completion_tokens": 1, "finish_reason": "Length"},
+        ]))
+        self.assertNotIn("length_stops=", "\n".join(junk))
 
     def test_unmeasured_opens_no_log(self):
         code, out, err = invoke(["capture", "--unmeasured"])

@@ -105,6 +105,57 @@ class RecordShape(unittest.TestCase):
             record_from_body(body.encode("utf-8"), "application/json"),
             {"completion_tokens": 1})
 
+    def test_finish_reason_is_kept_and_message_text_is_not(self):
+        body = json.dumps({
+            "choices": [{
+                "message": {"content": "SECRET-ANSWER"},
+                "finish_reason": "length",
+            }],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+        })
+        found = record_from_body(body.encode("utf-8"), "application/json")
+        self.assertEqual(found, {
+            "prompt_tokens": 7,
+            "completion_tokens": 2,
+            "total_tokens": 9,
+            "finish_reason": "length",
+        })
+        self.assertNotIn("SECRET-ANSWER", json.dumps(found))
+
+    def test_a_finish_reason_that_is_not_a_token_is_dropped(self):
+        for bad in ("Length", "stop.", "has space", "x" * 33, "", 1, None, True):
+            body = json.dumps({
+                "choices": [{"message": {"content": "SECRET-ANSWER"}, "finish_reason": bad}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            })
+            found = record_from_body(body.encode("utf-8"), "application/json")
+            self.assertEqual(found, {"prompt_tokens": 3, "completion_tokens": 1}, bad)
+            self.assertNotIn("SECRET-ANSWER", json.dumps(found))
+        token = "a" * 32
+        body = json.dumps({
+            "choices": [{"finish_reason": token}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        })
+        found = record_from_body(body.encode("utf-8"), "application/json")
+        self.assertEqual(found["finish_reason"], token)
+
+    def test_a_stream_keeps_a_finish_reason_from_another_event(self):
+        first = 'data: {"choices":[{"delta":{"content":"SECRET"},"finish_reason":null}]}\n\n'
+        mid = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        usage = ('data: {"choices":[{"finish_reason":"length"}],'
+                 '"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}\n\n')
+        found = record_from_body((first + mid + usage).encode("utf-8"), "text/event-stream")
+        self.assertEqual(found, {
+            "prompt_tokens": 4,
+            "completion_tokens": 1,
+            "total_tokens": 5,
+            "finish_reason": "length",
+        })
+        self.assertNotIn("SECRET", json.dumps(found))
+        reason_only = 'data: {"choices":[{"finish_reason":"length"}]}\n\n'
+        self.assertEqual(
+            record_from_body(reason_only.encode("utf-8"), "text/event-stream"), {})
+
 
 class SessionRecords(unittest.TestCase):
     def test_two_keep_alive_completions_and_a_models_call_is_not_one(self):
@@ -292,6 +343,54 @@ class SessionRecords(unittest.TestCase):
             "prompt_tokens": 3, "completion_tokens": 1,
             "prefill_ms": 20, "decode_ms": 40,
         }])
+
+    def test_the_store_keeps_a_length_reason_and_drops_message_text(self):
+        tmp = tempfile.TemporaryDirectory(prefix=".a770b-usage-tap-")
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "usage.json")
+        store = UsageStore(path)
+        store.replace(store.add({
+            "prompt_tokens": 7,
+            "completion_tokens": 2,
+            "finish_reason": "length",
+            "content": "SECRET-ANSWER",
+        }), {
+            "prompt_tokens": 7,
+            "completion_tokens": 2,
+            "total_tokens": 9,
+            "finish_reason": "length",
+            "message": "SECRET-ANSWER",
+        })
+        store.add({
+            "poison": 1,
+            "prompt_tokens": 3,
+            "finish_reason": "length",
+            "content": "SECRET-ANSWER",
+        })
+        store.add({
+            "prefill_ms": 20,
+            "finish_reason": "length",
+            "content": "SECRET-ANSWER",
+        })
+        store.add({
+            "prompt_tokens": 1,
+            "finish_reason": "Length",
+            "content": "SECRET-ANSWER",
+        })
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertEqual(json.loads(text), [
+            {
+                "prompt_tokens": 7,
+                "completion_tokens": 2,
+                "total_tokens": 9,
+                "finish_reason": "length",
+            },
+            {"poison": 1},
+            {"prefill_ms": 20},
+            {"prompt_tokens": 1},
+        ])
+        self.assertNotIn("SECRET-ANSWER", text)
 
 class SocketBridge(unittest.TestCase):
     def test_the_client_gets_the_bytes_and_the_file_keeps_integers_only(self):

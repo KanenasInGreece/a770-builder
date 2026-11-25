@@ -737,6 +737,56 @@ def test_fit_well_formed_is_accepted(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_output_stays_required_and_half_the_served_context(tmp_path):
+    """limit.output is required on the renderer. The shell fills it from the profile, an export, or half the ctx."""
+    template = TEMPLATE.read_text(encoding="utf-8")
+    assert '"output": __OUTPUT__' in template
+    cmd = [sys.executable, str(RENDERER), "render", "--template", str(TEMPLATE),
+           "--out", str(tmp_path / "missing.jsonc"), "--baseurl", "http://127.0.0.1:9/v1",
+           "--apikey", "k", "--ctx", "32768", "--name", "bare"]
+    missing = subprocess.run(cmd, capture_output=True, text=True)
+    assert missing.returncode != 0
+
+    script = r'''
+set -euo pipefail
+for v in $(compgen -A export A770B_ || true); do unset "$v"; done
+unset A770B_PROFILES_FILE A770B_VRAM_CAP_GIB
+export XDG_CONFIG_HOME="$1"
+export A770B_DATA="$1/data"
+export A770B_CARD=
+. "$2/harness/env.sh" >/dev/null
+out_of() {
+  python3 - "$1" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r'"output":\s*([0-9]+)', text)
+if not m:
+    raise SystemExit(1)
+print(m.group(1))
+PY
+}
+render() {
+  a770b_render_profile bare-profile "$1" "$2" nokey >/dev/null
+  out_of "$2"
+}
+unset A770B_OUTPUT_TOKENS A770B_BARE_PROFILE_OUTPUT_TOKENS || true
+test "$(render 32768 "$1/c32.jsonc")" = 16384
+test "$(render 65536 "$1/c65.jsonc")" = 32000
+test "$(render 100000 "$1/c100.jsonc")" = 32000
+test "$(render 131072 "$1/c131.jsonc")" = 32000
+test "$(render 16384 "$1/c16.jsonc")" = 8192
+export A770B_OUTPUT_TOKENS=1000
+test "$(render 32768 "$1/global.jsonc")" = 1000
+export A770B_BARE_PROFILE_OUTPUT_TOKENS=4242
+test "$(render 32768 "$1/profile.jsonc")" = 4242
+'''
+    result = subprocess.run(
+        ["bash", "-c", script, "half-ctx", str(tmp_path), str(TEMPLATE.parents[1])],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_fit_refusal_names_the_failed_check():
     sys.path.insert(0, str(RENDERER.parent))
     from render_profile import fit_failed_check

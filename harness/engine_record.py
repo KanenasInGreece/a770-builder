@@ -249,6 +249,9 @@ def cmd_stream(stdin_text):
 TIMING_RE = re.compile(
     r'=\s+([\d.]+) ms /\s+(\d+) tokens \(\s*([\d.]+) ms per token,\s*([\d.]+) tokens per second')
 NGEN_RE = re.compile(r'task\s+(\d+)\s+\|\s+n_gen\s+=\s+(\d+)')
+SLOT_RE = re.compile(
+    r'slot release:.*?\btask\s+(\d+)\b.*?\bn_tokens\s*=\s*(\d+).*?\btruncated\s*=\s*(\d+)')
+_FINISH_RE = re.compile(r'^[a-z0-9_]{1,32}$')
 
 
 def parse_timing(line):
@@ -259,6 +262,46 @@ def parse_timing(line):
 def percentile(values, fraction):
     '''That function's q: the entry at int(fraction * (len - 1)), or 0 when empty.'''
     return values[int(fraction * (len(values) - 1))] if values else 0
+
+
+def slot_peak_lines(lines):
+    '''Three machine lines when a slot release pairs with that task's n_gen.
+
+    Every n_gen line is collected first; the last line for a task id wins,
+    including one printed after the slot. The prompt is n_tokens minus that
+    n_gen. The prompt-eval count is not a prompt. No paired line means no
+    machine lines.
+    '''
+    ngen = {}
+    for line in lines:
+        gen = NGEN_RE.search(line)
+        if gen:
+            ngen[int(gen.group(1))] = int(gen.group(2))
+    prompts = []
+    gens = []
+    stops = 0
+    for line in lines:
+        slot = SLOT_RE.search(line)
+        if not slot:
+            continue
+        task = int(slot.group(1))
+        if task not in ngen:
+            continue
+        n_tokens = int(slot.group(2))
+        n_gen = ngen[task]
+        if n_tokens < n_gen:
+            continue
+        prompts.append(n_tokens - n_gen)
+        gens.append(n_gen)
+        if int(slot.group(3)) == 1:
+            stops += 1
+    if not prompts:
+        return []
+    return [
+        'max_prompt_tokens={0}'.format(max(prompts)),
+        'max_completion_tokens={0}'.format(max(gens)),
+        'length_stops={0}'.format(stops),
+    ]
 
 
 def n_gen_lines(lines):
@@ -567,6 +610,9 @@ def cmd_capture_usage(path):
     placeholder. Any other object is a row. A row whose prompt_tokens is absent
     or not a count leaves both lines unmeasured. A missing clock leaves
     the rate unmeasured, never zero, and does not drop the token total.
+    max_prompt_tokens is the largest prompt count, cache included.
+    max_completion_tokens is printed only when every row has one.
+    length_stops is printed only when a row has a finish_reason.
     '''
     text = read_log_text(path)
     if text is None or text.strip() == '':
@@ -620,6 +666,19 @@ def cmd_capture_usage(path):
         line = _optional_total(rows, key, label)
         if line is not None:
             sys.stdout.write(line + '\n')
+    sys.stdout.write('max_prompt_tokens={0}\n'.format(max(prompts)))
+    if gens_complete:
+        sys.stdout.write('max_completion_tokens={0}\n'.format(max(gens)))
+    reasons = []
+    saw_reason = False
+    for row in rows:
+        reason = row.get('finish_reason')
+        if isinstance(reason, str) and _FINISH_RE.fullmatch(reason):
+            saw_reason = True
+            reasons.append(reason)
+    if saw_reason:
+        sys.stdout.write('length_stops={0}\n'.format(
+            sum(1 for reason in reasons if reason == 'length')))
     return 0
 
 
@@ -630,6 +689,8 @@ def cmd_capture(paths):
     decode_ms on every row are a client clock already recorded, turned into
     one rate line; a row without that clock leaves the rate unmeasured, not
     zero. --unmeasured prints the unmeasured lines and does not open a log.
+    A paired slot with no prompt-eval line is printed after the build-log
+    lines. Those lines do not replace the rate line or the token total.
     '''
     if paths == ['--unmeasured']:
         sys.stdout.write(RATES_NOT_MEASURED + '\n')
@@ -648,6 +709,8 @@ def cmd_capture(paths):
         sys.stdout.write(requests_line + '\n')
         if record['detail']:
             sys.stdout.write(record['detail'].rstrip('\n') + '\n')
+        for line in slot_peak_lines(container_text.splitlines()):
+            sys.stdout.write(line + '\n')
         return 0
 
     build_text = read_log_text(paths[1])
@@ -668,6 +731,8 @@ def cmd_capture(paths):
         token_line = 'prompt_tokens_total={0}'.format(sum(counts))
     sys.stdout.write(rate_line + '\n')
     sys.stdout.write(token_line + '\n')
+    for line in slot_peak_lines(container_text.splitlines()):
+        sys.stdout.write(line + '\n')
     return 0
 
 

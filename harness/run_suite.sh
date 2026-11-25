@@ -717,6 +717,176 @@ with open(outfile, "w") as f:
     json.dump(doc, f, indent=2)
     f.write("\n")
 PY
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    record_suite_requests
+  fi
+  return "$rc"
+}
+
+# After the suite document is assembled, set this profile's requests object from counted stages.
+# A missing profiles file, or a profile that is not in it, is left alone. speed, speed.delivered,
+# and measured_tasks are not touched. source is the results file's base name.
+# No positive prompt peak, no positive completion peak, no length_stops number, and no
+# positive rate leaves the file unchanged. A length_stops of 0 is still written.
+record_suite_requests(){
+  local pf="${A770B_PROFILES_FILE:-}"
+  if [ ! -e "$pf" ]; then
+    return 0
+  fi
+  if [ ! -f "$pf" ] || [ ! -w "$pf" ]; then
+    echo "⚠ requests: profiles file is not writable — not updated" >&2
+    return 0
+  fi
+  python3 - "$pf" "$PROFILE" "$OUTFILE" "$A770B_DATA" "$A770B_PROJECT/harness/profiles.py" <<'PY' || echo "⚠ requests: update failed — continuing" >&2
+import fcntl, json, os, statistics, subprocess, sys, tempfile
+path, profile, outfile, data_dir, checker = sys.argv[1:6]
+
+def warn(msg):
+    print("⚠ requests: " + msg, file=sys.stderr)
+
+def positive_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+def nonneg_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+def positive_rate(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+def median_rate(values):
+    if not values:
+        return None
+    value = round(float(statistics.median(values)), 1)
+    if value <= 0:
+        return None
+    return value
+
+try:
+    with open(outfile, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except (OSError, ValueError):
+    warn("suite results are not JSON — not updated")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    warn("suite results are not a JSON object — not updated")
+    sys.exit(0)
+source = os.path.basename(outfile)
+if not source or "/" in source:
+    warn("suite results name is not a base name — not updated")
+    sys.exit(0)
+
+harness_dir = os.path.dirname(os.path.abspath(checker))
+sys.path.insert(0, harness_dir)
+import suite_report
+
+stages = doc.get("stages") if isinstance(doc.get("stages"), list) else []
+counted = [s for s in stages if isinstance(s, dict) and s.get("counts_toward_pass", True) is not False]
+prompts = [s["max_prompt_tokens"] for s in counted if positive_int(s.get("max_prompt_tokens"))]
+completions = [s["max_completion_tokens"] for s in counted if positive_int(s.get("max_completion_tokens"))]
+stops = [s["length_stops"] for s in counted if nonneg_int(s.get("length_stops"))]
+prefills = []
+decodes = []
+for stage in counted:
+    prefill, decode = suite_report.delivered_for_stage(stage, data_dir)
+    if positive_rate(prefill):
+        prefills.append(float(prefill))
+    if positive_rate(decode):
+        decodes.append(float(decode))
+requests = {
+    "max_prompt_tokens": max(prompts) if prompts else None,
+    "max_completion_tokens": max(completions) if completions else None,
+    "length_stops": sum(stops) if stops else None,
+    "prefill_tps": median_rate(prefills),
+    "decode_tps": median_rate(decodes),
+    "source": source,
+    }
+if (requests["max_prompt_tokens"] is None
+        and requests["max_completion_tokens"] is None
+        and requests["length_stops"] is None
+        and requests["prefill_tps"] is None
+        and requests["decode_tps"] is None):
+    sys.exit(0)
+
+dest = os.path.abspath(path)
+dest_dir = os.path.dirname(dest) or "."
+lock_path = os.path.join(dest_dir, "." + os.path.basename(dest) + ".lock")
+lock_fh = open(lock_path, "a+", encoding="utf-8")
+tmp = ""
+stage_dir = ""
+
+def check_file(target):
+    return subprocess.run(
+        [sys.executable, checker, "check", "--file", target],
+        capture_output=True, text=True)
+
+def check_detail(chk):
+    detail = (chk.stderr or "check failed").strip().splitlines()
+    return detail[-1] if detail else "check failed"
+
+try:
+    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        warn("profiles file is not JSON — not updated")
+        sys.exit(0)
+    if not isinstance(data, dict):
+        warn("profiles file is not a JSON object — not updated")
+        sys.exit(0)
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
+        sys.exit(0)
+    prof = profiles[profile]
+    prof["requests"] = requests
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp = tempfile.mkstemp(prefix=".requests-", suffix=".json", dir=dest_dir)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    chk = check_file(tmp)
+    if chk.returncode != 0 and "must be <card>.<mode>.json" in (chk.stderr or ""):
+        stage_dir = tempfile.mkdtemp(prefix=".requests-", dir=dest_dir)
+        named = os.path.join(stage_dir, os.path.basename(dest))
+        try:
+            os.link(tmp, named)
+        except OSError as exc:
+            warn("could not stage the profiles file for check (" + str(exc) + ") — not updated")
+            sys.exit(0)
+        chk = check_file(named)
+    if chk.returncode != 0:
+        warn("updated profile would not pass profiles.py check — not updated (" + check_detail(chk) + ")")
+        sys.exit(0)
+    try:
+        os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    except OSError:
+        pass
+    try:
+        os.replace(tmp, path)
+        tmp = ""
+    except OSError as exc:
+        warn("could not replace profiles file (" + str(exc) + ") — not updated")
+finally:
+    if tmp:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    if stage_dir:
+        try:
+            os.remove(os.path.join(stage_dir, os.path.basename(dest)))
+        except OSError:
+            pass
+        try:
+            os.rmdir(stage_dir)
+        except OSError:
+            pass
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    lock_fh.close()
+PY
 }
 
 # Install cleanup before starting any background sampler. An interruption during setup must not orphan the monitor.
@@ -736,7 +906,7 @@ if [ "$DRYRUN" != 1 ]; then
   fi
 fi
 
-emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome [counters_json] [serve_evidence] [verify_json]
+emit_stage(){ # emit_stage id language label working conformance_exit lines budget budget_ok score_json wall_s requests prompt_tokens gen_tokens axes_json counts_toward_pass seat_state_json outcome [counters_json] [serve_evidence] [verify_json] [max_prompt_tokens] [max_completion_tokens] [length_stops]
   case "${17:-}" in *error*|*timeout*|*interrupted*) SUITE_HAD_INCOMPLETE_STAGE=1 ;; esac
   python3 - "$@" >> "$RESULTS_NDJSON" <<'PY'
 import json, sys
@@ -747,6 +917,11 @@ def num(s):
         return float(s) if "." in s else int(s)
     except ValueError:
         return None
+def whole(s):
+    # An absent machine line is null. A printed 0 stays 0.
+    if isinstance(s, str) and s.isdigit():
+        return int(s)
+    return None
 def boolean(s):
     return True if s == "true" else False if s == "false" else None
 args = sys.argv[1:]
@@ -755,6 +930,9 @@ args = sys.argv[1:]
 counters_json = args[17] if len(args) > 17 else "null"
 serve_evidence = args[18] if len(args) > 18 else ""
 verify_json_s = args[19] if len(args) > 19 else ""
+max_prompt = whole(args[20]) if len(args) > 20 else None
+max_completion = whole(args[21]) if len(args) > 21 else None
+length_stops = whole(args[22]) if len(args) > 22 else None
 
 counters = None
 if counters_json and counters_json != "null":
@@ -796,6 +974,7 @@ rec = {
     "lines": num(lines), "budget_lines": num(budget), "budget_ok": boolean(budget_ok),
     "score": json.loads(score_json) if score_json and score_json != "null" else None,
     "wall_s": num(wall), "requests": req_val, "prompt_tokens": ptok_val, "gen_tokens": gtok_val,
+    "max_prompt_tokens": max_prompt, "max_completion_tokens": max_completion, "length_stops": length_stops,
     "axes": json.loads(axes_json) if axes_json else None,
     "counts_toward_pass": boolean(counts) if counts else True,
     "seat_state": json.loads(seat_state_json) if seat_state_json else [],
@@ -1132,6 +1311,7 @@ process_task(){
   fi
   local capfile="$A770B_DATA/results/$label.task.md" patchfile="$A770B_DATA/results/$label.patch"
   local reqline requests prompt_tokens gen_tokens lone section
+  local max_prompt_tokens max_completion_tokens length_stops
   # -a: a capture that dumped a build artefact's raw bytes into its "new files" section (the case Defect 3 above
   # closes off going forward, but an older or still-uncovered capture can still carry one) reads as binary to a
   # locale-aware grep, which then silently matches nothing anywhere past that point — including this timings line
@@ -1148,6 +1328,10 @@ process_task(){
     lone=$(printf '%s\n' "$section" | grep -a -E '^prompt_tokens_total=[0-9]+$' | tail -1 | cut -d= -f2 || true)
     if [ -n "$lone" ] && [ "$lone" -gt 0 ] 2>/dev/null; then prompt_tokens=$lone; fi
   fi
+  # Absent machine lines stay empty. The stage stores null, not 0.
+  max_prompt_tokens=$(printf '%s\n' "$section" | grep -a -E '^max_prompt_tokens=[0-9]+$' | tail -1 | cut -d= -f2 || true)
+  max_completion_tokens=$(printf '%s\n' "$section" | grep -a -E '^max_completion_tokens=[0-9]+$' | tail -1 | cut -d= -f2 || true)
+  length_stops=$(printf '%s\n' "$section" | grep -a -E '^length_stops=[0-9]+$' | tail -1 | cut -d= -f2 || true)
   local lines=0 added hdrs
   if [ -f "$patchfile" ]; then
     # grep -c prints 0 AND exits 1 on no match; `|| echo 0` then made "0\n0", a syntax error that
@@ -1289,7 +1473,7 @@ PY
     if [ -f "$rubricpath" ]; then score_json=$(review_stage "$rubricpath" "$patchfile")
     else echo "⚠ stage $id: rubric file not found: $rubricpath — no score" >&2; fi
   fi
-  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome" "$counters_json" "${serve_ev_path:-}" "$verify_meta_json"
+  emit_stage "$id" "$S_LANGUAGE" "$label" "$working" "$conf_exit" "$lines" "$S_BUDGET" "$budget_ok" "$score_json" "$wall_s" "$requests" "$prompt_tokens" "$gen_tokens" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "$outcome" "$counters_json" "${serve_ev_path:-}" "$verify_meta_json" "$max_prompt_tokens" "$max_completion_tokens" "$length_stops"
   if [ "$working" = true ] || [ "$working" = false ]; then
     record_measured "$id" "$working" "$wall_s" "$prompt_tokens"
   fi
