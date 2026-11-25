@@ -176,6 +176,12 @@ _write_serve_evidence(){ # <profile> <backend> <model-path> — best-effort (E4)
       && printf '%s\n' "$logtext" | python3 "$A770B_PROJECT/harness/engine_evidence.py" \
            log --engine "$engine" --log - --model "$model" --out "$out"
   then
+    python3 - "$A770B_PROJECT/harness" "$out" "$A770B_DATA/logs/profiling.json" <<'PY' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+profiling_contract.merge_receipt_file(sys.argv[2], sys.argv[3])
+PY
     printf '%s\n' "$out" > "$A770B_DATA/logs/serve-evidence.path"
   else
     _clear_serve_evidence_pointer
@@ -438,6 +444,25 @@ serve(){ local p="$1" gguf ctx kv kv_v reasoning extra t
   profile_vars "$p"
   A770B_SERVED_ENGINE=$(_profile_engine "$p") || exit $?
   export A770B_SERVED_ENGINE
+  # Refuse a forbidden measurement flag before any docker or card command.
+  if [ -n "$extra" ]; then
+    # extra is a deliberate word list, expanded unquoted on purpose so each word is an argument
+    # shellcheck disable=SC2086
+    python3 - "$A770B_PROJECT/harness" "$A770B_SERVED_ENGINE" $extra <<'PY' || return $?
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+if sys.argv[2] == "strata":
+    if len(sys.argv) > 3:
+        print("⛔ Strata engine flags belong in the prepared config", file=sys.stderr)
+        raise SystemExit(2)
+    raise SystemExit(0)
+message = profiling_contract.refusal(sys.argv[2], sys.argv[3:])
+if message:
+    print("⛔ " + message, file=sys.stderr)
+    raise SystemExit(2)
+PY
+  fi
   if [ "$A770B_SERVED_ENGINE" = strata ]; then _strata_serve; return $?; fi
   local strata_rc=0
   bash "$A770B_PROJECT/harness/serve_strata.sh" id >/dev/null || strata_rc=$?

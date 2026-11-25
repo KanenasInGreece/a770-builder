@@ -50,7 +50,10 @@ To exercise a kit stage against an externally managed Strata candidate on loopba
 managed serving and the rest of the ladder.
 
 A builder-class row is green on the task (suite at 80% or better, or a T1 pass), every probe passed, and no engine
-reset. Speed and window are recorded, not gates.
+reset. Speed and window are recorded, not gates. The useful window is the served context (`prefill-absorb-v1`).
+A failed depth probe still caps it at 8,000, and an unanswered probe leaves it unset. Decode speed does not set
+the window. An operator may set `A770B_ABSORB_MAX_S` to a positive number of seconds; the window is then the
+deepest depth whose measured time to first token stays within that limit.
 
 ## Profiling a card the registry does not know
 

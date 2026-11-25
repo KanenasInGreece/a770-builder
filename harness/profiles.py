@@ -70,6 +70,8 @@ from typing import Optional
 
 from live_backend import read
 
+import profiling_contract
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # The project these commands read and render. --root points them at another tree (tests use a temp copy, so they
 # never write the tracked registry or documents).
@@ -146,6 +148,7 @@ STRING_KEYS = (
     "reasoning", "extra", "capability_source", "use_for", "depth_probe_100k", "task_t1",
     "category", "weight_class", "measured_on", "card", "backend", "mode", "placement",
     "task", "evidence", "engine", "tool_parser", "reasoning_parser", "vllm_image",
+    "useful_ctx_rule",
 )
 # The task classes a row competes in. The organizing axis of a registry is now the task,
 # not the window: a row is a (model, quant, KV, context, sampling) cell that wins one of these.
@@ -153,17 +156,18 @@ TASK_VALUES = {
     "code-edit", "code-read", "debug-test", "prose-docs", "os-ops", "data-structured",
     "instruction-agentic",
 }
-INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens")
+INT_KEYS = ("ctx", "useful_ctx", "timeout_s", "output_tokens", "absorb_max_s")
 OTHER_KEYS = (
     "vram_gib_after_load", "ram_gb_extra", "params_b", "speed", "capability", "sampling", "fit", "suite",
     "instrument", "thinking", "operator_override", "checkpoint", "kernel", "measured_tasks",
-    "requests",
+    "requests", "profiling",
 )
 PROFILE_KEYS = set(STRING_KEYS) | set(INT_KEYS) | set(OTHER_KEYS)
 OPTIONAL_KEYS = {
     "kv_v", "sampling", "output_tokens", "fit", "suite", "thinking", "placement", "task_t1", "task",
     "evidence", "operator_override", "engine", "checkpoint", "kernel", "tool_parser",
-    "reasoning_parser", "vllm_image", "measured_tasks", "requests",
+    "reasoning_parser", "vllm_image", "measured_tasks", "requests", "profiling",
+    "useful_ctx_rule", "absorb_max_s",
 }
 MEASURED_TASK_KEYS = {"quality", "wall_s", "context_tokens", "thinking"}
 ENGINE_VALUES = {"llama.cpp", "vllm", "sglang", "strata"}
@@ -175,8 +179,11 @@ KERNEL_PATH_VALUES = {"gpu", "cpu-like", "untested"}
 KERNEL_XMX_VALUES = {"used", "unavailable", "untested"}
 KERNEL_KEYS = {"path", "xmx", "evidence"}
 
-CATALOGUE_HEADER = "| card | mode | profile | model | window (useful) | VRAM | decode / prefill at 8k | measured_on |"
-CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|"
+CATALOGUE_HEADER = (
+    "| card | mode | profile | model | window (useful) | VRAM at served context | "
+    "decode / prefill at 8k | decode / prefill at far end | measured_on |"
+)
+CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|"
 MODE_LABEL = {
     "display": "Display-safe (`A770B_CARD_MODE=display`, the default)",
     "inference": "Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop)",
@@ -233,6 +240,24 @@ def _reasoning_switch(prof) -> str:
     if isinstance(reasoning, str):
         return reasoning
     return "off"
+
+
+def _measurement_engine(prof: dict) -> str:
+    """Which contract row a profile's extra is checked against.
+
+    An engine already in the table wins. vulkan and sycl are llama.cpp.
+    A backend that names an engine (vllm, sglang, strata) is that engine.
+    Anything else is llama.cpp, which is what an omitted engine has always been.
+    """
+    engine = prof.get("engine")
+    backend = prof.get("backend")
+    if engine in profiling_contract.TABLE:
+        return engine
+    if backend in ("vulkan", "sycl"):
+        return "llama.cpp"
+    if backend in profiling_contract.TABLE:
+        return backend
+    return "llama.cpp"
 
 
 def validate(data) -> list[str]:
@@ -311,6 +336,12 @@ def validate(data) -> list[str]:
             if prof["useful_ctx"] > prof["ctx"]:
                 errors.append(f"{name}: useful_ctx must be <= ctx")
 
+        rule = prof.get("useful_ctx_rule")
+        if "useful_ctx_rule" in prof and rule != profiling_contract.RULE_NAME:
+            errors.append(
+                f"{name}: useful_ctx_rule must be {profiling_contract.RULE_NAME}"
+            )
+
         if "vram_gib_after_load" in prof:
             v = prof["vram_gib_after_load"]
             if not _is_number(v) or v <= 0:
@@ -375,6 +406,12 @@ def validate(data) -> list[str]:
                 errors.append(f"{name}: {field} int8 is only recorded for the Strata engine")
 
         extra = prof.get("extra")
+        if isinstance(extra, str) and extra.strip():
+            refused = profiling_contract.refusal(_measurement_engine(prof), extra.split())
+            if refused:
+                errors.append(f"{name}: {refused}")
+            if _measurement_engine(prof) == "strata":
+                errors.append(f"{name}: Strata engine flags belong in the prepared config")
         if prof.get("backend") == "sglang" and isinstance(extra, str):
             served_kv = re.search(r"(?:^|\s)--kv-cache-dtype(?:=|\s+)(\S+)", extra)
             if served_kv and prof.get("kv") != served_kv.group(1):
@@ -388,7 +425,7 @@ def validate(data) -> list[str]:
 
         if "speed" in prof:
             speed = prof["speed"]
-            speed_allowed = {"decode_tps", "prefill_tps", "far_end", "bench", "delivered"}
+            speed_allowed = {"decode_tps", "prefill_tps", "far_end", "bench", "delivered", "absorb_s"}
             if not isinstance(speed, dict) or not {"decode_tps", "prefill_tps"} <= set(speed.keys()) or set(speed.keys()) - speed_allowed:
                 errors.append(f"{name}: speed must be an object with decode_tps and prefill_tps")
             else:
@@ -440,9 +477,23 @@ def validate(data) -> list[str]:
                                         if vv is not None and not _is_number(vv):
                                             errors.append(f"{name}: speed.bench.at_depth.{dk}.{vk} must be a number or null")
 
+                if "absorb_s" in speed:
+                    absorb = speed["absorb_s"]
+                    if not isinstance(absorb, dict) or set(absorb.keys()) != {"8k", "far_end"}:
+                        errors.append(f"{name}: speed.absorb_s must be an object with 8k and far_end")
+                    else:
+                        for kk in ("8k", "far_end"):
+                            vv = absorb[kk]
+                            if vv is not None and (not _is_number(vv) or vv < 0):
+                                errors.append(
+                                    f"{name}: speed.absorb_s.{kk} must be a number of at least 0, or null"
+                                )
+
                 if "delivered" in speed:
                     delivered = speed["delivered"]
-                    if not isinstance(delivered, dict) or set(delivered.keys()) != DELIVERED_KEYS:
+                    if delivered is None:
+                        pass
+                    elif not isinstance(delivered, dict) or set(delivered.keys()) != DELIVERED_KEYS:
                         errors.append(f"{name}: speed.delivered must be an object with prefill_tps, decode_tps, source")
                     else:
                         for kk in ("prefill_tps", "decode_tps"):
@@ -537,6 +588,47 @@ def validate(data) -> list[str]:
                     src = req["source"]
                     if not isinstance(src, str) or not src or "/" in src:
                         errors.append(f"{name}: requests.source must be a non-empty string with no slash")
+
+        if "profiling" in prof:
+            profiling = prof["profiling"]
+            where = f"{name}: profiling"
+            allowed = {"contract", "engine", "flags", "confirmed"}
+            if not isinstance(profiling, dict):
+                errors.append(f"{where} must be an object")
+            else:
+                for kk in profiling.keys():
+                    if kk not in allowed:
+                        errors.append(f"{where}: unknown key {kk}")
+                for kk in allowed:
+                    if kk not in profiling:
+                        errors.append(f"{where}: missing key {kk}")
+                # A missing key is already one error. The type check is the second
+                # report only when the key is present and wrong.
+                if "contract" in profiling and not _is_pos_int(profiling["contract"]):
+                    errors.append(f"{where}.contract must be a positive int")
+                if "engine" in profiling:
+                    if profiling["engine"] not in ENGINE_VALUES:
+                        errors.append(f"{where}.engine must be one of {sorted(ENGINE_VALUES)}")
+                    elif profiling["engine"] != _measurement_engine(prof):
+                        errors.append(
+                            f"{where}.engine {profiling['engine']!r} is not this row's "
+                            f"measurement engine {_measurement_engine(prof)!r}"
+                        )
+                if "flags" in profiling:
+                    flags = profiling["flags"]
+                    if not isinstance(flags, list) or any(not isinstance(item, str) for item in flags):
+                        errors.append(f"{where}.flags must be a list of strings")
+                if "confirmed" in profiling:
+                    confirmed = profiling["confirmed"]
+                    if not isinstance(confirmed, dict):
+                        errors.append(f"{where}.confirmed must be an object")
+                    else:
+                        for ck, cv in confirmed.items():
+                            # 1 == True, so membership would accept a number. Only a real bool counts.
+                            if not isinstance(ck, str) or not (isinstance(cv, bool) or cv == "pending"):
+                                errors.append(
+                                    f"{where}.confirmed.{ck} must be true, false, or pending"
+                                )
 
         if "suite" in prof:
             suite = prof["suite"]
@@ -1368,19 +1460,74 @@ def _speed_pair(decode, prefill) -> str:
     return f"{_speed_cell(decode)} / {_speed_cell(prefill)}"
 
 
+def _depth_k(tokens: int) -> str:
+    """A token depth in thousands, to one decimal, so 99,887 tokens reads 99.9k."""
+    shown = (Decimal(tokens) / Decimal(1000)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return f"{shown}k"
+
+
+def _8k_cell(speed: dict) -> str:
+    """Decode and prefill at an 8k prompt.
+
+    Both missing is one em dash, not a pair of dashes with a unit."""
+    if not isinstance(speed, dict):
+        return "—"
+    decode = speed.get("decode_tps")
+    prefill = speed.get("prefill_tps")
+    if not isinstance(decode, dict):
+        decode = {}
+    if not isinstance(prefill, dict):
+        prefill = {}
+    pair = _speed_pair(decode.get("8k"), prefill.get("8k"))
+    if pair == "— / —":
+        return "—"
+    return f"{pair} tok/s at 8k"
+
+
+def _served_vram_cell(vram, ctx) -> str:
+    """VRAM after load at the context the server was started with.
+
+    No served context is labelled as not recorded, never a bare GiB figure."""
+    if vram is None:
+        return "—"
+    if ctx:
+        return f"{vram} GiB at {ctx:,} served"
+    return f"{vram} GiB (served context not recorded)"
+
+
+def _vram_cell(prof: dict) -> str:
+    """VRAM after load, named at the context the server was started with."""
+    return _served_vram_cell(prof["vram_gib_after_load"], prof["ctx"])
+
+
+def _far_end_cell(speed: dict) -> str:
+    """Decode and prefill at this row's measured far end. No measurement is an em dash, never another depth."""
+    far = speed.get("far_end")
+    if not isinstance(far, dict):
+        return "—"
+    tokens = far.get("tokens")
+    if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
+        return "—"
+    pair = _speed_pair(far.get("decode_tps"), far.get("prefill_tps"))
+    if pair == "— / —":
+        return "—"
+    return f"{pair} tok/s at {_depth_k(tokens)}"
+
+
 def _catalogue_table(rows: list[dict]) -> list[str]:
-    """The catalogue table: every card's rows, each carrying its card, mode and measured_on."""
+    """The catalogue table: one row per profile, with the window, the served-context VRAM, both speeds, and measured_on.
+
+    The 8k cell names that depth, and is one em dash when both rates are missing. The far-end cell names the
+    depth that row measured, or an em dash when that measurement is absent."""
     lines = [CATALOGUE_HEADER, CATALOGUE_SEPARATOR]
     for r in rows:
         prof = r["prof"]
         ctx_fmt = f"{prof['ctx']:,}"
         useful_k = prof["useful_ctx"] // 1000
-        decode8k = prof["speed"]["decode_tps"]["8k"]
-        prefill8k = prof["speed"]["prefill_tps"]["8k"]
         lines.append(
             f"| {r['card']} | {r['mode']} | {r['name']} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{prof['vram_gib_after_load']} GiB | {_speed_cell(decode8k)} / {_speed_cell(prefill8k)} tok/s | "
-            f"{prof.get('measured_on', '')} |"
+            f"{_vram_cell(prof)} | {_8k_cell(prof['speed'])} | "
+            f"{_far_end_cell(prof['speed'])} | {prof.get('measured_on', '')} |"
         )
     return lines
 
@@ -1397,7 +1544,7 @@ def _snippet_sentence(data: dict) -> str:
         decode8k = prof["speed"]["decode_tps"]["8k"]
 
         label = f"**--profile {name}**"
-        rate = "8k decode not measured" if decode8k is None else f"~{round(decode8k)} tok/s"
+        rate = "8k decode not measured" if decode8k is None else f"~{round(decode8k)} tok/s at 8k"
         segments.append(
             f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
             f"(useful to ~{useful_k}k), {rate}"

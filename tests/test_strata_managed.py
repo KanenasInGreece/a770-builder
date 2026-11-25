@@ -135,6 +135,113 @@ def test_continuous_enforcement_is_written_only_after_admission():
     assert vram_check < serve.index('"${managed[@]}" admit')
 
 
+def test_strata_receipt_is_written_only_after_admission(tmp_path):
+    """A stale receipt is removed before start. Admission failure leaves none. Success writes it."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    started = tmp_path / "started"
+    evidence = tmp_path / "data" / "logs" / "serve-strata.evidence.json"
+    python = bin_dir / "python3"
+    python.write_text(
+        "#!/bin/bash\n"
+        "if [[ \"$1\" == *strata_managed.py ]]; then\n"
+        "  shift\n"
+        "  printf '%s\\n' \"$1\" >> \"$STRATA_CALLS\"\n"
+        "  case \"$1\" in\n"
+        "    tokenizer) exit 0 ;;\n"
+        "    id)\n"
+        "      if [ -f \"$STRATA_STARTED\" ]; then printf '%s\\n' strata-id; exit 0; fi\n"
+        "      exit 1 ;;\n"
+        "    start)\n"
+        "      if [ -e \"$A770B_DATA/logs/profiling.json\" ]; then\n"
+        "        echo present > \"$STRATA_AT_START\"\n"
+        "      else\n"
+        "        echo absent > \"$STRATA_AT_START\"\n"
+        "      fi\n"
+        "      printf '%s\\n' '{\"engine\":\"strata\"}' > \"$STRATA_EVIDENCE\"\n"
+        "      : > \"$STRATA_STARTED\"\n"
+        "      printf '%s\\n' \"$STRATA_EVIDENCE\"\n"
+        "      exit 0 ;;\n"
+        "    admit) exit \"${STRATA_ADMIT_RC:-0}\" ;;\n"
+        "    stop) exit 0 ;;\n"
+        "  esac\n"
+        "  exit 0\n"
+        "fi\n"
+        "exec /usr/bin/python3 \"$@\"\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    (bin_dir / "nvtop").write_text(
+        "#!/bin/bash\n"
+        "printf '%s\\n' '[{\"device_name\":\"Intel Arc DG2\",\"mem_used\":0,"
+        "\"mem_total\":17179869184,\"mem_free\":17179869184}]'\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "nvtop").chmod(0o755)
+    (bin_dir / "docker").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (bin_dir / "docker").chmod(0o755)
+    gate = tmp_path / "gate.sh"
+    gate.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    gate.chmod(0o755)
+    data = tmp_path / "data"
+    (data / "logs").mkdir(parents=True)
+    receipt = data / "logs" / "profiling.json"
+    receipt.write_text('{"stale": true}\n', encoding="utf-8")
+    key = tmp_path / "api.key"
+    key.write_text("a770b-test\n", encoding="utf-8")
+    env = dict(os.environ)
+    env.update({
+        "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+        "A770B_PROJECT": str(ROOT),
+        "A770B_DATA": str(data),
+        "A770B_HOST": "127.0.0.1",
+        "A770B_PORT": "9",
+        "A770B_VRAM_CAP_GIB": "16",
+        "A770B_CARD_VRAM_TOTAL": "16",
+        "A770B_GPU_MATCH": "DG2",
+        "A770B_ALLOW_NO_NVTOP": "1",
+        "A770B_MIN_AVAIL_MB": "1",
+        "A770B_BUDGET_GATE": str(gate),
+        "A770B_API_KEY_FILE": str(key),
+        "A770B_DOCKER": "docker",
+        "A770B_FRAMEWORK_PORTS": "",
+        "A770B_SERVE": "compose",
+        "A770B_COMPOSE_PROJECT": "a770-builder",
+        "A770B_CARD": "",
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+        "STRATA_CALLS": str(calls),
+        "STRATA_STARTED": str(started),
+        "STRATA_EVIDENCE": str(evidence),
+        "STRATA_AT_START": str(tmp_path / "at-start.txt"),
+        "STRATA_ADMIT_RC": "1",
+    })
+    (tmp_path / "xdg").mkdir()
+    script = ROOT / "harness" / "serve_strata.sh"
+    failed = __import__("subprocess").run(
+        ["bash", str(script), "start", str(tmp_path / "prepared.json"), "8192"],
+        env=env, capture_output=True, text=True,
+    )
+    assert failed.returncode == 3, failed.stdout + failed.stderr
+    assert not receipt.exists()
+    assert (tmp_path / "at-start.txt").read_text(encoding="utf-8").strip() == "absent"
+    assert not evidence.exists() or "profiling" not in evidence.read_text(encoding="utf-8")
+
+    receipt.write_text('{"stale": true}\n', encoding="utf-8")
+    started.unlink()
+    env["STRATA_ADMIT_RC"] = "0"
+    ok = __import__("subprocess").run(
+        ["bash", str(script), "start", str(tmp_path / "prepared.json"), "8192"],
+        env=env, capture_output=True, text=True,
+    )
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert ok.stdout.strip() == str(evidence)
+    written = json.loads(receipt.read_text(encoding="utf-8"))
+    assert written["engine"] == "strata" and written["flags"] == []
+    merged = json.loads(evidence.read_text(encoding="utf-8"))
+    assert merged["profiling"]["engine"] == "strata"
+
+
 def test_strata_shell_dispatches_the_supported_pid_command(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

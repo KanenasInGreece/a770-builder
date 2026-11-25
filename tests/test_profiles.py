@@ -3191,7 +3191,7 @@ def test_b70_registry_keeps_four_rows_and_records_flashnext():
 def test_strata_profile_preserves_int8_and_can_omit_flash_attention(tmp_path):
     registry = json.loads((ROOT / "config/registry/b70.inference.json").read_text())
     entry = registry["profiles"]["flashnext"]
-    entry.update(engine="strata", backend="strata", kv="int8")
+    entry.update(engine="strata", backend="strata", kv="int8", extra="")
     for field in ("flash_attention", "tool_parser", "reasoning_parser"):
         entry.pop(field)
     path = write_json(tmp_path / "strata-registry.json", registry)
@@ -3245,6 +3245,230 @@ def test_html_recap_keeps_measured_prefill_when_decode_is_missing():
     assert "28.7 / 1337.1 tok/s" in html
 
 
+def _catalogue_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _catalogue_label_gaps(mod, rows: list[dict], table: list[str]) -> list[str]:
+    """One entry per catalogue cell whose figure is not tied to that row's own depth or served context.
+
+    An 8k cell is a single em dash when both rates are missing, never a pair of dashes with a unit.
+    A far-end cell is an em dash when the row has no usable far-end measurement, and otherwise ends
+    with that row's own token depth. One bad cell is enough: the caller fails on a non-empty list.
+    """
+    gaps = []
+    body = table[2:]
+    if len(body) != len(rows):
+        return [f"{len(body)} rendered rows for {len(rows)} profiles"]
+    for row, line in zip(rows, body):
+        name = row.get("name", "?")
+        cells = _catalogue_cells(line)
+        if len(cells) != 9:
+            gaps.append(f"{name}: {len(cells)} cells")
+            continue
+        prof = row["prof"]
+        vram, at_8k, far = cells[5], cells[6], cells[7]
+        ctx = prof.get("ctx")
+        if not isinstance(ctx, int) or isinstance(ctx, bool):
+            gaps.append(f"{name}: vram {vram!r}")
+        else:
+            expected = f"{prof['vram_gib_after_load']} GiB at {ctx:,} served"
+            if vram != expected:
+                gaps.append(f"{name}: vram {vram!r}")
+        speed = prof.get("speed") if isinstance(prof.get("speed"), dict) else {}
+        decode = speed.get("decode_tps")
+        prefill = speed.get("prefill_tps")
+        if not isinstance(decode, dict):
+            decode = {}
+        if not isinstance(prefill, dict):
+            prefill = {}
+        dec, pre = decode.get("8k"), prefill.get("8k")
+        if dec is None and pre is None:
+            if at_8k != "—":
+                gaps.append(f"{name}: 8k {at_8k!r}")
+        else:
+            expected = f"{mod._speed_pair(dec, pre)} tok/s at 8k"
+            if at_8k != expected:
+                gaps.append(f"{name}: 8k {at_8k!r}")
+        far_end = speed.get("far_end")
+        tokens = far_end.get("tokens") if isinstance(far_end, dict) else None
+        usable = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0
+        if usable:
+            pair = mod._speed_pair(far_end.get("decode_tps"), far_end.get("prefill_tps"))
+            if pair == "— / —":
+                if far != "—":
+                    gaps.append(f"{name}: far {far!r}")
+            elif far != f"{pair} tok/s at {mod._depth_k(tokens)}":
+                gaps.append(f"{name}: far {far!r}")
+        elif far != "—":
+            gaps.append(f"{name}: far {far!r}")
+    return gaps
+
+
+def _one_catalogue_row(speed: dict, **prof) -> dict:
+    body = {
+        "ctx": 8192,
+        "useful_ctx": 8000,
+        "model": "m.gguf",
+        "vram_gib_after_load": 1.0,
+        "speed": speed,
+        "measured_on": "x",
+    }
+    body.update(prof)
+    return {"card": "c", "mode": "inference", "name": "n", "prof": body}
+
+
+def test_catalogue_labels_every_speed_and_vram_with_its_depth():
+    """A rendered catalogue cell that holds a speed or a VRAM figure also names the depth or the served
+    context that figure was read at. The far-end cell uses that row's own measured depth. One unlabelled
+    cell, on any row, fails this check."""
+    mod = _profiles_module()
+    rows, errors = mod._catalogue_rows()
+    assert not errors, errors
+    table = mod._catalogue_table(rows)
+    assert "at 8k" in table[0]
+    assert "far end" in table[0]
+    assert "served" in table[0]
+    assert _catalogue_label_gaps(mod, rows, table) == []
+    flash = [line for line in table if "| flashnext |" in line]
+    assert len(flash) == 1, table
+    assert "9.9 / 1418.3 tok/s at 8k" in flash[0]
+    assert "11.0 / 891 tok/s at 99.9k" in flash[0]
+    assert "27.31 GiB at 131,072 served" in flash[0]
+    gemma = [line for line in table if "| gemma4-8b-e4b-q4km-vulkan |" in line]
+    assert len(gemma) == 1
+    assert _catalogue_cells(gemma[0])[7] == "—"
+    assert "60 / 796 tok/s at 8k" in gemma[0]
+    assert "8.1 GiB at 131,072 served" in gemma[0]
+    # A synthetic row proves one unlabelled cell is enough. The other cells stay labelled.
+    synthetic = _one_catalogue_row({
+        "decode_tps": {"8k": 4},
+        "prefill_tps": {"8k": 80},
+        "far_end": {"tokens": 50000, "decode_tps": 3, "prefill_tps": 9},
+    })
+    rendered = mod._catalogue_table([synthetic])
+    assert _catalogue_label_gaps(mod, [synthetic], rendered) == []
+    cells = _catalogue_cells(rendered[-1])
+    cells[7] = "3 / 9 tok/s"
+    unlabelled = "| " + " | ".join(cells) + " |"
+    assert _catalogue_label_gaps(mod, [synthetic], rendered[:2] + [unlabelled])
+    bare_8k = list(cells)
+    bare_8k[6] = "— / — tok/s at 8k"
+    bare_8k[7] = "3 / 9 tok/s at 50.0k"
+    unlabelled_8k = "| " + " | ".join(bare_8k) + " |"
+    assert _catalogue_label_gaps(mod, [synthetic], rendered[:2] + [unlabelled_8k])
+    missing = _one_catalogue_row({"decode_tps": {"8k": None}, "prefill_tps": {"8k": None}})
+    missing_table = mod._catalogue_table([missing])
+    assert _catalogue_cells(missing_table[-1])[6] == "—"
+    assert "— / — tok/s at 8k" not in missing_table[-1]
+    assert _catalogue_label_gaps(mod, [missing], missing_table) == []
+
+
+def test_8k_cell_is_one_dash_when_both_speeds_are_missing():
+    """Both 8k rates missing is one em dash. One measured rate still names the 8k depth."""
+    mod = _profiles_module()
+    assert mod._8k_cell({"decode_tps": {"8k": None}, "prefill_tps": {"8k": None}}) == "—"
+    assert mod._8k_cell({"decode_tps": {"8k": None}, "prefill_tps": {"8k": 20}}) == "— / 20 tok/s at 8k"
+    assert mod._8k_cell({"decode_tps": {"8k": 4}, "prefill_tps": {"8k": None}}) == "4 / — tok/s at 8k"
+    row = _one_catalogue_row({"decode_tps": {"8k": None}, "prefill_tps": {"8k": None}})
+    assert _catalogue_cells(mod._catalogue_table([row])[-1])[6] == "—"
+
+
+def test_served_vram_cell_never_drops_the_context():
+    """A VRAM figure names the served context, or says that context was not recorded."""
+    mod = _profiles_module()
+    assert mod._served_vram_cell(1.5, 8192) == "1.5 GiB at 8,192 served"
+    assert mod._served_vram_cell(1.5, None) == "1.5 GiB (served context not recorded)"
+    assert mod._served_vram_cell(None, 8192) == "—"
+    assert mod._served_vram_cell(1.5, None) != "1.5 GiB"
+
+
+def test_html_recap_shows_the_catalogue_columns():
+    """The local recap uses the catalogue's columns, far-end cell, and served-context VRAM label."""
+    script = (ROOT / "render_readme.sh").read_text(encoding="utf-8")
+    assert "_8k_cell" in script and "_far_end_cell" in script and "_served_vram_cell" in script
+    assert 'f"{vram} GiB"' not in script
+    result = subprocess.run(["bash", str(ROOT / "render_readme.sh")], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    html = (ROOT / "README.html").read_text(encoding="utf-8")
+    mod = _profiles_module()
+    names = [cell.strip() for cell in mod.CATALOGUE_HEADER.strip().strip("|").split("|")]
+    assert "".join(f"<th>{name}</th>" for name in names) in html
+    rows, errors = mod._catalogue_rows()
+    assert not errors, errors
+    for line in mod._catalogue_table(rows)[2:]:
+        for cell in _catalogue_cells(line)[5:9]:
+            assert cell in html, cell
+    assert "— / — tok/s at 8k" not in html
+    assert re.search(r">\d[\d.]*(?:\.\d+)? GiB<", html) is None
+
+
+def test_catalogue_far_end_without_a_measurement_is_a_dash():
+    """No far-end object means an em dash. The cell is not filled from the 8k sample or from the window."""
+    mod = _profiles_module()
+    table = mod._catalogue_table([{
+        "card": "a770",
+        "mode": "display",
+        "name": "no-far",
+        "prof": {
+            "ctx": 8192,
+            "useful_ctx": 8000,
+            "model": "m.gguf",
+            "vram_gib_after_load": 1.5,
+            "speed": {"decode_tps": {"8k": 10}, "prefill_tps": {"8k": 20}},
+            "measured_on": "test card",
+        },
+    }])
+    cells = _catalogue_cells(table[-1])
+    assert cells[5] == "1.5 GiB at 8,192 served"
+    assert cells[6] == "10 / 20 tok/s at 8k"
+    assert cells[7] == "—"
+
+
+def test_snippet_sentence_names_the_8k_depth_on_a_quoted_speed():
+    data = load_base()
+    sentence = _profiles_module()._snippet_sentence(data)
+    assert re.search(r"~\d+ tok/s at 8k", sentence), sentence
+    assert re.search(r"tok/s(?! at 8k)", sentence) is None, sentence
+
+
+def _unlabeled_readme_measures(text: str) -> list[str]:
+    """Sentences in README.md, outside the catalogue, that state a speed, a memory size, or a time in
+    seconds without a depth or context cue in that same sentence.
+
+    Known limits. A sentence is the text between '. ' (a period and a space), after line breaks are turned
+    into spaces, so a figure and its cue have to share that span. The units are only tok/s, GiB, and the
+    word seconds: minutes, milliseconds, a bare s, GB, and MiB are not checked. A cue is a number followed
+    by k, -token, or tokens, or the word window, context, or depth, anywhere in the sentence. One cue covers
+    every figure in the sentence; the cue is not checked to belong to the same measurement. The catalogue
+    block is removed first. Versions and counts that do not use those units are ignored.
+    """
+    text = re.sub(
+        r"<!-- catalogue:begin -->.*?<!-- catalogue:end -->",
+        " ",
+        text,
+        flags=re.S,
+    )
+    measured = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:tok/s|GiB|seconds)\b", re.I)
+    cue = re.compile(
+        r"\d[\d,]*(?:\.\d+)?\s*(?:k\b|-token\b|tokens\b)|\b(?:window|context|depth)\b",
+        re.I,
+    )
+    bad = []
+    for sentence in text.replace("\n", " ").split(". "):
+        if measured.search(sentence) and not cue.search(sentence):
+            bad.append(" ".join(sentence.split())[:180])
+    return bad
+
+
+def test_readme_outside_the_catalogue_names_depth_for_every_speed_or_memory():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert _unlabeled_readme_measures(readme) == []
+    assert _unlabeled_readme_measures("The server held 8.1 GiB and decoded at 11 tok/s.")
+    labeled = "Decode was 11 tok/s at 8k, and the load was 8.1 GiB at a 32,768-token window."
+    assert _unlabeled_readme_measures(labeled) == []
+
+
 def test_catalogue_shows_the_b70_strata_row_at_one_decimal_and_keeps_raw_registry_values():
     """The operator's row: B70 Qwen3.8 Flash-Next on Strata reads 28.7 / 1337.1 tok/s in the generated
     catalogue, while config/registry/b70.inference.json keeps the measured floats untouched."""
@@ -3254,7 +3478,7 @@ def test_catalogue_shows_the_b70_strata_row_at_one_decimal_and_keeps_raw_registr
     table = mod._catalogue_table(rows)
     strata = [ln for ln in table if "| qwen38-flash-next-iq3s-strata |" in ln]
     assert len(strata) == 1, table
-    assert "| 28.7 / 1337.1 tok/s |" in strata[0], strata[0]
+    assert "| 28.7 / 1337.1 tok/s at 8k |" in strata[0], strata[0]
     for ln in table[2:]:
         cell = ln.split(" | ")[6]
         assert not re.search(r"\d\.\d\d", cell), ln
@@ -3332,9 +3556,114 @@ def test_requests_rejects_an_unknown_key_and_a_bad_value(tmp_path):
     assert "requests: missing key source" in result.stderr
 
 
+def test_i4_profiling_validates_when_present_and_absence_stays_valid(tmp_path):
+    data = load_base()
+    path = write_json(tmp_path / "absent.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "contract": 1,
+        "engine": "llama.cpp",
+        "flags": ["--metrics", "-lv", "4"],
+        "confirmed": {"--metrics": True, "-lv 4": "pending"},
+    }
+    row["useful_ctx_rule"] = "prefill-absorb-v1"
+    row["absorb_max_s"] = 600
+    row["speed"]["absorb_s"] = {"8k": 14.0, "far_end": None}
+    row["speed"]["delivered"] = None
+    path = write_json(tmp_path / "present.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    row["profiling"]["note"] = "typed"
+    path = write_json(tmp_path / "unknown.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "profiling: unknown key note" in result.stderr
+
+
+def test_missing_profiling_key_is_reported_once(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "engine": "llama.cpp",
+        "flags": ["--metrics", "-lv", "4"],
+        "confirmed": {"--metrics": True, "-lv 4": True},
+    }
+    path = write_json(tmp_path / "missing-contract.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert result.stderr.count("missing key contract") == 1
+    assert "contract must be a positive int" not in result.stderr
+
+
+def test_profiling_confirmed_rejects_numeric_standins_for_booleans(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "contract": 1,
+        "engine": "llama.cpp",
+        "flags": ["--metrics", "-lv", "4"],
+        "confirmed": {"--metrics": True, "-lv 4": False},
+    }
+    for bad in (0, 1, 0.0, 1.0):
+        row["profiling"]["confirmed"] = {"--metrics": bad, "-lv 4": False}
+        path = write_json(tmp_path / f"num-{bad}.json", data)
+        result = run("check", "--file", str(path))
+        assert result.returncode == 2, bad
+        assert "must be true, false, or pending" in result.stderr, bad
+
+
+def test_profiling_engine_must_match_the_row_and_strata_extra_is_empty(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "contract": 1,
+        "engine": "vllm",
+        "flags": ["--enable-per-request-metrics"],
+        "confirmed": {"--enable-per-request-metrics": True},
+    }
+    path = write_json(tmp_path / "wrong-engine.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "measurement engine 'llama.cpp'" in result.stderr
+    row["profiling"]["engine"] = "llama.cpp"
+    row["profiling"]["flags"] = ["--metrics", "-lv", "4"]
+    row["profiling"]["confirmed"] = {"--metrics": True, "-lv 4": True}
+    path = write_json(tmp_path / "same-engine.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+    strata = json.loads((ROOT / "config" / "registry" / "b70.inference.json").read_text(encoding="utf-8"))
+    strata["profiles"]["qwen38-flash-next-iq3s-strata"]["extra"] = "--draft"
+    path = write_json(tmp_path / "b70.inference.json", strata)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "Strata engine flags belong in the prepared config" in result.stderr
+
+
+def test_i2_profiles_check_refuses_a_forbidden_extra(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["extra"] = row["extra"] + " --metrics"
+    path = write_json(tmp_path / "dup.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "llama.cpp refuses --metrics" in result.stderr
+    row["extra"] = "--log-requests"
+    row["backend"] = "sglang"
+    row["engine"] = "sglang"
+    row["kv"] = "fp8_e4m3"
+    row["kv_v"] = "fp8_e4m3"
+    path = write_json(tmp_path / "sglang.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "sglang refuses --log-requests" in result.stderr
+
+
 def test_tracked_catalogue_documents_show_the_strata_row_at_one_decimal():
     for rel in ("README.md", "config/models.md"):
         text = (ROOT / rel).read_text(encoding="utf-8")
         section = text[text.index("<!-- catalogue:begin -->"):text.index("<!-- catalogue:end -->")]
         assert "28.675594849636038" not in section and "1337.1326933097464" not in section, rel
-        assert "| 28.7 / 1337.1 tok/s |" in section, rel
+        assert "| 28.7 / 1337.1 tok/s at 8k |" in section, rel

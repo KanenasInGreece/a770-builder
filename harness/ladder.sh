@@ -9,7 +9,7 @@
 #                                         bring/speed/count come from harness/roles.py. SGLang is
 #                                         started from compose/b70-sglang.yaml, not attached.
 #   4. the window rung                      — harness/ctx_sweep.sh 8000 <far end>  (VRAM/kernel-log safety read;
-#                                              still the source useful_ctx's linear extension is drawn from)
+#                                              its measured time to first token is what a prefill limit reads)
 #   5. the depth probe, now graded          — harness/depth_probe.sh <far end>  (caps useful_ctx where it fails)
 #   6. the task rung                        — harness/run_suite.sh <profile>  (or --model/--ctx — see below)
 # harness/cancel_repro.sh (AGENTS.md's rung 6, "the cancel reproduction") is a one-off, once-per-model check an
@@ -30,9 +30,9 @@
 # The last step is harness/ladder_row.py — a file rather than a heredoc, so a test can drive it and an operator can
 # re-run it over the artefacts a terminated run left behind. It writes ONE JSON,
 # $A770B_DATA/results/<label>-ladder-<date>.json, holding every rung's numbers (whatever ran,
-# including a rung that failed or was skipped), then prints a REGISTRY ROW: useful_ctx computed from the ctx_sweep
-# 8k/far-end decode readings by extending time-per-token linearly between them and capping by the depth probe's
-# last passing depth (AGENTS.md's "four-tokens-a-second rule"); speed.decode_tps/prefill_tps filled from
+# including a rung that failed or was skipped), then prints a REGISTRY ROW: useful_ctx is the served context
+# unless A770B_ABSORB_MAX_S sets a prefill limit (prefill-absorb-v1), capped at 8,000 when the depth probe
+# fails; speed.decode_tps/prefill_tps filled from
 # speed.bench.at_depth by depth (kit/PROFILE.md §2); vram_gib_after_load, memavailable_drop_gb (the host
 # MemAvailable drop across the load — recorded in the results JSON's computed block, not printed in the row;
 # ram_gb_extra itself is never computed here, it is transcribed by hand from the server log's *_Host … buffer size
@@ -49,6 +49,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$here/env.sh"; . "$here/guard.sh"
 die(){ echo "⛔ $*" >&2; exit 2; }
+# Empty is unset. Anything else must be a positive integer number of seconds.
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import profiling_contract; profiling_contract.parse_absorb_limit()' "$here" || exit $?
 serving_pid_matches_engine(){
   python3 - "$here/host_memory.py" "$1" "$ENGINE" <<'PY'
 import sys
@@ -296,7 +298,7 @@ if [ "$DRYRUN" = 1 ]; then
     EXTRA_DRY=""; [ -n "$EXTRA" ] && EXTRA_DRY=" --extra '$EXTRA'"
     echo "[dry-run] rung 6/6: bash harness/$KIT --model $GGUF --ctx $CTX --kv $KV --kv-v $KV_V$EXTRA_DRY --reasoning $REAS${BUDGET:+ --reasoning-budget $BUDGET} --timeout $TIMEOUT $SEAT${SUITE:+ --suite $SUITE}${REVIEWER:+ --reviewer $REVIEWER}$FRESH_FLAG"
   fi
-  echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, suite, instrument computed; ram_gb_extra printed null — transcribe it by hand from the server log's *_Host … buffer size lines at -lv 4; use_for/fit.write/capability left as placeholders)"
+  echo "[dry-run] writes: $OUT, then prints a REGISTRY ROW to paste (useful_ctx, speed, vram_gib_after_load, suite, instrument computed; ram_gb_extra printed null — transcribe it by hand from the server log's *_Host … buffer size lines at verbosity 4; use_for/fit.write/capability left as placeholders)"
   echo "[dry-run] nothing written"
   exit 0
 fi
@@ -504,6 +506,12 @@ if [ "$ENGINE" != strata ] && [ -z "$FAIL_RUNG" ] && [ "$BRING" != attach ]; the
   if ev_logtext=$("$A770B_DOCKER" logs "$ev_container" 2>&1) \
       && printf '%s\n' "$ev_logtext" | python3 "$here/engine_evidence.py" \
            log --engine "$ENGINE" --log - --model "$GGUF" --out "$ev_out"; then
+    python3 - "$here" "$ev_out" "$A770B_DATA/logs/profiling.json" <<'PY' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract
+profiling_contract.merge_receipt_file(sys.argv[2], sys.argv[3])
+PY
     EVIDENCE_PATH="$ev_out"
   else
     echo "⚠ could not write serve evidence for $NAME (the container log or engine_evidence.py failed) — continuing" >&2
@@ -624,9 +632,9 @@ if [ "$ENGINE" = strata ] && [ -n "${EVIDENCE_PATH:-}" ]; then
   fi
 fi
 
-# ── the last step: read every rung's own output, compute what no single rung produces (useful_ctx by the
-# four-tokens-a-second rule, memavailable_drop_gb from rung 1's MemAvailable sampling, the speed table — ram_gb_extra
-# is never computed here, it is transcribed by hand from the server log's *_Host … buffer size lines at -lv 4),
+# ── the last step: read every rung's own output, compute what no single rung produces (useful_ctx by
+# prefill-absorb-v1, memavailable_drop_gb from rung 1's MemAvailable sampling, the speed table — ram_gb_extra
+# is never computed here, it is transcribed by hand from the server log's *_Host … buffer size lines at verbosity 4),
 # write the ONE ladder results JSON to $OUT, and print
 # the REGISTRY ROW to paste. It lives in harness/ladder_row.py, not in a heredoc here, so it can be called: a test
 # drives it with a real run's rung outputs, and an operator can re-run it by hand over the artefacts a terminated
