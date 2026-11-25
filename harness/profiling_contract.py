@@ -302,7 +302,8 @@ def ttft_at(depth, t1, t2, far_end, shallow=SHALLOW_DEPTH):
 
     Below the shallow point, time scales from zero. Between the points it is
     linear. Past the far end the same slope continues only while time rises;
-    otherwise the far-end time is held flat.
+    otherwise the far-end time is held flat. When the far end is not past the
+    shallow point, a deeper depth uses the far time itself.
     """
     depth = float(depth)
     if depth <= 0:
@@ -311,7 +312,7 @@ def ttft_at(depth, t1, t2, far_end, shallow=SHALLOW_DEPTH):
     if depth <= shallow or far_end <= shallow:
         if depth <= shallow:
             return float(t1) * (depth / shallow)
-        return float(t1) if t2 > t1 else float(t2)
+        return float(t2)
     if depth <= far_end:
         span = float(far_end) - shallow
         return float(t1) + (float(t2) - float(t1)) * ((depth - shallow) / span)

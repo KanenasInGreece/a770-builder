@@ -91,6 +91,15 @@ def test_refusal_matches_the_flag_and_the_equals_form_only():
     assert pc.refusal("llama.cpp", ["-lv4"]) is None
 
 
+def test_ttft_at_uses_the_far_time_when_the_far_end_is_not_beyond_shallow():
+    # Far time above the shallow time: the far time, not the smaller one.
+    assert pc.ttft_at(10000, 10, 50, 8000) == 50.0
+    # Far time below the shallow time: the far time, not the larger one.
+    assert pc.ttft_at(10000, 50, 10, 8000) == 10.0
+    # At or below the shallow depth, time still scales from zero.
+    assert pc.ttft_at(4000, 10, 50, 8000) == 5.0
+
+
 def test_confirm_llama_and_vllm_from_a_healthy_start():
     good = pc.confirm_llama(200, "llamacpp:prompt_tokens_total 1\n", "verbosity = 4\n")
     assert good["--metrics"] is True and good["-lv 4"] is True
