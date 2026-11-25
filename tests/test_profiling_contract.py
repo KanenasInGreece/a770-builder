@@ -91,6 +91,15 @@ def test_refusal_matches_the_flag_and_the_equals_form_only():
     assert pc.refusal("llama.cpp", ["-lv4"]) is None
 
 
+def test_absorb_window_zero_under_a_limit_is_unset():
+    useful, _, limit = pc.absorb_window(40000, 38976, 10000.0, 20000.0, 1, True, False)
+    assert useful is None and limit == 1
+    unlimited, _, no_limit = pc.absorb_window(
+        40000, 38976, 10000.0, 20000.0, None, True, False,
+    )
+    assert unlimited == 40000 and no_limit is None
+
+
 def test_ttft_at_uses_the_far_time_when_the_far_end_is_not_beyond_shallow():
     # Far time above the shallow time: the far time, not the smaller one.
     assert pc.ttft_at(10000, 10, 50, 8000) == 50.0

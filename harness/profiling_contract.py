@@ -345,7 +345,7 @@ def absorb_window(ctx, far_end, ttft_8k, ttft_far, limit, depth_pass, unanswered
     With no limit the served context is the window, except a failed probe caps
     it at 8,000 and an unanswered probe or a sweep that lacks a point leaves
     it unset. Decode is not an input. With a limit, a missing ttft leaves the
-    window unset. The result is never above ctx.
+    window unset, and so does a window of 0. The result is never above ctx.
     """
     absorb = {"8k": ttft_8k, "far_end": ttft_far}
     if unanswered:
@@ -361,6 +361,9 @@ def absorb_window(ctx, far_end, ttft_8k, ttft_far, limit, depth_pass, unanswered
         useful = min(useful, SHALLOW_DEPTH)
     if useful is not None:
         useful = max(0, min(int(useful), int(ctx)))
+    # A zero window cannot be stored. Only a limit can produce one.
+    if limit is not None and useful == 0:
+        useful = None
     return useful, absorb, limit
 
 
