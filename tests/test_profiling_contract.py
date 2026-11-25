@@ -253,6 +253,18 @@ _NAMED_TEXT = (
 )
 
 
+def _unmarked_decode_floor(text):
+    """A sentence that sets a useful window from a tokens-per-second figure without saying legacy."""
+    found = []
+    for sentence in text.replace("\n", " ").split(". "):
+        lower = sentence.lower()
+        floor = "tok/s" in lower or "tokens a second" in lower
+        window = "useful window" in lower or "useful_ctx" in lower
+        if floor and window and "legacy" not in lower:
+            found.append(" ".join(sentence.split())[:160])
+    return found
+
+
 def test_i10_old_rule_wording_is_only_on_legacy_rows():
     bad = []
     for rel in _NAMED_TEXT:
@@ -260,6 +272,9 @@ def test_i10_old_rule_wording_is_only_on_legacy_rows():
         for number, line in enumerate(text.splitlines(), 1):
             if any(phrase in line for phrase in _OLD_RULE) and "legacy" not in line:
                 bad.append(f"{rel}:{number}")
+        if rel == "docs/OPERATING.md":
+            for sentence in _unmarked_decode_floor(text):
+                bad.append(f"{rel}: {sentence}")
     assert bad == [], bad
 
 

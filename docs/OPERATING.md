@@ -105,9 +105,9 @@ The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode again
 kernel log watched. The 9B serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
 flat within 0.3 GiB of its load; by the legacy four-tokens-a-second rule (below) its useful window is 65,536 tokens, this
 row's own registry `useful_ctx`. The three 27B files share one speed profile, decode being compute-bound on this
-card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and below 4 tok/s by 64k, so
-the 27B's useful window is 32,768 whether it serves 131,072 or 114,688, and a brief for it points at
-files that fit that.
+card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and below 4 tok/s by 64k. By the
+legacy four-tokens-a-second rule (below) the 27B's useful window is 32,768 tokens, this row's own registry
+`useful_ctx`, whether it serves 131,072 or 114,688, and a brief for it points at files that fit that.
 
 The E4B exists for the read, not the edit: files the 9B's window cannot hold, and the "read this whole thing
 and tell me" step before a brief is written. Its useful depth is about 100k tokens: at that depth it answered a probe's
