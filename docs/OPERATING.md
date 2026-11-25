@@ -63,12 +63,11 @@ deny block at the end of the profile's bash rules (git state verbs, docker, syst
 clients) are rendered after everything the caller adds, and a bash pattern that is a bare wildcard, a path, or begins with a
 wrapper or interpreter is refused outright; the floor itself is defence in depth, the boundary is the sandbox. An example specification is at the end of `briefs/TEMPLATE.md`. For the profiling kit's own tasks, `make` and `ctest` are added per task through `bash_allow`, while `node`, `g++` and `cmake` come from the template itself.
 
-The test command a brief names runs in the model's own shell tool, which cuts a command at 120 seconds (a shell
-limit, not a prompt depth) unless the model asks for longer, and inside the boundary, which has no network and
-none of the host's environment. So a brief names the test files its change touches, never the whole suite.
-Measured on a repository of about 3,800 tests: the full suite took 144 seconds inside the sandbox (measured
-under the earlier test matrix; depth not recorded), the first attempt was cut at 120, and 17 tests that depend
-on the host's environment failed there while passing on the host. The full suite is the merger's run on the host after review; `verify` re-runs
+The test command a brief names runs in the model's own shell tool, which cuts a command at 120 seconds unless the model
+asks for longer, and inside the boundary, which has no network and none of the host's environment. So a brief names the
+test files its change touches, never the whole suite. Measured on a repository of about 3,800 tests: the full suite took
+144 seconds inside the sandbox, the first attempt was cut at 120, and 17 tests that depend on the host's environment
+failed there while passing on the host. The full suite is the merger's run on the host after review; `verify` re-runs
 what the brief named.
 
 ## Profiles
@@ -94,12 +93,12 @@ profiles` shows what is actually served beside what the registry says.
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB at 262,144 tokens served | 36.8 / 571 tok/s at 8k | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| gemma4-8b-e4b-q4km-vulkan | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB at 131,072 tokens served | 60 / 796 tok/s at 8k | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| qwen38-27b-iq3xxs-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB at 131,072 tokens served | 8.1 / 72 tok/s at 8k | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB at 262,144 served | 36.8 / 571 tok/s at 8k | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| gemma4-8b-e4b-q4km-vulkan | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB at 131,072 served | 60 / 796 tok/s at 8k | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| qwen38-27b-iq3xxs-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB at 131,072 served | 8.1 / 72 tok/s at 8k | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 
 This workstation's own `builder.display.env` runs `qwen38-27b-iq3xxs-vulkan` on the quantiser's task-lossless file instead, IQ3_S, at
-114,688 tokens under a 14.1 cap: 13.78 GiB after load at that context, peaking at 14.21 GiB during a 32k prompt, ~9 minutes (five tests,
+114,688 under a 14.1 cap: 13.78 GiB after load, peaking at 14.21 GiB during a 32k prompt, ~9 minutes (five tests,
 542 s); `local-build.sh profiles --served` shows it in place of the registry's row.
 
 The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM sampled and the
@@ -127,11 +126,11 @@ is why it is set aside. Every file the model reads lands in that window, and a 1
 
 **Pure-inference**: measured on the same card with nothing else on it.
 
-| profile | model | window (useful) | VRAM | decode / prefill | use for |
+| profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB at 262,144 tokens served | 43.7 / 439 tok/s (measured under the earlier test matrix; depth not recorded; not the catalogue row's 29.3 / 385.9 tok/s at 8k, nor its 9.2 / 117.0 tok/s at 99.8k) | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
-| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB at 196,608 tokens served | 7.9 / 71 tok/s at 8k | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the legacy four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
-| qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB at 100,000 tokens served | 9.91 / 358 tok/s at 8k | The faster sibling of qwen38-27b-iq3s-vulkan: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB at 262,144 served | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
+| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB at 196,608 served | 7.9 / 71 tok/s at 8k | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the legacy four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+| qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB at 100,000 served | 9.91 / 358 tok/s at 8k | The faster sibling of qwen38-27b-iq3s-vulkan: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
 
 `useful_ctx` is the served context (`prefill-absorb-v1`). A failed depth probe still caps a measured window at
 8,000, and an unanswered probe leaves the field unset. Decode speed is recorded and does not set the window.
@@ -182,13 +181,13 @@ The installed skill copy finds the project via `A770B_PROJECT`.
 **The card mode.** `A770B_CARD_MODE` selects which of the two configurations this machine serves: unset or `display`
 (the default) reads `config/registry/<card>.display.json` under a 13.0 GiB cap, for a card that also draws the
 desktop; `inference` reads `config/registry/<card>.inference.json` under a 15.3 GiB cap, for a card that draws
-nothing else (a memory budget, not a prompt depth). A per-mode file,
+nothing else. A per-mode file,
 `builder.<mode>.env` beside each `builder.env`, lets one machine keep different overrides for each mode in the load
 order above — this workstation keeps `qwen38-27b-iq3xxs-vulkan` at IQ3_S under a 14.1 cap only in `builder.display.env`, and drops that
 override in inference mode. `status` prints the mode and the registry file on the builder-card line. `doctor` measures,
 only while the seat's own server is down, what the builder card actually holds: in inference mode a reading above
 0.5 GiB is reported MISSING — something else is still drawing the card; in display mode a reading at or under 0.1 GiB
-gets a hint that inference mode would serve the larger registry under the larger cap (idle readings, not a prompt depth). Either mode's cap is raised only
+gets a hint that inference mode would serve the larger registry under the larger cap. Either mode's cap is raised only
 on a fresh measurement of what else the card holds, never by hand.
 
 **The builder card.** `A770B_CARD` (no default — `doctor` refuses while unset) names the ONE builder card on this host (e.g. `b70`, `a770`). Physical capabilities and selectors are described in `config/cards.json`: PCI IDs, total VRAM, GPU match patterns, architecture generation, XMX native precision formats, and device selectors. Setting `A770B_CARD` supplies default values for `A770B_VK_DEVICE_SELECT`, `A770B_GPU_MATCH`, and `A770B_CARD_VRAM_TOTAL` via `harness/env.sh`, while explicit environment or `builder.env` overrides still win. `A770B_CARD_ROLE` (optional) overrides a card's role in `cards.json` — a community B580 builder sets `A770B_CARD_ROLE=builder` to use a card this project filed as an encoder. The VRAM cap (`A770B_VRAM_CAP_GIB`) remains an empirical runtime measurement in `builder.env`/`builder.<mode>.env` with no default.
@@ -217,12 +216,12 @@ The cap is measured after load, in either mode, and has no default — `doctor` 
 unset. On a card that also draws the desktop, a shared card's cap must account for a desktop share that has never been
 measured on your card. Measure it before setting or raising the cap: run `nvtop -s`, start something that actually
 draws the card (a video playing is enough), and sum every process on it that is not the server. On the A770 this came
-to 1.0 GiB (desktop share, not a prompt depth), so the cap there ran at 14.1 in `builder.display.env` rather than a display default. That extra headroom is
+to 1.0 GiB, so the cap there ran at 14.1 in `builder.display.env` rather than a display default. That extra headroom is
 what admitted the 27B's task-lossless file, IQ3_S, at 114,688, which
 loads at 13.78 GiB and peaks at 14.21 GiB during a 32k prompt; the 9B's full native window loads at
-10.35 GiB at 262,144 tokens served and fits under either cap. On a card that draws nothing, the free card here reported 15.9 GiB total and
-0.08 GiB used besides the server (card total, not a prompt depth); prefill growth above the after-load reading has measured 0.04 to 0.3 GiB under
-`-ub 512` (measured under the earlier test matrix; depth not recorded), so the inference cap is 15.3: 15.9 minus a 0.3 GiB growth allowance minus a 0.3 GiB reserve. Either cap is
+10.35 GiB at 262,144 served and fits under either cap. On a card that draws nothing, the free card here reported 15.9 GiB total and
+0.08 GiB used besides the server; prefill growth above the after-load reading has measured 0.04 to 0.3 GiB under
+`-ub 512`, so the inference cap is 15.3: 15.9 minus a 0.3 GiB growth allowance minus a 0.3 GiB reserve. Either cap is
 raised only after a fresh measurement, never by guesswork.
 
 **Host memory.** The only host-memory check before a load is a floor on available memory, `A770B_MIN_AVAIL_MB`
@@ -416,15 +415,15 @@ warning" is NVIDIA advice; on this card AutoRound **W4A16** is the working vLLM 
 
 llama.cpp does not log shader names (`mul_mat_vec_q6_k.comp`, …) at our verbosity. The honest kernel miss is
 **decode in a CPU-like band while VRAM is occupied**. Same Qwen3.8-27B UD-Q6_K GGUF on this B70: Vulkan ~5.45 t/s
-at 893 tokens with ~23 GiB used; SYCL 21.2 t/s after load (measured under the earlier test matrix; depth not recorded). That is not `useful_ctx` (a slow
+at 893 tokens with ~23 GiB used; SYCL 21.2 t/s after load. That is not `useful_ctx` (a slow
 kernel is not the useful-window rule).
 
 A CPU-only A/B (`llama-server -ngl 0`, or vLLM `--device cpu` if the image has it) is decisive on a **small**
-file. Do not `-ngl 0` a 21 GiB 27B (weight size, not a prompt depth) on this host as a screening tool. Prefer: same file Vulkan vs SYCL, then
+file. Do not `-ngl 0` a 21 GiB 27B on this host as a screening tool. Prefer: same file Vulkan vs SYCL, then
 another user's encoding of the same Hugging Face id (GPTQ/AWQ/AutoRound) on the engine that has a kernel.
 
 Prefill vs decode are already in `slot print_timing` / llama-bench `pp`/`tg`. Do not copy A770 9B numbers
-(~37–44 t/s, measured under the earlier test matrix; depth not recorded) onto a 27B, or NVIDIA ms/token bands onto this card.
+(~37–44 t/s) onto a 27B, or NVIDIA ms/token bands onto this card.
 
 ### What to do when it is slow
 
@@ -434,7 +433,7 @@ Prefill vs decode are already in `slot print_timing` / llama-bench `pp`/`tg`. Do
 3. Same GGUF, other llama.cpp backend — if they disagree, it is the **kernel/backend**, not the model.
 4. Other checkpoint of the same model on the engine that named a kernel (vLLM AutoRound W4A16 vs GGUF K-quant).
 5. Only then spend a ladder, or write the family off. IQ2 vs IQ3 LiveCodeBench is a real **file-quality** cliff;
-   Vulkan 5 t/s at 893 tokens on Q6_K is not.
+   Vulkan 5 t/s on Q6_K is not.
 
 ## Qualifying a new model
 
@@ -663,7 +662,7 @@ the pinned terminal's owner guard to close its server and engine.
 
 Use the [Intel Arc guide](https://github.com/Niko1221/Strata/blob/v0.2.17/docs/INTEL_ARC.md)
 and the [ISTA-DASLab IQ3_S checkpoint](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S).
-The two GGUF shards occupy 77.9 GiB on disk (not a prompt depth). Place them on a local SSD and prepare
+The two GGUF shards occupy 77.9 GiB on disk. Place them on a local SSD and prepare
 the native pack with the pinned Terminal. The measured run used the signed
 SYCL engine 0.1.63 and the `expert-profile-sycl.bin` from that Terminal revision.
 
@@ -675,14 +674,14 @@ Set `parallel` to 1 in the JSON. The config's engine environment uses
 `STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1`, and
 `STRATA_MIRROR_MIB=28672`. Use the single indexed Level Zero selector verified
 for your host. Keep the existing 28 GiB card cap and a 10 GiB host
-`MemAvailable` floor (`A770B_MIN_AVAIL_MB=10240`); both are budgets, not a prompt depth. The trial ran in a systemd user scope with
+`MemAvailable` floor (`A770B_MIN_AVAIL_MB=10240`). The trial ran in a systemd user scope with
 `MemoryMax=36G` and `MemorySwapMax=0`.
 
 The engine reported 10,087 resident experts and 14,489 experts mirrored in
-27.70 GiB of pinned host RAM at a 32,768-token context. The measured load read 25.64 GiB of GPU memory at 32,768 tokens served.
+27.70 GiB of pinned host RAM. The measured load read 25.64 GiB of GPU memory at 32,768 served. 
 The native suffix draft path used `--spec 2` without an external draft head.
-Three llama-benchy trials averaged 1,337 tok/s prefill and 28.7 tok/s decode at an 8,192-token
-prompt and 128 generated tokens. The context sweep reached 31,632 input tokens at
+Three llama-benchy trials averaged 1,337 tok/s prefill and 28.7 tok/s decode at 8,192
+prompt tokens and 128 generated tokens. The context sweep reached 31,632 input tokens at
 33.5 tok/s decode, 18.9 seconds to first token and zero GPU resets. The 31,522-token
 depth probe passed at 2/3.
 

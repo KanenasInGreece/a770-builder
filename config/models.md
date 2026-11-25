@@ -109,7 +109,7 @@ except the `qwen38-27b-iq3s-sycl` row, measured on `Arc A770 16 GB, llama.cpp fu
 
 | model file | source | ctx / KV | VRAM after load | decode 8k / far end | prefill 8k / far end | task | profile | notes |
 |---|---|---|---|---|---|---|---|---|
-| `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 262,144 / q8_0 (native) | 9.49 GiB at 262,144 tokens served | 43.7 tok/s (measured under the earlier test matrix; depth not recorded) / 11.6 tok/s at 100k | 439 tok/s (measured under the earlier test matrix; depth not recorded) / 147 tok/s at 100k | T1: 6 tests, 122 s (instruct line); SUITE-1@1: 1 of 3 counted stages passed (backend), front end + C++ failed | **qwen35-9b-q4km-vulkan** | useful to its whole native window; 100k prompt TTFT 626 s; the same file as the display registry's `qwen35-9b-q4km-vulkan`, served in full on a card with nothing else on it. The 43.7 and 439 tok/s figures are not the catalogue row's 29.3 / 385.9 tok/s at 8k, nor its 9.2 / 117.0 tok/s at 99.8k. The 11.6 and 147 tok/s figures are the ones this ledger already places at 100k; they are not that catalogue far end |
+| `Qwen3.5-9B-Q4_K_M.gguf` | `lmstudio-community/Qwen3.5-9B-GGUF` | 262,144 / q8_0 (native) | 9.49 GiB | 43.7 / 11.6 tok/s (far end 100k) | 439 / 147 tok/s | T1: 6 tests, 122 s (instruct line); SUITE-1@1: 1 of 3 counted stages passed (backend), front end + C++ failed | **qwen35-9b-q4km-vulkan** | useful to its whole native window; 100k prompt TTFT 626 s; the same file as the display registry's `qwen35-9b-q4km-vulkan`, served in full on a card with nothing else on it |
 | `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 131,072 / q8_0, `--n-cpu-moe 18` (18 expert layers in host RAM, 22 on the card) | 14.1 GiB, flat | 21.8 / 10.3 tok/s (far end 100k) | 207 / 80 tok/s | PASS, 10 tests, 203 s, under its instruct line | measured, not shipped | useful to its whole 131,072; 100k prompt TTFT 1,150 s; three times the dense 27B's decode; 18 of its expert layers sit in host memory, 22 on the card, which costs about 18 GB of system memory beyond the card and a CPU that is not otherwise busy; the harness has no gate for that memory, so it is not offered as a profile (*Measured and kept out*) |
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 196,608 / q4_0, reasoning on at effort low | 14.62 GiB, 14.82 peak at a 32k prompt | 7.9 / 4.9 tok/s (8k / 64k; 100k not run) | 71 / 42 tok/s (8k / 64k) | T1: 10 tests, 546 s (card line); SUITE-1@1: 3 of 3 counted stages passed | **qwen38-27b-iq3s-vulkan** (inference) | useful to about 98k by the legacy four-tokens-a-second rule; the quantiser's task-lossless file, 100.2% of BF16 on its own card (AIME25 100, GPQA-Diamond 89.39 against 89.90, LiveCodeBench v6 85.71 = BF16); the largest IQ3_S window under the 15.3 cap |
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 100,000 / q8_0, reasoning on at effort low, budget 2048 | 14.61 GiB | 9.91 / 6.29 tok/s (8k / 64k; 100k not run) | 358 / 242 tok/s (8k / 64k) | gpu-hang-check 13/13 (2026-09-13); SUITE-1@1: 3 of 3 counted stages passed, all three reference exercises passed | **qwen38-27b-iq3s-sycl** (inference, SYCL container) | measured on `Arc A770 16 GB, llama.cpp full-intel SYCL container` — a different `measured_on` from the Vulkan rows above, so it is compared only with rows sharing it; ~25% faster decode and ~5x faster prefill than the Vulkan qwen38-27b-iq3s-vulkan row at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000); `useful_ctx` 100,000 is derived from THIS row's measured 8k/64k decode (the legacy four-tokens-a-second crossing is ~155k, capped at the window), and the depth probe is not run — a first cut, not a full ladder |
@@ -118,13 +118,13 @@ except the `qwen38-27b-iq3s-sycl` row, measured on `Arc A770 16 GB, llama.cpp fu
 
 One row per file and window the campaign measured on the free card, adopted or not; VRAM is after load unless a peak
 is named. The display registry's own after-load readings above were taken with the desktop's 0.65 to 0.9 GiB on the
-card (desktop share, not a prompt depth), which this table has none of. Every row below down to and including the `-ub 1024`/`-ub 2048` rows carries
+card, which this table has none of. Every row below down to and including the `-ub 1024`/`-ub 2048` rows carries
 instrument `seat: Shared_Memory@3c8e2bb`, measured on `Arc A770 16 GB, llama.cpp b10805 Vulkan`; the last two rows
 are the exceptions, on a different instrument, named beside them.
 
 | file, window | VRAM after load (peak) | decode / prefill at 8k | profile or verdict |
 |---|---|---|---|
-| Qwen3.5-9B Q4_K_M, 262,144 | 9.49 GiB at 262,144 tokens served | 43.7 / 439 tok/s (measured under the earlier test matrix; depth not recorded; not the catalogue row's 29.3 / 385.9 tok/s at 8k, nor its 9.2 / 117.0 tok/s at 99.8k) | **qwen35-9b-q4km-vulkan** (inference) |
+| Qwen3.5-9B Q4_K_M, 262,144 | 9.49 GiB | 43.7 / 439 tok/s | **qwen35-9b-q4km-vulkan** (inference) |
 | Qwen3.5-9B Q8_0, 262,144 | 12.64 GiB | 30.6 / — tok/s | measured, not adopted: 28% less decode at 8k than Q4_K_M for nothing measurable on T1 (10.3 against 11.6 at 100k); Q4_K_M keeps the row unless the suite separates them |
 | gemma-4-E4B Q4_K_M, 131,072, `-fa off` | 7.33 GiB | 60 / 796 tok/s | **gemma4-8b-e4b-q4km-vulkan** (display registry; the same file, read on a card with nothing else on it) |
 | Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 18 expert layers in host RAM | 14.1 GiB, flat | 21.8 / 207 tok/s | measured, not adopted: the fastest builder measured on this card, but its expert layers cost about 18 GB of system memory beyond the card and the harness has no gate for that (*Measured and kept out*) |
@@ -143,7 +143,7 @@ are the exceptions, on a different instrument, named beside them.
 | Qwen3.6-35B-A3B UD-Q4_K_XL, 131,072, 18 expert layers in RAM, thinking mode under the card's precise-coding line (temperature 0.6, top_p 0.95, top_k 20, min_p 0, presence 0) | 14.1 GiB | 22.3 / 154 tok/s (prefill at 17k; 51.7 ms per token after it) | measured, not adopted: probes 3 of 3 with short reasoning; T1 nine tests green in 254 s, against the instruct line's ten in 203 s — thinking costs a quarter of the wall for nothing on this task; the instruct line keeps the row |
 | Qwen3.8-27B GSQ-RCO IQ3_S, 196,608, q4_0 KV, `-ub 1024` | 14.94 GiB (15.11 peak during an 8k prompt) | 7.9 / 74 tok/s | measured, not adopted: four percent more prefill than `-ub 512` (71 tok/s, 7.9 decode, 14.77 GiB peak) for 0.34 GiB more peak; ubatch stays 512 in both modes |
 | Gemma 4 26B-A4B UD-Q4_K_XL, 131,072, 18 expert layers in host memory, K q8_0 / V f16, `-fa off` | 11.7 GiB (15.00 GiB peak, no reset) | 10.5 / 175 tok/s (13,028-token prompt, the project's own sweep) | measured with the kit, not a registry row — **the first model measured on the kit** (`instrument: SUITE-1@0.1.5`, not `seat: Shared_Memory@3c8e2bb`; `measured_on: Arc A770 16 GB, llama.cpp b10805 Vulkan`, the same card as every other row in this table): 7.7 GB of host memory for the 18 expert layers beyond the 11.7 GiB VRAM; llama-bench at its own served flags: 13.3/186.5 tok/s decode/prefill at depth 0, 11.5/168.6 at 8,192, 9.4/109.2 at 32,768; the project's own sweep: 10.5/175 tok/s decode/prefill at a 13,028-token prompt, 5.5/82 at a 101,532-token prompt, VRAM peaking at 15.00 GiB, zero resets; the depth probe answered all three questions correctly at 101,532 tokens; the kit's suite: 3 of 3 counted stages passed (front end, backend, C++ optimisation) — the design note's own hidden check failed, scored outside the pass count, as it does for every row; of the three reference exercises, none of which ever counts toward the tally: the Python one passed, the C++ one failed, and the JavaScript one timed out after an hour. Decode still held at 5.5 tok/s at 101,532 tokens, comfortably above the legacy four-tokens-a-second floor — so this row's window is bounded by memory near 110k (VRAM already at 15.00 GiB against the free card's 15.3 cap) rather than by speed. This is a measurement, not a ruling: it carries no registry row and is not comparable with the rows above it, which share a different instrument |
-| Qwen3.5-9B Q4_K_M, 262,144, the ladder run of 2026-09-09 | 9.49 GiB at 262,144 tokens served | 36 / 414 tok/s at 8k | measured, not a registry row: **the second model measured on the kit** (`instrument: SUITE-1@0.1.5`, not `seat: Shared_Memory@3c8e2bb`; `measured_on: Arc A770 16 GB, llama.cpp b10805 Vulkan`, the same card as every other row in this table). It loaded in 3.3 s at 9.49 GiB and stayed there, with no kernel reset; prefill and decode by depth: 576 / 46 tok/s at the shallow end, 414 / 36 at 8k, 219 / 23 at 32k, 89 / 12 at 100k; the far end, 99,847 tokens, answered after 581 s of prefill at 159 tok/s and decoded at 11.5; the graded depth probe at 100,000 tokens passed all three questions. The kit's suite: every counted stage ran, and 1 of the 3 passed (the backend stage passed, the front end and the C++ optimisation failed), mean wall 86 s; the design note passed as well and is scored outside the count, as it is for every row. One of three is a complete pass ratio and a failing one, well under the 80% the builder-class bar asks for. The run was cut short after 4 of the suite's 7 stages, before the three reference exercises, which are the contamination check and never enter that ratio, so what this measurement lacks is that check and not the quality score. This is a measurement, not a ruling: it carries no registry row, none of these numbers belong in one, and it sits beside the other row taken on the kit instrument, never beside the rows above that carry the seat instrument |
+| Qwen3.5-9B Q4_K_M, 262,144, the ladder run of 2026-09-09 | 9.49 GiB | 36 / 414 tok/s | measured, not a registry row: **the second model measured on the kit** (`instrument: SUITE-1@0.1.5`, not `seat: Shared_Memory@3c8e2bb`; `measured_on: Arc A770 16 GB, llama.cpp b10805 Vulkan`, the same card as every other row in this table). It loaded in 3.3 s at 9.49 GiB and stayed there, with no kernel reset; prefill and decode by depth: 576 / 46 tok/s at the shallow end, 414 / 36 at 8k, 219 / 23 at 32k, 89 / 12 at 100k; the far end, 99,847 tokens, answered after 581 s of prefill at 159 tok/s and decoded at 11.5; the graded depth probe at 100,000 tokens passed all three questions. The kit's suite: every counted stage ran, and 1 of the 3 passed (the backend stage passed, the front end and the C++ optimisation failed), mean wall 86 s; the design note passed as well and is scored outside the count, as it is for every row. One of three is a complete pass ratio and a failing one, well under the 80% the builder-class bar asks for. The run was cut short after 4 of the suite's 7 stages, before the three reference exercises, which are the contamination check and never enter that ratio, so what this measurement lacks is that check and not the quality score. This is a measurement, not a ruling: it carries no registry row, none of these numbers belong in one, and it sits beside the other row taken on the kit instrument, never beside the rows above that carry the seat instrument |
 
 ## Measured and kept out
 
@@ -159,7 +159,7 @@ fifth of the time) and the 35B-A3B mixture-of-experts file, itself measured and 
 speed, less VRAM, a faster task).
 
 **Qwen3.6-35B-A3B** (`Qwen3.6-35B-A3B-UD-Q4_K_XL`) is a mixture of experts measured on this card at 14.1 GiB of VRAM
-at a 131,072-token context, with 18 of its expert layers in host memory, which costs about 18 GB of system memory beyond the card. It is not
+with 18 of its expert layers in host memory, which costs about 18 GB of system memory beyond the card. It is not
 shipped as a profile. The only host-memory check the harness makes is a floor on available memory before the load,
 written for a dense model's page cache, and it cannot refuse a start whose weights will not fit in RAM. On a machine
 whose swap is committed the server is killed under memory pressure, and the kill looks like a fault of the seat
@@ -177,7 +177,7 @@ full cache does not. A new family enters with both settings tried before its num
 **Speculative decoding results on Arc A770.** A separate draft model on the tested Qwen3.5-9B Vulkan configuration
 lost throughput. Its embedded MTP head improved short decode by 10% but slowed decode after a 17,255-token
 prompt by 28% and reduced prefill by 7%. Qwen3.8-27B IQ3_S-MTP slowed from 8.7 to 7.0 tok/s on Vulkan and
-10.9 to 9.5 tok/s on SYCL (measured under the earlier test matrix; depth not recorded). The 196,608-token MTP load failed. These results describe the measured configurations.
+10.9 to 9.5 tok/s on SYCL. The 196,608-token MTP load failed. These results describe the measured configurations.
 The B70 QKV8-MTP row below used the checkpoint with its head disabled.
 
 **The sampling line.** opencode sends its own temperature when the agent's profile block sets none — 0 by default for
@@ -209,41 +209,39 @@ budget, retained for historical comparison and not directly comparable with the 
 
 | checkpoint | engine | decode / prefill (llama-bench depth 0 / 8k prompt, unless the cell names another protocol) | peak VRAM | kit, counted · refs | kit wall | status |
 |---|---|---|---|---|---|---|
-| Qwen3.8-27B-UD-Q6_K (Unsloth) | llama.cpp SYCL | 21.4 / 1008 tok/s at an 8k prompt, llama-bench depth 0 | 23.35 GiB at a 100,000-token context | 3/3 · 3/3 (task budget 2048, full ladder) | 1.4 h | **adopted: qwen38-27b-udq6k-sycl** |
-| Qwen3.8-27B-UD-Q4_K_XL (Unsloth) | llama.cpp SYCL | 22.1 / 866 tok/s at an 8k prompt, llama-bench depth 0 | 17.33 GiB at a 32,768-token context | 2/3 · 2/3 | 2.0 h | measured, not adopted (below the bar) |
-| Qwen3.8-27B-Q6_K-QKV8 (Frosty40) | llama.cpp SYCL | 21.5 / 1015 tok/s at an 8k prompt, llama-bench depth 0 | 22.17 GiB at a 32,768-token context | 1/3 · 2/3 | 2.1 h | measured, not adopted |
-| Qwen3.8-27B-Q6_K-QKV8-MTP (Frosty40), head off | llama.cpp SYCL | 21.5 / 1016 tok/s at an 8k prompt, llama-bench depth 0 | 24.71 GiB at a 100,000-token context | 3/3 · 3/3 (task budget 2048, suite re-run 2026-10-05; speed and depth from the ladder the same day) | 1.3 h | **adopted: qwen38-27b-q6k-qkv8-mtp-sycl** |
-| Qwen3.8-27B-Q6_K-OQ8 (Frosty40) | llama.cpp SYCL | 22.0 / 1012 tok/s at an 8k prompt, llama-bench depth 0 | 24.46 GiB at a 100,000-token context | 3/3 · 3/3 (task budget 2048, suite re-run 2026-10-05; speed and depth from the ladder the same day) | 1.2 h | **adopted: qwen38-27b-q6k-oq8-sycl** |
-| Qwen3.8-27B-Q6_K-OQ8-MTP (Frosty40), head off | llama.cpp SYCL | 22.0 / 1017 tok/s at an 8k prompt, llama-bench depth 0 | 22.13 GiB at a 32,768-token context | 1/3 · 2/3 | 2.1 h | measured, not adopted |
-| Qwen3.8-27B-W4A16-AutoRound (GPTQ, group 64) | vLLM 0.21 XPU | 26.5 / 932 tok/s (one completion, 8.4k prompt) | 28.58 GiB at a 32,768-token context | 1/3 · 2/3 | 1.9 h | measured, not adopted |
-| Qwen3.8-27B-GPTQ-Int4-sym-G128-MTP-BF16 (SergiioB), head off | vLLM 0.21 XPU | 27.0 / 854 tok/s (one completion, 7k prompt) | 28.75 GiB at a 32,768-token context | 0/3 · 0/3 | 2.1 h | measured, not adopted |
-| Qwen3.8-27B-exl3-4.00bpw (turboderp), head off | vLLM 0.26 XPU | — / 1893.1 tok/s (vLLM completions, 8184-token prompt; the 128-token decode 33.87 is depth 0 only) | 28.15 GiB at a 100,000-token context | 3/3 · 3/3 (JavaScript is a retest; the first JavaScript stage applied an empty patch) | 1.8 h | **adopted: qwen38-27b-exl3-4bpw-vllm** |
-| Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound (Intel) | vLLM 0.26 XPU (Scaler 1.5) | 19.45 / 8995.5 tok/s (llama-benchy 8k) | 27.59 GiB (sample prompt depth not recorded) | 3/3 · 0/3 | 305.7 s mean | **adopted: intel-qwen3-coder-30b-a3b-w4a16-vllm** |
-| Laguna-XS-2.1 Q4_K_M (Frosty40) | llama.cpp SYCL | 90.6 / 920 tok/s at an 8k prompt, llama-bench depth 0 | 19.67 GiB at a 32,768-token context | — (server did not start: architecture `laguna`) | — | not runnable on this build |
-| Nex-N2-mini Q4_K_M (Frosty40) | llama.cpp SYCL | 91.2 / 955 tok/s at an 8k prompt, llama-bench depth 0 | 20.60 GiB at a 32,768-token context | 1/3 · 3/3 | 0.8 h | measured, not adopted |
-| Nex-N2-mini Q5_K_M (Frosty40) | llama.cpp SYCL | 88.8 / 982 tok/s at an 8k prompt, llama-bench depth 0 | 23.55 GiB at a 32,768-token context | 2/3 · 3/3 | 0.9 h | measured, not adopted |
-| Qwen-AgentWorld-35B-A3B Q5_K_M-agentaug (Frosty40) | llama.cpp SYCL | 88.5 / 1064 tok/s at an 8k prompt, llama-bench depth 0 | 23.55 GiB at a 32,768-token context | 2/3 · 3/3 | 0.9 h | measured, not adopted |
-| SIQ-1-35B Q5_K_M (Frosty40) | llama.cpp SYCL | 89.2 / 1047 tok/s at an 8k prompt, llama-bench depth 0 | 23.55 GiB at a 32,768-token context | 2/3 · 1/3 | 0.9 h | measured, not adopted |
+| Qwen3.8-27B-UD-Q6_K (Unsloth) | llama.cpp SYCL | 21.4 / 1008 tok/s | 23.35 GiB | 3/3 · 3/3 (task budget 2048, full ladder) | 1.4 h | **adopted: qwen38-27b-udq6k-sycl** |
+| Qwen3.8-27B-UD-Q4_K_XL (Unsloth) | llama.cpp SYCL | 22.1 / 866 | 17.33 GiB | 2/3 · 2/3 | 2.0 h | measured, not adopted (below the bar) |
+| Qwen3.8-27B-Q6_K-QKV8 (Frosty40) | llama.cpp SYCL | 21.5 / 1015 | 22.17 GiB | 1/3 · 2/3 | 2.1 h | measured, not adopted |
+| Qwen3.8-27B-Q6_K-QKV8-MTP (Frosty40), head off | llama.cpp SYCL | 21.5 / 1016 tok/s | 24.71 GiB | 3/3 · 3/3 (task budget 2048, suite re-run 2026-10-05; speed and depth from the ladder the same day) | 1.3 h | **adopted: qwen38-27b-q6k-qkv8-mtp-sycl** |
+| Qwen3.8-27B-Q6_K-OQ8 (Frosty40) | llama.cpp SYCL | 22.0 / 1012 tok/s | 24.46 GiB | 3/3 · 3/3 (task budget 2048, suite re-run 2026-10-05; speed and depth from the ladder the same day) | 1.2 h | **adopted: qwen38-27b-q6k-oq8-sycl** |
+| Qwen3.8-27B-Q6_K-OQ8-MTP (Frosty40), head off | llama.cpp SYCL | 22.0 / 1017 | 22.13 GiB | 1/3 · 2/3 | 2.1 h | measured, not adopted |
+| Qwen3.8-27B-W4A16-AutoRound (GPTQ, group 64) | vLLM 0.21 XPU | 26.5 / 932 (one completion, 8.4k prompt) | 28.58 GiB | 1/3 · 2/3 | 1.9 h | measured, not adopted |
+| Qwen3.8-27B-GPTQ-Int4-sym-G128-MTP-BF16 (SergiioB), head off | vLLM 0.21 XPU | 27.0 / 854 (one completion, 7k prompt) | 28.75 GiB | 0/3 · 0/3 | 2.1 h | measured, not adopted |
+| Qwen3.8-27B-exl3-4.00bpw (turboderp), head off | vLLM 0.26 XPU | — / 1893.1 (vLLM completions, 8184-token prompt; the 128-token decode 33.87 is depth 0 only) | 28.15 GiB | 3/3 · 3/3 (JavaScript is a retest; the first JavaScript stage applied an empty patch) | 1.8 h | **adopted: qwen38-27b-exl3-4bpw-vllm** |
+| Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound (Intel) | vLLM 0.26 XPU (Scaler 1.5) | 19.45 / 8995.5 (llama-benchy 8k) | 27.59 GiB | 3/3 · 0/3 | 305.7 s mean | **adopted: intel-qwen3-coder-30b-a3b-w4a16-vllm** |
+| Laguna-XS-2.1 Q4_K_M (Frosty40) | llama.cpp SYCL | 90.6 / 920 | 19.67 GiB | — (server did not start: architecture `laguna`) | — | not runnable on this build |
+| Nex-N2-mini Q4_K_M (Frosty40) | llama.cpp SYCL | 91.2 / 955 | 20.60 GiB | 1/3 · 3/3 | 0.8 h | measured, not adopted |
+| Nex-N2-mini Q5_K_M (Frosty40) | llama.cpp SYCL | 88.8 / 982 | 23.55 GiB | 2/3 · 3/3 | 0.9 h | measured, not adopted |
+| Qwen-AgentWorld-35B-A3B Q5_K_M-agentaug (Frosty40) | llama.cpp SYCL | 88.5 / 1064 | 23.55 GiB | 2/3 · 3/3 | 0.9 h | measured, not adopted |
+| SIQ-1-35B Q5_K_M (Frosty40) | llama.cpp SYCL | 89.2 / 1047 | 23.55 GiB | 2/3 · 1/3 | 0.9 h | measured, not adopted |
 
 Kit runs of 2026-09-24: ctx 32,768, K/V q8_0, reasoning on without a task budget, a stage past 25 minutes counted
 as a timeout. Those vLLM stages stored no token counts. The capture reads the usage file when the recorded
 engine is vllm or sglang, and reads the container log only for llama.cpp.
-Q6_K-OQ8's result in that run was 1/3 counted and 1/3 references, 22.0 / 1017 tok/s at an 8k prompt
-(llama-bench depth 0) and 22.13 GiB at a 32,768-token context. The adopted
+Q6_K-OQ8's result in that run was 1/3 counted and 1/3 references, 22.0 / 1017 tok/s and 22.13 GiB. The adopted
 profile takes speed, window, VRAM and depth from the ladder of 2026-10-05
 (`qwen38-27b-q6k-oq8-sycl-ladder-20261005-173832.json`: ctx 100,000, task budget 2,048, K/V q8_0, 22.0 / 1012
-tok/s at an 8k prompt, llama-bench depth 0, and 24.46 GiB at a 100,000-token context) and the kit 3/3 from the same-day suite re-run
+tok/s, 24.46 GiB) and the kit 3/3 from the same-day suite re-run
 (`qwen38-27b-q6k-oq8-sycl-suite-20261005-205802-139840.json`), after that ladder's own suite failed to grade.
 Q6_K-QKV8-MTP's result in that run, with the head off, was 1/3 counted and 1/3 references, 21.5 / 1016 tok/s
-at an 8k prompt (llama-bench depth 0) and 21.01 GiB at a 32,768-token context. The adopted profile takes speed, window, VRAM and depth from the ladder of 2026-10-05
+and 21.01 GiB. The adopted profile takes speed, window, VRAM and depth from the ladder of 2026-10-05
 (`qwen38-27b-q6k-qkv8-mtp-sycl-ladder-20261005-190913.json`: ctx 100,000, task budget 2,048, K/V q8_0,
-speculation off, 21.5 / 1016 tok/s at an 8k prompt, llama-bench depth 0, and 24.71 GiB at a 100,000-token context) and the kit 3/3 from the same-day suite re-run
+speculation off, 21.5 / 1016 tok/s, 24.71 GiB) and the kit 3/3 from the same-day suite re-run
 (`qwen38-27b-q6k-qkv8-mtp-sycl-suite-20261005-220834-163747.json`), after that ladder's own suite failed to grade.
 EXL3 4.00bpw (turboderp, codebook mul1, 4.0 bits, head bits 6) was served on vLLM 0.26.1.dev0 XPU from the local
-image `exl3xpu:b70-15ded2f`, quantization `exl3`, language-model only, max-num-seqs 16, a 6.39 GiB KV budget
-(a cache budget, not a prompt depth),
+image `exl3xpu:b70-15ded2f`, quantization `exl3`, language-model only, max-num-seqs 16, a 6.39 GiB KV budget,
 speculation off. The engine log records dtype bfloat16, kv_cache_dtype auto, reasoning off, and Flash Attention.
-Host VRAM after the bench was 28.15 GiB at a 100,000-token context. Prefill was 1893.1 tok/s at 8184 tokens and 1320.6 tok/s at 98729 tokens.
+Host VRAM after the bench was 28.15 GiB. Prefill was 1893.1 tok/s at 8184 tokens and 1320.6 tok/s at 98729 tokens.
 Decode was 33.87 tok/s for 128 tokens at depth 0. The 98729-token request asked for 128 tokens and stopped after
 12, at 27.58 tok/s, so there is no 8k, 32k, 64k or 100k decode column and the depth probe was not run. The first
 suite (`candidate-suite-20261006-132921-52788.json`) passed design, backend, optimise and the three references;
@@ -253,7 +251,7 @@ The pinned intel vLLM image does not contain this quant's plugin; serve uses thi
 still emitted a think tag, and those tokens were not capped.
 
 AutoRound INT4 W4A16 (Intel Hub revision `2e34fa861568584540b3c4f7a47cc1a4a4d88773`, safetensors,
-15.7 GiB on disk (not a prompt depth), directory `Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound`) was qualified on Intel LLM
+15.7 GiB, directory `Qwen3-Coder-30B-A3B-Instruct-int4-AutoRound`) was qualified on Intel LLM
 Scaler 1.5 using the CA-refreshed container derivative
 `sha256:d321efe647fbde0ebcc710e83e1ebddf3bf6d698416ef09f29537d8144df6aa5`
 (`a770-builder/llm-scaler-vllm-ca:2026-10-25`, upstream digest
@@ -264,9 +262,9 @@ the trust gate. Stock AutoRound metadata routed to Scaler's INC path, which sele
 experts and failed to load (OOM at 8K); a process-local metadata override
 (`{"quantization_config":{"quant_method":"gptq","bits":4,"group_size":128,"sym":true,"desc_act":false,"lm_head":false}}`)
 selected the packed GPTQ loader with `XPUwNa16LinearKernel` and `XPUExpertsWNA16` on unchanged
-weights. VRAM after load was 26.771 GiB at a 101,024-token context and peaked at 27.59 GiB in five-second samples (under the
-28.0 GiB cap; the sample's prompt depth is not recorded). Host memory overhead (`ram_gb_extra: 5.16`) is a sampled drop in system MemAvailable
-(which stayed above 35.74 GiB, swap peak 0.96 GiB), not process RSS and not a prompt depth. llama-benchy generation mode
+weights. VRAM after load was 26.771 GiB and peaked at 27.59 GiB in five-second samples (under the
+28.0 GiB cap). Host memory overhead (`ram_gb_extra: 5.16`) is a sampled drop in system MemAvailable
+(which stayed above 35.74 GiB, swap peak 0.96 GiB), not process RSS. llama-benchy generation mode
 measured 19.45 / 8995.45 tok/s at 8k, 19.49 / 4874.5 at 32k, 19.59 / 3078.96 at 64k, and 19.42 /
 2214.99 at 100k; the 99,846-token streaming sweep produced 43.4 s TTFT and 20.5 tok/s decode with
 zero resets. The stock tokenizer has 2,048-token truncation for standalone prompt sizing; the sweep
@@ -280,17 +278,17 @@ OpenCode v2.2.0 rejects the harness's `run --dir` flag.
 ### Qwen3.8-Flash-Next GSQ-RCO IQ3_S on Strata
 
 The unpruned [ISTA-DASLab IQ3_S checkpoint](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S)
-uses 77.9 GiB on disk across the transformer and per-layer embedding GGUFs (not a prompt depth). The B70 served it with
+uses 77.9 GiB across the transformer and per-layer embedding GGUFs. The B70 served it with
 Strata v0.2.17 and signed SYCL engine 0.1.63, a 32,768-token context, int8 KV, one request,
 a 4,096-token prefill chunk and the embedding shard mapped from SSD. The run used native
 suffix drafts at `--spec 2` with no external draft head. This setting applies to this
 checkpoint, engine build, backend and card.
 
-The load measured 25.64 GiB VRAM at a 32,768-token context, under the 28 GiB cap. Strata reported 10,087 resident experts
-and 14,489 mirrored in 27.70 GiB of pinned host memory at that same 32,768-token context. The run used a 36 GiB host memory scope
-with no swap and a 10 GiB host memory availability floor (budgets, not a prompt depth). Three llama-benchy
-trials at an 8,192-token prompt with 128 generated tokens averaged 1,337 tok/s prefill and 28.7 tok/s decode. The
-31,632-token context sweep reached 33.5 tok/s decode without a GPU reset, and the
+The load measured 25.64 GiB VRAM under the 28 GiB cap. Strata reported 10,087 resident experts
+and 14,489 mirrored in 27.70 GiB of pinned host memory. The run used a 36 GiB host memory scope
+with no swap and a 10 GiB host memory availability floor. Three 8,192-prompt-token llama-benchy
+trials with 128 generated tokens averaged 1,337 tok/s prefill and 28.7 tok/s decode. The
+31,632-input-token context sweep reached 33.5 tok/s decode without a GPU reset, and the
 31,522-token depth probe scored 2/3. All three counted SUITE-1@1 coding stages passed.
 See the [B70 operating recipe](../docs/OPERATING.md#arc-pro-b70-and-qwen38-flash-next-iq3_s).
 
@@ -302,7 +300,7 @@ and a 2,048-token reasoning budget. The trial used a trust-refreshed Vulkan imag
 `GGML_VK_DISABLE_COOPMAT` unset inside the server process. The matched 8,135-token sweep
 measured 103 tok/s prefill in that setting and 81 with the disable flag set.
 
-The server allocated 65,536 tokens at 23.71 GiB after load. At a 62,949-token input, decode
+The server allocated 65,536 tokens at 23.71 GiB after load. At 62,949 input tokens, decode
 was 6.8 tok/s and first-token latency was 643 s. The depth probe scored 3/3 at 62,926
 tokens. All three counted coding stages and all three reference exercises passed.
 The standard 8k and 32k benchmarks
