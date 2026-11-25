@@ -3245,6 +3245,110 @@ def test_html_recap_keeps_measured_prefill_when_decode_is_missing():
     assert "28.7 / 1337.1 tok/s" in html
 
 
+def _catalogue_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def test_catalogue_labels_every_speed_and_vram_with_its_depth():
+    """A rendered catalogue cell that holds a speed or a VRAM figure also names the depth or the served
+    context that figure was read at. The far-end cell uses that row's own measured depth."""
+    mod = _profiles_module()
+    rows, errors = mod._catalogue_rows()
+    assert not errors, errors
+    table = mod._catalogue_table(rows)
+    assert "at 8k" in table[0]
+    assert "far end" in table[0]
+    assert "served" in table[0]
+    dashes = 0
+    for line in table[2:]:
+        cells = _catalogue_cells(line)
+        assert len(cells) == 9, line
+        vram, at_8k, far = cells[5], cells[6], cells[7]
+        assert re.fullmatch(r"\d[\d.]*(?:\.\d+)? GiB at [\d,]+ served", vram), vram
+        assert re.search(r"tok/s at 8k$", at_8k), at_8k
+        if far == "—":
+            dashes += 1
+        else:
+            assert re.fullmatch(r"(?:—|\d[\d.]*) / (?:—|\d[\d.]*) tok/s at \d+\.\d+k", far), far
+    assert dashes >= 1
+    flash = [line for line in table if "| flashnext |" in line]
+    assert len(flash) == 1, table
+    assert "9.9 / 1418.3 tok/s at 8k" in flash[0]
+    assert "11.0 / 891 tok/s at 99.9k" in flash[0]
+    assert "27.31 GiB at 131,072 served" in flash[0]
+    gemma = [line for line in table if "| gemma4-8b-e4b-q4km-vulkan |" in line]
+    assert len(gemma) == 1
+    assert _catalogue_cells(gemma[0])[7] == "—"
+    assert "60 / 796 tok/s at 8k" in gemma[0]
+    assert "8.1 GiB at 131,072 served" in gemma[0]
+
+
+def test_catalogue_far_end_without_a_measurement_is_a_dash():
+    """No far-end object means an em dash. The cell is not filled from the 8k sample or from the window."""
+    mod = _profiles_module()
+    table = mod._catalogue_table([{
+        "card": "a770",
+        "mode": "display",
+        "name": "no-far",
+        "prof": {
+            "ctx": 8192,
+            "useful_ctx": 8000,
+            "model": "m.gguf",
+            "vram_gib_after_load": 1.5,
+            "speed": {"decode_tps": {"8k": 10}, "prefill_tps": {"8k": 20}},
+            "measured_on": "test card",
+        },
+    }])
+    cells = _catalogue_cells(table[-1])
+    assert cells[5] == "1.5 GiB at 8,192 served"
+    assert cells[6] == "10 / 20 tok/s at 8k"
+    assert cells[7] == "—"
+
+
+def test_snippet_sentence_names_the_8k_depth_on_a_quoted_speed():
+    data = load_base()
+    sentence = _profiles_module()._snippet_sentence(data)
+    assert re.search(r"~\d+ tok/s at 8k", sentence), sentence
+    assert re.search(r"tok/s(?! at 8k)", sentence) is None, sentence
+
+
+def _unlabeled_readme_measures(text: str) -> list[str]:
+    """Sentences in README.md, outside the catalogue, that state a speed, a memory size, or a time in
+    seconds without a depth or context cue in that same sentence.
+
+    Known limits. A sentence is the text between '. ' (a period and a space), after line breaks are turned
+    into spaces, so a figure and its cue have to share that span. The units are only tok/s, GiB, and the
+    word seconds: minutes, milliseconds, a bare s, GB, and MiB are not checked. A cue is a number followed
+    by k, -token, or tokens, or the word window, context, or depth, anywhere in the sentence. One cue covers
+    every figure in the sentence; the cue is not checked to belong to the same measurement. The catalogue
+    block is removed first. Versions and counts that do not use those units are ignored.
+    """
+    text = re.sub(
+        r"<!-- catalogue:begin -->.*?<!-- catalogue:end -->",
+        " ",
+        text,
+        flags=re.S,
+    )
+    measured = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:tok/s|GiB|seconds)\b", re.I)
+    cue = re.compile(
+        r"\d[\d,]*(?:\.\d+)?\s*(?:k\b|-token\b|tokens\b)|\b(?:window|context|depth)\b",
+        re.I,
+    )
+    bad = []
+    for sentence in text.replace("\n", " ").split(". "):
+        if measured.search(sentence) and not cue.search(sentence):
+            bad.append(" ".join(sentence.split())[:180])
+    return bad
+
+
+def test_readme_outside_the_catalogue_names_depth_for_every_speed_or_memory():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert _unlabeled_readme_measures(readme) == []
+    assert _unlabeled_readme_measures("The server held 8.1 GiB and decoded at 11 tok/s.")
+    labeled = "Decode was 11 tok/s at 8k, and the load was 8.1 GiB at a 32,768-token window."
+    assert _unlabeled_readme_measures(labeled) == []
+
+
 def test_catalogue_shows_the_b70_strata_row_at_one_decimal_and_keeps_raw_registry_values():
     """The operator's row: B70 Qwen3.8 Flash-Next on Strata reads 28.7 / 1337.1 tok/s in the generated
     catalogue, while config/registry/b70.inference.json keeps the measured floats untouched."""
@@ -3254,7 +3358,7 @@ def test_catalogue_shows_the_b70_strata_row_at_one_decimal_and_keeps_raw_registr
     table = mod._catalogue_table(rows)
     strata = [ln for ln in table if "| qwen38-flash-next-iq3s-strata |" in ln]
     assert len(strata) == 1, table
-    assert "| 28.7 / 1337.1 tok/s |" in strata[0], strata[0]
+    assert "| 28.7 / 1337.1 tok/s at 8k |" in strata[0], strata[0]
     for ln in table[2:]:
         cell = ln.split(" | ")[6]
         assert not re.search(r"\d\.\d\d", cell), ln
@@ -3442,4 +3546,4 @@ def test_tracked_catalogue_documents_show_the_strata_row_at_one_decimal():
         text = (ROOT / rel).read_text(encoding="utf-8")
         section = text[text.index("<!-- catalogue:begin -->"):text.index("<!-- catalogue:end -->")]
         assert "28.675594849636038" not in section and "1337.1326933097464" not in section, rel
-        assert "| 28.7 / 1337.1 tok/s |" in section, rel
+        assert "| 28.7 / 1337.1 tok/s at 8k |" in section, rel

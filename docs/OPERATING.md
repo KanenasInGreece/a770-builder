@@ -93,9 +93,9 @@ profiles` shows what is actually served beside what the registry says.
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB | 36.8 / 571 tok/s | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| gemma4-8b-e4b-q4km-vulkan | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB | 60 / 796 tok/s | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
-| qwen38-27b-iq3xxs-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB | 8.1 / 72 tok/s | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~65k) | 10.35 GiB at 262,144 served | 36.8 / 571 tok/s at 8k | Every ordinary change, tests from a specification, and a read up to about 64k. Reads exactly at 100k but takes eleven minutes to get there. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| gemma4-8b-e4b-q4km-vulkan | gemma-4-E4B-it-Q4_K_M.gguf | 131,072 (~100k) | 8.1 GiB at 131,072 served | 60 / 796 tok/s at 8k | The fast reader: a large file read cold in about four and a half minutes at 100k and precise questions about a passage deep in it. Not the profile for edits. Measured with no sampling line set, at the client's default temperature (0), before this registry carried one -- not the card's own recommended line. |
+| qwen38-27b-iq3xxs-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf | 131,072 (~32k) | 12.25 GiB at 131,072 served | 8.1 / 72 tok/s at 8k | A deliverable larger than its brief, tests written from an unfamiliar module, a change touching several files. Ten to twenty-five minutes; decode under five tokens a second by 64k, so point it at files that fit 32k. A measured card may run the IQ3_S file at a larger window through builder.env. |
 
 This workstation's own `builder.display.env` runs `qwen38-27b-iq3xxs-vulkan` on the quantiser's task-lossless file instead, IQ3_S, at
 114,688 under a 14.1 cap: 13.78 GiB after load, peaking at 14.21 GiB during a 32k prompt, ~9 minutes (five tests,
@@ -128,9 +128,9 @@ is why it is set aside. Every file the model reads lands in that window, and a 1
 
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
-| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
-| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the legacy four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
-| qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358 tok/s | The faster sibling of qwen38-27b-iq3s-vulkan: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
+| qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB at 262,144 served | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
+| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB at 196,608 served | 7.9 / 71 tok/s at 8k | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the legacy four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+| qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB at 100,000 served | 9.91 / 358 tok/s at 8k | The faster sibling of qwen38-27b-iq3s-vulkan: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
 
 `useful_ctx` is the served context (`prefill-absorb-v1`). A failed depth probe still caps a measured window at
 8,000, and an unanswered probe leaves the field unset. Decode speed is recorded and does not set the window.
@@ -219,7 +219,7 @@ draws the card (a video playing is enough), and sum every process on it that is 
 to 1.0 GiB, so the cap there ran at 14.1 in `builder.display.env` rather than a display default. That extra headroom is
 what admitted the 27B's task-lossless file, IQ3_S, at 114,688, which
 loads at 13.78 GiB and peaks at 14.21 GiB during a 32k prompt; the 9B's full native window loads at
-10.35 GiB and fits under either cap. On a card that draws nothing, the free card here reported 15.9 GiB total and
+10.35 GiB at 262,144 served and fits under either cap. On a card that draws nothing, the free card here reported 15.9 GiB total and
 0.08 GiB used besides the server; prefill growth above the after-load reading has measured 0.04 to 0.3 GiB under
 `-ub 512`, so the inference cap is 15.3: 15.9 minus a 0.3 GiB growth allowance minus a 0.3 GiB reserve. Either cap is
 raised only after a fresh measurement, never by guesswork.
@@ -678,7 +678,7 @@ for your host. Keep the existing 28 GiB card cap and a 10 GiB host
 `MemoryMax=36G` and `MemorySwapMax=0`.
 
 The engine reported 10,087 resident experts and 14,489 experts mirrored in
-27.70 GiB of pinned host RAM. The measured load read 25.64 GiB of GPU memory.
+27.70 GiB of pinned host RAM. The measured load read 25.64 GiB of GPU memory at 32,768 served. 
 The native suffix draft path used `--spec 2` without an external draft head.
 Three llama-benchy trials averaged 1,337 tok/s prefill and 28.7 tok/s decode at 8,192
 prompt tokens and 128 generated tokens. The context sweep reached 31,632 input tokens at

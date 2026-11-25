@@ -42,7 +42,7 @@ throughout, abridged to its fields with one gloss each, real values, unedited:
 one gloss per field shown: `model` the served GGUF's bare file name · `source` where it came from · `family` the
 model family label · `quant` the quantisation scheme · `category` dense or moe · `weight_class` a short label for
 the parameter count · `ctx` the window served · `useful_ctx` the served window, unless a prefill limit says otherwise ·
-`kv`/`flash_attention`/`reasoning` what was actually served · `vram_gib_after_load` the after-load VRAM reading ·
+`kv`/`flash_attention`/`reasoning` what was actually served · `vram_gib_after_load` the after-load VRAM reading (this example's 14.62 GiB was read at the served context of 196,608 tokens) ·
 `ram_gb_extra` the host RAM llama.cpp holds by design (the server log's `*_Host … buffer size` lines, at `-lv 4`) ·
 `depth_probe_100k`/`task_t1` pass/fail of two rungs · `instrument` what the row was measured on ·
 `capability` the model's own public benchmark numbers · `use_for` what the ladder showed the row is good for.

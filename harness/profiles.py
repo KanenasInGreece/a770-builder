@@ -179,8 +179,11 @@ KERNEL_PATH_VALUES = {"gpu", "cpu-like", "untested"}
 KERNEL_XMX_VALUES = {"used", "unavailable", "untested"}
 KERNEL_KEYS = {"path", "xmx", "evidence"}
 
-CATALOGUE_HEADER = "| card | mode | profile | model | window (useful) | VRAM | decode / prefill at 8k | measured_on |"
-CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|"
+CATALOGUE_HEADER = (
+    "| card | mode | profile | model | window (useful) | VRAM at served context | "
+    "decode / prefill at 8k | decode / prefill at far end | measured_on |"
+)
+CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|"
 MODE_LABEL = {
     "display": "Display-safe (`A770B_CARD_MODE=display`, the default)",
     "inference": "Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop)",
@@ -1457,8 +1460,36 @@ def _speed_pair(decode, prefill) -> str:
     return f"{_speed_cell(decode)} / {_speed_cell(prefill)}"
 
 
+def _depth_k(tokens: int) -> str:
+    """A token depth in thousands, to one decimal, so 99,887 tokens reads 99.9k."""
+    shown = (Decimal(tokens) / Decimal(1000)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return f"{shown}k"
+
+
+def _vram_cell(prof: dict) -> str:
+    """VRAM after load, named at the context the server was started with."""
+    return f"{prof['vram_gib_after_load']} GiB at {prof['ctx']:,} served"
+
+
+def _far_end_cell(speed: dict) -> str:
+    """Decode and prefill at this row's measured far end. No measurement is an em dash, never another depth."""
+    far = speed.get("far_end")
+    if not isinstance(far, dict):
+        return "—"
+    tokens = far.get("tokens")
+    if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
+        return "—"
+    pair = _speed_pair(far.get("decode_tps"), far.get("prefill_tps"))
+    if pair == "— / —":
+        return "—"
+    return f"{pair} tok/s at {_depth_k(tokens)}"
+
+
 def _catalogue_table(rows: list[dict]) -> list[str]:
-    """The catalogue table: every card's rows, each carrying its card, mode and measured_on."""
+    """The catalogue table: one row per profile, with the window, the served-context VRAM, both speeds, and measured_on.
+
+    The 8k speed names that depth in the column and again in the cell. The far-end speed names the depth that
+    row actually measured. A row with no far-end measurement shows an em dash."""
     lines = [CATALOGUE_HEADER, CATALOGUE_SEPARATOR]
     for r in rows:
         prof = r["prof"]
@@ -1468,8 +1499,8 @@ def _catalogue_table(rows: list[dict]) -> list[str]:
         prefill8k = prof["speed"]["prefill_tps"]["8k"]
         lines.append(
             f"| {r['card']} | {r['mode']} | {r['name']} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
-            f"{prof['vram_gib_after_load']} GiB | {_speed_cell(decode8k)} / {_speed_cell(prefill8k)} tok/s | "
-            f"{prof.get('measured_on', '')} |"
+            f"{_vram_cell(prof)} | {_speed_pair(decode8k, prefill8k)} tok/s at 8k | "
+            f"{_far_end_cell(prof['speed'])} | {prof.get('measured_on', '')} |"
         )
     return lines
 
@@ -1486,7 +1517,7 @@ def _snippet_sentence(data: dict) -> str:
         decode8k = prof["speed"]["decode_tps"]["8k"]
 
         label = f"**--profile {name}**"
-        rate = "8k decode not measured" if decode8k is None else f"~{round(decode8k)} tok/s"
+        rate = "8k decode not measured" if decode8k is None else f"~{round(decode8k)} tok/s at 8k"
         segments.append(
             f"{label} = {_short_model_name(prof['model'])}, {ctx_fmt}-token window "
             f"(useful to ~{useful_k}k), {rate}"

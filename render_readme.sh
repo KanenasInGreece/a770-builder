@@ -79,15 +79,20 @@ for cfg in sorted(pathlib.Path("config/registry").glob("*.json")):
         useful = p.get("useful_ctx")
         window = f"{ctx:,} (~{useful:,})" if ctx and useful else "—"
         vram = p.get("vram_gib_after_load")
-        vram_s = f"{vram} GiB" if vram is not None else "—"
+        if vram is None:
+            vram_s = "—"
+        elif ctx:
+            vram_s = f"{vram} GiB at {ctx:,} served"
+        else:
+            vram_s = f"{vram} GiB"
         dec = p.get("speed", {}).get("decode_tps", {}).get("8k")
         pre = p.get("speed", {}).get("prefill_tps", {}).get("8k")
-        speed = f"{speed_pair(dec, pre)} tok/s"
+        speed = f"{speed_pair(dec, pre)} tok/s at 8k"
         instrument = p.get("instrument", "—")
         rows.append((card, mode, name, p.get("model", "—"), window, vram_s, speed, instrument))
 
 table_html = ['<table>', '<thead><tr><th>card</th><th>mode</th><th>profile</th><th>model</th>'
-              '<th>window (useful)</th><th>VRAM</th><th>decode / prefill @8k</th><th>instrument</th></tr></thead>',
+              '<th>window (useful)</th><th>VRAM at served context</th><th>decode / prefill at 8k</th><th>instrument</th></tr></thead>',
               '<tbody>']
 for card, mode, name, model, window, vram_s, speed, instrument in rows:
     table_html.append(
