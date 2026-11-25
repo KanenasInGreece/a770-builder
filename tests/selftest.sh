@@ -2186,7 +2186,7 @@ cb_env(){ A770B_PROJECT="$here" A770B_REFUSE=/nonexistent A770B_DATA="$cb/data" 
   A770B_COMPOSE_FILE="$here/compose/a770-vulkan.yaml" A770B_COMPOSE_ENV_FILE="$cb/a770-vulkan.env" \
   A770B_LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp:full-vulkan" A770B_DRM_CARD=/dev/dri/card0 A770B_DRM_RENDER=/dev/dri/renderD128 \
   A770B_RENDER_GID=105 A770B_VIDEO_GID=39 \
-  A770B_DOCKER=docker FAKE_DOCKER_LOG="$cb/docker.log" PATH="$cb/bin:$PATH" "$@"; }
+  A770B_DOCKER=docker A770B_HOST=127.0.0.1 A770B_PORT=9 FAKE_DOCKER_LOG="$cb/docker.log" PATH="$cb/bin:$PATH" "$@"; }
 cb_plan=$(cb_env bash "$here/harness/serve_compose.sh" plan Qwen3.5-9B-Q4_K_M.gguf 8192 2>&1)
 if printf '%s\n' "$cb_plan" | grep -q '^entrypoint: /app/llama-server$' \
   && printf '%s\n' "$cb_plan" | grep -q '^argv: -m$' \
@@ -2443,6 +2443,25 @@ fi
 sl_out=$(cd / && env -u A770B_PROJECT XDG_CONFIG_HOME="$t/xdg" bash "$here/skills/local-build/scripts/local-build.sh" version 2>&1)
 if printf '%s\n' "$sl_out" | grep -q "$here"; then echo "ok   skill: a copy inside a checkout resolves A770B_PROJECT to its own checkout"
 else echo "FAIL skill: self-location did not resolve to $here"; printf '%s\n' "$sl_out"; fail=1
+fi
+
+# Applied measurement flags are spelled only in the contract module. SGLang and Strata apply none.
+pc_hits=$(python3 - "$here/harness" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import profiling_contract as pc
+for hit in pc.spellings_outside_contract(sys.argv[1]):
+    print(hit)
+if pc.TABLE["sglang"]["flags"] or pc.TABLE["strata"]["flags"]:
+    print("sglang or strata applies a flag")
+if pc.TABLE["sglang"]["status"] != "deferred":
+    print("sglang status is not deferred")
+PY
+)
+if [ -z "$pc_hits" ]; then
+  echo "ok   contract: applied flags are spelled only in the contract, and sglang and strata apply none"
+else
+  echo "FAIL contract: applied flags leaked or a deferred engine applies one"; printf '%s\n' "$pc_hits"; fail=1
 fi
 
 # the run is over: every shipped registry file must be the bytes the run started with, and the directory listing

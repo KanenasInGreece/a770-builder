@@ -26,6 +26,8 @@ description: Use when delegating a bounded coding task to a LOCAL Intel Arc mode
 | Reset | `bash <skill-dir>/scripts/local-build.sh reset [<seat>]` |
 | Version | `bash <skill-dir>/scripts/local-build.sh --version` · `check-update` |
 
+The useful window a card lists follows `prefill-absorb-v1`: the served context, unless `A770B_ABSORB_MAX_S` is set to a positive number of seconds. Decode speed is recorded and does not set the window.
+
 ## Patterns
 
 Copy the command. The line under it is what that command does.

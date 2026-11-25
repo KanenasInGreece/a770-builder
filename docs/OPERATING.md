@@ -103,9 +103,9 @@ This workstation's own `builder.display.env` runs `qwen38-27b-iq3xxs-vulkan` on 
 
 The Qwen windows are swept with `harness/ctx_sweep.sh`, prefill and decode against position with VRAM sampled and the
 kernel log watched. The 9B serves its native 262,144 tokens and holds a 100k prompt with no reset and VRAM
-flat within 0.3 GiB of its load; by the four-tokens-a-second rule (below) its useful window is 65,536 tokens, this
+flat within 0.3 GiB of its load; by the legacy four-tokens-a-second rule (below) its useful window is 65,536 tokens, this
 row's own registry `useful_ctx`. The three 27B files share one speed profile, decode being compute-bound on this
-card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and under four tokens a second by 64k, so
+card whatever the quantisation: about 8 tokens a second at 8k, 6 at 32k and below 4 tok/s by 64k, so
 the 27B's useful window is 32,768 whether it serves 131,072 or 114,688, and a brief for it points at
 files that fit that.
 
@@ -129,13 +129,15 @@ is why it is set aside. Every file the model reads lands in that window, and a 1
 | profile | model | window (useful) | VRAM | decode / prefill at 8k | use for |
 |---|---|---|---|---|---|
 | qwen35-9b-q4km-vulkan | Qwen3.5-9B-Q4_K_M.gguf | 262,144 (~262k) | 9.49 GiB | 43.7 / 439 tok/s | Every ordinary change, tests from a specification, and a read up to its whole window at above five tokens a second; the depth probe is exact at 100k. |
-| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
+| qwen38-27b-iq3s-vulkan | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 196,608 (~98k) | 14.62 GiB | 7.9 / 71 tok/s | A deliverable larger than its brief, tests from an unfamiliar module, a change touching several files: the best-written output here, at eight tokens a second; useful to about 98k by the legacy four-tokens-a-second rule, so a long read costs minutes per 10k tokens. |
 | qwen38-27b-iq3s-sycl | Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf | 100,000 (~100k) | 14.61 GiB | 9.91 / 358 tok/s | The faster sibling of qwen38-27b-iq3s-vulkan: the same 27B served in the SYCL container (`A770B_SERVE=compose`, `compose/a770-sycl.yaml`), ~25% faster decode and ~5x faster prefill at the same depths; 131,072 does not load (the SYCL server segfaults above 100,000). |
 
-`useful_ctx` is the largest depth at which decode stays above four tokens a second, taken from the two measured points
-(8k and the far end of the window) by extending the time per token linearly, capped at the depth probe's last
-passing depth where one failed — not a window swept token by token. This is the one definition of `useful_ctx` in
-this project; `harness/ladder.sh` (`AGENTS.md`, *The ladder*) computes it exactly this way. Beyond the table,
+`useful_ctx` is the served context (`prefill-absorb-v1`). A failed depth probe still caps a measured window at
+8,000, and an unanswered probe leaves the field unset. Decode speed is recorded and does not set the window.
+`A770B_ABSORB_MAX_S`, when it is a positive number of seconds, limits the window to the deepest depth whose
+measured time to first token stays inside that limit. This is the definition of `useful_ctx`; `harness/ladder.sh`
+(`AGENTS.md`, *The ladder*) computes it. A row with no `useful_ctx_rule` keeps the legacy decode rule it was
+measured under. Beyond the table,
 `local-build.sh profiles` (`harness/profiles.py card`)
 carries the full card for each row: `speed` at 8k and the far end (decode, prefill, time to first token); `fit`, three
 short strings with their source — `code` (the in-house suite or T1, tests passed and wall), `think` (a reasoning arm
@@ -413,8 +415,8 @@ warning" is NVIDIA advice; on this card AutoRound **W4A16** is the working vLLM 
 
 llama.cpp does not log shader names (`mul_mat_vec_q6_k.comp`, …) at our verbosity. The honest kernel miss is
 **decode in a CPU-like band while VRAM is occupied**. Same Qwen3.8-27B UD-Q6_K GGUF on this B70: Vulkan ~5.45 t/s
-at 893 tokens with ~23 GiB used; SYCL 21.2 t/s after load. That is not `useful_ctx` (the
-four-tokens-a-second floor is a window rule).
+at 893 tokens with ~23 GiB used; SYCL 21.2 t/s after load. That is not `useful_ctx` (a slow
+kernel is not the useful-window rule).
 
 A CPU-only A/B (`llama-server -ngl 0`, or vLLM `--device cpu` if the image has it) is decisive on a **small**
 file. Do not `-ngl 0` a 21 GiB 27B on this host as a screening tool. Prefer: same file Vulkan vs SYCL, then
@@ -473,7 +475,7 @@ identity field).
    probes and the 17k summary; **3** —
    `harness/bench_http.sh`, llama-benchy at prompt sizes 8192, 32768, 65536 and 100000 against the server left up
    (skipped for a bare GGUF); **4** — `harness/ctx_sweep.sh 8000 <far end>`, prefill, decode and VRAM
-   against position, the source `useful_ctx`'s linear extension is drawn from; **5** — `harness/depth_probe.sh <far
+   against position, the measured time to first token a prefill limit reads; **5** — `harness/depth_probe.sh <far
    end>`, now graded PASS/FAIL per question, capping `useful_ctx` at 8,000 where it fails; **6** —
    `harness/run_suite.sh <profile>` (or `--model <gguf> --ctx <n> [--kv …] [--kv-v …] [--extra …] [--timeout …]` for
    a model with no row yet): starts the server under the mode's cap and `-ub 512`, exports `kit/seat/` fresh per
