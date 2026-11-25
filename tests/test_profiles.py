@@ -3313,14 +3313,15 @@ def test_snippet_sentence_names_the_8k_depth_on_a_quoted_speed():
 
 
 def _unlabeled_readme_measures(text: str) -> list[str]:
-    """Sentences in README.md, outside the catalogue, that state a speed, a memory size, or a time in
-    seconds without a depth or context cue in that same sentence.
+    """Sentences in README.md, in config/models.md, or in docs/OPERATING.md, outside a catalogue block,
+    that state a speed, a memory size, or a time in seconds without a depth or context cue in that same
+    sentence.
 
     Known limits. A sentence is the text between '. ' (a period and a space), after line breaks are turned
     into spaces, so a figure and its cue have to share that span. The units are only tok/s, GiB, and the
     word seconds: minutes, milliseconds, a bare s, GB, and MiB are not checked. A cue is a number followed
     by k, -token, or tokens, or the word window, context, or depth, anywhere in the sentence. One cue covers
-    every figure in the sentence; the cue is not checked to belong to the same measurement. The catalogue
+    every figure in the sentence; the cue is not checked to belong to the same measurement. A catalogue
     block is removed first. Versions and counts that do not use those units are ignored.
     """
     text = re.sub(
@@ -3342,9 +3343,18 @@ def _unlabeled_readme_measures(text: str) -> list[str]:
 
 
 def test_readme_outside_the_catalogue_names_depth_for_every_speed_or_memory():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert _unlabeled_readme_measures(readme) == []
-    assert _unlabeled_readme_measures("The server held 8.1 GiB and decoded at 11 tok/s.")
+    """README prose, the model ledger outside its catalogue, and the operating guide each name a depth
+    or a context for every tok/s, GiB, or seconds figure. The same check rejects a synthetic unlabeled
+    sentence appended to each file."""
+    texts = [
+        (ROOT / "README.md").read_text(encoding="utf-8"),
+        (ROOT / "config" / "models.md").read_text(encoding="utf-8"),
+        (ROOT / "docs" / "OPERATING.md").read_text(encoding="utf-8"),
+    ]
+    synthetic = "The server held 8.1 GiB and decoded at 11 tok/s."
+    for text in texts:
+        assert _unlabeled_readme_measures(text) == []
+        assert _unlabeled_readme_measures(text + ". " + synthetic)
     labeled = "Decode was 11 tok/s at 8k, and the load was 8.1 GiB at a 32,768-token window."
     assert _unlabeled_readme_measures(labeled) == []
 
