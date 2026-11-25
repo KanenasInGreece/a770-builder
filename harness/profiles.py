@@ -407,6 +407,8 @@ def validate(data) -> list[str]:
             refused = profiling_contract.refusal(_measurement_engine(prof), extra.split())
             if refused:
                 errors.append(f"{name}: {refused}")
+            if _measurement_engine(prof) == "strata":
+                errors.append(f"{name}: Strata engine flags belong in the prepared config")
         if prof.get("backend") == "sglang" and isinstance(extra, str):
             served_kv = re.search(r"(?:^|\s)--kv-cache-dtype(?:=|\s+)(\S+)", extra)
             if served_kv and prof.get("kv") != served_kv.group(1):
@@ -601,6 +603,11 @@ def validate(data) -> list[str]:
                     errors.append(f"{where}.contract must be a positive int")
                 if profiling.get("engine") not in ENGINE_VALUES:
                     errors.append(f"{where}.engine must be one of {sorted(ENGINE_VALUES)}")
+                elif profiling["engine"] != _measurement_engine(prof):
+                    errors.append(
+                        f"{where}.engine {profiling['engine']!r} is not this row's "
+                        f"measurement engine {_measurement_engine(prof)!r}"
+                    )
                 flags = profiling.get("flags")
                 if not isinstance(flags, list) or any(not isinstance(item, str) for item in flags):
                     errors.append(f"{where}.flags must be a list of strings")

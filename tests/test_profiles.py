@@ -3375,6 +3375,34 @@ def test_profiling_confirmed_rejects_numeric_standins_for_booleans(tmp_path):
         assert "must be true, false, or pending" in result.stderr, bad
 
 
+def test_profiling_engine_must_match_the_row_and_strata_extra_is_empty(tmp_path):
+    data = load_base()
+    row = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    row["profiling"] = {
+        "contract": 1,
+        "engine": "vllm",
+        "flags": ["--enable-per-request-metrics"],
+        "confirmed": {"--enable-per-request-metrics": True},
+    }
+    path = write_json(tmp_path / "wrong-engine.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "measurement engine 'llama.cpp'" in result.stderr
+    row["profiling"]["engine"] = "llama.cpp"
+    row["profiling"]["flags"] = ["--metrics", "-lv", "4"]
+    row["profiling"]["confirmed"] = {"--metrics": True, "-lv 4": True}
+    path = write_json(tmp_path / "same-engine.json", data)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+
+    strata = json.loads((ROOT / "config" / "registry" / "b70.inference.json").read_text(encoding="utf-8"))
+    strata["profiles"]["qwen38-flash-next-iq3s-strata"]["extra"] = "--draft"
+    path = write_json(tmp_path / "b70.inference.json", strata)
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "Strata engine flags belong in the prepared config" in result.stderr
+
+
 def test_i2_profiles_check_refuses_a_forbidden_extra(tmp_path):
     data = load_base()
     row = data["profiles"]["qwen35-9b-q4km-vulkan"]
