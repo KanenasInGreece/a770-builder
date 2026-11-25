@@ -36,19 +36,11 @@ case "${1:-}" in
     "${managed[@]}" tokenizer "$config" >/dev/null || exit $?
     a770b_api_key >/dev/null || exit 2
     export A770B_MIN_AVAIL_MB A770B_VRAM_CAP_GIB
+    # A failed cap or admission must not leave the previous start's receipt behind.
+    if [ -f "$A770B_DATA/logs/profiling.json" ] && [ ! -L "$A770B_DATA/logs/profiling.json" ]; then
+      rm -f -- "$A770B_DATA/logs/profiling.json"
+    fi
     evidence=$("${managed[@]}" start "$config" --ctx "$ctx" --timeout "${A770B_STRATA_READY_S:-300}") || exit $?
-    python3 - "$here" "$evidence" "$A770B_DATA" <<'PY' || true
-import sys
-sys.path.insert(0, sys.argv[1])
-import os
-import profiling_contract
-evidence, data = sys.argv[2], sys.argv[3]
-receipt_path = os.path.join(data, "logs", "profiling.json")
-profiling_contract.write_receipt(
-    receipt_path, profiling_contract.receipt("strata", {}),
-)
-profiling_contract.merge_receipt_file(evidence, receipt_path)
-PY
     id=$("${managed[@]}" id) || exit $?
     if ! used=$(gpu_used_gib) || ! python3 -c 'import sys; used,cap=map(float,sys.argv[1:]); sys.exit(not (0 <= used <= cap))' \
       "$used" "$A770B_VRAM_CAP_GIB"; then
@@ -61,6 +53,19 @@ PY
       "${managed[@]}" stop "$id" || exit 3
       exit 3
     fi
+    # The receipt is written only after the cap and admission have accepted this start.
+    python3 - "$here" "$evidence" "$A770B_DATA" <<'PY' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import os
+import profiling_contract
+evidence, data = sys.argv[2], sys.argv[3]
+receipt_path = os.path.join(data, "logs", "profiling.json")
+profiling_contract.write_receipt(
+    receipt_path, profiling_contract.receipt("strata", {}),
+)
+profiling_contract.merge_receipt_file(evidence, receipt_path)
+PY
     printf '%s\n' "$evidence"
     ;;
   *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | status | id | pid | model | tokenizer <config> | config-model <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
