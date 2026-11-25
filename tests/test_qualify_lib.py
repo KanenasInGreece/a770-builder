@@ -483,3 +483,90 @@ def test_fit_report_first_line(kit_env, tmp_path):
     first = (job / "report.md").read_text().splitlines()[0]
     assert first.startswith("FIT RESULT")
     assert "needs-review" in (job / "report.md").read_text()
+
+
+def test_i20_docs_name_qualify_as_default():
+    """README and AGENTS name qualify as the profiling step. The ladder is for one rung."""
+    for name in ("README.md", "AGENTS.md"):
+        text = open(os.path.join(PROJECT, name), encoding="utf-8").read()
+        for needle in ("local-build.sh qualify start", "qualify result", "qualify export"):
+            assert needle in text, (name, needle)
+        for line in text.splitlines():
+            if "ladder.sh" in line and re.search(r"default", line, re.I):
+                assert re.search(r"debug|not the default", line, re.I), line
+
+
+_FIGURE = re.compile(r"\d+(?:\.\d+)?\s*(?:tok/s|t/s|GiB|MiB)\b", re.I)
+_DEPTH_CUE = re.compile(r"\b(?:at|served|token|tokens|context|depth|prompt|window)\b", re.I)
+
+
+def test_speed_and_memory_figures_name_their_depth():
+    """A speed or memory figure names the depth in the same line."""
+    report = ql.render_report(
+        os.path.join("job", "sample"),
+        {
+            "engine": "llama.cpp",
+            "model": "sample.gguf",
+            "ctx": 16384,
+            "window": {"usable": 8192, "served_ctx": 16384, "output_limit": 8192},
+            "useful_ctx": 16384,
+            "useful_ctx_rule": pc.RULE_NAME,
+            "speed": [
+                {
+                    "engine_prefill": {"value": 10, "unit": "tok/s", "depth_tokens": 8192},
+                    "engine_decode": {"value": 11, "unit": "tok/s", "depth_tokens": 8192},
+                    "client_prefill": {
+                        "value": "unknown",
+                        "unit": "tok/s",
+                        "depth_tokens": 8192,
+                        "reason": "not measured",
+                    },
+                    "client_decode": {
+                        "value": "unknown",
+                        "unit": "tok/s",
+                        "depth_tokens": 8192,
+                        "reason": "not measured",
+                    },
+                }
+            ],
+            "vram_after_load": {"value": 8.0, "unit": "GiB", "depth_tokens": 16384},
+            "checks": [],
+        },
+    )
+    blobs = [("report.md", report)]
+    for name in ("README.md", "AGENTS.md"):
+        blobs.append((name, open(os.path.join(PROJECT, name), encoding="utf-8").read()))
+    for label, text in blobs:
+        for line in text.splitlines():
+            if _FIGURE.search(line):
+                assert _DEPTH_CUE.search(line), (label, line)
+
+
+def test_i13_diff_has_no_private_markers():
+    """New tracked text keeps private names and record ids out. Patterns are assembled here."""
+    diff = subprocess.check_output(["git", "diff", "main"], cwd=PROJECT, text=True, errors="replace")
+    folded = diff.lower()
+    patterns = [
+        "xeno" + "fon",
+        "cla" + "wee",
+        "cl" + "oe",
+        "/ho" + "me/",
+        "fa" + "ct:",
+        "decis" + "ion:",
+        "re" + "tro:",
+    ]
+    found = [pat for pat in patterns if pat in folded or pat in diff]
+    assert found == []
+
+
+def test_i22_window_and_compaction_in_result(kit_env, tmp_path):
+    plan = ql.build_plan(_gguf_args())
+    job = _job(tmp_path, plan)
+    (job / "evidence" / "collected.json").write_text(json.dumps({"statistics": _stats()}))
+    ql.summarise(str(job))
+    result = json.loads((job / "result.json").read_text())
+    names = {item["name"]: item for item in result["checks"]}
+    assert "usable-window-holds-kit" in names
+    assert "no-compaction-storm" in names
+    assert result["window"]["usable"] is not None
+    assert result["window"]["served_ctx"] is not None

@@ -438,8 +438,9 @@ Prefill vs decode are already in `slot print_timing` / llama-bench `pp`/`tg`. Do
 ## Qualifying a new model
 
 Models keep being released, and a new version of a family is a new model: its window, its speed on this card, its
-sampling line and its behaviour on a real brief are all unmeasured until the harness has run it. The seat is built so
-that a new model enters by measurement, in one sitting, through one command:
+sampling line and its behaviour on a real brief are all unmeasured until the harness has run it. The default
+profiling step is `local-build.sh qualify start`, then `qualify result` and `qualify export`. The ladder below is
+what that command runs, and the way to debug one rung. It is not the default.
 
 ```
 harness/ladder.sh <profile-or-gguf> [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v f16|q8_0|q4_0] [--extra "<flags>"]

@@ -12,7 +12,7 @@ supports llama.cpp (Vulkan and SYCL), vLLM, SGLang and Strata. OpenCode calls th
 | Serve a card | `bash skills/local-build/scripts/local-build.sh serve <card>` |
 | Status | `bash skills/local-build/scripts/local-build.sh status` |
 | Pick a card | `bash skills/local-build/scripts/local-build.sh profiles` / `menu` |
-| Profile a model | `bash harness/ladder.sh <gguf> --ctx N [--kv f16|q8_0|q4_0] [--reasoning on|off] [--reasoning-budget N] [--dry-run]` |
+| Profile a model | `bash skills/local-build/scripts/local-build.sh qualify start --engine <llama or llama.cpp, vllm, sglang, or strata> --model <name>`, then `qualify result <job>` and `qualify export <job>` |
 | Validate the registry | `python3 harness/profiles.py check` |
 | Test | `uv run --with pytest python -m pytest -q tests/` |
 | Self-test | `env -u A770B_CARD_MODE -u A770B_PROFILES_FILE -u A770B_CORPUS_FILE A770B_PROJECT=$PWD bash tests/selftest.sh` |
@@ -34,6 +34,8 @@ checkpoint of the same model is a different row when the engine, the weight quan
 differs, even when the kernel is the same.
 
 ## The ladder
+
+The default profiling step is `local-build.sh qualify start`, then `qualify result` and `qualify export`. A result holds the required statistics, the measurement switches for that engine, and whether each switch was confirmed. The runner returns facts and the verdict `needs-review`. It does not add a profile. `harness/ladder.sh` runs the same rungs and is how to debug one rung. It is not the default.
 
 `ladder.sh` runs six rungs in order and stops at the first failure:
 
@@ -68,13 +70,13 @@ When qualifying models on a card that has no rows in the registry, do not measur
 6. **Classify**:
    - **Compute-bound**: If decode tok/s stays flat across quantizations (e.g. Q4 vs Q6), higher precision is essentially free — densify to the larger quant for quality.
    - **Bandwidth-bound**: If decode speed drops proportionally with larger weights, memory bandwidth is the bottleneck — stay at the faster quant and record the ceiling.
-   - **Kernel miss**: decode in a CPU-like band while VRAM is occupied (same Q6_K: Vulkan ~5 t/s vs SYCL ~21 t/s). Try the other backend or another user's checkpoint before a ladder.
+   - **Kernel miss**: decode in a CPU-like band while VRAM is occupied (same Q6_K, at the prompt depth of that pair: Vulkan ~5 t/s vs SYCL ~21 t/s). Try the other backend or another user's checkpoint before a ladder.
 7. **Suggest next tests**: Use the classification to pick the candidate for the full ladder (`harness/ladder.sh`). Only the full ladder measurement ships a profile row.
 
 ## Submit a profile
 
 1. Put the GGUF in `A770B_MODELS`; `doctor` must report all ok.
-2. Run the ladder; fill the printed row's `__TODO__` fields by hand.
+2. Run `local-build.sh qualify start`, then `qualify result` and `qualify export`. Fill the exported row's `__TODO__` fields by hand. Merging the row is deliberate. Debug one rung with `harness/ladder.sh` when a result is not enough; that script is not the default.
 3. Paste the row under `profiles.<name>` in the card's own file, `config/registry/<card>.<mode>.json` — a new card's
    first row creates that file, with its top-level `card` and `mode` keys — then `python3 harness/profiles.py check`
    and `python3 harness/profiles.py render --catalogue`.
