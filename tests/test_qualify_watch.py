@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 import time
 from datetime import datetime, timedelta, timezone
@@ -52,7 +53,7 @@ def cum(builder, count):
     return logs
 
 
-def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn=None, running="true", run_pid=None, suite_pid=None, stage_start=None):
+def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn=None, running="true", run_pid=None, suite_pid=None, stage_start=None, stage_file=None, suite_start=None, live_cid=None, docker_log=None):
     arm = tmp / name
     fake = arm / "fake"
     logs_dir = arm / "logs"
@@ -82,6 +83,15 @@ def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn
     false_bin.chmod(0o700)
     if suite_pid:
         (arm / "suite.pid").write_text(str(suite_pid))
+        sys.path.insert(0, os.path.join(PROJECT, "harness"))
+        import qualify_lib
+
+        if suite_start is not None:
+            (arm / "suite.start").write_text(str(suite_start) + "\n")
+        else:
+            start = qualify_lib.proc_starttime(suite_pid)
+            if start:
+                (arm / "suite.start").write_text(start + "\n")
     env = os.environ.copy()
     env.update(
         {
@@ -104,6 +114,14 @@ def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn
     )
     if stage_start is not None:
         env["QUALIFY_STAGE_START"] = str(stage_start)
+    if stage_file is not None:
+        (arm / "stage-start").write_text(str(stage_file) + "\n")
+    env.pop("A770B_QUALIFY_STUB", None)
+    if live_cid:
+        live_dir = arm / "data" / "logs"
+        live_dir.mkdir(parents=True)
+        (live_dir / "llamacpp-a770.cid").write_text(live_cid + "\n")
+        (arm / "status.json").write_text('{"phase": "suite", "state": "running"}\n')
     if running == "true":
         env["WD_RUNNING_BIN"] = str(true_bin)
     elif running == "false":
@@ -112,8 +130,13 @@ def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn
         env.pop("WD_RUNNING_BIN", None)
     if run_pid:
         (arm / "run.pid").write_text(str(run_pid))
-    (arm / "data").mkdir()
-    (arm / "xdg").mkdir()
+    (arm / "data").mkdir(exist_ok=True)
+    (arm / "xdg").mkdir(exist_ok=True)
+    if docker_log:
+        wrapper = arm / "docker-wrap.sh"
+        wrapper.write_text(f"#!/bin/bash\nprintf '%s\\n' \"$*\" >> {docker_log}\nexec {FAKE} \"$@\"\n")
+        wrapper.chmod(0o755)
+        env["WD_DOCKER"] = str(wrapper)
     subprocess.run(["bash", WATCH, str(arm), str(arm / "cid")], env=env, timeout=60, check=False)
     trips_path = arm / "watchdog-trips.log"
     trips = trips_path.read_text().splitlines() if trips_path.exists() else []
@@ -188,13 +211,9 @@ def test_i7_no_run_and_identity(tmp_path):
     finally:
         proc.kill()
         proc.wait(timeout=5)
-    quoted = tmp_path / "local-build-quote.sh"
-    quoted.write_text("#!/bin/sh\nexec sleep 120\n")
-    quoted.chmod(0o700)
-    # The command text names a run, and the pid file points at it. That is not a run leader.
-    decoy = subprocess.Popen(["bash", "-c", 'exec sleep 120'])
+    # The command line names local-build.sh run. That string is not a run leader.
+    decoy = subprocess.Popen(["bash", "-c", "exec sleep 120", "local-build.sh", "run"])
     try:
-        (tmp_path / "note").write_text("local-build.sh run")
         run_case(tmp_path, "R3", [fresh] * 3, build=PROSE, step=400, running=None, run_pid=decoy.pid, expect=0)
     finally:
         decoy.kill()
@@ -243,3 +262,42 @@ def test_old_stage_log_is_ignored(tmp_path):
         expect=0,
         stage_start=future,
     )
+    # qualify.sh writes this file. The watch must read it when the environment is unset.
+    run_case(
+        tmp_path,
+        "from-file",
+        [[vl(i, 19.7, 1)] for i in range(1, 6)],
+        build=PROSE,
+        step=400,
+        expect=0,
+        stage_file=future,
+    )
+
+
+def test_phase5_reads_the_live_container_id(tmp_path):
+    arm_clock()
+    recorded = tmp_path / "docker-args.txt"
+    run_case(
+        tmp_path,
+        "phase5",
+        [[vl(1, 19.7, 1)]],
+        expect=0,
+        live_cid="phase5cid",
+        docker_log=recorded,
+    )
+    text = recorded.read_text()
+    assert "phase5cid" in text
+    assert "deadbeef" not in text
+
+
+def test_driver_does_not_signal_a_reused_pid(tmp_path):
+    arm_clock()
+    other = subprocess.Popen(["sleep", "120"])
+    try:
+        fresh = [vl(1, 19.7, 1), f"{ts(2)} ERROR SIGSEGV in the driver"]
+        run_case(tmp_path, "wrong-start", [fresh], expect=1, suite_pid=other.pid, suite_start="1")
+        assert other.poll() is None
+    finally:
+        if other.poll() is None:
+            other.kill()
+            other.wait(timeout=5)

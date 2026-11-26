@@ -224,7 +224,10 @@ export A770B_PROJECT A770B_DATA A770B_SEAT A770B_MODELS A770B_REFUSE A770B_PORT 
 export A770B_PROFILES
 # exported for the compose envelope's ${…} interpolation (the values this file is the single source of)
 export A770B_SERVE A770B_SERVE_SCRIPT A770B_COMPOSE_FILE A770B_COMPOSE_ENV_FILE A770B_COMPOSE_PROJECT A770B_DOCKER A770B_VK_DEVICE_SELECT A770B_ONEAPI_DEVICE_SELECTOR A770B_CONTAINER_UID A770B_CONTAINER_GID A770B_SERVED_BACKEND A770B_BUDGET_MESSAGE
-mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
+# qualify.sh sets this so a dry run or a refused start creates nothing.
+if [ "${A770B_DEFER_DATA_DIRS:-}" != 1 ]; then
+  mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results" 2>/dev/null || true
+fi
 a770b_model_path(){ case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$A770B_MODELS/$1";; esac; }
 # a770b_profile_var <profile> <FIELD> — the value of A770B_<PROFILE>_<FIELD> (name upper-cased, - → _); empty if unset
 a770b_profile_var(){ local n; n=$(printf '%s' "$1" | tr 'a-z-' 'A-Z_'); local v="A770B_${n}_$2"; printf '%s\n' "${!v:-}"; }

@@ -6,6 +6,8 @@ set -uo pipefail
 umask 077
 exec 7>&- 9>&- || true
 here=$(cd "$(dirname "$0")" && pwd)
+# A refused start and a dry run must not create logs or results.
+export A770B_DEFER_DATA_DIRS=1
 # shellcheck disable=SC1091
 source "$here/env.sh" || exit 2
 # shellcheck disable=SC1091
@@ -30,6 +32,26 @@ source "$here/guard.sh"
 py=(python3 "$here/qualify_lib.py")
 
 die() { printf '⛔ %s\n' "$*" >&2; exit 2; }
+
+# shellcheck disable=SC1091
+source "$here/serve_envelope.sh"
+
+# A write follows a symlink. Refuse the path and its parent before opening it.
+refuse_link() {
+  local path=$1
+  if [ -L "$path" ] || [ -L "$(dirname "$path")" ]; then
+    printf '⛔ refusing a symlink: %s\n' "$path" >&2
+    return 1
+  fi
+  return 0
+}
+
+plain_trunc() {
+  local path=$1
+  refuse_link "$path" || return 1
+  : > "$path"
+  chmod 600 "$path" 2>/dev/null || true
+}
 
 usage() {
   printf '%s\n' "usage: qualify.sh start --engine <llama|llama.cpp|vllm|sglang|strata> --model <name> [--profiles-file <file>] [--ctx N] [--backend vulkan|sycl] [--tokenizer <dir>] [--kv T] [--kv-v T] [--extra <flags>] [--reasoning on|off] [--reasoning-budget N] [--stages a,b] [--refs-repeat N] [--absorb-max-s N] [--skip-window] [--no-suite] [--fit-only] [--dry-run] [--foreground] | status [job] | wait <job> [--timeout S] | result <job> [--json] | export <job> [--out <file>] [--allow-incomplete] | stop <job> | list" >&2
@@ -85,6 +107,7 @@ stop_helpers() {
   rm -f "$job/WATCH" "$job/HEARTBEAT" 2>/dev/null || true
   kill_helper "${HB:-}"
   kill_helper "${WD:-}"
+  kill_helper "${VRAM_PID:-}"
   if [ -n "${MEM:-}" ]; then
     kill -TERM "$MEM" 2>/dev/null || true
   fi
@@ -93,31 +116,63 @@ stop_helpers() {
 stop_server() {
   [ "${SERVER_STOPPED:-0}" = 1 ] && return 0
   SERVER_STOPPED=1
-  local cid=""
-  [ -f "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
+  local cid="" engine
+  [ -f "$job/cid" ] && [ ! -L "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
   [ -n "$cid" ] || return 0
+  refuse_link "$job/phases/stop-server.log" || return 0
   if command -v a770b-qualify-stop >/dev/null 2>&1; then
     printf '%s\n' "stop: a770b-qualify-stop $cid" >> "$job/evidence/argv.log"
     a770b-qualify-stop "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
   elif [ "${STUB:-0}" != 1 ]; then
-    bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+    engine=$(pget engine 2>/dev/null || true)
+    if [ "$engine" = strata ]; then
+      bash "$here/serve_strata.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+    else
+      bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+    fi
   fi
 }
 
 record_hooks() {
-  Q_PRE="${PRE_STARTED:-0}" Q_CODE="${POST_CODE:-}" Q_LINE="${POST_LINE:-}" \
+  # The exit code is a small variable. The first log line is read here, and
+  # only a prefix of it: a long line must not ride in the environment.
+  Q_PRE="${PRE_STARTED:-0}" Q_CODE="${POST_CODE:-}" Q_LINE="${POST_LINE:-}" Q_LOG="$job/phases/post-hook.log" \
     python3 - "$job" <<'PY'
 import json, os, sys
 job = sys.argv[1]
 body = {"pre_started": os.environ.get("Q_PRE") == "1"}
 code = os.environ.get("Q_CODE", "")
+line = os.environ.get("Q_LINE", "")
+if not line:
+    path = os.environ.get("Q_LOG", "")
+    if path and not os.path.islink(path):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            fd = None
+        if fd is not None:
+            try:
+                chunk = os.read(fd, 400)
+            finally:
+                os.close(fd)
+            line = chunk.split(b"\n", 1)[0].decode("utf-8", "replace")
 if code != "":
-    body["post_code"] = int(code)
-    body["post_line"] = os.environ.get("Q_LINE", "").splitlines()[0] if os.environ.get("Q_LINE") else ""
+    try:
+        body["post_code"] = int(code)
+    except ValueError:
+        pass
+    else:
+        body["post_line"] = line.splitlines()[0] if line else ""
 path = os.path.join(job, "evidence", "hooks.json")
+payload = (json.dumps(body, indent=2) + "\n").encode()
 fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-os.write(fd, (json.dumps(body, indent=2) + "\n").encode())
-os.close(fd)
+try:
+    view = memoryview(payload)
+    while view:
+        wrote = os.write(fd, view)
+        view = view[wrote:]
+finally:
+    os.close(fd)
 PY
 }
 
@@ -129,10 +184,14 @@ run_post() {
   POST_CODE=0
   POST_LINE=""
   if [ -n "$post" ] && [ -x "$post" ] && [ ! -L "$post" ]; then
-    local out
-    out=$("$post" "$job" 2>&1 | head -n 1)
-    POST_CODE=$?
-    POST_LINE=$out
+    if ! refuse_link "$job/phases/post-hook.log"; then
+      POST_CODE=1
+      POST_LINE="post hook log is a symlink"
+    else
+      "$post" "$job" >"$job/phases/post-hook.log" 2>&1
+      POST_CODE=$?
+      POST_LINE=""
+    fi
   else
     POST_CODE=1
     POST_LINE="post hook missing"
@@ -144,9 +203,21 @@ finish() {
   IN_FINISH=1
   # A second TERM must not run the trap again: that exit would skip the marker.
   trap '' TERM INT
-  [ -n "${CHILD:-}" ] && kill -TERM "$CHILD" 2>/dev/null || true
+  if [ -n "${CHILD:-}" ]; then
+    kill_helper "$CHILD"
+    local n=0
+    while kill -0 "$CHILD" 2>/dev/null && [ "$n" -lt 50 ]; do
+      sleep 0.1
+      n=$((n + 1))
+    done
+    kill -KILL -- "-$CHILD" 2>/dev/null || kill -KILL "$CHILD" 2>/dev/null || true
+    wait "$CHILD" 2>/dev/null || true
+    CHILD=
+  fi
+  rm -f "$job/VRAM_SAMPLE" 2>/dev/null || true
   stop_helpers
   stop_server
+  record_card || true
   run_post
   record_hooks || true
   "${py[@]}" assemble --job "$job" >/dev/null 2>&1 || true
@@ -165,8 +236,10 @@ if start:
 print(json.dumps(body))
 PY
 )"
-  : > "$job/$marker"
-  chmod 600 "$job/$marker" 2>/dev/null || true
+  if ! plain_trunc "$job/$marker"; then
+    release_locks
+    exit 2
+  fi
   MARKER=1
   release_locks
 }
@@ -179,7 +252,7 @@ on_term() {
   MARKER_NAME=STOPPED
   FAIL_REASON=${FAIL_REASON:-stopped}
   finish
-  exit 0
+  exit 4
 }
 
 on_exit() {
@@ -248,28 +321,82 @@ phase() {
   merge "{\"phase\":\"$1\",\"event\":\"phase $1\"}"
 }
 
+record_card() {
+  refuse_link "$job/evidence/card.json" || return 1
+  if [ "${STUB:-0}" = 1 ]; then
+    printf '%s\n' '{"containers": null, "vram_gib": null, "idle_gib": null}' | "${py[@]}" note --job "$job" --name card.json >/dev/null
+    return 0
+  fi
+  python3 - "$job" "$here" <<'PY'
+import json, os, subprocess, sys
+job, here = sys.argv[1], sys.argv[2]
+body = {"containers": None, "vram_gib": None, "idle_gib": None}
+docker = os.environ.get("A770B_DOCKER") or "docker"
+project = os.environ.get("A770B_COMPOSE_PROJECT") or ""
+try:
+    run = subprocess.run(
+        [docker, "ps", "-q", "--filter", f"label=com.docker.compose.project={project}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if run.returncode == 0:
+        body["containers"] = len([line for line in run.stdout.splitlines() if line.strip()])
+except (OSError, subprocess.TimeoutExpired):
+    pass
+script = "source " + json.dumps(os.path.join(here, "env.sh")) + " && source " + json.dumps(os.path.join(here, "guard.sh")) + " && gpu_used_gib"
+try:
+    used = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=15)
+    text = (used.stdout or "").strip()
+    if used.returncode == 0 and text and text != "unavailable":
+        body["vram_gib"] = float(text)
+except (OSError, subprocess.TimeoutExpired, ValueError):
+    pass
+path = os.path.join(job, "evidence", "card.json")
+fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+os.write(fd, (json.dumps(body, indent=2) + "\n").encode())
+os.close(fd)
+PY
+}
+
 run_tool() {
   local name=$1
   shift
   mkdir -p "$job/phases" "$job/evidence"
+  refuse_link "$job/evidence/argv.log" || return 2
+  refuse_link "$job/phases/${name}.log" || return 2
   printf '%s\n' "$name: $*" >> "$job/evidence/argv.log"
-  local out rc=0
-  out=$("$@" 2>>"$job/phases/${name}.log") || rc=$?
-  printf '%s\n' "$out" >> "$job/phases/${name}.log"
-  printf '%s' "$out" | "${py[@]}" apply-phase --job "$job" --phase "$name" --rc "$rc" >/dev/null || true
+  # Background plus wait is what lets SIGTERM run before a long bench finishes.
+  ( exec 7>&- 9>&-; "$@" >"$job/phases/${name}.log" 2>&1 ) &
+  CHILD=$!
+  local rc=0
+  wait "$CHILD" || rc=$?
+  CHILD=
+  "${py[@]}" apply-phase --job "$job" --phase "$name" --rc "$rc" < "$job/phases/${name}.log" >/dev/null || true
   return "$rc"
 }
 
 copy_profiles() {
-  local src="" dest="$job/scratch/profiles.json"
+  local src="" dest="$job/scratch/profiles.json" card mode candidate
   if [ -n "${PROFILE_FILE:-}" ] && [ -f "$PROFILE_FILE" ] && [ ! -L "$PROFILE_FILE" ]; then
     src=$PROFILE_FILE
   elif [ -n "${A770B_PROFILES_FILE:-}" ] && [ -f "$A770B_PROFILES_FILE" ] && [ ! -L "$A770B_PROFILES_FILE" ]; then
     src=$A770B_PROFILES_FILE
   else
-    src=$(find "$A770B_PROJECT/config/registry" -maxdepth 1 -type f -name '*.json' | head -n 1)
+    card=${A770B_CARD:-}
+    mode=${A770B_CARD_MODE:-inference}
+    candidate="$A770B_PROJECT/config/registry/${card}.${mode}.json"
+    if [ -n "$card" ] && [ -f "$candidate" ] && [ ! -L "$candidate" ]; then
+      src=$candidate
+    fi
   fi
-  [ -n "$src" ] || return 1
+  if [ -z "$src" ]; then
+    # A bare GGUF suite can run from --model. It does not invent a registry file.
+    if [ "${GGUF:-0}" = 1 ]; then
+      unset A770B_PROFILES_FILE
+      return 0
+    fi
+    return 1
+  fi
+  refuse_link "$dest" || return 1
   cp -- "$src" "$dest" || return 1
   chmod 600 "$dest" || return 1
   export A770B_PROFILES_FILE=$dest
@@ -311,17 +438,23 @@ EOF
 }
 
 run_suite_once() {
-  local stages=$1
+  local stages=$1 pass=$2
   local -a args=()
   if [ "$GGUF" = 1 ]; then
-    args=(--model "$MODEL" --ctx "$CTX")
+    args=(--model "$(pget artifact)" --ctx "$CTX")
     [ -n "$KV" ] && args+=(--kv "$KV")
     [ -n "$KV_V" ] && args+=(--kv-v "$KV_V")
     [ -n "$EXTRA" ] && args+=(--extra "$EXTRA")
+    args+=(--reasoning "$(pget reasoning)")
+    local budget
+    budget=$(pget reasoning_budget)
+    [ -n "$budget" ] && args+=(--reasoning-budget "$budget")
+    export A770B_SERVED_BACKEND
   else
     args=("$PROFILE_NAME")
   fi
-  args+=("$job/scratch/seat")
+  # The scratch seat is this job's. --fresh is safe and pass 2 needs it.
+  args+=("$job/scratch/seat" --fresh)
   [ -n "$stages" ] && args+=(--stages "$stages")
   local -a cmd
   if command -v a770b-qualify-suite >/dev/null 2>&1; then
@@ -331,15 +464,22 @@ run_suite_once() {
   else
     cmd=(bash "$here/run_suite.sh" "${args[@]}")
   fi
+  local log="$job/phases/suite-pass-${pass}.log"
+  refuse_link "$job/evidence/argv.log" || return 2
+  refuse_link "$log" || return 2
   printf '%s\n' "suite: ${cmd[*]}" >> "$job/evidence/argv.log"
-  printf '%s\n' "profiles-file: $A770B_PROFILES_FILE" >> "$job/evidence/argv.log"
-  A770B_PROFILES_FILE=$A770B_PROFILES_FILE A770B_SEAT="$job/scratch/seat" "${cmd[@]}" >"$job/phases/suite.log" 2>&1 &
+  printf '%s\n' "profiles-file: ${A770B_PROFILES_FILE:-}" >> "$job/evidence/argv.log"
+  A770B_PROFILES_FILE=${A770B_PROFILES_FILE:-} A770B_SEAT="$job/scratch/seat" "${cmd[@]}" >"$log" 2>&1 &
   CHILD=$!
+  plain_trunc "$job/suite.pid" || return 2
   printf '%s\n' "$CHILD" > "$job/suite.pid"
+  refuse_link "$job/suite.start" || return 2
+  "${py[@]}" starttime "$CHILD" > "$job/suite.start" 2>/dev/null || true
+  chmod 600 "$job/suite.start" 2>/dev/null || true
   local rc=0
   wait "$CHILD" || rc=$?
   CHILD=
-  "${py[@]}" apply-phase --job "$job" --phase suite --rc "$rc" < "$job/phases/suite.log" >/dev/null || true
+  "${py[@]}" apply-phase --job "$job" --phase suite --rc "$rc" < "$log" >/dev/null || true
   return "$rc"
 }
 
@@ -347,6 +487,134 @@ fail_job() {
   FINISH_STATE=failed
   FAIL_REASON=$1
   MARKER_NAME=FAILED
+}
+
+prepare_serve_env() {
+  local backend image_row budget
+  backend=$(pget backend)
+  image_row=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print((d.get("row_fields") or {}).get("vllm_image") or "")' "$job/plan.json" 2>/dev/null || true)
+  if [ -n "$image_row" ]; then
+    export A770B_VLLM_IMAGE=$image_row
+  fi
+  case "$engine" in
+    llama.cpp) select_serve_envelope "$backend" ;;
+    vllm) select_serve_envelope vllm ;;
+    sglang) select_serve_envelope sglang ;;
+  esac
+  [ -n "$KV" ] && export KV_K=$KV
+  [ -n "$KV_V" ] && export KV_V=$KV_V
+  export REASONING=$(pget reasoning)
+  export THINKING_MODE=$REASONING
+  budget=$(pget reasoning_budget)
+  [ -n "$budget" ] && export THINKING_BUDGET=$budget
+  if [ -n "$backend" ]; then
+    export A770B_SERVED_BACKEND=$backend
+  fi
+}
+
+capture_cid() {
+  local live="" file
+  if [ "$engine" = strata ]; then
+    live=$(bash "$here/serve_strata.sh" id 2>/dev/null || true)
+  else
+    file=$A770B_DATA/logs/llamacpp-a770.cid
+    if [ -f "$file" ] && [ ! -L "$file" ]; then
+      live=$(tr -d '[:space:]' < "$file" || true)
+    fi
+  fi
+  [ -n "$live" ] || return 0
+  plain_trunc "$job/cid" || return 1
+  printf '%s\n' "$live" > "$job/cid"
+}
+
+confirm_switches() {
+  local log=$job/phases/serve.log receipt cid
+  receipt=$A770B_DATA/logs/profiling.json
+  if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
+    log=$receipt
+  elif [ -f "$job/cid" ] && [ ! -L "$job/cid" ]; then
+    cid=$(tr -d '[:space:]' < "$job/cid" || true)
+    if [ -n "$cid" ]; then
+      refuse_link "$job/phases/engine.log" || return 1
+      "${A770B_DOCKER:-docker}" logs "$cid" >"$job/phases/engine.log" 2>&1 || true
+      log=$job/phases/engine.log
+    fi
+  fi
+  "${py[@]}" confirm --job "$job" --host "$A770B_HOST" --port "$A770B_PORT" --log "$log" >/dev/null 2>&1 || true
+}
+
+snap_metrics() {
+  [ "${STUB:-0}" = 1 ] && return 0
+  local dest=$job/evidence/metrics-$1.prom
+  refuse_link "$dest" || return 0
+  if ! curl --silent --show-error --max-time 10 "http://$A770B_HOST:$A770B_PORT/metrics" >"$dest"; then
+    rm -f -- "$dest"
+  fi
+}
+
+start_observers() {
+  [ "${STUB:-0}" = 1 ] && return 0
+  plain_trunc "$job/VRAM_SAMPLE" || return 0
+  refuse_link "$job/evidence/vram-samples.txt" || return 0
+  refuse_link "$job/evidence/host-memory.jsonl" || return 0
+  (
+    trap - TERM INT EXIT
+    exec 7>&- 9>&-
+    while [ -f "$job/VRAM_SAMPLE" ]; do
+      used=$(gpu_used_gib 2>/dev/null || true)
+      printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${used:-unavailable}" >> "$job/evidence/vram-samples.txt"
+      sleep 5
+    done
+  ) &
+  VRAM_PID=$!
+  ( trap - TERM INT EXIT; exec 7>&- 9>&-; exec python3 "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" ) &
+  MEM=$!
+}
+
+measure_speed() {
+  local tok alias
+  local -a sizes=()
+  tok=$(pget tokenizer)
+  alias=${A770B_ALIAS:-local-builder}
+  if [ -z "$tok" ]; then
+    printf '%s\n' "speed: no tokenizer, speed was not measured" >> "$job/evidence/argv.log"
+    return 0
+  fi
+  mapfile -t sizes < <(pget speed_sizes)
+  run_tool speed bash "$here/bench_http.sh" \
+    --base-url "http://$A770B_HOST:$A770B_PORT" \
+    --served-model-name "$alias" \
+    --tokenizer "$tok" \
+    --save-result "$job/evidence/speed-bench.json" \
+    --pp "${sizes[@]}"
+}
+
+measure_window() {
+  local tok alias
+  tok=$(pget tokenizer)
+  alias=${A770B_ALIAS:-local-builder}
+  if [ -z "$tok" ]; then
+    printf '%s\n' "window: no tokenizer, the sweep was not measured" >> "$job/evidence/argv.log"
+    return 0
+  fi
+  case "$engine" in
+    vllm|sglang|strata) export A770B_SWEEP_STREAM=1 ;;
+  esac
+  run_tool window bash "$here/ctx_sweep.sh" --tokenize openai --model "$alias" --tokenizer "$tok" 8000 "$(pget far_end)"
+}
+
+measure_depth() {
+  local tok alias
+  tok=$(pget tokenizer)
+  alias=${A770B_ALIAS:-local-builder}
+  if [ -z "$tok" ]; then
+    printf '%s\n' "depth: no tokenizer, the probe was not measured" >> "$job/evidence/argv.log"
+    return 0
+  fi
+  case "$engine" in
+    vllm|sglang|strata) export A770B_SWEEP_STREAM=1 ;;
+  esac
+  run_tool depth bash "$here/depth_probe.sh" "$(pget far_end)" --gen "$(pget gen)" --tokenize openai --model "$alias" --tokenizer "$tok"
 }
 
 run_phases() {
@@ -371,6 +639,7 @@ run_phases() {
     return
   fi
   image=$(image_for "$engine")
+  prepare_serve_env
   if command -v a770b-qualify-gate >/dev/null 2>&1; then
     run_tool gate a770b-qualify-gate --engine "$engine" --image "$image" --backend "$(pget backend)" || {
       fail_job preflight
@@ -380,7 +649,8 @@ run_phases() {
     fail_job preflight
     return
   elif [ "$engine" = strata ]; then
-    run_tool gate bash "$here/serve_strata.sh" admit || { fail_job preflight; return; }
+    run_tool gate bash "$here/serve_strata.sh" config-model "$(pget artifact)" || { fail_job preflight; return; }
+    bash "$here/serve_strata.sh" tokenizer "$(pget artifact)" >>"$job/phases/gate.log" 2>&1 || { fail_job preflight; return; }
   else
     run_tool gate bash "$here/serve_compose.sh" gate || { fail_job preflight; return; }
   fi
@@ -401,20 +671,34 @@ run_phases() {
     return
   fi
   phase serve
+  start_observers
   if [ "$STUB" = 1 ]; then
     local -a serve_argv=()
     mapfile -t serve_argv < <(pget serve_argv)
     run_tool serve a770b-qualify-serve "${serve_argv[@]}" || { fail_job load; return; }
   elif [ "$engine" = "llama.cpp" ]; then
-    local -a extra_argv=()
+    local -a extra_argv=() clean=()
+    local item
     mapfile -t extra_argv < <(pget extra)
-    bash "$here/serve_compose.sh" start "$model" "$CTX" "${extra_argv[@]}" >"$job/phases/serve.log" 2>&1 || { fail_job load; return; }
-    [ -f "$A770B_DATA/logs/llamacpp-a770.cid" ] && cp -- "$A770B_DATA/logs/llamacpp-a770.cid" "$job/cid"
+    for item in "${extra_argv[@]}"; do
+      [ -n "$item" ] && clean+=("$item")
+    done
+    if ! run_tool serve bash "$here/serve_compose.sh" start "$(pget artifact)" "$CTX" "${clean[@]}"; then
+      fail_job load
+      return
+    fi
+    capture_cid
   else
-    bash "$A770B_PROJECT/skills/local-build/scripts/local-build.sh" serve "$PROFILE_NAME" >"$job/phases/serve.log" 2>&1 || { fail_job load; return; }
+    copy_profiles || { fail_job load; return; }
+    if ! run_tool serve bash "$A770B_PROJECT/skills/local-build/scripts/local-build.sh" serve "$PROFILE_NAME"; then
+      fail_job load
+      return
+    fi
+    capture_cid
   fi
   if [ "$STUB" != 1 ]; then
-    "${py[@]}" confirm --job "$job" --host "$A770B_HOST" --port "$A770B_PORT" --log "$job/phases/serve.log" >/dev/null 2>&1 || true
+    confirm_switches || true
+    snap_metrics after-serve || true
   fi
   phase smoke
   run_tool smoke bash "$here/qualify_smoke.sh" "$job" || true
@@ -422,28 +706,26 @@ run_phases() {
   if [ "$STUB" = 1 ]; then
     run_tool speed a770b-qualify-speed --ctx "$CTX" || true
   else
-    run_tool speed bash "$here/bench_http.sh" --base-url "http://$A770B_HOST:$A770B_PORT/v1" --served-model-name "$model" --tokenizer "$(pget tokenizer)" --pp "$(pget speed_sizes | paste -sd ' ' -)" || true
+    measure_speed || true
   fi
   if [ "$(pget skip_window)" != 1 ]; then
     phase window
     if [ "$STUB" = 1 ]; then
       run_tool window a770b-qualify-sweep --to "$(pget far_end)" || true
     else
-      run_tool window bash "$here/ctx_sweep.sh" --tokenizer "$(pget tokenizer)" 8000 "$(pget far_end)" || true
+      measure_window || true
     fi
   fi
   phase depth
   if [ "$STUB" = 1 ]; then
     run_tool depth a770b-qualify-depth --gen "$(pget gen)" || true
   else
-    run_tool depth bash "$here/depth_probe.sh" "$(pget far_end)" --gen "$(pget gen)" --tokenizer "$(pget tokenizer)" || true
+    measure_depth || true
   fi
+  snap_metrics after-depth || true
   phase memory
   if [ "$STUB" = 1 ]; then
     run_tool memory a770b-qualify-memory --interval 5 --owner-pid "$$" || true
-  else
-    ( exec 7>&- 9>&-; exec python3 "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" ) &
-    MEM=$!
   fi
   phase stop-server
   stop_server
@@ -455,17 +737,20 @@ run_phases() {
     phase suite
     copy_profiles || { fail_job preflight; return; }
     take_seat "$job/scratch/seat" || { fail_job lock; return; }
-    local stages
+    plain_trunc "$job/stage-start" || { fail_job preflight; return; }
+    date +%s > "$job/stage-start"
+    local stages pass refs left
     stages=$(pget stages | paste -sd, -)
-    run_suite_once "$stages" || true
+    run_suite_once "$stages" 1 || true
     if [ "$(pget refs_apply)" = 1 ] && [ "$(pget refs_repeat)" -gt 1 ] && [ ! -f "$job/DRIVER_ERROR" ]; then
-      local left refs
       left=$(( $(pget refs_repeat) - 1 ))
-      refs=$(pget reference_ids | paste -sd, -)
-      while [ "$left" -gt 0 ]; do
+      refs=$(pget reference_stages | paste -sd, -)
+      pass=2
+      while [ "$left" -gt 0 ] && [ -n "$refs" ]; do
         [ -f "$job/SUITE_SKIP" ] && break
         [ -f "$job/DRIVER_ERROR" ] && break
-        run_suite_once "$refs" || true
+        run_suite_once "$refs" "$pass" || true
+        pass=$((pass + 1))
         left=$((left - 1))
       done
     fi
@@ -476,7 +761,8 @@ run_phases() {
 }
 
 cmd_run() {
-  job=${1:?job directory}
+  [ -n "${1:-}" ] || die "run needs a job directory"
+  job=$1
   [ -d "$job" ] && [ ! -L "$job" ] || die "job directory is missing or a symlink"
   INSIDE_RUN=1
   FINISH_STATE=finished
@@ -491,21 +777,19 @@ cmd_run() {
   trap on_term TERM INT
   trap on_exit EXIT
   mkdir -p "$job/evidence" "$job/phases" "$job/scratch"
-  : > "$job/evidence/argv.log"
-  chmod 600 "$job/evidence/argv.log" || true
+  plain_trunc "$job/evidence/argv.log" || die "refusing a symlink argv log"
   if ! take_card; then
     merge '{"state":"failed","reason":"lock","event":"lock refused"}'
-    : > "$job/FAILED"
-    chmod 600 "$job/FAILED" || true
+    plain_trunc "$job/FAILED" || die "refusing a symlink marker"
     MARKER=1
     exit 2
   fi
   RUN_PID=$$
   RUN_START=$("${py[@]}" starttime "$$" || true)
   merge "{\"state\":\"running\",\"phase\":\"preflight\",\"pid\":$RUN_PID,\"pid_starttime\":\"${RUN_START}\",\"reason\":null,\"event\":\"running\"}"
-  : > "$job/HEARTBEAT"
-  : > "$job/WATCH"
-  : > "$job/cid"
+  plain_trunc "$job/HEARTBEAT" || die "refusing a symlink heartbeat"
+  plain_trunc "$job/WATCH" || die "refusing a symlink watch flag"
+  plain_trunc "$job/cid" || die "refusing a symlink container id"
   if [ "${A770B_QUALIFY_STUB:-}" = 1 ] || command -v a770b-qualify-serve >/dev/null 2>&1; then
     STUB=1
     # The helper must be executable, and every file inside the job is mode 0600.
@@ -538,19 +822,32 @@ cmd_run() {
 }
 
 wait_handshake() {
-  local n=0 state
+  local n=0 state reason
   while [ "$n" -lt 50 ]; do
     if [ -f "$job/status.json" ]; then
       state=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("state",""))' "$job/status.json" 2>/dev/null || true)
-      if [ "$state" = running ]; then
-        printf 'job %s\n' "$id"
-        printf 'directory %s\n' "$job"
-        return 0
-      fi
-      if [ "$state" = failed ]; then
-        printf '⛔ runner refused the lock or the seat\n' >&2
-        return 2
-      fi
+      case "$state" in
+        running|finished|stopped)
+          printf 'job %s\n' "$id"
+          printf 'directory %s\n' "$job"
+          return 0
+          ;;
+        failed)
+          reason=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("reason") or "")' "$job/status.json" 2>/dev/null || true)
+          if [ "$reason" = lock ]; then
+            printf '⛔ runner refused the lock or the seat\n' >&2
+            return 2
+          fi
+          printf 'job %s\n' "$id"
+          printf 'directory %s\n' "$job"
+          return 0
+          ;;
+      esac
+    fi
+    if [ -f "$job/DONE" ] || [ -f "$job/STOPPED" ] || [ -f "$job/FAILED" ]; then
+      printf 'job %s\n' "$id"
+      printf 'directory %s\n' "$job"
+      return 0
     fi
     n=$((n + 1))
     sleep 0.2
@@ -586,13 +883,18 @@ cmd_start() {
     rm -f -- "$tmp"
     return 2
   fi
-  if ! probe_card; then
+  if [ -L "$A770B_DATA" ]; then
     rm -f -- "$tmp"
-    die "the card lock is held"
+    die "refusing a symlink in the job path"
   fi
   if run_pid_alive "$A770B_DATA/logs/run.pid" >/dev/null 2>&1; then
     rm -f -- "$tmp"
     die "a run is in flight on this seat"
+  fi
+  mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results"
+  if ! probe_card; then
+    rm -f -- "$tmp"
+    die "the card lock is held"
   fi
   local root id launch
   root=$A770B_DATA/qualify
@@ -658,13 +960,15 @@ cmd_status() {
 }
 
 cmd_wait() {
-  local id=${1:?job}
+  [ $# -ge 1 ] || die "wait needs a job"
+  local id=$1
   shift
   local timeout=86400
   while [ $# -gt 0 ]; do
     case "$1" in
       --timeout)
-        timeout=${2:?seconds}
+        [ $# -ge 2 ] || die "timeout needs a value"
+        timeout=$2
         shift 2
         ;;
       *) die "unknown qualify option $1" ;;
@@ -693,11 +997,16 @@ cmd_wait() {
 }
 
 cmd_result() {
-  local id="" json=0 arg
-  for arg in "$@"; do
-    case "$arg" in
-      --json) json=1 ;;
-      *) id=$arg ;;
+  local id="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --*) die "unknown qualify option $1" ;;
+      *)
+        [ -z "$id" ] || die "unknown qualify option $1"
+        id=$1
+        shift
+        ;;
     esac
   done
   [ -n "$id" ] || die "result needs a job"
@@ -706,9 +1015,13 @@ cmd_result() {
   local shown state
   shown=$("${py[@]}" status-show --job "$job")
   state=$(printf '%s' "$shown" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))')
-  if [ "$json" = 1 ] && [ -f "$job/result.json" ]; then
+  if [ "$json" = 1 ]; then
+    if [ ! -f "$job/result.json" ] || [ -L "$job/result.json" ]; then
+      printf '⛔ no result.json\n' >&2
+      exit 4
+    fi
     cat "$job/result.json"
-  elif [ -f "$job/report.md" ]; then
+  elif [ -f "$job/report.md" ] && [ ! -L "$job/report.md" ]; then
     cat "$job/report.md"
   else
     printf '%s\n' "$shown"
@@ -721,7 +1034,8 @@ cmd_result() {
 }
 
 cmd_export() {
-  local id=${1:?job}
+  [ $# -ge 1 ] || die "export needs a job"
+  local id=$1
   shift
   job=$(job_path "$id") || exit 2
   [ -d "$job" ] && [ ! -L "$job" ] || die "no such job"
@@ -729,16 +1043,19 @@ cmd_export() {
 }
 
 cmd_stop() {
-  local id=${1:?job}
+  [ $# -ge 1 ] || die "stop needs a job"
+  local id=$1
+  shift
+  [ $# -eq 0 ] || die "unknown qualify option $1"
   job=$(job_path "$id") || exit 2
   [ -d "$job" ] && [ ! -L "$job" ] || die "no such job"
   local pid start launch
   pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("pid") or "")' "$job/status.json" 2>/dev/null || true)
   start=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("pid_starttime") or "")' "$job/status.json" 2>/dev/null || true)
-  if ! "${py[@]}" identity --pid "$pid" --starttime "$start"; then
+  if ! "${py[@]}" identity --pid "$pid" --starttime "$start" --job "$job"; then
     die "runner identity does not match"
   fi
-  : > "$job/STOP_REQUESTED"
+  plain_trunc "$job/STOP_REQUESTED" || die "refusing a symlink stop request"
   chmod 600 "$job/STOP_REQUESTED" || true
   if run_pid_alive "$A770B_DATA/logs/run.pid" >/dev/null 2>&1; then
     bash "$A770B_PROJECT/skills/local-build/scripts/local-build.sh" stop-run >>"$job/phases/stop-run.log" 2>&1 || true
@@ -782,7 +1099,8 @@ case "$cmd" in
   start) cmd_start "$@" ;;
   run)
     [ "${1:-}" = --job ] || die "run needs --job"
-    cmd_run "${2:?job directory}"
+    [ -n "${2:-}" ] || die "run needs a job directory"
+    cmd_run "$2"
     ;;
   status) cmd_status "${1:-}" ;;
   wait) cmd_wait "$@" ;;

@@ -35,6 +35,9 @@ do_stop() {
 }
 
 say() {
+  if [ -L "$job/watchdog.log" ] || [ -L "$job" ]; then
+    return 0
+  fi
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$job/watchdog.log"
 }
 
@@ -48,24 +51,35 @@ trip_stage() {
   local rule=$1
   shift
   say "TRIP: $*"
-  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$job/watchdog-trips.log"
+  if [ ! -L "$job/watchdog-trips.log" ] && [ ! -L "$job" ]; then
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$job/watchdog-trips.log"
+  fi
   record_trip "$rule" "$*"
   do_stop >> "$job/watchdog.log" 2>&1 || true
   [ "${WD_NOFINALSLEEP:-0}" = 1 ] || sleep 90
 }
 
 trip_driver() {
-  local line=$1
+  local line=$1 pid start now
+  # Skip the suite before the 90s post-stop sleep, and only signal the recorded pid.
+  if [ -L "$job/DRIVER_ERROR" ] || [ -L "$job/SUITE_SKIP" ]; then
+    say "refusing a symlink driver marker"
+    return 0
+  fi
   printf '%s\n' "$line" > "$job/DRIVER_ERROR"
-  trip_stage "driver" "fresh engine/driver error: $line"
-  if [ -f "$job/suite.pid" ]; then
-    local pid
-    pid=$(cat "$job/suite.pid" 2>/dev/null || true)
-    if [ -n "$pid" ]; then
+  printf '1\n' > "$job/SUITE_SKIP"
+  if [ -f "$job/suite.pid" ] && [ ! -L "$job/suite.pid" ]; then
+    pid=$(tr -d '[:space:]' < "$job/suite.pid" 2>/dev/null || true)
+    start=""
+    if [ -f "$job/suite.start" ] && [ ! -L "$job/suite.start" ]; then
+      start=$(tr -d '[:space:]' < "$job/suite.start" 2>/dev/null || true)
+    fi
+    now=$("${py[@]}" starttime "$pid" 2>/dev/null || true)
+    if [ -n "$pid" ] && [ -n "$start" ] && [ "$now" = "$start" ]; then
       kill -TERM "$pid" 2>/dev/null || true
     fi
   fi
-  printf '1\n' > "$job/SUITE_SKIP"
+  trip_stage "driver" "fresh engine/driver error: $line"
 }
 
 now_s() {
@@ -121,6 +135,9 @@ while [ -e "$job/WATCH" ]; do
     if [ -z "$newest" ]; then
       newest=$(ls -t "$logs"/build-*.log 2>/dev/null | head -n 1 || true)
     fi
+    if [ -z "${QUALIFY_STAGE_START:-}" ] && [ -f "$job/stage-start" ] && [ ! -L "$job/stage-start" ]; then
+      QUALIFY_STAGE_START=$(tr -d '[:space:]' < "$job/stage-start" 2>/dev/null || true)
+    fi
     if [ -n "$newest" ] && [ -n "${QUALIFY_STAGE_START:-}" ]; then
       stamp=$(log_epoch "$newest" || true)
       if [ -n "$stamp" ] && [ "$stamp" -lt "$QUALIFY_STAGE_START" ]; then
@@ -165,7 +182,24 @@ while [ -e "$job/WATCH" ]; do
         continue
       fi
     fi
-    cid=$(cat "$cidfile" 2>/dev/null || true)
+    cid=""
+    phase=""
+    if [ -f "$job/status.json" ] && [ ! -L "$job/status.json" ]; then
+      phase=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("phase") or "")' "$job/status.json" 2>/dev/null || true)
+    fi
+    # Phase 5 starts a new container. The phase 3 id in $cidfile is already dead.
+    if [ "$phase" = suite ] && [ "${A770B_QUALIFY_STUB:-}" != 1 ] && ! command -v a770b-qualify-serve >/dev/null 2>&1; then
+      live="$A770B_DATA/logs/llamacpp-a770.cid"
+      if [ -f "$live" ] && [ ! -L "$live" ]; then
+        cid=$(tr -d '[:space:]' < "$live" 2>/dev/null || true)
+      fi
+      if [ -z "$cid" ]; then
+        cid=$(bash "$here/serve_strata.sh" id 2>/dev/null || true)
+      fi
+    fi
+    if [ -z "$cid" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
+      cid=$(tr -d '[:space:]' < "$cidfile" 2>/dev/null || true)
+    fi
     if [ -n "$cid" ]; then
       if [ "$cid" != "$prev_cid" ]; then
         prev_cid=$cid
@@ -174,7 +208,9 @@ while [ -e "$job/WATCH" ]; do
         last_ts=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
       fi
       res=$("$dk" logs --timestamps --since "$last_ts" "$cid" 2>&1 | "${scan[@]}" "$last_ts")
-      last_ts=$(jget "$res" last_ts)
+      fresh=$(jget "$res" last_ts)
+      # An empty scan must not rewind --since and replay old lines.
+      [ -n "$fresh" ] && last_ts=$fresh
       err=$(jget "$res" error)
       if [ -n "$err" ]; then
         trip_driver "$err"

@@ -1,0 +1,4 @@
+corpus: kit/corpus/large.py (already generated)
+budget for 99894 tokens: 7200s — UNMEASURED (no llama-bench curve for this model; the deadline is a fixed generous one)
+prompt_tokens=99756 wall=137s prefill_tps=860 decode_tps=12.0 vram_max=21.77GiB resets=0 reasoning_chars=0 reasoning_truncated=False
+depth probe at 100000: 2/3

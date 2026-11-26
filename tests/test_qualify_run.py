@@ -88,7 +88,10 @@ STUB = textwrap.dedent(
       a770b-qualify-smoke)
         printf '%s\\n' '{"models": true, "completion": true, "tool": true}'
         ;;
-      a770b-qualify-speed) printf '%s\\n' '{"rows": []}' ;;
+      a770b-qualify-speed)
+        if [ -n "${A770B_QUALIFY_SPEED_SLEEP:-}" ]; then sleep "$A770B_QUALIFY_SPEED_SLEEP"; fi
+        printf '%s\\n' '{"rows": []}'
+        ;;
       a770b-qualify-sweep) printf '%s\\n' '{"resets": 0}' ;;
       a770b-qualify-depth) printf '%s\\n' '{"passed": true, "score": "1/3"}' ;;
       a770b-qualify-gate) printf '%s\\n' "image sha256:0123456789abcdef" ;;
@@ -313,10 +316,13 @@ def test_i5_refusal_creates_no_job_directory(box, tmp_path):
 
 
 def test_i12_and_foreground_result(box):
+    data = Path(box["A770B_DATA"])
     dry = _run(box, ["start", "--dry-run", *_gguf(box)])
     assert dry.returncode == 0
     assert "serve-argv:" in dry.stdout
     assert _jobs(box) == []
+    assert not (data / "logs").exists()
+    assert not (data / "results").exists()
     done = _run(box, ["start", "--foreground", *_gguf(box)])
     assert done.returncode == 0, done.stderr
     job = _one(box)
@@ -328,6 +334,13 @@ def test_i12_and_foreground_result(box):
     assert "no-compaction-storm" in names
     report = (job / "report.md").read_text()
     assert "needs-review" in report
+    assert (job / "stage-start").is_file()
+    assert (job / "stage-start").read_text().strip().isdigit()
+    card = json.loads((job / "evidence" / "card.json").read_text())
+    assert card["containers"] is None
+    suite = next(line for line in (job / "evidence" / "argv.log").read_text().splitlines() if line.startswith("suite:"))
+    assert "--fresh" in suite
+    assert "--reasoning" in suite
     shown = _run(box, ["result", job.name])
     assert shown.returncode == 0
     assert "needs-review" in shown.stdout
@@ -380,8 +393,10 @@ def test_i8_registry_unchanged_for_both_engines(box, tmp_path):
     assert _registry() == before
     for job in _jobs(box):
         text = (job / "evidence" / "argv.log").read_text()
+        document = json.loads((job / "job.json").read_text())
         assert "--base-url" not in text
-        assert "scratch/profiles.json" in text
+        if document.get("engine") == "vllm":
+            assert "scratch/profiles.json" in text
 
 
 def test_i11_sglang_strata_and_missing_row(box, tmp_path):
@@ -807,3 +822,218 @@ def test_i27_systemd_or_setsid(box, tmp_path):
     job = _one(box)
     assert json.loads((job / "job.json").read_text())["launch"] == "systemd"
     assert _wait_file(job / "DONE")
+
+
+def test_real_serve_lines_use_the_alias_and_not_admit():
+    text = open(QUALIFY, encoding="utf-8").read()
+    assert 'serve_strata.sh" admit' not in text
+    assert 'serve_strata.sh" config-model' in text
+    assert 'serve_strata.sh" stop-id' in text
+    assert '--served-model-name "$alias"' in text
+    assert "--tokenize openai" in text
+    assert "A770B_SWEEP_STREAM=1" in text
+    assert '--base-url "http://$A770B_HOST:$A770B_PORT"' in text
+    assert "http://$A770B_HOST:$A770B_PORT/v1" not in text
+
+
+def test_i4_failing_post_hook_and_a_large_successful_one(box, tmp_path):
+    pre = tmp_path / "pre.sh"
+    post = tmp_path / "post.sh"
+    _hook(pre, "PRE", 0)
+    post.write_text("#!/bin/sh\nprintf '%s\\n' POST-FAILED\nexit 1\n")
+    post.chmod(0o755)
+    box["A770B_QUALIFY_PRE"] = str(pre)
+    box["A770B_QUALIFY_POST"] = str(post)
+    failed = _run(box, ["start", "--foreground", *_gguf(box)])
+    # A failing post-hook is a check failure. The job itself already finished.
+    assert failed.returncode == 0, failed.stderr
+    job = _one(box)
+    check = next(item for item in json.loads((job / "result.json").read_text())["checks"] if item["name"] == "post-hook-ok")
+    assert check["result"] == "fail"
+    assert "POST-FAILED" in (check.get("reason") or "")
+
+    post.write_text("#!/bin/sh\ndd if=/dev/zero bs=1024 count=128 2>/dev/null | tr '\\0' x\nprintf '\\nPOST-OK\\n'\nexit 0\n")
+    data = tmp_path / "data-big"
+    data.mkdir()
+    box["A770B_DATA"] = str(data)
+    good = _run(box, ["start", "--foreground", *_gguf(box)])
+    assert good.returncode == 0, good.stderr
+    job = _one(box)
+    check = next(item for item in json.loads((job / "result.json").read_text())["checks"] if item["name"] == "post-hook-ok")
+    assert check["result"] == "pass", check
+
+
+def test_i23_term_during_a_long_speed_child(box, tmp_path):
+    box["A770B_QUALIFY_SPEED_SLEEP"] = "30"
+    proc = subprocess.Popen(
+        ["bash", QUALIFY, "start", *_gguf(box)],
+        env=box,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    job = None
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        found = _jobs(box)
+        if found:
+            log = found[0] / "evidence" / "argv.log"
+            if log.is_file() and any(line.startswith("speed:") for line in log.read_text().splitlines()):
+                job = found[0]
+                break
+        time.sleep(0.1)
+    assert job is not None
+    pid = json.loads((job / "status.json").read_text())["pid"]
+    os.kill(int(pid), signal.SIGTERM)
+    proc.wait(timeout=20)
+    assert _wait_file(job / "STOPPED", timeout=15)
+    assert json.loads((job / "status.json").read_text())["state"] == "stopped"
+
+
+def test_i25_symlink_phase_log_is_refused(box, tmp_path):
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_text("untouched")
+    pre = tmp_path / "pre.sh"
+    pre.write_text(f"#!/bin/sh\nln -s {sentinel} \"$1/phases/serve.log\"\nexit 0\n")
+    pre.chmod(0o755)
+    box["A770B_QUALIFY_PRE"] = str(pre)
+    refused = _run(box, ["start", "--foreground", *_gguf(box)])
+    assert refused.returncode == 4
+    job = _one(box)
+    assert (job / "FAILED").is_file()
+    assert sentinel.read_text() == "untouched"
+    assert "symlink" in refused.stderr
+
+
+def test_i6_unknown_options_and_json_result(box, tmp_path):
+    missing = _run(box, ["export"])
+    assert missing.returncode == 2
+    assert _run(box, ["stop"]).returncode == 2
+    assert _run(box, ["wait"]).returncode == 2
+    assert _run(box, ["result", "--nope"]).returncode == 2
+    done = _run(box, ["start", "--foreground", *_gguf(box)])
+    assert done.returncode == 0, done.stderr
+    job = _one(box)
+    assert _run(box, ["export", job.name, "--not-a-flag"]).returncode == 2
+    assert _run(box, ["stop", job.name, "--extra"]).returncode == 2
+    assert _run(box, ["wait", job.name, "--timeout"]).returncode == 2
+    (job / "result.json").unlink()
+    shown = _run(box, ["result", job.name, "--json"])
+    assert shown.returncode == 4
+    assert "report.md" not in shown.stdout
+    assert "needs-review" not in shown.stdout
+
+
+def test_i3_handshake_of_a_fast_preflight_failure_is_not_a_lock(box):
+    box["A770B_QUALIFY_MIN_FREE_GIB"] = "1000000"
+    launched = _run(box, ["start", *_gguf(box)])
+    assert launched.returncode == 0, launched.stderr
+    assert "job " in launched.stdout
+    assert "refused the lock" not in launched.stderr
+    job = _one(box)
+    assert _wait_file(job / "FAILED", timeout=20)
+    assert json.loads((job / "status.json").read_text())["reason"] == "preflight"
+
+
+def test_stop_systemd_kill_reaches_the_runner(box, tmp_path):
+    box["A770B_QUALIFY_PAUSE_PHASE"] = "serve"
+    proc = subprocess.Popen(
+        ["bash", QUALIFY, "start", *_gguf(box)],
+        env=box,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    job = None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        found = _jobs(box)
+        if found and (found[0] / "cid").is_file() and (found[0] / "cid").read_text().strip():
+            job = found[0]
+            break
+        time.sleep(0.1)
+    assert job is not None
+    document = json.loads((job / "job.json").read_text())
+    document["launch"] = "systemd"
+    (job / "job.json").write_text(json.dumps(document))
+    pid = json.loads((job / "status.json").read_text())["pid"]
+    log = tmp_path / "systemctl.log"
+    stub = Path(box["PATH"].split(":")[0]) / "systemctl"
+    stub.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$*\" >> {log}\n"
+        'if [ "$1" = --user ] && [ "$2" = kill ]; then\n'
+        f"  kill -TERM {int(pid)}\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    stopped = _run(box, ["stop", job.name], timeout=30)
+    proc.wait(timeout=20)
+    assert stopped.returncode == 0, stopped.stderr
+    assert "kill -s TERM --kill-who=main" in log.read_text()
+    assert (job / "STOPPED").is_file()
+
+
+def test_wp1_smoke_reads_a_local_http_stub(box, tmp_path):
+    """The real smoke script, against a loopback HTTP stub. Not a model server."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"data":[{"id":"local-builder"}]}'
+            self._send(body)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if payload.get("tools"):
+                body = json.dumps(
+                    {"choices": [{"message": {"tool_calls": [{"id": "1", "type": "function"}]}}]}
+                ).encode()
+            else:
+                body = b'{"choices":[{"message":{"content":"ok"}}]}'
+            self._send(body)
+
+        def _send(self, body):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        job = tmp_path / "smoke-job"
+        for name in ("evidence", "scratch", "phases"):
+            (job / name).mkdir(parents=True)
+        (job / "plan.json").write_text(json.dumps({"engine": "vllm"}))
+        env = dict(box)
+        env.pop("A770B_QUALIFY_STUB", None)
+        env["PATH"] = "/usr/bin:/bin"
+        env["A770B_HOST"] = "127.0.0.1"
+        env["A770B_PORT"] = str(port)
+        env["A770B_ALIAS"] = "local-builder"
+        run = subprocess.run(
+            ["bash", os.path.join(PROJECT, "harness", "qualify_smoke.sh"), str(job)],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert run.returncode == 0, run.stderr
+        assert json.loads(run.stdout) == {"models": True, "completion": True, "tool": True}
+        assert SECRET not in run.stdout
+        fields = json.loads((job / "evidence" / "per-request-fields.json").read_text())
+        assert fields["choices"][0]["message"]["content"] == "ok"
+        assert "Authorization" not in json.dumps(fields)
+    finally:
+        server.shutdown()
+        server.server_close()

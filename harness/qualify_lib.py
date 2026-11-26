@@ -9,6 +9,7 @@ records facts. The verdict string is always needs-review.
 from __future__ import annotations
 
 import argparse
+import calendar
 import fcntl
 import glob
 import json
@@ -42,7 +43,6 @@ ENGINE_MAP = {
     "sglang": "sglang",
     "strata": "strata",
 }
-SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD)")
 NO_ROW = (
     "A model with no registry row yet on one of these engines has no kit path "
     "(the kit builds an ephemeral candidate only from a GGUF): the person writes "
@@ -200,24 +200,136 @@ def speed_sizes(ctx: int) -> list[int]:
     return [size for size in (8192, 32768, 65536, 100000) if size <= room]
 
 
-def kit_prompt_budget() -> tuple[int | None, str]:
+def _positive_token(value) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def _peak_from_row(row: dict | None, stages: list[str] | None) -> int | None:
+    """The row's own measured prompt peak for the stages this run will execute."""
+    if not isinstance(row, dict):
+        return None
+    wanted = set(stages or [])
+    peak = None
+    tasks = row.get("measured_tasks")
+    if isinstance(tasks, dict):
+        for name, entry in tasks.items():
+            if wanted and name not in wanted:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            tokens = _positive_token(entry.get("context_tokens"))
+            if tokens is not None:
+                peak = tokens if peak is None else max(peak, tokens)
+    # A stage filter with per-stage counts does not fall back to the whole-suite peak.
+    if peak is None or not wanted:
+        requests = row.get("requests")
+        if isinstance(requests, dict):
+            tokens = _positive_token(requests.get("max_prompt_tokens"))
+            if tokens is not None:
+                peak = tokens if peak is None else max(peak, tokens)
+    return peak
+
+
+def _token_count(tokenizer_json: str, text: str) -> int | None:
+    """Count with the local tokenizer file. A missing library is unknown, not a guess."""
+    try:
+        from tokenizers import Tokenizer
+    except ImportError:
+        return None
+    try:
+        loaded = Tokenizer.from_file(tokenizer_json)
+        return len(loaded.encode(text, add_special_tokens=False).ids)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _tokenize_kit(stages: list[str] | None, tokenizer: str | None) -> tuple[int | None, str]:
+    """Briefs, the starter seat, and the OpenCode template. A partial set is not a budget."""
+    raw = str(tokenizer or "").strip()
+    if not raw:
+        return None, ""
+    path = raw
+    if os.path.isdir(path):
+        path = os.path.join(path, "tokenizer.json")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return None, ""
+    suite_path = os.path.join(PROJECT, "kit", "suite.json")
+    seat = os.path.join(PROJECT, "kit", "seat")
+    template = os.path.join(PROJECT, "config", "opencode.profile.template.jsonc")
+    if not os.path.isfile(suite_path) or not os.path.isdir(seat) or not os.path.isfile(template):
+        return None, ""
+    try:
+        suite = _load_json(suite_path)
+    except (OSError, ValueError, QualifyError):
+        return None, ""
+    wanted = set(stages or [])
+    parts = []
+    briefs = 0
+    for stage in suite.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        name = stage.get("id")
+        if wanted and name not in wanted:
+            continue
+        brief = stage.get("brief")
+        if not isinstance(brief, str) or not brief:
+            continue
+        brief_path = brief if os.path.isabs(brief) else os.path.join(PROJECT, brief)
+        if not os.path.isfile(brief_path) or os.path.islink(brief_path):
+            return None, ""
+        try:
+            parts.append(open(brief_path, encoding="utf-8", errors="replace").read())
+        except OSError:
+            return None, ""
+        briefs += 1
+    if briefs == 0:
+        return None, ""
+    for dirpath, dirnames, filenames in os.walk(seat):
+        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+        for name in sorted(filenames):
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            try:
+                parts.append(open(full, encoding="utf-8", errors="replace").read())
+            except OSError:
+                return None, ""
+    try:
+        parts.append(open(template, encoding="utf-8", errors="replace").read())
+    except OSError:
+        return None, ""
+    counted = _token_count(path, "\n".join(parts))
+    if counted is None:
+        return None, ""
+    return counted, "tokenized stage briefs, starter seat, and OpenCode template"
+
+
+def kit_prompt_budget(stages: list[str] | None = None, row: dict | None = None, tokenizer: str | None = None) -> tuple[int | None, str]:
     """Measured kit prompt, or unknown. This does not invent a token count."""
     raw = os.environ.get("A770B_QUALIFY_KIT_PROMPT_TOKENS")
-    if raw is None or raw == "":
-        return None, "no measured kit prompt total"
-    if not re.fullmatch(r"[1-9][0-9]*", raw):
-        raise QualifyError(
-            "A770B_QUALIFY_KIT_PROMPT_TOKENS must be a positive integer "
-            f"(it is {raw!r})"
-        )
-    return int(raw), "A770B_QUALIFY_KIT_PROMPT_TOKENS"
+    if raw is not None and raw != "":
+        if not re.fullmatch(r"[1-9][0-9]*", raw):
+            raise QualifyError(
+                "A770B_QUALIFY_KIT_PROMPT_TOKENS must be a positive integer "
+                f"(it is {raw!r})"
+            )
+        return int(raw), "A770B_QUALIFY_KIT_PROMPT_TOKENS"
+    peak = _peak_from_row(row, stages)
+    if peak is not None:
+        return peak, "profile measured_tasks context_tokens or requests.max_prompt_tokens"
+    counted, source = _tokenize_kit(stages, tokenizer)
+    if counted is not None:
+        return counted, source
+    return None, "no measured kit prompt total"
 
 
-def window_plan(ctx: int, profile_output) -> dict:
+def window_plan(ctx: int, profile_output, stages: list[str] | None = None, row: dict | None = None, tokenizer: str | None = None) -> dict:
     """Usable window against the kit prompt plus the named headroom."""
     limit = output_limit(ctx, profile_output, os.environ.get("A770B_OUTPUT_TOKENS"))
     usable = int(ctx) - limit
-    kit, kit_source = kit_prompt_budget()
+    kit, kit_source = kit_prompt_budget(stages, row, tokenizer)
     headroom = WINDOW_HEADROOM
     need = None if kit is None else int(math.ceil(kit * (1.0 + headroom)))
     left = None if kit is None else usable - kit
@@ -269,9 +381,18 @@ def _split_extra(text: str) -> list[str]:
         raise QualifyError(f"could not parse --extra ({exc})") from exc
 
 
+def _option_name(token: str) -> str:
+    """Long options compare with '_' folded to '-', the way vLLM and SGLang do."""
+    head = token.split("=", 1)[0]
+    if head.startswith("--"):
+        return "--" + head[2:].replace("_", "-")
+    return head
+
+
 def _refuse_key(tokens: list[str], where: str) -> None:
     for token in tokens:
-        if token == "--api-key" or token.startswith("--api-key="):
+        name = _option_name(token)
+        if name == "--api-key":
             raise QualifyError(
                 f"{where} must not carry --api-key; the harness owns "
                 "authentication through its key file"
@@ -340,8 +461,13 @@ def _reference_ids() -> set[str]:
     return found
 
 
+class _PlanParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise QualifyError(message)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="qualify start", add_help=False)
+    parser = _PlanParser(prog="qualify start", add_help=False)
     parser.add_argument("--engine", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--profiles-file")
@@ -367,10 +493,7 @@ def _parser() -> argparse.ArgumentParser:
 def build_plan(argv: list[str]) -> dict:
     """Validate a start line. Creates nothing. Unmapped engines never hit the contract."""
     parser = _parser()
-    try:
-        args, unknown = parser.parse_known_args(argv)
-    except SystemExit as exc:
-        raise QualifyError("qualify start needs --engine and --model") from exc
+    args, unknown = parser.parse_known_args(argv)
     if unknown:
         raise QualifyError(f"unknown qualify option {unknown[0]}")
     engine = canonical_engine(args.engine)
@@ -394,6 +517,10 @@ def build_plan(argv: list[str]) -> dict:
             if engine != "llama.cpp":
                 raise QualifyError(NO_ROW)
             raise QualifyError(f"no registry row named {args.model!r}")
+    if row and isinstance(row.get("engine"), str) and row["engine"] != engine:
+        raise QualifyError(
+            f"--engine {engine} is not the profile engine {row['engine']}"
+        )
     if gguf and engine != "llama.cpp":
         if row is None:
             raise QualifyError(NO_ROW)
@@ -417,13 +544,18 @@ def build_plan(argv: list[str]) -> dict:
         return asked
 
     kv = _same("--kv", args.kv, row.get("kv") if row else None)
-    kv_v = _same("--kv-v", args.kv_v, row.get("kv_v") if row else None)
+    have_kv_v = None
+    if row:
+        have_kv_v = row.get("kv_v")
+        if have_kv_v is None:
+            have_kv_v = row.get("kv")
+    kv_v = _same("--kv-v", args.kv_v, have_kv_v)
     row_extra = row.get("extra") if row else None
     if row_extra is None:
         row_extra = ""
     if not isinstance(row_extra, str):
         raise QualifyError("profile extra is not a string")
-    if args.extra and row and shlex.split(row_extra) != extra_tokens:
+    if args.extra and row and _split_extra(row_extra) != extra_tokens:
         raise QualifyError("--extra is not the profile extra")
     if row and not args.extra:
         extra_tokens = _split_extra(row_extra)
@@ -451,12 +583,17 @@ def build_plan(argv: list[str]) -> dict:
             "a bare GGUF needs --tokenizer or A770B_TOKENIZER_DIR"
         )
 
+    thinking = row.get("thinking") if row and isinstance(row.get("thinking"), dict) else {}
     reasoning = args.reasoning
+    if reasoning is None and thinking.get("mode") in ("on", "off"):
+        reasoning = thinking["mode"]
     if reasoning is None and row and row.get("reasoning") in ("on", "off"):
         reasoning = row["reasoning"]
     if reasoning is None:
         reasoning = "off"
     budget = args.reasoning_budget
+    if budget is None and "budget" in thinking:
+        budget = thinking.get("budget")
     end, gen = far_end_and_gen(ctx, reasoning, budget)
     if end <= 8000:
         raise QualifyError(
@@ -464,16 +601,22 @@ def build_plan(argv: list[str]) -> dict:
             "at or below the sweep's 8000-token shallow point"
         )
     profile_output = row.get("output_tokens") if row else None
-    window = window_plan(ctx, profile_output)
+    stages = [part for part in (args.stages or "").split(",") if part]
+    window = window_plan(ctx, profile_output, stages, row, tokenizer)
     fit_only = bool(args.fit_only)
-    if window["action"] in ("refuse", "unknown") and not fit_only and not args.dry_run:
+    suite_skipped = fit_only or bool(args.no_suite)
+    if window["action"] in ("refuse", "unknown") and not suite_skipped and not args.dry_run:
         raise QualifyError(window["message"])
 
-    stages = [part for part in (args.stages or "").split(",") if part]
     ref_ids = _reference_ids()
     refs_apply = True
     if stages and not any(stage in ref_ids or stage.startswith("ref-") for stage in stages):
         refs_apply = False
+    reference_stages = []
+    for ref in sorted(ref_ids):
+        prefix = ref.split("-", 1)[0]
+        if not stages or ref in stages or prefix in stages:
+            reference_stages.append(ref)
     flags = profiling_contract.flags(engine)
     serve_argv = ["serve", args.model, "--ctx", str(ctx)]
     if backend:
@@ -509,6 +652,7 @@ def build_plan(argv: list[str]) -> dict:
         "stages": stages,
         "refs_repeat": refs,
         "refs_apply": refs_apply,
+        "reference_stages": reference_stages,
         "absorb_max_s": absorb,
         "skip_window": bool(args.skip_window),
         "no_suite": bool(args.no_suite),
@@ -530,6 +674,7 @@ def build_plan(argv: list[str]) -> dict:
         "job_id": job_id,
         "useful_ctx_rule": profiling_contract.RULE_NAME,
         "reference_ids": sorted(ref_ids),
+        "artifact": row.get("model") if row and isinstance(row.get("model"), str) else os.path.basename(args.model),
     }
 
 
@@ -537,6 +682,7 @@ def _row_fields(row: dict | None) -> dict:
     if not row:
         return {}
     keep = (
+        "model",
         "quant",
         "tool_parser",
         "reasoning",
@@ -591,7 +737,7 @@ def cmd_plan(argv: list[str]) -> int:
     if plan["dry_run"]:
         sys.stdout.write(format_plan(plan))
         return 0
-    if plan["window"]["action"] in ("refuse", "unknown") and not plan["fit_only"]:
+    if plan["window"]["action"] in ("refuse", "unknown") and not plan["fit_only"] and not plan["no_suite"]:
         raise QualifyError(plan["window"]["message"])
     payload = json.dumps(plan, indent=2) + "\n"
     if emit:
@@ -703,8 +849,11 @@ def proc_starttime(pid) -> str | None:
             text = handle.read()
     except (OSError, ValueError):
         return None
-    tail = text.split(")", 1)[-1].split()
+    # comm can contain ")". The state is the first field after the last ")".
+    tail = text.rsplit(")", 1)[-1].split()
     if len(tail) < 20:
+        return None
+    if tail[0] in ("Z", "X"):
         return None
     return tail[19]
 
@@ -716,21 +865,39 @@ def pid_matches(pid, starttime) -> bool:
 
 
 def cmdline(pid) -> str:
+    return " ".join(cmdline_argv(pid))
+
+
+def cmdline_argv(pid) -> list[str]:
     try:
         with open(f"/proc/{int(pid)}/cmdline", "rb") as handle:
             raw = handle.read()
     except (OSError, ValueError):
-        return ""
-    return raw.replace(b"\0", b" ").decode("utf-8", "replace")
+        return []
+    parts = raw.split(b"\0")
+    return [part.decode("utf-8", "replace") for part in parts if part]
 
 
-def runner_identity(pid, starttime, project: str) -> bool:
-    """True when pid is this project's qualify.sh and the start time matches."""
+def runner_identity(pid, starttime, project: str, job: str | None = None) -> bool:
+    """True when pid is this project's qualify.sh run and the start time matches."""
     if not pid_matches(pid, starttime):
         return False
-    text = cmdline(pid)
+    argv = cmdline_argv(pid)
     script = os.path.join(project, "harness", "qualify.sh")
-    return script in text
+    if len(argv) < 4:
+        return False
+    if os.path.basename(argv[0]) != "bash":
+        return False
+    if os.path.realpath(argv[1]) != os.path.realpath(script):
+        return False
+    if argv[2] != "run":
+        return False
+    if job is not None:
+        if len(argv) < 5 or argv[3] != "--job":
+            return False
+        if os.path.realpath(argv[4]) != os.path.realpath(job):
+            return False
+    return True
 
 
 def _terminal(job: str) -> str | None:
@@ -740,16 +907,60 @@ def _terminal(job: str) -> str | None:
     return None
 
 
+def _age_seconds(stamp) -> float | None:
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        parsed = time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return time.time() - calendar.timegm(parsed)
+
+
+def _systemd_unit_active(job: str) -> bool:
+    """True only when this job's unit is active. A missing systemctl is not active."""
+    path = os.path.join(job, "job.json")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return False
+    try:
+        document = _load_json(path)
+    except QualifyError:
+        return False
+    if document.get("launch") != "systemd":
+        return False
+    unit = "qualify-" + os.path.basename(job.rstrip("/"))
+    try:
+        run = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return run.returncode == 0 and run.stdout.strip() == "active"
+
+
 def status_show(job: str) -> dict:
-    """Read status. A dead queued or running pid with no marker is written lost once."""
+    """Read status. A dead running pid is lost. A queued pid-less job has a handshake grace."""
     path = os.path.join(job, "status.json")
     current = _read_status(path)
     if _terminal(job):
         return current
     state = current.get("state")
-    if state in ("queued", "running") and not pid_matches(current.get("pid"), current.get("pid_starttime")):
-        if current.get("state") != "lost":
-            current = status_merge(job, {"state": "lost", "reason": "runner pid is gone"})
+    if state not in ("queued", "running"):
+        return current
+    if pid_matches(current.get("pid"), current.get("pid_starttime")):
+        return current
+    # init_job writes queued with no pid. status during the 10s handshake must not call it lost.
+    if state == "queued" and not current.get("pid"):
+        age = _age_seconds(current.get("started"))
+        if age is None or age <= 15:
+            return current
+        if _systemd_unit_active(job):
+            return current
+    if current.get("state") != "lost":
+        current = status_merge(job, {"state": "lost", "reason": "runner pid is gone"})
     return current
 
 
@@ -760,7 +971,7 @@ def job_dir(data_root: str, job_id: str) -> str:
 
 
 def scrub_argv(argv: list) -> list:
-    """Drop key switches. The key file stays the only place a key is stored."""
+    """Drop key switches. Underscores fold the same way vLLM and SGLang do."""
     cleaned = []
     skip = False
     for token in argv:
@@ -768,10 +979,10 @@ def scrub_argv(argv: list) -> list:
         if skip:
             skip = False
             continue
-        if text == "--api-key":
-            skip = True
-            continue
-        if text.startswith("--api-key="):
+        name = _option_name(text)
+        if name == "--api-key":
+            if "=" not in text:
+                skip = True
             continue
         cleaned.append(token)
     return cleaned
@@ -806,6 +1017,13 @@ def opencode_version(project: str) -> str:
     script = """
 set -uo pipefail
 source "$1/harness/env.sh" || exit 1
+if ! a770b_opencode_v1_ok; then
+  share=${A770B_OPENCODE_HOME:-}
+  if [ -n "$share" ] && [ -x "$share/opencode" ]; then
+    A770B_OPENCODE_BIN=$share
+    export A770B_OPENCODE_BIN
+  fi
+fi
 a770b_opencode_v1_ok || exit 1
 bin=$(a770b_opencode_bin) || exit 1
 "$bin/opencode" --version | head -n 1
@@ -1037,22 +1255,42 @@ def _compaction(stages) -> dict:
         )
     worst = 0.0
     have = False
+    any_missing = False
+    storm = False
     for stage in stages:
         if not isinstance(stage, dict):
             continue
         lines = stage.get("compaction_lines")
         requests = stage.get("requests")
+        # bool is an int. A flag is not a count.
+        if isinstance(lines, bool) or isinstance(requests, bool):
+            any_missing = True
+            continue
         if lines is None or requests in (None, 0, "unknown"):
-            return _check(
-                "no-compaction-storm",
-                "unknown",
-                "evidence/suite.json",
-                f"at most one compaction per {COMPACTION_PER_REQUESTS} requests",
-                "a stage has no compaction count",
-            )
+            any_missing = True
+            continue
+        try:
+            lines_n = float(lines)
+            requests_n = float(requests)
+        except (TypeError, ValueError):
+            any_missing = True
+            continue
+        if requests_n <= 0:
+            any_missing = True
+            continue
         have = True
-        worst = max(worst, float(lines) / float(requests))
-    if not have:
+        ratio = lines_n / requests_n
+        worst = max(worst, ratio)
+        if lines_n * COMPACTION_PER_REQUESTS > requests_n:
+            storm = True
+    if storm:
+        return _check(
+            "no-compaction-storm",
+            "fail",
+            "evidence/suite.json",
+            f"at most one compaction per {COMPACTION_PER_REQUESTS} requests",
+        )
+    if any_missing or not have:
         return _check(
             "no-compaction-storm",
             "unknown",
@@ -1147,6 +1385,9 @@ def summarise(job: str) -> dict:
     dotted = _apply_nulls(engine, receipt, requests, delivered)
 
     suite = collected.get("suite") if isinstance(collected.get("suite"), dict) else {}
+    if isinstance(collected.get("requests"), dict) and collected.get("requests"):
+        suite = dict(suite)
+        suite["requests"] = collected["requests"]
     stages = suite.get("stages") if isinstance(suite.get("stages"), list) else []
     bar = counted_pass_bar()
     counted = [s for s in stages if isinstance(s, dict) and s.get("counts_toward_pass", True) is not False]
@@ -1387,12 +1628,33 @@ def summarise(job: str) -> dict:
         "missing_statistics": missing,
         "image": collected.get("image") or job_doc.get("image") or "unknown",
         "opencode": job_doc.get("opencode", "unknown"),
+        "artifact": plan.get("artifact") or os.path.basename(str(plan.get("model") or "")),
+        "ram_gb_extra": collected.get("ram_gb_extra", "unknown"),
+        "timeout_s": _timeout_seconds(stages),
+        "profile_speed": collected.get("profile_speed") if isinstance(collected.get("profile_speed"), dict) else {},
+        "depth_not_measured": collected.get("depth_not_measured"),
+        "card_free": collected.get("card_free") if isinstance(collected.get("card_free"), dict) else {},
     }
     for key, value in dotted.items():
         result[key] = value
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
     _write_private(os.path.join(job, "report.md"), render_report(job, result))
     return result
+
+
+def _timeout_seconds(stages) -> int | str:
+    """The longest counted stage wall, when the suite recorded one. Else unknown."""
+    walls = []
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        wall = stage.get("wall_s")
+        if isinstance(wall, bool) or not isinstance(wall, int) or wall < 1:
+            continue
+        walls.append(wall)
+    if not walls:
+        return "unknown"
+    return max(walls)
 
 
 def _statistics_from(collected, plan, dotted, useful) -> dict:
@@ -1456,7 +1718,14 @@ def render_report(job: str, result: dict) -> str:
     if missing:
         lines.append("missing statistics: " + ", ".join(missing))
     job_id = os.path.basename(job.rstrip("/"))
-    card = "card"
+    plan_card = None
+    plan_path = os.path.join(job, "plan.json")
+    if os.path.isfile(plan_path) and not os.path.islink(plan_path):
+        try:
+            plan_card = (_load_json(plan_path).get("row_fields") or {}).get("card")
+        except QualifyError:
+            plan_card = None
+    card = plan_card or os.environ.get("A770B_CARD") or "<card>"
     mode = os.environ.get("A770B_CARD_MODE") or "inference"
     lines.append("")
     lines.append(f"Export with: local-build.sh qualify export {job_id}")
@@ -1466,59 +1735,75 @@ def render_report(job: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def _sentinel_row(row: dict) -> dict:
-    """A copy that can pass the structural checker. The written row is unchanged."""
+# Human fields the checker may see filled. The written row keeps __TODO__.
+# Runner measurements are not in this map. allow_incomplete is the only
+# path that may fill a missing runner field, and only on the check copy.
+_HUMAN_FILL = {
+    "task": "code-edit",
+    "capability": {"published": 1},
+    "source": "model card",
+    "family": "family",
+    "architecture": "arch",
+    "quant": "Q4_K_M",
+    "category": "dense",
+    "weight_class": "9b",
+    "params_b": {"total": 1, "active": 1},
+    "capability_source": "model card",
+    "sampling": {"temperature": 0.6, "source": "model card"},
+    "measured_on": "operator card and build at 8192 tokens",
+    "use_for": "to be written by hand",
+    "task_t1": "not measured",
+    "timeout_s": 60,
+    "fit": {"code": "not measured", "think": "not measured", "write": "not measured"},
+}
+_RUNNER_FILL = {
+    "ctx": 8192,
+    "useful_ctx": 8192,
+    "vram_gib_after_load": 1.0,
+    "ram_gb_extra": 0.0,
+    "kv": "q8_0",
+    "flash_attention": "on",
+    "reasoning": "off",
+    "extra": "",
+    "card": "a770",
+    "backend": "vulkan",
+    "mode": "inference",
+    "depth_probe_100k": "not measured",
+}
+
+
+def _needs_fill(current) -> bool:
+    if current is None:
+        return True
+    if isinstance(current, str) and "__TODO__" in current:
+        return True
+    return False
+
+
+def _sentinel_row(row: dict, allow_incomplete: bool = False) -> dict:
+    """A check copy. Human TODO fields are filled. Runner fields stay unless incomplete."""
     check = json.loads(json.dumps(row))
-    todos = {
-        "task": "code-edit",
-        "capability": {"published": 1},
-        "source": "model card",
-        "family": "family",
-        "architecture": "arch",
-        "quant": "Q4_K_M",
-        "category": "dense",
-        "weight_class": "9b",
-        "params_b": {"total": 1, "active": 1},
-        "capability_source": "model card",
-        "sampling": {"temperature": 0.6, "source": "model card"},
-        "measured_on": "operator card and build at 8192 tokens",
-        "use_for": "to be written by hand",
-        "depth_probe_100k": "not measured",
-        "task_t1": "not measured",
-        "kv": "f16",
-        "flash_attention": "on",
-        "reasoning": "off",
-        "extra": "",
-        "timeout_s": 60,
-        "ctx": 8192,
-        "useful_ctx": 8192,
-        "vram_gib_after_load": 1.0,
-        "ram_gb_extra": 0.0,
-        "card": "a770",
-        "backend": "vulkan",
-        "mode": "inference",
-        "fit": {"code": "not measured", "think": "not measured", "write": "not measured"},
-    }
     import profiles
 
     required = profiles.PROFILE_KEYS - profiles.OPTIONAL_KEYS
-    for key, value in todos.items():
+    if check.get("engine") == "strata":
+        required = set(required) - {"flash_attention"}
+    for key, value in _HUMAN_FILL.items():
         if key not in check and key not in required:
             continue
-        current = check.get(key)
-        if key not in check or current is None or (isinstance(current, str) and "__TODO__" in current):
+        if key not in check or _needs_fill(check.get(key)):
             check[key] = value
-    if not isinstance(check.get("capability"), dict):
-        check["capability"] = {"published": 1}
-    if not isinstance(check.get("requests"), dict) and "requests" in check:
-        check["requests"] = {
-            "max_prompt_tokens": 1,
-            "max_completion_tokens": 1,
-            "length_stops": 0,
-            "prefill_tps": None,
-            "decode_tps": None,
-            "source": "suite",
-        }
+    if allow_incomplete:
+        for key, value in _RUNNER_FILL.items():
+            if key not in check and key not in required:
+                continue
+            if key not in check or check.get(key) is None or _needs_fill(check.get(key)):
+                check[key] = value
+    if not isinstance(check.get("capability"), dict) and (
+        "capability" not in check or _needs_fill(check.get("capability")) or allow_incomplete
+    ):
+        if "capability" in required or "capability" in check:
+            check["capability"] = {"published": 1}
     speed = check.get("speed")
     if not isinstance(speed, dict):
         check["speed"] = {
@@ -1528,63 +1813,137 @@ def _sentinel_row(row: dict) -> dict:
     return check
 
 
+def _number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
 def _base_row(plan: dict, result: dict) -> dict:
+    """Copy measured fields. A missing measurement is omitted, never a stand-in number."""
+    import profiles
+
     ctx = int(plan["ctx"])
     rates = {"8k": None, "32k": None, "64k": None, "100k": None}
+    fields = plan.get("row_fields") or {}
+    artifact = result.get("artifact") or plan.get("artifact") or os.path.basename(str(plan.get("model") or ""))
+    engine = plan["engine"]
+    extra = " ".join(plan.get("extra") or [])
+    # llama.cpp's serve sends -ctk/-ctv q8_0 when the plan did not set KV. That is the
+    # server input, not a copied measurement. Other engines omit an unknown cache type.
+    kv = plan.get("kv")
+    if not kv and engine == "llama.cpp":
+        kv = "q8_0"
+    flash = None
+    if engine != "strata":
+        flash = "off" if re.search(r"(?:^|\s)-fa\s+off(?:\s|$)", extra) else "on"
+    useful = result.get("useful_ctx")
+    if not isinstance(useful, int) or isinstance(useful, bool):
+        useful = None
+    vram = result.get("vram_after_load")
+    vram_value = _number(vram.get("value")) if isinstance(vram, dict) else _number(vram)
+    ram = _number(result.get("ram_gb_extra"))
+    timeout = result.get("timeout_s")
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
+        timeout = "__TODO__ — longest observed stage wall"
+    card = fields.get("card") or os.environ.get("A770B_CARD") or None
+    try:
+        instrument = profiles.kit_instrument()
+    except (OSError, ValueError):
+        instrument = None
     row = {
-        "model": os.path.basename(plan["model"]),
+        "model": os.path.basename(str(artifact)),
         "ctx": ctx,
-        "kv": plan.get("kv") or "f16",
-        "flash_attention": "on",
         "reasoning": plan.get("reasoning") or "off",
-        "extra": " ".join(plan.get("extra") or []),
-        "timeout_s": 60,
-        "vram_gib_after_load": 1.0,
-        "ram_gb_extra": 0.0,
-        "useful_ctx": ctx if isinstance(result.get("useful_ctx"), int) else ctx,
+        "extra": extra,
         "useful_ctx_rule": profiling_contract.RULE_NAME,
         "speed": {"decode_tps": dict(rates), "prefill_tps": dict(rates)},
-        "instrument": "SUITE-1@1",
         "task": "__TODO__ — the task class this row wins",
-        "evidence": "SUITE-1@1: suite result (this qualification run)",
         "measured_on": "__TODO__ — the card and build this was measured on",
         "use_for": "__TODO__ — write by hand from what this run showed",
-        "fit": {"code": "not measured", "write": "__TODO__ — reviewer prose or not measured"},
         "capability": "__TODO__ — published evaluation, quoted verbatim",
         "source": "__TODO__",
         "family": "__TODO__",
         "architecture": "__TODO__",
         "quant": "__TODO__",
-        "category": "dense",
-        "weight_class": "9b",
+        "category": "__TODO__",
+        "weight_class": "__TODO__",
         "capability_source": "__TODO__",
-        "card": os.environ.get("A770B_CARD") or "a770",
-        "backend": plan.get("backend") or "vulkan",
-        "mode": os.environ.get("A770B_CARD_MODE") or "inference",
-        "engine": plan["engine"],
+        "engine": engine,
     }
-    if plan.get("kv_v"):
+    if instrument:
+        row["instrument"] = instrument
+        row["evidence"] = instrument + " qualification result"
+    if kv:
+        row["kv"] = kv
+    if plan.get("kv_v") and plan.get("kv_v") != kv:
         row["kv_v"] = plan["kv_v"]
-    fields = plan.get("row_fields") or {}
-    for key in ("quant", "tool_parser", "reasoning_parser", "vllm_image", "family", "card", "backend", "mode"):
+    if flash is not None:
+        row["flash_attention"] = flash
+    if isinstance(timeout, int):
+        row["timeout_s"] = timeout
+    else:
+        row["timeout_s"] = timeout
+    if useful is not None:
+        row["useful_ctx"] = useful
+    if vram_value is not None and vram_value > 0:
+        row["vram_gib_after_load"] = vram_value
+    if ram is not None and ram >= 0:
+        row["ram_gb_extra"] = ram
+    if card:
+        row["card"] = card
+    backend = fields.get("backend") or plan.get("backend")
+    if backend:
+        row["backend"] = backend
+    mode = fields.get("mode") or os.environ.get("A770B_CARD_MODE")
+    if mode:
+        row["mode"] = mode
+    for key in ("quant", "tool_parser", "reasoning_parser", "vllm_image", "family"):
         if fields.get(key):
             row[key] = fields[key]
-    if isinstance(result.get("requests.prefill_tps"), (int, float)) or result.get("requests.prefill_tps") is None:
+    profile_speed = result.get("profile_speed") if isinstance(result.get("profile_speed"), dict) else {}
+    for side in ("decode_tps", "prefill_tps"):
+        cells = profile_speed.get(side)
+        if not isinstance(cells, dict):
+            continue
+        for label in rates:
+            number = _number(cells.get(label))
+            if number is not None:
+                row["speed"][side][label] = number
+    suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    requests = suite.get("requests") if isinstance(suite.get("requests"), dict) else {}
+    if requests:
+        length = result.get("requests.length_stops")
+        prefill = result.get("requests.prefill_tps")
+        decode = result.get("requests.decode_tps")
         row["requests"] = {
-            "max_prompt_tokens": None,
-            "max_completion_tokens": None,
-            "length_stops": result.get("requests.length_stops") if result.get("requests.length_stops") is not None else None,
-            "prefill_tps": result.get("requests.prefill_tps") if isinstance(result.get("requests.prefill_tps"), (int, float)) else None,
-            "decode_tps": result.get("requests.decode_tps") if isinstance(result.get("requests.decode_tps"), (int, float)) else None,
-            "source": "suite",
+            "max_prompt_tokens": requests.get("max_prompt_tokens") if isinstance(requests.get("max_prompt_tokens"), int) else None,
+            "max_completion_tokens": requests.get("max_completion_tokens") if isinstance(requests.get("max_completion_tokens"), int) else None,
+            "length_stops": length if isinstance(length, int) and not isinstance(length, bool) else None,
+            "prefill_tps": prefill if _number(prefill) is not None else None,
+            "decode_tps": decode if _number(decode) is not None else None,
+            "source": requests.get("source") if isinstance(requests.get("source"), str) and "/" not in requests.get("source", "") else "suite",
         }
     delivered = result.get("speed.delivered")
     if isinstance(delivered, dict):
         row["speed"]["delivered"] = delivered
-    elif delivered is None:
+    elif delivered is None and requests:
         row["speed"]["delivered"] = None
     if isinstance(result.get("profiling"), dict):
         row["profiling"] = result["profiling"]
+    far = plan.get("far_end")
+    score = result.get("depth_score")
+    if isinstance(far, int) and far >= 90000 and isinstance(score, int) and not isinstance(score, bool):
+        row["depth_probe_100k"] = f"{score}/3"
+    elif result.get("depth_not_measured"):
+        row["depth_probe_100k"] = "not measured"
+    else:
+        row["depth_probe_100k"] = "not measured"
+    if plan.get("absorb_max_s") is not None:
+        row["absorb_max_s"] = plan["absorb_max_s"]
+    absorb = result.get("absorb")
+    if isinstance(absorb, dict) and (absorb.get("8k") is not None or absorb.get("far_end") is not None):
+        row["speed"]["absorb_s"] = {"8k": absorb.get("8k"), "far_end": absorb.get("far_end")}
     profiling_contract.null_unconfirmed_verbosity(row)
     return row
 
@@ -1626,6 +1985,8 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
                 row.setdefault("speed", {})
                 row["speed"][field.split(".", 1)[1]] = None
     names = list(LADDER_HUMAN_NAMES)
+    if isinstance(row.get("timeout_s"), str):
+        names.append("timeout_s")
     if not (plan.get("far_end", 0) >= 90000 and result.get("depth_score") not in (None, "unknown")):
         if "depth_probe_100k" not in names:
             names.append("depth_probe_100k")
@@ -1639,12 +2000,16 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
     os.makedirs(os.path.join(scratch, "config", "registry"), mode=0o700, exist_ok=True)
     cards_src = os.path.join(PROJECT, "config", "cards.json")
     shutil.copy(cards_src, os.path.join(scratch, "config", "cards.json"))
-    card = row.get("card") or "a770"
-    mode = row.get("mode") or "inference"
+    card = row.get("card")
+    mode = row.get("mode")
+    if not card or not mode:
+        raise QualifyError("export needs a card and a mode from the plan or the environment", 4)
     reg_name = f"{card}.{mode}.json"
     reg_path = os.path.join(scratch, "config", "registry", reg_name)
     existing = {"schema": 1, "card": card, "mode": mode, "profiles": {}}
     source = plan.get("profiles_file")
+    if not source:
+        source = os.path.join(PROJECT, "config", "registry", reg_name)
     if source and os.path.isfile(source) and not os.path.islink(source):
         try:
             loaded = _load_json(source)
@@ -1652,11 +2017,12 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
                 existing = loaded
         except QualifyError:
             pass
-    name = re.sub(r"[^a-z0-9]+", "-", os.path.basename(plan["model"]).lower()).strip("-")
+    name_src = plan.get("artifact") or plan["model"]
+    name = re.sub(r"[^a-z0-9]+", "-", os.path.basename(str(name_src)).lower()).strip("-")
     if not name or not name[0].isalpha():
         name = "qualify-row"
     name = name[:48]
-    check_row = _sentinel_row(row)
+    check_row = _sentinel_row(row, allow_incomplete)
     profiles = dict(existing.get("profiles") or {})
     profiles[name] = check_row
     document = {
@@ -1735,7 +2101,10 @@ def _load_patch(argv: list[str]) -> tuple[str, dict]:
     return args.job, patch
 
 
-_SECRET_NAME = re.compile(r"(?:^|_)(KEY|TOKEN|SECRET|PASSWORD)$")
+_SECRET_NAME = re.compile(
+    r"(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD|PASS|AUTH)(?:_|$)",
+    re.IGNORECASE,
+)
 
 
 def iter_forward_env():
@@ -1824,14 +2193,246 @@ def _json_line(text: str) -> dict:
             try:
                 parsed = json.loads(stripped)
             except ValueError:
-                return {}
-            return parsed if isinstance(parsed, dict) else {}
+                continue
+            if isinstance(parsed, dict):
+                return parsed
     return {}
 
 
-def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
-    """Store one phase's JSON line. The shell does not interpret the numbers."""
+_PHASE_KEYS = {
+    "gate": ("digest", "image", "admitted"),
+    "serve": ("load_ok", "cid", "vram_after_load", "vram_cap"),
+    "speed": ("rows", "at_depth"),
+    "window": ("resets", "ttft_8k"),
+    "depth": ("passed", "score"),
+    "suite": ("stages", "completed", "references"),
+    "smoke": ("models", "tool", "completion"),
+    "memory": ("peak", "samples"),
+}
+
+
+def _stub_body(phase: str, text: str) -> dict | None:
     body = _json_line(text)
+    if not body:
+        return None
+    keys = _PHASE_KEYS.get(phase)
+    if keys is None:
+        return body
+    if any(key in body for key in keys):
+        return body
+    return None
+
+
+def _allowed_evidence_file(job: str, raw: str | None) -> str | None:
+    """A path from a log is readable only inside the job or the data directory."""
+    if not raw or raw.startswith("-"):
+        return None
+    if os.path.islink(raw):
+        return None
+    if not os.path.isfile(raw):
+        return None
+    real = os.path.realpath(raw)
+    roots = [os.path.realpath(job), os.path.realpath(os.path.join(job, "evidence"))]
+    data = os.environ.get("A770B_DATA")
+    if data:
+        roots.append(os.path.realpath(data))
+    for root in roots:
+        if real == root or real.startswith(root + os.sep):
+            return real
+    return None
+
+
+def _parse_window(job: str, text: str) -> dict:
+    points = {}
+    for match in re.finditer(
+        r"^[ \t]*(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(?:([\d.]+)GiB|unavailable)\s+(-?\d+)\s*$",
+        text or "",
+        re.MULTILINE,
+    ):
+        target, _toks, ttft, _pp, _tg, vmax, resets = match.groups()
+        points[int(target)] = {
+            "ttft_s": float(ttft),
+            "vram_max_gib": float(vmax) if vmax is not None else None,
+            "resets": int(resets),
+        }
+    far = None
+    plan_path = os.path.join(job, "plan.json")
+    if os.path.isfile(plan_path) and not os.path.islink(plan_path):
+        try:
+            far = _load_json(plan_path).get("far_end")
+        except QualifyError:
+            far = None
+    shallow = points.get(8000)
+    far_point = points.get(far) if isinstance(far, int) else None
+    resets = None
+    if points:
+        resets = max(point["resets"] for point in points.values())
+    return {
+        "resets": resets,
+        "ttft_8k": shallow["ttft_s"] if shallow else None,
+        "ttft_far": far_point["ttft_s"] if far_point else None,
+        "points": {str(key): value for key, value in points.items()},
+    }
+
+
+def _parse_depth(text: str) -> dict:
+    body: dict = {}
+    match = re.search(r"depth probe at (\d+): (\d)/3", text or "")
+    if match:
+        body["depth_tokens"] = int(match.group(1))
+        body["score"] = int(match.group(2))
+        body["passed"] = int(match.group(2)) >= 2
+        return body
+    missing = re.search(r"depth probe at (\d+): not measured — (.+)", text or "")
+    if missing:
+        body["depth_tokens"] = int(missing.group(1))
+        body["passed"] = None
+        body["score"] = None
+        body["unanswered"] = True
+        body["not_measured"] = missing.group(2).strip()
+    return body
+
+
+def _parse_speed(job: str, text: str) -> dict:
+    match = re.search(r"mapped →\s*(\S+)", text or "")
+    path = _allowed_evidence_file(job, match.group(1)) if match else None
+    if path is None:
+        return {}
+    try:
+        doc = _load_json(path)
+    except QualifyError:
+        return {}
+    at_depth = doc.get("at_depth") if isinstance(doc.get("at_depth"), dict) else {}
+    labels = {8192: "8k", 32768: "32k", 65536: "64k", 100000: "100k"}
+    profile = {
+        "decode_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+        "prefill_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
+    }
+    rows = []
+    for key, cell in at_depth.items():
+        if not isinstance(cell, dict):
+            continue
+        try:
+            depth = int(key)
+        except (TypeError, ValueError):
+            continue
+        prefill = _number(cell.get("pp"))
+        decode = _number(cell.get("tg"))
+        rows.append(
+            {
+                "depth_tokens": depth,
+                "client_prefill": prefill,
+                "client_decode": decode,
+                "engine_prefill": None,
+                "engine_decode": None,
+                "engine_source": "bench client",
+            }
+        )
+        label = labels.get(depth)
+        if label:
+            profile["prefill_tps"][label] = prefill
+            profile["decode_tps"][label] = decode
+    return {"rows": rows, "profile_speed": profile, "at_depth": at_depth}
+
+
+def _stage_copy(stage: dict) -> dict:
+    item = {
+        "id": stage.get("id"),
+        "working": stage.get("working"),
+        "counts_toward_pass": stage.get("counts_toward_pass", True),
+        "requests": stage.get("requests"),
+        "prompt_tokens": stage.get("prompt_tokens"),
+        "wall_s": stage.get("wall_s"),
+    }
+    if "gen_tokens" in stage:
+        item["gen_tokens"] = stage.get("gen_tokens")
+    if "compaction_lines" in stage:
+        item["compaction_lines"] = stage.get("compaction_lines")
+    return item
+
+
+def _parse_suite(job: str, text: str) -> dict:
+    match = re.search(r"suite complete:\s*(\S+)", text or "")
+    path = _allowed_evidence_file(job, match.group(1)) if match else None
+    body: dict = {"completed": False, "stages": []}
+    if path is None:
+        return body
+    try:
+        doc = _load_json(path)
+    except QualifyError:
+        return body
+    stages = [_stage_copy(stage) for stage in doc.get("stages") or [] if isinstance(stage, dict)]
+    body["completed"] = True
+    body["stages"] = stages
+    if isinstance(doc.get("instrument"), str):
+        body["instrument"] = doc["instrument"]
+    if isinstance(doc.get("references"), dict):
+        body["references"] = {
+            "passed": doc["references"].get("passed"),
+            "attempts": doc["references"].get("attempts"),
+        }
+    prompts = [stage.get("prompt_tokens") for stage in stages if isinstance(stage.get("prompt_tokens"), int)]
+    gens = [stage.get("gen_tokens") for stage in stages if isinstance(stage.get("gen_tokens"), int)]
+    if prompts or gens:
+        body["requests"] = {
+            "max_prompt_tokens": max(prompts) if prompts else None,
+            "max_completion_tokens": max(gens) if gens else None,
+            "length_stops": None,
+            "prefill_tps": None,
+            "decode_tps": None,
+            "source": "suite",
+        }
+        body["peak_prompt_tokens"] = max(prompts) if prompts else None
+    return body
+
+
+def _merge_suite(previous: dict, body: dict) -> dict:
+    """Keep every pass. A later reference pass does not replace counted stages."""
+    merged = dict(body)
+    prev_stages = previous.get("stages") if isinstance(previous.get("stages"), list) else []
+    new_stages = body.get("stages") if isinstance(body.get("stages"), list) else []
+    merged["stages"] = list(prev_stages) + list(new_stages)
+    merged["attempts"] = int(previous.get("attempts") or 0) + 1
+    prev_refs = previous.get("references") if isinstance(previous.get("references"), dict) else {}
+    new_refs = body.get("references") if isinstance(body.get("references"), dict) else {}
+    if prev_refs or new_refs:
+        def _count(item, key):
+            value = item.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+        merged["references"] = {
+            "passed": _count(prev_refs, "passed") + _count(new_refs, "passed"),
+            "attempts": _count(prev_refs, "attempts") + _count(new_refs, "attempts"),
+        }
+    if previous.get("requests") and not body.get("requests"):
+        merged["requests"] = previous["requests"]
+    elif isinstance(previous.get("requests"), dict) and isinstance(body.get("requests"), dict):
+        left = previous["requests"]
+        right = body["requests"]
+        merged["requests"] = dict(right)
+        for key in ("max_prompt_tokens", "max_completion_tokens"):
+            values = [item.get(key) for item in (left, right) if isinstance(item.get(key), int)]
+            merged["requests"][key] = max(values) if values else None
+    if previous.get("completed") is True:
+        merged["completed"] = True
+    return merged
+
+
+def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
+    """Store a phase. A stub JSON line wins; otherwise the real harness text is parsed."""
+    body = _stub_body(phase, text)
+    parsed = body is not None
+    if body is None:
+        if phase == "window":
+            body = _parse_window(job, text)
+        elif phase == "depth":
+            body = _parse_depth(text)
+        elif phase == "speed":
+            body = _parse_speed(job, text)
+        elif phase == "suite":
+            body = _parse_suite(job, text)
+        else:
+            body = {}
     body["rc"] = rc
     if phase == "gate":
         set_image(job, text)
@@ -1840,13 +2441,24 @@ def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
     if phase == "serve":
         cid = str(body.get("cid") or "")
         if cid and re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", cid):
-            _write_private(os.path.join(job, "cid"), cid + "\n")
-        write_note(job, "serve.json", body)
+            cid_path = os.path.join(job, "cid")
+            if not os.path.islink(cid_path):
+                _write_private(cid_path, cid + "\n")
+        previous = _evidence(job, "serve.json")
+        merged = dict(previous)
+        for key, value in body.items():
+            if key == "rc" or value is not None:
+                merged[key] = value
+        write_note(job, "serve.json", merged)
         return
     if phase == "suite":
         previous = _evidence(job, "suite.json")
-        attempts = int(previous.get("attempts") or 0) + 1
-        body["attempts"] = attempts
+        if previous and not parsed:
+            body = _merge_suite(previous, body)
+        elif previous and parsed:
+            body = _merge_suite(previous, body)
+        else:
+            body["attempts"] = 1
         write_note(job, "suite.json", body)
         return
     write_note(job, f"{phase}.json", body)
@@ -1861,33 +2473,47 @@ def assemble(job: str) -> None:
     depth = _evidence(job, "depth.json")
     suite = _evidence(job, "suite.json")
     hooks = _evidence(job, "hooks.json")
+    card = _evidence(job, "card.json")
     collected = {
         "load_ok": serve.get("load_ok"),
         "vram_after_load": serve.get("vram_after_load"),
         "vram_cap": serve.get("vram_cap"),
         "vram_peak": serve.get("vram_peak"),
         "load_s": serve.get("load_s"),
+        "ram_gb_extra": serve.get("ram_gb_extra"),
         "smoke": {
             "models": smoke.get("models"),
             "completion": smoke.get("completion"),
             "tool": smoke.get("tool"),
         },
         "speed": speed.get("rows") if isinstance(speed.get("rows"), list) else [],
+        "profile_speed": speed.get("profile_speed") if isinstance(speed.get("profile_speed"), dict) else {},
         "window_resets": window.get("resets"),
+        "ttft_8k": window.get("ttft_8k"),
+        "ttft_far": window.get("ttft_far"),
         "depth_pass": depth.get("passed"),
         "depth_score": depth.get("score"),
         "depth_tokens": depth.get("depth_tokens"),
+        "unanswered": bool(depth.get("unanswered")),
+        "depth_not_measured": depth.get("not_measured"),
         "suite": {
             "completed": suite.get("completed"),
             "stages": suite.get("stages") if isinstance(suite.get("stages"), list) else [],
             "references": suite.get("references")
             if isinstance(suite.get("references"), dict)
             else {},
+            "requests": suite.get("requests") if isinstance(suite.get("requests"), dict) else {},
         },
         "requests": suite.get("requests") if isinstance(suite.get("requests"), dict) else {},
+        "peak_prompt_tokens": suite.get("peak_prompt_tokens", "unknown"),
         "delivered": serve.get("delivered", "unknown"),
         "hooks": hooks,
         "statistics": suite.get("statistics") if isinstance(suite.get("statistics"), dict) else {},
+        "card_free": {
+            "containers": card.get("containers"),
+            "vram_gib": card.get("vram_gib"),
+            "idle_gib": card.get("idle_gib"),
+        },
     }
     write_note(job, "collected.json", collected)
 
@@ -1948,11 +2574,12 @@ def main(argv: list[str] | None = None) -> int:
             summarise(job)
             return 0
         if cmd == "export":
-            job = rest[rest.index("--job") + 1]
-            out = None
-            if "--out" in rest:
-                out = rest[rest.index("--out") + 1]
-            export_job(job, out, "--allow-incomplete" in rest)
+            parser = _PlanParser(add_help=False)
+            parser.add_argument("--job", required=True)
+            parser.add_argument("--out")
+            parser.add_argument("--allow-incomplete", action="store_true")
+            args = parser.parse_args(rest)
+            export_job(args.job, args.out, args.allow_incomplete)
             return 0
         if cmd == "confirm":
             job = rest[rest.index("--job") + 1]
@@ -1966,9 +2593,12 @@ def main(argv: list[str] | None = None) -> int:
             confirm_server(job, log_text, host, int(port))
             return 0
         if cmd == "identity":
-            pid = rest[rest.index("--pid") + 1]
-            start = rest[rest.index("--starttime") + 1]
-            if runner_identity(pid, start, PROJECT):
+            parser = _PlanParser(add_help=False)
+            parser.add_argument("--pid", required=True)
+            parser.add_argument("--starttime", required=True)
+            parser.add_argument("--job")
+            args = parser.parse_args(rest)
+            if runner_identity(args.pid, args.starttime, PROJECT, args.job):
                 return 0
             return 2
         if cmd == "starttime":
