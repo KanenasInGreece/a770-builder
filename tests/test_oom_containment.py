@@ -1609,7 +1609,7 @@ exit 0
     assert fd1.read_text(encoding="utf-8").strip() == "/dev/null", fd1.read_text(encoding="utf-8")
     assert "sandbox_oom.py" in cmdline.read_text(encoding="utf-8")
 
-    # The show sleeps inside the tool bound and outside the command wait.
+    # The public command is instant. The show sleeps inside the tool bound.
     # Hidden still runs only when that sleep is added back onto the deadline.
     patch = results / "near.patch"
     patch.write_text(
@@ -1619,12 +1619,12 @@ exit 0
     hidden = Path(env["A770B_DATA"]) / "hidden" / "hid_ok"
     hidden.write_text("print('ok')\n", encoding="utf-8")
     (results / "near.spec.json").write_text(json.dumps({
-        "verify": {"test": "sleep 2", "hidden": ["hid_ok"]},
+        "verify": {"test": "true", "hidden": ["hid_ok"]},
     }), encoding="utf-8")
     _exe(bin_ / "systemctl", """
 case " $* " in
   *" show "*)
-    sleep 3
+    /usr/bin/sleep 4
     printf '%s\\n' 'ActiveState=inactive' 'Result=success'
     ;;
 esac
