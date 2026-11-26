@@ -186,10 +186,15 @@ def far_end_and_gen(ctx: int, reasoning: str, budget) -> tuple[int, int]:
     if reasoning == "on":
         if budget in (None, "", "-1", -1):
             gen = 4096
-        elif int(budget) == 0:
-            gen = 320
         else:
-            gen = int(budget) + 320
+            try:
+                number = int(budget)
+            except (TypeError, ValueError):
+                raise QualifyError(f"--reasoning-budget must be an integer (it is {budget!r})")
+            if number == 0:
+                gen = 320
+            else:
+                gen = number + 320
     head = max(gen + 64, 1024)
     end = min(100000, int(ctx) - head)
     return end, gen
@@ -207,103 +212,191 @@ def _positive_token(value) -> int | None:
 
 
 def _peak_from_row(row: dict | None, stages: list[str] | None) -> int | None:
-    """The row's own measured prompt peak for the stages this run will execute."""
+    """The row's single-request peak, when a previous run recorded one.
+
+    measured_tasks.context_tokens is the cumulative prompt total of a stage, not
+    one request. Using it refuses rows that already passed the kit.
+    """
+    del stages
     if not isinstance(row, dict):
         return None
-    wanted = set(stages or [])
-    peak = None
-    tasks = row.get("measured_tasks")
-    if isinstance(tasks, dict):
-        for name, entry in tasks.items():
-            if wanted and name not in wanted:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            tokens = _positive_token(entry.get("context_tokens"))
-            if tokens is not None:
-                peak = tokens if peak is None else max(peak, tokens)
-    # A stage filter with per-stage counts does not fall back to the whole-suite peak.
-    if peak is None or not wanted:
-        requests = row.get("requests")
-        if isinstance(requests, dict):
-            tokens = _positive_token(requests.get("max_prompt_tokens"))
-            if tokens is not None:
-                peak = tokens if peak is None else max(peak, tokens)
-    return peak
-
-
-def _token_count(tokenizer_json: str, text: str) -> int | None:
-    """Count with the local tokenizer file. A missing library is unknown, not a guess."""
-    try:
-        from tokenizers import Tokenizer
-    except ImportError:
+    requests = row.get("requests")
+    if not isinstance(requests, dict):
         return None
-    try:
-        loaded = Tokenizer.from_file(tokenizer_json)
-        return len(loaded.encode(text, add_special_tokens=False).ids)
-    except (OSError, ValueError, RuntimeError):
-        return None
+    return _positive_token(requests.get("max_prompt_tokens"))
 
 
-def _tokenize_kit(stages: list[str] | None, tokenizer: str | None) -> tuple[int | None, str]:
-    """Briefs, the starter seat, and the OpenCode template. A partial set is not a budget."""
+def _tokenizer_json(tokenizer: str | None) -> str | None:
+    """A directory or a tokenizer.json file. A symlink to a real file is allowed."""
     raw = str(tokenizer or "").strip()
     if not raw:
-        return None, ""
+        return None
     path = raw
     if os.path.isdir(path):
         path = os.path.join(path, "tokenizer.json")
-    if not os.path.isfile(path) or os.path.islink(path):
-        return None, ""
+    if os.path.isfile(path) and os.path.basename(path) == "tokenizer.json":
+        return path
+    return None
+
+
+def _token_counts(tokenizer_json: str, texts: list[str]) -> list[int] | None:
+    """Count each text. System python without tokenizers falls through to one uv child."""
+    if not texts:
+        return None
+    try:
+        from tokenizers import Tokenizer
+
+        loaded = Tokenizer.from_file(tokenizer_json)
+        return [len(loaded.encode(text, add_special_tokens=False).ids) for text in texts]
+    except ImportError:
+        pass
+    except (OSError, ValueError, RuntimeError):
+        return None
+    if os.environ.get("A770B_QUALIFY_TOKENIZERS_CHILD") or shutil.which("uv") is None:
+        return None
+    script = (
+        "import json,sys\n"
+        "from tokenizers import Tokenizer\n"
+        "raw=json.load(sys.stdin)\n"
+        "loaded=Tokenizer.from_file(raw['tokenizer'])\n"
+        "json.dump([len(loaded.encode(text, add_special_tokens=False).ids) for text in raw['texts']], sys.stdout)\n"
+    )
+    try:
+        run = subprocess.run(
+            ["uv", "run", "--with", "tokenizers", "python3", "-c", script],
+            input=json.dumps({"tokenizer": tokenizer_json, "texts": texts}),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env={**os.environ, "A770B_QUALIFY_TOKENIZERS_CHILD": "1"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if run.returncode != 0:
+        return None
+    try:
+        counts = json.loads(run.stdout)
+    except ValueError:
+        return None
+    if not isinstance(counts, list) or len(counts) != len(texts):
+        return None
+    if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
+        return None
+    return counts
+
+
+def _project_text(path: str) -> str | None:
+    """Read a kit file. The resolved path must stay inside this project."""
+    if not path or not os.path.isfile(path):
+        return None
+    root = os.path.realpath(PROJECT)
+    real = os.path.realpath(path)
+    if real != root and not real.startswith(root + os.sep):
+        return None
+    try:
+        return open(real, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+
+
+def _directory_text(directory: str) -> str:
+    if not directory or not os.path.isdir(directory):
+        return ""
+    root = os.path.realpath(PROJECT)
+    parts = []
+    for dirpath, dirnames, filenames in os.walk(directory):
+        dirnames[:] = [name for name in dirnames if not name.startswith(".") and name != "__pycache__"]
+        for name in sorted(filenames):
+            full = os.path.join(dirpath, name)
+            if not os.path.isfile(full):
+                continue
+            real = os.path.realpath(full)
+            if real != root and not real.startswith(root + os.sep):
+                continue
+            text = _project_text(full)
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _kit_stage_records(wanted: set[str]) -> list[dict]:
+    records = []
     suite_path = os.path.join(PROJECT, "kit", "suite.json")
-    seat = os.path.join(PROJECT, "kit", "seat")
-    template = os.path.join(PROJECT, "config", "opencode.profile.template.jsonc")
-    if not os.path.isfile(suite_path) or not os.path.isdir(seat) or not os.path.isfile(template):
-        return None, ""
+    reference_path = os.path.join(PROJECT, "kit", "reference", "reference.json")
     try:
         suite = _load_json(suite_path)
     except (OSError, ValueError, QualifyError):
+        suite = {}
+    for stage in suite.get("stages") or []:
+        if isinstance(stage, dict):
+            records.append(stage)
+    try:
+        reference = _load_json(reference_path)
+    except (OSError, ValueError, QualifyError):
+        reference = {}
+    for stage in reference.get("entries") or []:
+        if isinstance(stage, dict):
+            records.append(stage)
+    if not wanted:
+        return [stage for stage in records if not str(stage.get("id") or "").startswith("ref-")]
+    return [stage for stage in records if stage.get("id") in wanted]
+
+
+def _tokenize_kit(stages: list[str] | None, tokenizer: str | None) -> tuple[int | None, str]:
+    """The largest single stage prompt: brief, seat or exercise, and the wrapper.
+
+    Each stage starts a fresh session, so the budget is the max, not the sum.
+    """
+    path = _tokenizer_json(tokenizer)
+    if path is None:
         return None, ""
     wanted = set(stages or [])
-    parts = []
-    briefs = 0
-    for stage in suite.get("stages") or []:
-        if not isinstance(stage, dict):
-            continue
-        name = stage.get("id")
-        if wanted and name not in wanted:
-            continue
+    selected = _kit_stage_records(wanted)
+    if not selected:
+        return None, ""
+    try:
+        from render_profile import DEFAULT_PROMPT
+    except ImportError:
+        return None, ""
+    seat_cache: dict[str, str] = {}
+    texts = []
+    for stage in selected:
         brief = stage.get("brief")
         if not isinstance(brief, str) or not brief:
             continue
         brief_path = brief if os.path.isabs(brief) else os.path.join(PROJECT, brief)
-        if not os.path.isfile(brief_path) or os.path.islink(brief_path):
-            return None, ""
-        try:
-            parts.append(open(brief_path, encoding="utf-8", errors="replace").read())
-        except OSError:
-            return None, ""
-        briefs += 1
-    if briefs == 0:
+        brief_text = _project_text(brief_path)
+        if brief_text is None:
+            continue
+        parts = [brief_text, DEFAULT_PROMPT]
+        seat = stage.get("seat") or "kit/seat"
+        if not str(stage.get("id") or "").startswith("ref-"):
+            seat_path = seat if os.path.isabs(str(seat)) else os.path.join(PROJECT, str(seat))
+            if seat_path not in seat_cache:
+                seat_cache[seat_path] = _directory_text(seat_path)
+            if seat_cache[seat_path]:
+                parts.append(seat_cache[seat_path])
+        else:
+            spec = stage.get("spec")
+            if isinstance(spec, str) and spec:
+                spec_path = spec if os.path.isabs(spec) else os.path.join(PROJECT, spec)
+                spec_text = _project_text(spec_path)
+                if spec_text:
+                    parts.append(spec_text)
+            language = stage.get("language")
+            slug = stage.get("slug")
+            if isinstance(language, str) and isinstance(slug, str):
+                exercise = os.path.join(PROJECT, "kit", "reference", language, slug)
+                exercise_text = _directory_text(exercise)
+                if exercise_text:
+                    parts.append(exercise_text)
+        texts.append("\n".join(parts))
+    if not texts:
         return None, ""
-    for dirpath, dirnames, filenames in os.walk(seat):
-        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
-        for name in sorted(filenames):
-            full = os.path.join(dirpath, name)
-            if os.path.islink(full) or not os.path.isfile(full):
-                continue
-            try:
-                parts.append(open(full, encoding="utf-8", errors="replace").read())
-            except OSError:
-                return None, ""
-    try:
-        parts.append(open(template, encoding="utf-8", errors="replace").read())
-    except OSError:
+    counts = _token_counts(path, texts)
+    if not counts:
         return None, ""
-    counted = _token_count(path, "\n".join(parts))
-    if counted is None:
-        return None, ""
-    return counted, "tokenized stage briefs, starter seat, and OpenCode template"
+    return max(counts), "max tokenized stage (brief, seat or exercise, OpenCode wrapper)"
 
 
 def kit_prompt_budget(stages: list[str] | None = None, row: dict | None = None, tokenizer: str | None = None) -> tuple[int | None, str]:
@@ -318,7 +411,7 @@ def kit_prompt_budget(stages: list[str] | None = None, row: dict | None = None, 
         return int(raw), "A770B_QUALIFY_KIT_PROMPT_TOKENS"
     peak = _peak_from_row(row, stages)
     if peak is not None:
-        return peak, "profile measured_tasks context_tokens or requests.max_prompt_tokens"
+        return peak, "requests.max_prompt_tokens"
     counted, source = _tokenize_kit(stages, tokenizer)
     if counted is not None:
         return counted, source
@@ -1463,12 +1556,14 @@ def summarise(job: str) -> dict:
         smoke_check = _check("smoke-tool-call", "fail", "evidence/smoke.json", "one tool call returned")
     else:
         smoke_check = _check("smoke-tool-call", "unknown", None, "one tool call returned", "smoke did not record a tool call")
+    resets = collected.get("window_resets")
     if plan.get("skip_window"):
         window_check = _check("window-no-resets", "unknown", None, "the sweep recorded no reset", "window sweep skipped")
-    elif collected.get("window_resets") == 0:
-        window_check = _check("window-no-resets", "pass", "evidence/window.json", "the sweep recorded no reset")
-    elif isinstance(collected.get("window_resets"), int):
-        window_check = _check("window-no-resets", "fail", "evidence/window.json", "the sweep recorded no reset")
+    elif isinstance(resets, int) and not isinstance(resets, bool) and resets <= 0:
+        # kernel_resets_since can report -1 when an older reset ages out of the window.
+        window_check = _check("window-no-resets", "pass", "evidence/window.json", "the sweep recorded no new reset")
+    elif isinstance(resets, int) and not isinstance(resets, bool):
+        window_check = _check("window-no-resets", "fail", "evidence/window.json", "the sweep recorded no new reset")
     else:
         window_check = _check("window-no-resets", "unknown", None, "the sweep recorded no reset", "no sweep record")
     if collected.get("depth_pass") is True:
@@ -1526,13 +1621,21 @@ def summarise(job: str) -> dict:
             "no project container is running; VRAM is at or below idle plus tolerance when a reading exists",
             "no nvtop reading",
         )
-    elif containers == 0 and isinstance(now_vram, (int, float)) and isinstance(idle, (int, float)):
+    elif containers == 0 and isinstance(now_vram, (int, float)) and isinstance(idle, (int, float)) and not isinstance(now_vram, bool) and not isinstance(idle, bool):
         ok = now_vram <= idle + IDLE_VRAM_TOLERANCE_GIB
         card_check = _check(
             "card-free-after",
             "pass" if ok else "fail",
             "evidence/card.json",
             f"VRAM at or below idle plus {IDLE_VRAM_TOLERANCE_GIB} GiB and no project container",
+        )
+    elif containers == 0 and isinstance(now_vram, (int, float)) and not isinstance(now_vram, bool) and idle is None:
+        card_check = _check(
+            "card-free-after",
+            "unknown",
+            "evidence/card.json",
+            "VRAM at or below idle plus tolerance",
+            "no idle VRAM baseline",
         )
     elif containers not in (0, None):
         card_check = _check(
@@ -1559,7 +1662,10 @@ def summarise(job: str) -> dict:
         collected.get("depth_pass") if collected.get("depth_pass") is not None else None,
         bool(collected.get("unanswered")),
     )
-    statistics = _statistics_from(collected, plan, dotted, useful)
+    measured = dict(collected)
+    if isinstance(absorb_pair, dict):
+        measured["absorb"] = absorb_pair
+    statistics = _statistics_from(measured, plan, dotted, useful)
     checks = [
         fit,
         load,
@@ -1637,6 +1743,45 @@ def summarise(job: str) -> dict:
     }
     for key, value in dotted.items():
         result[key] = value
+    unmeasured = collected.get("unmeasured") if isinstance(collected.get("unmeasured"), list) else []
+    result["unmeasured"] = unmeasured
+    result["bench"] = collected.get("bench")
+    result["far_speed"] = collected.get("far_end")
+    result["measured_tasks"] = collected.get("measured_tasks")
+    empties = [
+        {
+            "stage": stage.get("id"),
+            "label": stage.get("label"),
+            "evidence": stage.get("empty_patch"),
+        }
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("outcome") == "empty_patch"
+    ]
+    result["empty_patches"] = empties
+    by_phase = {}
+    for item in unmeasured:
+        if isinstance(item, dict) and item.get("phase"):
+            by_phase[item["phase"]] = item
+    phase_for = {
+        "load-ok": "serve",
+        "fit-under-cap": "serve",
+        "smoke-tool-call": "smoke",
+        "window-no-resets": "window",
+        "depth-probe": "depth",
+        "suite-completed": "suite",
+    }
+    for check in checks:
+        if check.get("result") != "unknown":
+            continue
+        why = by_phase.get(phase_for.get(check.get("name") or ""))
+        if not isinstance(why, dict) or not why.get("reason"):
+            continue
+        check["reason"] = (
+            f"{why.get('reason')} (command {why.get('command')}, "
+            f"exit {why.get('rc')}, log {why.get('log')})"
+        )
+    if empties:
+        result["checks"] = checks
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
     _write_private(os.path.join(job, "report.md"), render_report(job, result))
     return result
@@ -1649,12 +1794,25 @@ def _timeout_seconds(stages) -> int | str:
         if not isinstance(stage, dict):
             continue
         wall = stage.get("wall_s")
+        if stage.get("counts_toward_pass", True) is False:
+            continue
         if isinstance(wall, bool) or not isinstance(wall, int) or wall < 1:
             continue
         walls.append(wall)
     if not walls:
         return "unknown"
     return max(walls)
+
+
+def _stat_unknown(value) -> bool:
+    return value in (None, "unknown")
+
+
+def _fill_stat(stats: dict, key: str, value) -> None:
+    """A supplied statistics dict wins. A real measurement fills only an unknown."""
+    if not _stat_unknown(stats.get(key)) or _stat_unknown(value):
+        return
+    stats[key] = value
 
 
 def _statistics_from(collected, plan, dotted, useful) -> dict:
@@ -1669,7 +1827,55 @@ def _statistics_from(collected, plan, dotted, useful) -> dict:
     if plan.get("absorb_max_s") is not None:
         stats["absorb_max_s"] = plan["absorb_max_s"]
     if collected.get("profiling_ok") is True:
-        stats["profiling"] = "recorded"
+        _fill_stat(stats, "profiling", "recorded")
+    vram = collected.get("vram_after_load")
+    if isinstance(vram, (int, float)) and not isinstance(vram, bool) and vram > 0:
+        _fill_stat(stats, "vram_gib_after_load", vram)
+    ram = collected.get("ram_gb_extra")
+    if isinstance(ram, (int, float)) and not isinstance(ram, bool) and ram >= 0:
+        _fill_stat(stats, "ram_gb_extra", ram)
+    engine = plan.get("engine")
+    if engine and engine != "strata":
+        extra = " ".join(plan.get("extra") or [])
+        flash = "off" if re.search(r"(?:^|\s)-fa\s+off(?:\s|$)", extra) else "on"
+        _fill_stat(stats, "flash_attention", flash)
+    profile = collected.get("profile_speed") if isinstance(collected.get("profile_speed"), dict) else {}
+    have_rate = False
+    for side in ("decode_tps", "prefill_tps"):
+        cells = profile.get(side)
+        if isinstance(cells, dict) and any(_number(value) is not None for value in cells.values()):
+            have_rate = True
+    if have_rate:
+        _fill_stat(stats, "speed.decode_tps / speed.prefill_tps", "recorded")
+    if isinstance(collected.get("bench"), dict):
+        _fill_stat(stats, "speed.bench", "recorded")
+    far = collected.get("far_end")
+    if isinstance(far, dict) and _number(far.get("ttft_s")) is not None:
+        _fill_stat(stats, "speed.far_end", "recorded")
+    delivered = collected.get("delivered")
+    if isinstance(delivered, dict) and _number(delivered.get("prefill_tps")) and _number(delivered.get("decode_tps")):
+        _fill_stat(stats, "speed.delivered", "recorded")
+    suite = collected.get("suite") if isinstance(collected.get("suite"), dict) else {}
+    if suite.get("completed") is True or (isinstance(suite.get("stages"), list) and suite.get("stages")):
+        _fill_stat(stats, "suite", "recorded")
+    requests = collected.get("requests") if isinstance(collected.get("requests"), dict) else {}
+    if isinstance(requests.get("max_prompt_tokens"), int):
+        _fill_stat(stats, "requests", "recorded")
+    if isinstance(collected.get("measured_tasks"), dict) and collected.get("measured_tasks"):
+        _fill_stat(stats, "measured_tasks", "recorded")
+    if isinstance(collected.get("fit_code"), str) and collected.get("fit_code"):
+        _fill_stat(stats, "fit.code", "recorded")
+    absorb = collected.get("absorb")
+    if isinstance(absorb, dict) and (absorb.get("8k") is not None or absorb.get("far_end") is not None):
+        _fill_stat(stats, "speed.absorb_s", "recorded")
+    try:
+        import profiles
+
+        _fill_stat(stats, "instrument", profiles.kit_instrument())
+    except (OSError, ValueError, ImportError):
+        pass
+    if stats.get("suite") not in (None, "unknown") and stats.get("instrument") not in (None, "unknown"):
+        _fill_stat(stats, "evidence", "recorded")
     return stats
 
 
@@ -1719,14 +1925,32 @@ def render_report(job: str, result: dict) -> str:
         lines.append("missing statistics: " + ", ".join(missing))
     job_id = os.path.basename(job.rstrip("/"))
     plan_card = None
+    plan_mode = None
     plan_path = os.path.join(job, "plan.json")
     if os.path.isfile(plan_path) and not os.path.islink(plan_path):
         try:
-            plan_card = (_load_json(plan_path).get("row_fields") or {}).get("card")
+            fields = _load_json(plan_path).get("row_fields") or {}
+            plan_card = fields.get("card")
+            plan_mode = fields.get("mode")
         except QualifyError:
             plan_card = None
+            plan_mode = None
     card = plan_card or os.environ.get("A770B_CARD") or "<card>"
-    mode = os.environ.get("A770B_CARD_MODE") or "inference"
+    mode = plan_mode or os.environ.get("A770B_CARD_MODE") or "inference"
+    empties = result.get("empty_patches") or []
+    if empties:
+        lines.append("empty patch (the model ran and changed nothing):")
+        for item in empties:
+            lines.append(f"- {item.get('stage')}: {item.get('evidence')}")
+    unmeasured = result.get("unmeasured") or []
+    if unmeasured:
+        lines.append("unmeasured:")
+        for item in unmeasured:
+            if isinstance(item, dict):
+                lines.append(
+                    f"- {item.get('phase')}: {item.get('reason')} "
+                    f"(exit {item.get('rc')}, log {item.get('log')})"
+                )
     lines.append("")
     lines.append(f"Export with: local-build.sh qualify export {job_id}")
     lines.append(f"Registry file for a later merge: config/registry/{card}.{mode}.json")
@@ -1810,6 +2034,14 @@ def _sentinel_row(row: dict, allow_incomplete: bool = False) -> dict:
             "decode_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
             "prefill_tps": {"8k": None, "32k": None, "64k": None, "100k": None},
         }
+    else:
+        for key in ("bench", "far_end", "absorb_s", "delivered"):
+            if speed.get(key) is None:
+                speed.pop(key, None)
+        speed.pop("decode_tps / speed.prefill_tps", None)
+    for key in ("suite", "requests", "measured_tasks", "fit"):
+        if check.get(key) is None:
+            check.pop(key, None)
     return check
 
 
@@ -1817,6 +2049,96 @@ def _number(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return value
+
+
+def _registry_stage(stage: dict) -> dict | None:
+    working = stage.get("working")
+    wall = stage.get("wall_s")
+    name = stage.get("id")
+    if not isinstance(working, bool) or not isinstance(name, str) or not name:
+        return None
+    if isinstance(wall, bool) or not isinstance(wall, (int, float)):
+        return None
+    axes = stage.get("axes")
+    if not isinstance(axes, list) or not all(isinstance(item, str) for item in axes):
+        axes = []
+    lines = stage.get("lines")
+    budget = stage.get("budget_lines")
+    return {
+        "id": name,
+        "working": working,
+        "conformance": stage.get("conformance") if isinstance(stage.get("conformance"), bool) else None,
+        "lines": lines if isinstance(lines, int) and not isinstance(lines, bool) else None,
+        "budget_lines": budget if isinstance(budget, int) and not isinstance(budget, bool) else None,
+        "maintainable": stage.get("maintainable") if stage.get("maintainable") in (0, 3, 5) else None,
+        "usable": stage.get("usable") if stage.get("usable") in (0, 3, 5) else None,
+        "wall_s": wall,
+        "axes": axes,
+        "counts_toward_pass": stage.get("counts_toward_pass") is not False,
+    }
+
+
+def _export_suite(result: dict) -> dict | None:
+    suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    stages = [stage for stage in suite.get("stages") or [] if isinstance(stage, dict)]
+    if not stages:
+        return None
+    import suite_report
+
+    totals = suite_report.totals({"stages": stages}, "qualification")
+    runs = totals.get("runs")
+    briefs = totals.get("briefs")
+    if not isinstance(runs, int) or isinstance(runs, bool) or runs < 1:
+        return None
+    if not isinstance(briefs, int) or isinstance(briefs, bool) or briefs < 1:
+        return None
+    body = {
+        "briefs": briefs,
+        "runs": runs,
+        "passed": totals.get("passed") if isinstance(totals.get("passed"), int) else 0,
+        "source": "qualification",
+    }
+    if isinstance(totals.get("timeouts"), int) and not isinstance(totals.get("timeouts"), bool):
+        body["timeouts"] = totals["timeouts"]
+    if isinstance(totals.get("mean_wall_s"), (int, float)) and not isinstance(totals.get("mean_wall_s"), bool):
+        body["mean_wall_s"] = totals["mean_wall_s"]
+    try:
+        import profiles
+
+        body["instrument"] = profiles.kit_instrument()
+    except (OSError, ValueError, ImportError):
+        pass
+    copied = [item for item in (_registry_stage(stage) for stage in stages) if item]
+    if copied:
+        body["stages"] = copied
+    return body
+
+
+def _export_tasks(result: dict, plan: dict) -> dict | None:
+    suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    thinking = "on" if plan.get("reasoning") == "on" else "off"
+    tasks = {}
+    for stage in suite.get("stages") or []:
+        if not isinstance(stage, dict) or stage.get("counts_toward_pass", True) is False:
+            continue
+        if stage.get("working") not in (True, False):
+            continue
+        wall = stage.get("wall_s")
+        name = stage.get("id")
+        if not isinstance(name, str) or not name:
+            continue
+        if isinstance(wall, bool) or not isinstance(wall, int) or wall < 1:
+            continue
+        tokens = stage.get("prompt_tokens")
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 1:
+            tokens = None
+        tasks[name] = {
+            "quality": "pass" if stage.get("working") is True else "fail",
+            "wall_s": wall,
+            "context_tokens": tokens,
+            "thinking": thinking,
+        }
+    return tasks or None
 
 
 def _base_row(plan: dict, result: dict) -> dict:
@@ -1880,10 +2202,7 @@ def _base_row(plan: dict, result: dict) -> dict:
         row["kv_v"] = plan["kv_v"]
     if flash is not None:
         row["flash_attention"] = flash
-    if isinstance(timeout, int):
-        row["timeout_s"] = timeout
-    else:
-        row["timeout_s"] = timeout
+    row["timeout_s"] = timeout
     if useful is not None:
         row["useful_ctx"] = useful
     if vram_value is not None and vram_value > 0:
@@ -1934,11 +2253,45 @@ def _base_row(plan: dict, result: dict) -> dict:
     far = plan.get("far_end")
     score = result.get("depth_score")
     if isinstance(far, int) and far >= 90000 and isinstance(score, int) and not isinstance(score, bool):
-        row["depth_probe_100k"] = f"{score}/3"
-    elif result.get("depth_not_measured"):
-        row["depth_probe_100k"] = "not measured"
+        word = "pass" if score >= 2 else "fail"
+        row["depth_probe_100k"] = f"{word} ({score}/3)"
     else:
         row["depth_probe_100k"] = "not measured"
+    bench = result.get("bench")
+    if isinstance(bench, dict) and bench.get("tool") and isinstance(bench.get("at_depth"), dict) and bench.get("at_depth"):
+        row["speed"]["bench"] = {
+            "tool": bench.get("tool"),
+            "prompt": bench.get("prompt"),
+            "gen": bench.get("gen"),
+            "flags": bench.get("flags") if isinstance(bench.get("flags"), str) and bench.get("flags") else "default",
+            "at_depth": bench.get("at_depth"),
+            "source": bench.get("source") if isinstance(bench.get("source"), str) else "bench",
+        }
+    far_speed = result.get("far_speed")
+    if isinstance(far_speed, dict):
+        tokens = far_speed.get("tokens")
+        prefill = _number(far_speed.get("prefill_tps"))
+        decode = _number(far_speed.get("decode_tps"))
+        ttft = _number(far_speed.get("ttft_s"))
+        if isinstance(tokens, int) and tokens > 0 and prefill and prefill > 0 and decode and decode > 0 and ttft and ttft > 0:
+            row["speed"]["far_end"] = {
+                "tokens": tokens,
+                "prefill_tps": prefill,
+                "decode_tps": decode,
+                "ttft_s": ttft,
+            }
+    exported_suite = _export_suite(result)
+    if exported_suite:
+        row["suite"] = exported_suite
+        mean = exported_suite.get("mean_wall_s")
+        code = f"SUITE-1: {exported_suite['passed']}/{exported_suite['runs']} stages passed"
+        if mean is not None:
+            code += f", mean wall {mean}s"
+        code += " (this qualification)"
+        row["fit"] = {"code": code}
+    tasks = _export_tasks(result, plan)
+    if tasks:
+        row["measured_tasks"] = tasks
     if plan.get("absorb_max_s") is not None:
         row["absorb_max_s"] = plan["absorb_max_s"]
     absorb = result.get("absorb")
@@ -1978,12 +2331,26 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
     _refuse_out(out)
     row = _base_row(plan, result)
     if allow_incomplete:
+        top_level = {
+            "vram_gib_after_load": "vram_gib_after_load",
+            "ram_gb_extra": "ram_gb_extra",
+            "useful_ctx": "useful_ctx",
+            "flash_attention": "flash_attention",
+            "useful_ctx_rule": "useful_ctx_rule",
+            "instrument": "instrument",
+            "evidence": "evidence",
+        }
         for field in missing:
-            if field in row:
+            if field in top_level:
+                key = top_level[field]
+                if key not in row:
+                    row[key] = None
+            elif field == "speed.decode_tps / speed.prefill_tps":
+                speed = row.setdefault("speed", {})
+                speed.setdefault("decode_tps", {"8k": None, "32k": None, "64k": None, "100k": None})
+                speed.setdefault("prefill_tps", {"8k": None, "32k": None, "64k": None, "100k": None})
+            elif field in row and not isinstance(row.get(field), dict):
                 row[field] = None
-            elif field.startswith("speed."):
-                row.setdefault("speed", {})
-                row["speed"][field.split(".", 1)[1]] = None
     names = list(LADDER_HUMAN_NAMES)
     if isinstance(row.get("timeout_s"), str):
         names.append("timeout_s")
@@ -2215,6 +2582,8 @@ def _stub_body(phase: str, text: str) -> dict | None:
     body = _json_line(text)
     if not body:
         return None
+    if body.get("why") or body.get("skipped"):
+        return body
     keys = _PHASE_KEYS.get(phase)
     if keys is None:
         return body
@@ -2249,9 +2618,12 @@ def _parse_window(job: str, text: str) -> dict:
         text or "",
         re.MULTILINE,
     ):
-        target, _toks, ttft, _pp, _tg, vmax, resets = match.groups()
+        target, toks, ttft, pp, tg, vmax, resets = match.groups()
         points[int(target)] = {
+            "tokens": int(toks),
             "ttft_s": float(ttft),
+            "prefill_tps": float(pp),
+            "decode_tps": float(tg),
             "vram_max_gib": float(vmax) if vmax is not None else None,
             "resets": int(resets),
         }
@@ -2276,26 +2648,82 @@ def _parse_window(job: str, text: str) -> dict:
 
 
 def _parse_depth(text: str) -> dict:
+    """The grading footer is the last line. Model text can quote an earlier one."""
     body: dict = {}
-    match = re.search(r"depth probe at (\d+): (\d)/3", text or "")
-    if match:
-        body["depth_tokens"] = int(match.group(1))
-        body["score"] = int(match.group(2))
-        body["passed"] = int(match.group(2)) >= 2
+    found = re.findall(r"^depth probe at (\d+): ([0-3])/3$", text or "", re.MULTILINE)
+    if found:
+        tokens, score = found[-1]
+        body["depth_tokens"] = int(tokens)
+        body["score"] = int(score)
+        body["passed"] = int(score) >= 2
         return body
-    missing = re.search(r"depth probe at (\d+): not measured — (.+)", text or "")
+    missing = re.findall(r"^depth probe at (\d+): not measured — (.+)$", text or "", re.MULTILINE)
     if missing:
-        body["depth_tokens"] = int(missing.group(1))
+        tokens, reason = missing[-1]
+        body["depth_tokens"] = int(tokens)
         body["passed"] = None
         body["score"] = None
         body["unanswered"] = True
-        body["not_measured"] = missing.group(2).strip()
+        body["not_measured"] = reason.strip()
     return body
 
 
-def _parse_speed(job: str, text: str) -> dict:
+def _mapped_speed_path(job: str, text: str) -> str | None:
     match = re.search(r"mapped →\s*(\S+)", text or "")
-    path = _allowed_evidence_file(job, match.group(1)) if match else None
+    if match:
+        allowed = _allowed_evidence_file(job, match.group(1))
+        if allowed:
+            return allowed
+    # bench_http.sh writes the mapped file, then exits 1 on a missing depth
+    # before it echoes the path. The file is still the measurement.
+    fallback = os.path.join(job, "evidence", "speed-bench.mapped.json")
+    if os.path.isfile(fallback) and not os.path.islink(fallback):
+        return os.path.realpath(fallback)
+    return None
+
+
+def _log_rates(text: str) -> tuple[dict[int, float], dict[int, float]]:
+    """llama.cpp timing lines, keyed by the token count on that line."""
+    import engine_record
+
+    prefill: dict[int, float] = {}
+    decode: dict[int, float] = {}
+    for line in (text or "").splitlines():
+        if line.startswith(("+", "-")):
+            continue
+        parsed = engine_record.parse_timing(line)
+        if not parsed:
+            continue
+        tokens = int(parsed[1])
+        rate = parsed[3]
+        if "prompt eval time" in line:
+            prefill[tokens] = rate
+        elif "eval time" in line:
+            decode[tokens] = rate
+    return prefill, decode
+
+
+def _metrics_rates(job: str, phase: str, engine: str) -> dict | None:
+    before = os.path.join(job, "evidence", f"metrics-before-{phase}.prom")
+    after = os.path.join(job, "evidence", f"metrics-after-{phase}.prom")
+    if engine not in ("vllm", "llama.cpp"):
+        return None
+    if not os.path.isfile(before) or not os.path.isfile(after):
+        return None
+    if os.path.islink(before) or os.path.islink(after):
+        return None
+    import engine_evidence
+
+    try:
+        left = engine_evidence.parse_prometheus(open(before, encoding="utf-8", errors="replace").read())
+        right = engine_evidence.parse_prometheus(open(after, encoding="utf-8", errors="replace").read())
+        return engine_evidence.stage_counters(left, right, engine)
+    except (OSError, ValueError):
+        return None
+
+
+def _parse_speed(job: str, text: str) -> dict:
+    path = _mapped_speed_path(job, text)
     if path is None:
         return {}
     try:
@@ -2325,35 +2753,165 @@ def _parse_speed(job: str, text: str) -> dict:
                 "client_decode": decode,
                 "engine_prefill": None,
                 "engine_decode": None,
-                "engine_source": "bench client",
+                "engine_source": "unknown",
             }
         )
         label = labels.get(depth)
         if label:
             profile["prefill_tps"][label] = prefill
             profile["decode_tps"][label] = decode
-    return {"rows": rows, "profile_speed": profile, "at_depth": at_depth}
+    slice_path = os.path.join(job, "evidence", "engine-speed.log")
+    if os.path.isfile(slice_path) and not os.path.islink(slice_path):
+        try:
+            prefill_by, decode_by = _log_rates(open(slice_path, encoding="utf-8", errors="replace").read())
+        except OSError:
+            prefill_by, decode_by = {}, {}
+        for row in rows:
+            depth = row["depth_tokens"]
+            if depth in prefill_by or depth in decode_by:
+                row["engine_prefill"] = prefill_by.get(depth)
+                row["engine_decode"] = decode_by.get(depth)
+                row["engine_source"] = "server log"
+    plan_engine = ""
+    plan_path = os.path.join(job, "plan.json")
+    if os.path.isfile(plan_path) and not os.path.islink(plan_path):
+        try:
+            plan_engine = _load_json(plan_path).get("engine") or ""
+        except QualifyError:
+            plan_engine = ""
+    metrics = _metrics_rates(job, "speed", plan_engine)
+    if isinstance(metrics, dict) and len(rows) == 1 and rows[0]["engine_source"] == "unknown":
+        prefill = _number(metrics.get("prefill_tps"))
+        decode = _number(metrics.get("decode_tps"))
+        if prefill is not None or decode is not None:
+            rows[0]["engine_prefill"] = prefill
+            rows[0]["engine_decode"] = decode
+            rows[0]["engine_source"] = "/metrics"
+    body = {"rows": rows, "profile_speed": profile, "at_depth": at_depth}
+    prompt = doc.get("prompt")
+    gen = doc.get("gen")
+    if (
+        isinstance(doc.get("tool"), str)
+        and doc.get("tool")
+        and isinstance(prompt, int)
+        and not isinstance(prompt, bool)
+        and prompt > 0
+        and isinstance(gen, int)
+        and not isinstance(gen, bool)
+        and gen > 0
+        and at_depth
+    ):
+        body["bench"] = {
+            "tool": doc.get("tool"),
+            "prompt": prompt,
+            "gen": gen,
+            "flags": doc.get("flags") if isinstance(doc.get("flags"), str) and doc.get("flags") else "default",
+            "at_depth": at_depth,
+            "source": os.path.basename(path),
+        }
+    return body
+
+
+_COMPACT_RE = re.compile(r"(?i)\bcompact(?:ing|ed|ion)\b")
+_KEEP_STAGE = (
+    "id",
+    "working",
+    "counts_toward_pass",
+    "requests",
+    "prompt_tokens",
+    "gen_tokens",
+    "wall_s",
+    "max_prompt_tokens",
+    "max_completion_tokens",
+    "length_stops",
+    "outcome",
+    "verify",
+    "conformance_exit",
+    "lines",
+    "label",
+    "serve_evidence",
+    "language",
+    "budget_lines",
+    "axes",
+)
+
+
+def _compaction_count(stage: dict) -> int | None:
+    """A present capture with no compaction line is zero. A missing capture is unknown."""
+    data = os.environ.get("A770B_DATA") or ""
+    if not data:
+        return None
+    import suite_report
+
+    path = suite_report.capture_path_for_stage(stage, data)
+    if not path or os.path.islink(path) or not os.path.isfile(path):
+        return None
+    count = 0
+    try:
+        for line in open(path, encoding="utf-8", errors="replace"):
+            if line.startswith(("+", "-")):
+                continue
+            if _COMPACT_RE.search(line):
+                count += 1
+    except OSError:
+        return None
+    return count
+
+
+def _empty_patch_text(stage: dict) -> str | None:
+    label = stage.get("label")
+    data = os.environ.get("A770B_DATA") or ""
+    if not data or not isinstance(label, str) or not label or "/" in label or label.startswith("."):
+        return None
+    path = os.path.join(data, "results", f"{label}.verify.json")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return None
+    try:
+        doc = _load_json(path)
+    except QualifyError:
+        return None
+    error = doc.get("error")
+    if not isinstance(error, str):
+        return None
+    if "patch is empty" in error or "changed nothing" in error:
+        return error
+    return None
 
 
 def _stage_copy(stage: dict) -> dict:
-    item = {
-        "id": stage.get("id"),
-        "working": stage.get("working"),
-        "counts_toward_pass": stage.get("counts_toward_pass", True),
-        "requests": stage.get("requests"),
-        "prompt_tokens": stage.get("prompt_tokens"),
-        "wall_s": stage.get("wall_s"),
-    }
-    if "gen_tokens" in stage:
-        item["gen_tokens"] = stage.get("gen_tokens")
-    if "compaction_lines" in stage:
+    item = {}
+    for key in _KEEP_STAGE:
+        if key in stage:
+            item[key] = stage.get(key)
+    item.setdefault("counts_toward_pass", stage.get("counts_toward_pass", True))
+    counted = _compaction_count(stage)
+    if counted is not None:
+        item["compaction_lines"] = counted
+    elif "compaction_lines" in stage:
         item["compaction_lines"] = stage.get("compaction_lines")
+    evidence = _empty_patch_text(stage)
+    if evidence:
+        item["outcome"] = "empty_patch"
+        item["empty_patch"] = evidence
     return item
 
 
+def _suite_result_path(job: str, text: str) -> tuple[str | None, str]:
+    matches = list(
+        re.finditer(
+            r"(suite complete:|suite incomplete — results:|partial results:)\s*(\S+)",
+            text or "",
+        )
+    )
+    if not matches:
+        return None, ""
+    last = matches[-1]
+    kind = "complete" if last.group(1) == "suite complete:" else "incomplete"
+    return _allowed_evidence_file(job, last.group(2)), kind
+
+
 def _parse_suite(job: str, text: str) -> dict:
-    match = re.search(r"suite complete:\s*(\S+)", text or "")
-    path = _allowed_evidence_file(job, match.group(1)) if match else None
+    path, kind = _suite_result_path(job, text)
     body: dict = {"completed": False, "stages": []}
     if path is None:
         return body
@@ -2361,38 +2919,67 @@ def _parse_suite(job: str, text: str) -> dict:
         doc = _load_json(path)
     except QualifyError:
         return body
-    stages = [_stage_copy(stage) for stage in doc.get("stages") or [] if isinstance(stage, dict)]
-    body["completed"] = True
+    raw_stages = [stage for stage in doc.get("stages") or [] if isinstance(stage, dict)]
+    stages = [_stage_copy(stage) for stage in raw_stages]
+    body["completed"] = kind == "complete"
     body["stages"] = stages
+    body["source"] = os.path.basename(path)
     if isinstance(doc.get("instrument"), str):
         body["instrument"] = doc["instrument"]
-    if isinstance(doc.get("references"), dict):
+    refs = [stage for stage in stages if str(stage.get("id") or "").startswith("ref-")]
+    if refs:
         body["references"] = {
-            "passed": doc["references"].get("passed"),
-            "attempts": doc["references"].get("attempts"),
+            "passed": sum(1 for stage in refs if stage.get("working") is True),
+            "attempts": len(refs),
         }
-    prompts = [stage.get("prompt_tokens") for stage in stages if isinstance(stage.get("prompt_tokens"), int)]
-    gens = [stage.get("gen_tokens") for stage in stages if isinstance(stage.get("gen_tokens"), int)]
-    if prompts or gens:
+    prompts = [
+        stage.get("max_prompt_tokens")
+        for stage in stages
+        if isinstance(stage.get("max_prompt_tokens"), int) and not isinstance(stage.get("max_prompt_tokens"), bool)
+    ]
+    gens = [
+        stage.get("max_completion_tokens")
+        for stage in stages
+        if isinstance(stage.get("max_completion_tokens"), int) and not isinstance(stage.get("max_completion_tokens"), bool)
+    ]
+    stops = [
+        stage.get("length_stops")
+        for stage in stages
+        if isinstance(stage.get("length_stops"), int) and not isinstance(stage.get("length_stops"), bool)
+    ]
+    import suite_report
+
+    _pairs, medians = suite_report.delivered({"stages": raw_stages}, os.environ.get("A770B_DATA") or "")
+    prefill = medians.get("prefill_tps") if isinstance(medians, dict) else None
+    decode = medians.get("decode_tps") if isinstance(medians, dict) else None
+    if prompts or gens or stops or medians:
         body["requests"] = {
             "max_prompt_tokens": max(prompts) if prompts else None,
             "max_completion_tokens": max(gens) if gens else None,
-            "length_stops": None,
-            "prefill_tps": None,
-            "decode_tps": None,
-            "source": "suite",
+            "length_stops": sum(stops) if stops else None,
+            "prefill_tps": prefill,
+            "decode_tps": decode,
+            "source": os.path.basename(path),
         }
-        body["peak_prompt_tokens"] = max(prompts) if prompts else None
+        if prompts:
+            body["peak_prompt_tokens"] = max(prompts)
+    if isinstance(medians, dict) and prefill and decode:
+        body["delivered"] = {
+            "prefill_tps": prefill,
+            "decode_tps": decode,
+            "source": os.path.basename(path),
+        }
     return body
 
 
 def _merge_suite(previous: dict, body: dict) -> dict:
-    """Keep every pass. A later reference pass does not replace counted stages."""
+    """Keep every pass. A later failure does not erase an earlier success, and does not invent one."""
     merged = dict(body)
     prev_stages = previous.get("stages") if isinstance(previous.get("stages"), list) else []
     new_stages = body.get("stages") if isinstance(body.get("stages"), list) else []
     merged["stages"] = list(prev_stages) + list(new_stages)
     merged["attempts"] = int(previous.get("attempts") or 0) + 1
+    merged["completed"] = bool(previous.get("completed") and body.get("completed"))
     prev_refs = previous.get("references") if isinstance(previous.get("references"), dict) else {}
     new_refs = body.get("references") if isinstance(body.get("references"), dict) else {}
     if prev_refs or new_refs:
@@ -2411,17 +2998,90 @@ def _merge_suite(previous: dict, body: dict) -> dict:
         right = body["requests"]
         merged["requests"] = dict(right)
         for key in ("max_prompt_tokens", "max_completion_tokens"):
-            values = [item.get(key) for item in (left, right) if isinstance(item.get(key), int)]
+            values = [item.get(key) for item in (left, right) if isinstance(item.get(key), int) and not isinstance(item.get(key), bool)]
             merged["requests"][key] = max(values) if values else None
-    if previous.get("completed") is True:
-        merged["completed"] = True
+    peaks = [
+        value
+        for value in (previous.get("peak_prompt_tokens"), body.get("peak_prompt_tokens"))
+        if isinstance(value, int) and not isinstance(value, bool)
+    ]
+    if peaks:
+        merged["peak_prompt_tokens"] = max(peaks)
     return merged
+
+
+def _parse_serve(text: str, rc: int) -> dict:
+    """serve_compose.sh prints prose. A healthy start names the container and the VRAM line."""
+    body: dict = {}
+    started = "started server container" in (text or "")
+    body["load_ok"] = bool(rc == 0 and started)
+    found = re.search(
+        r"VRAM after load:\s*([0-9]+(?:\.[0-9]+)?)\s*GiB\s*≤\s*.*?\s+([0-9]+(?:\.[0-9]+)?)\s*GiB",
+        text or "",
+    )
+    if found:
+        body["vram_after_load"] = float(found.group(1))
+        body["vram_cap"] = float(found.group(2))
+    times = re.findall(r"^phase_s\s+(\d+)\s*$", text or "", re.MULTILINE)
+    if times:
+        body["load_s"] = int(times[-1])
+    return body
+
+
+def _command_line(job: str, phase: str) -> str:
+    path = os.path.join(job, "evidence", "argv.log")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return ""
+    last = ""
+    prefix = phase + ":"
+    try:
+        for line in open(path, encoding="utf-8", errors="replace"):
+            if line.startswith(prefix):
+                last = line.strip()
+    except OSError:
+        return ""
+    return last
+
+
+def _phase_measured(phase: str, body: dict) -> bool:
+    if phase == "serve":
+        return body.get("load_ok") is True or isinstance(body.get("vram_after_load"), (int, float))
+    if phase == "speed":
+        return isinstance(body.get("rows"), list) and bool(body.get("rows"))
+    if phase == "window":
+        return isinstance(body.get("resets"), int) or body.get("ttft_8k") is not None
+    if phase == "depth":
+        return isinstance(body.get("score"), int) or body.get("passed") is True or body.get("unanswered") is True
+    if phase == "suite":
+        return bool(body.get("stages")) or body.get("completed") is True
+    if phase == "smoke":
+        return any(isinstance(body.get(key), bool) for key in ("models", "tool", "completion"))
+    return True
+
+
+def _attach_why(job: str, phase: str, body: dict, rc: int) -> dict:
+    if _phase_measured(phase, body):
+        return body
+    why = body.get("why")
+    if isinstance(why, dict) and why.get("reason"):
+        why.setdefault("command", _command_line(job, phase) or phase)
+        why.setdefault("rc", rc)
+        why.setdefault("log", f"phases/{phase}.log")
+        body["why"] = why
+        return body
+    reason = body.get("not_measured") or f"{phase} produced no measurement"
+    body["why"] = {
+        "command": _command_line(job, phase) or phase,
+        "rc": rc,
+        "log": f"phases/{phase}.log",
+        "reason": reason,
+    }
+    return body
 
 
 def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
     """Store a phase. A stub JSON line wins; otherwise the real harness text is parsed."""
     body = _stub_body(phase, text)
-    parsed = body is not None
     if body is None:
         if phase == "window":
             body = _parse_window(job, text)
@@ -2431,8 +3091,11 @@ def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
             body = _parse_speed(job, text)
         elif phase == "suite":
             body = _parse_suite(job, text)
+        elif phase == "serve":
+            body = _parse_serve(text, rc)
         else:
             body = {}
+    body = _attach_why(job, phase, body, rc)
     body["rc"] = rc
     if phase == "gate":
         set_image(job, text)
@@ -2453,15 +3116,115 @@ def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
         return
     if phase == "suite":
         previous = _evidence(job, "suite.json")
-        if previous and not parsed:
-            body = _merge_suite(previous, body)
-        elif previous and parsed:
+        if previous:
             body = _merge_suite(previous, body)
         else:
             body["attempts"] = 1
         write_note(job, "suite.json", body)
         return
     write_note(job, f"{phase}.json", body)
+
+
+def _vram_peak(job: str):
+    path = os.path.join(job, "evidence", "vram-samples.txt")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return None
+    peak = None
+    try:
+        for line in open(path, encoding="utf-8", errors="replace"):
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                value = float(parts[-1])
+            except ValueError:
+                continue
+            peak = value if peak is None else max(peak, value)
+    except OSError:
+        return None
+    return peak
+
+
+def _ram_from_evidence(job: str):
+    candidates = [os.path.join(job, "evidence", "engine-evidence.json")]
+    data = os.environ.get("A770B_DATA") or ""
+    pointer = os.path.join(data, "logs", "serve-evidence.path") if data else ""
+    if pointer and os.path.isfile(pointer) and not os.path.islink(pointer):
+        try:
+            target = open(pointer, encoding="utf-8").read().strip()
+        except OSError:
+            target = ""
+        if target:
+            candidates.insert(0, target)
+    for path in candidates:
+        if not path or os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            doc = _load_json(path)
+        except QualifyError:
+            continue
+        mib = doc.get("host_buffers_mib")
+        if isinstance(mib, (int, float)) and not isinstance(mib, bool) and mib >= 0:
+            return mib / 1024.0
+    return None
+
+
+def _far_speed(job: str, window: dict) -> dict | None:
+    points = window.get("points") if isinstance(window, dict) else None
+    if not isinstance(points, dict):
+        return None
+    plan_path = os.path.join(job, "plan.json")
+    if not os.path.isfile(plan_path) or os.path.islink(plan_path):
+        return None
+    try:
+        far = _load_json(plan_path).get("far_end")
+    except QualifyError:
+        return None
+    point = points.get(str(far))
+    if not isinstance(point, dict):
+        return None
+    return {
+        "tokens": point.get("tokens"),
+        "prefill_tps": point.get("prefill_tps"),
+        "decode_tps": point.get("decode_tps"),
+        "ttft_s": point.get("ttft_s"),
+    }
+
+
+def _unmeasured(serve, smoke, speed, window, depth, suite) -> list:
+    notes = {
+        "serve": serve,
+        "smoke": smoke,
+        "speed": speed,
+        "window": window,
+        "depth": depth,
+        "suite": suite,
+    }
+    found = []
+    for phase, note in notes.items():
+        why = note.get("why") if isinstance(note, dict) else None
+        if isinstance(why, dict) and why.get("reason"):
+            item = dict(why)
+            item["phase"] = phase
+            found.append(item)
+    return found
+
+
+def _tasks_from_stages(stages: list) -> dict | None:
+    return _export_tasks({"suite": {"stages": stages}}, {})
+
+
+def _profiling_recorded(job: str) -> bool:
+    path = os.path.join(job, "evidence", "profiling-start.json")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return False
+    try:
+        confirmed = _load_json(path).get("confirmed")
+    except QualifyError:
+        return False
+    if not isinstance(confirmed, dict):
+        return False
+    return all(value is True for value in confirmed.values())
 
 
 def assemble(job: str) -> None:
@@ -2506,15 +3269,34 @@ def assemble(job: str) -> None:
         },
         "requests": suite.get("requests") if isinstance(suite.get("requests"), dict) else {},
         "peak_prompt_tokens": suite.get("peak_prompt_tokens", "unknown"),
-        "delivered": serve.get("delivered", "unknown"),
+        "delivered": suite.get("delivered") if isinstance(suite.get("delivered"), dict) else serve.get("delivered"),
         "hooks": hooks,
         "statistics": suite.get("statistics") if isinstance(suite.get("statistics"), dict) else {},
+        "bench": speed.get("bench") if isinstance(speed.get("bench"), dict) else None,
         "card_free": {
             "containers": card.get("containers"),
             "vram_gib": card.get("vram_gib"),
             "idle_gib": card.get("idle_gib"),
         },
     }
+    peak = _vram_peak(job)
+    if peak is not None:
+        collected["vram_peak"] = peak
+    if collected.get("ram_gb_extra") is None:
+        ram = _ram_from_evidence(job)
+        if ram is not None:
+            collected["ram_gb_extra"] = ram
+    far_point = _far_speed(job, window)
+    if far_point:
+        collected["far_end"] = far_point
+    collected["unmeasured"] = _unmeasured(serve, smoke, speed, window, depth, suite)
+    if _profiling_recorded(job):
+        collected["profiling_ok"] = True
+    tasks = _tasks_from_stages(suite.get("stages") if isinstance(suite.get("stages"), list) else [])
+    if tasks:
+        collected["measured_tasks"] = tasks
+    if isinstance(collected.get("delivered"), dict):
+        pass
     write_note(job, "collected.json", collected)
 
 
