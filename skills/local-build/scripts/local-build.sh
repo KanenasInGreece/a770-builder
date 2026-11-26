@@ -1292,8 +1292,13 @@ PY
     PUB_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PUB_CMD[@]}")
     HID_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${HID_CMD[@]}")
     v_py_rc=0
-    # BASHPID, not $$, because this python is a child of the command substitution.
-    v_py_out=$(python3 -I -B - "$BASHPID" "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" "$VRAW" "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "${timeout:-}" "$PUB_JSON" "$HID_JSON" "$A770B_DATA/logs" <<'PY'
+    # exec replaces the substitution shell, so the grader's parent is this
+    # verify process. A SIGKILL of verify then kills the grader. FDs 7 and 9
+    # are the seat and card locks; the grader must not keep them.
+    v_py_out=$(
+      if ( : >&7 ) 2>/dev/null; then exec 7>&-; fi
+      if ( : >&9 ) 2>/dev/null; then exec 9>&-; fi
+      exec python3 -I -B - "$$" "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" "$VRAW" "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "${timeout:-}" "$PUB_JSON" "$HID_JSON" "$A770B_DATA/logs" <<'PY'
 import ctypes, json, os, signal, subprocess, sys, tempfile, time
 
 # The shell passes its pid. getppid() after startup can already be the
@@ -1323,17 +1328,6 @@ _owner_pid = os.getpid()
 
 
 def _arm_child():
-    # The test sets this path and kills the parent while this child sleeps.
-    # The expected pid was captured before the fork, so the check still sees
-    # the death. Production leaves the variable unset.
-    ready = os.environ.get("A770B_SLOW_ARM_READY", "")
-    if ready:
-        try:
-            with open(ready, "w", encoding="ascii") as handle:
-                handle.write(str(os.getpid()))
-        except OSError:
-            os._exit(137)
-        time.sleep(2)
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != _owner_pid:
         os._exit(137)

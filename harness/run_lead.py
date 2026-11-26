@@ -202,8 +202,12 @@ def main(argv):
         signal.signal(sig, on_stop)
     signal.signal(signal.SIGALRM, on_fence)
     try:
+        # The worker arms against this pid. Its own PPID, read after it has
+        # started, is the adopter when this leader has already died.
+        child_env = os.environ.copy()
+        child_env["A770B_SPAWNER_PID"] = str(os.getpid())
         # Atomic in the child: its own group, default dispositions for every held signal, and a mask without them.
-        child = os.posix_spawnp(cmd[0], cmd, os.environ, setpgroup=0, setsigdef=held,
+        child = os.posix_spawnp(cmd[0], cmd, child_env, setpgroup=0, setsigdef=held,
                                 setsigmask=set(inherited) - set(held))
     except FileNotFoundError:
         print(f"run_lead.py: {cmd[0]}: not found", file=sys.stderr)

@@ -32,8 +32,16 @@ if ( : >&7 ) 2>/dev/null; then exec 7>&-; fi
 if ( : >&9 ) 2>/dev/null; then exec 9>&-; fi
 # The death signal is not inherited across fork. Re-exec once under setpriv.
 # The guard is this pid and is unset after the check, so a nested call arms too.
+# A770B_SPAWNER_PID is the leader's pid, passed before this process started.
+# PPID read here can already be the adopter when that leader died first.
+# A direct or nested call passes nothing and still uses PPID.
 if [ "${A770B_PDEATH_ARMED_PID:-}" != "$$" ] && command -v setpriv >/dev/null 2>&1; then
-  export A770B_PDEATH_PARENT="${PPID}"
+  if [ -n "${A770B_SPAWNER_PID:-}" ]; then
+    export A770B_PDEATH_PARENT="${A770B_SPAWNER_PID}"
+    unset A770B_SPAWNER_PID
+  else
+    export A770B_PDEATH_PARENT="${PPID}"
+  fi
   export A770B_PDEATH_ARMED_PID="$$"
   exec setpriv --pdeathsig KILL -- /usr/bin/bash "$0" "$@"
 fi

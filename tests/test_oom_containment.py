@@ -5,6 +5,7 @@ OOM runs use a test-only MemoryMax on an a770b-test-* unit. They skip when
 the user systemd bus is absent. Nothing here writes the workstation log tree.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -126,6 +127,40 @@ def _descendants(root: int) -> list[int]:
                 out.append(child)
                 stack.append(child)
     return out
+
+
+def _ppid(pid: int) -> int:
+    stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    return int(stat.rsplit(")", 1)[1].split()[1])
+
+
+def _proc_fds(pid: int) -> set[str]:
+    root = Path(f"/proc/{pid}/fd")
+    try:
+        return {entry.name for entry in root.iterdir()}
+    except OSError:
+        return set()
+
+
+def _fd_target(pid: int, number: int) -> str | None:
+    try:
+        return os.readlink(f"/proc/{pid}/fd/{number}")
+    except OSError:
+        return None
+
+
+def _lock_available(path: str) -> bool:
+    """True when this process can take an exclusive flock. The lock is released."""
+    fd = os.open(path, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return True
+    finally:
+        os.close(fd)
 
 
 def _alive(pid: int) -> bool:
@@ -383,14 +418,21 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
     records: list[Path] = []
     try:
         cases = (
-            (False, {}),
-            (True, {"A770B_SERVED_ENGINE": "strata"}),
+            (False, {}, False),
+            (True, {"A770B_SERVED_ENGINE": "strata"}, False),
+            (False, {}, True),
+            (True, {}, True),
         )
-        for entered, extra in cases:
-            ready = seat / f"ready-{int(entered)}"
+        stub = bin_ / "systemd-run"
+        for entered, extra, fallback in cases:
+            if stub.exists():
+                stub.unlink()
+            if fallback:
+                _exe(stub, "#!/bin/bash\nexit 1\n")
+            ready = seat / f"ready-{int(entered)}-{int(fallback)}"
             ready.unlink(missing_ok=True)
-            entered_file = tmp_path / f"entered-{int(entered)}"
-            record = tmp_path / f"i2-{int(entered)}.json"
+            entered_file = tmp_path / f"entered-{int(entered)}-{int(fallback)}"
+            record = tmp_path / f"i2-{int(entered)}-{int(fallback)}.json"
             records.append(record)
             command = f'sleep 120 & echo ready > "{ready}"; sleep 120'
             env = dict(base, A770B_SANDBOX_RECORD_FILE=str(record), **extra)
@@ -407,16 +449,19 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
                 ")\n"
                 "wait\n"
             )
+            err_path = tmp_path / f"i2-err-{int(entered)}-{int(fallback)}"
+            err_fh = err_path.open("w", encoding="utf-8")
             proc = subprocess.Popen(
                 ["bash", "-c", script], env=env,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                stdout=subprocess.DEVNULL, stderr=err_fh, text=True,
             )
             owned: list[int] = []
             try:
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline and not ready.exists():
                     if proc.poll() is not None:
-                        err = proc.stderr.read() if proc.stderr else ""
+                        err_fh.close()
+                        err = err_path.read_text(encoding="utf-8", errors="replace")
                         raise AssertionError(f"caller exited {proc.returncode} before ready: {err}")
                     time.sleep(0.1)
                 assert ready.exists(), "sandbox command did not start"
@@ -426,7 +471,10 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
                         time.sleep(0.05)
                     assert entered_file.read_text(encoding="utf-8").strip() == "entered"
                 body = json.loads(record.read_text(encoding="utf-8"))
-                if _bus():
+                if fallback:
+                    assert body["isolation"] == "none", body
+                    assert _scope_unit(record) is None
+                elif _bus():
                     assert body["isolation"] == "scope", body
                 else:
                     assert body["isolation"] == "none", body
@@ -439,9 +487,16 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
                     assert any(b"socat" in _cmdline(pid) for pid in owned), "socat bridge was not started"
                 os.kill(proc.pid, signal.SIGKILL)
                 proc.wait(timeout=5)
+                err_fh.close()
+                # A survivor can keep the write end. The death check must not wait on it.
                 left = _wait_gone(owned)
                 assert left == [], f"sandbox processes survived the caller: {left}"
+                if fallback:
+                    err = err_path.read_text(encoding="utf-8", errors="replace")
+                    assert err.count("isolation=none") == 1, err
             finally:
+                if not err_fh.closed:
+                    err_fh.close()
                 _reap_owned(proc, owned)
     finally:
         _stop_records(records)
@@ -905,43 +960,67 @@ def test_i8_oom_record_grade_and_outside_kill(tmp_path, monkeypatch):
 
 
 def test_i9_without_systemd_run_still_runs_and_dies_with_parent(tmp_path):
+    """Caller death with systemd-run refused, on the shell path and the entered path."""
     bin_ = _tools(tmp_path)
     _exe(bin_ / "systemd-run", "#!/bin/bash\nexit 1\n")
     seat = _seat(tmp_path)
     cfg = _cfg(tmp_path)
-    record = tmp_path / "data" / "logs" / "none.json"
-    ready = seat / "ready"
-    env = _env(
-        tmp_path,
-        PATH=f"{bin_}:{os.environ['PATH']}",
-        A770B_SANDBOX_RECORD_FILE=str(record),
-    )
-    command = f'sleep 120 & echo ready > "{ready}"; sleep 120'
-    proc = subprocess.Popen(
-        ["bash", str(SANDBOX), str(seat), str(cfg), "--", "bash", "-c", command],
-        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-    )
+    base = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}")
+    records: list[Path] = []
+    proc: subprocess.Popen | None = None
     owned: list[int] = []
     try:
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline and not ready.exists():
-            if proc.poll() is not None:
-                raise AssertionError(proc.stderr.read() if proc.stderr else "exited")
-            time.sleep(0.1)
-        assert ready.exists(), "sandbox command did not start"
-        owned = _note_owned(proc.pid)
-        os.kill(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=5)
-        err = proc.stderr.read() if proc.stderr else ""
-        assert err.count("isolation=none") == 1, err
-        body = json.loads(record.read_text(encoding="utf-8"))
-        assert body["isolation"] == "none"
-        assert body["oom"] == "unknown"
-        assert _scope_unit(record) is None
-        left = _wait_gone(owned)
-        assert left == [], left
+        for entered in (False, True):
+            record = tmp_path / "data" / "logs" / f"none-{int(entered)}.json"
+            records.append(record)
+            ready = seat / f"ready-{int(entered)}"
+            ready.unlink(missing_ok=True)
+            entered_file = tmp_path / f"entered-{int(entered)}"
+            env = dict(base, A770B_SANDBOX_RECORD_FILE=str(record))
+            if entered:
+                env["A770B_SANDBOX_ENTERED_FILE"] = str(entered_file)
+            command = f'sleep 120 & echo ready > "{ready}"; sleep 120'
+            err_path = tmp_path / f"i9-err-{int(entered)}"
+            err_fh = err_path.open("w", encoding="utf-8")
+            proc = subprocess.Popen(
+                ["bash", str(SANDBOX), str(seat), str(cfg), "--", "bash", "-c", command],
+                env=env, stdout=subprocess.DEVNULL, stderr=err_fh, text=True,
+            )
+            owned = []
+            try:
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline and not ready.exists():
+                    if proc.poll() is not None:
+                        err_fh.close()
+                        raise AssertionError(err_path.read_text(encoding="utf-8", errors="replace") or "exited")
+                    time.sleep(0.1)
+                assert ready.exists(), "sandbox command did not start"
+                if entered:
+                    file_deadline = time.monotonic() + 5
+                    while time.monotonic() < file_deadline and not entered_file.exists():
+                        time.sleep(0.05)
+                    assert entered_file.read_text(encoding="utf-8").strip() == "entered"
+                owned = _note_owned(proc.pid)
+                os.kill(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=5)
+                err_fh.close()
+                left = _wait_gone(owned)
+                assert left == [], left
+                err = err_path.read_text(encoding="utf-8", errors="replace")
+                assert err.count("isolation=none") == 1, err
+                body = json.loads(record.read_text(encoding="utf-8"))
+                assert body["isolation"] == "none"
+                assert body["oom"] == "unknown"
+                assert _scope_unit(record) is None
+            finally:
+                if not err_fh.closed:
+                    err_fh.close()
+                _reap_owned(proc, owned)
+                owned = []
     finally:
-        _reap_owned(proc, owned)
+        if proc is not None and owned:
+            _reap_owned(proc, owned)
+        _stop_records(records)
 
 
 def test_i10_sandbox_slice_path_is_null_when_absent(tmp_path):
@@ -1552,13 +1631,13 @@ def test_b3_slow_start_does_not_arm_the_reaper(tmp_path):
             logs = Path(env["A770B_DATA"]) / "logs"
             for unit in _scopes_in_logs(logs):
                 saved_units.append(unit)
-            # The grader's parent is the command-substitution shell, not the
-            # local-build process that owns the pipeline.
-            parent = int(Path(f"/proc/{delayed}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[1])
-            owned.append(parent)
-            os.kill(parent, signal.SIGKILL)
+            # Kill the outer verify process, not the grader's parent if those differ.
+            os.kill(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
             _arm_pid_gone(delayed)
             assert not marker.exists()
+            left = _wait_gone([pid for pid in owned if pid != proc.pid])
+            assert left == [], f"verify descendants survived the owner: {left}"
         finally:
             _reap_owned(proc, owned)
             _stop_log_scopes(Path(env["A770B_DATA"]) / "logs", saved_units)
@@ -1566,29 +1645,196 @@ def test_b3_slow_start_does_not_arm_the_reaper(tmp_path):
         _stop_log_scopes(Path(base["A770B_DATA"]) / "logs", saved_units)
 
 
+def _arm_delay_copy(dest: Path) -> Path:
+    """Production grader plus a pause at the start of its preexec function.
+
+    The pause is not in the shipped script. It only gives the test a window
+    in which to kill the parent before the production check runs.
+    """
+    text = LOCAL_BUILD.read_text(encoding="utf-8")
+    needle = "def _arm_child():\n"
+    assert text.count(needle) == 1, "grader preexec function moved"
+    injected = (
+        "def _arm_child():\n"
+        "    _ready = os.environ.get('A770B_ARM_DELAY_READY', '')\n"
+        "    if _ready:\n"
+        "        with open(_ready, 'w', encoding='ascii') as _fh:\n"
+        "            _fh.write(str(os.getpid()))\n"
+        "        time.sleep(2)\n"
+    )
+    dest.write_text(text.replace(needle, injected, 1), encoding="utf-8")
+    dest.chmod(0o755)
+    return dest
+
+
+def test_b3_verify_owner_death_reaps_descendants_and_the_seat_lock(tmp_path):
+    """SIGKILL the outer verify pid. Its descendants and the seat lock must go too."""
+    bin_ = _tools(tmp_path)
+    seat = _seat(tmp_path)
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
+    token = f"vown{tmp_path.name}"
+    ready = seat / "owner-ready"
+    results = Path(env["A770B_DATA"]) / "results"
+    patch = results / "owner.patch"
+    patch.write_text(
+        "diff --git a/README b/README\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-seat\n+seat changed\n",
+        encoding="utf-8",
+    )
+    (results / "owner.spec.json").write_text(json.dumps({
+        "verify": {"test": _sleeper_command(token, ready)},
+    }), encoding="utf-8")
+    verify = subprocess.Popen(
+        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat), "--timeout", "60"],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+    )
+    logs = Path(env["A770B_DATA"]) / "logs"
+    owned: list[int] = []
+    units: list[str] = []
+    try:
+        sleeper = _wait_sleeper(verify.pid, ready, token, verify, seconds=30)
+        owned = _note_owned(verify.pid, [sleeper])
+        for unit in _scopes_in_logs(logs):
+            embedded = int(_SCOPE_UNIT.fullmatch(unit).group(1))
+            assert embedded in owned, unit
+            units.append(unit)
+        lock = _fd_target(verify.pid, 7)
+        assert lock, "verify did not hold the seat lock"
+        assert not _lock_available(lock), "seat lock was not held before the kill"
+        held = [
+            pid for pid in owned
+            if pid != verify.pid and ({"7", "9"} & _proc_fds(pid))
+        ]
+        os.kill(verify.pid, signal.SIGKILL)
+        verify.wait(timeout=5)
+        left = _wait_gone([pid for pid in owned if pid != verify.pid])
+        assert left == [], f"descendants survived verify: {left}"
+        assert _lock_available(lock), "seat lock stayed held after verify died"
+        assert held == [], f"a descendant held lock fd 7 or 9: {held}"
+    finally:
+        _reap_owned(verify, owned)
+        _stop_log_scopes(logs, units)
+
+
 def test_b3_preexec_parent_is_the_pid_from_before_the_fork(tmp_path):
-    """Kill the parent while the forked child is still in preexec."""
+    """Kill the grader while its child is still in preexec. Production has no delay hook."""
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_text("keep\n", encoding="utf-8")
+    env, patch, seat, _results = _verify_fixture(tmp_path, "hook", "true")
+    bin_ = tmp_path / "bin"
+    _scope_exec_stub(bin_ / "systemd-run")
+    _exe(bin_ / "systemctl", """
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=inactive' 'Result=success' ;;
+esac
+exit 0
+""")
+    _exe(bin_ / "journalctl", "exit 1\n")
+    logs = Path(env["A770B_DATA"]) / "logs"
+    proc = subprocess.run(
+        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat)],
+        env=dict(env, A770B_SLOW_ARM_READY=str(sentinel)),
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
+    _stop_log_scopes(logs)
+
     ready = tmp_path / "arm.ready"
     marker = tmp_path / "arm-ran"
-    env, patch, seat, _results = _verify_fixture(tmp_path, "arm", f"printf ran > '{marker}'")
-    env = dict(env, A770B_SLOW_ARM_READY=str(ready))
+    delay_root = tmp_path / "delay"
+    delay_root.mkdir()
+    env, patch, seat, _results = _verify_fixture(delay_root, "arm", f"printf ran > '{marker}'")
+    script = _arm_delay_copy(delay_root / "local-build-arm-delay.sh")
     logs = Path(env["A770B_DATA"]) / "logs"
     proc = subprocess.Popen(
-        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat), "--timeout", "30"],
-        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        ["bash", str(script), "verify", str(patch), str(seat), "--timeout", "30"],
+        env=dict(env, A770B_ARM_DELAY_READY=str(ready)),
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
     owned: list[int] = []
     try:
         delayed = _wait_ready(ready, proc)
-        owned = [proc.pid, delayed]
-        parent = int(Path(f"/proc/{delayed}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[1])
-        owned.append(parent)
-        os.kill(parent, signal.SIGKILL)
+        owned = _note_owned(proc.pid, [delayed])
+        os.kill(_ppid(delayed), signal.SIGKILL)
         _arm_pid_gone(delayed)
         assert not marker.exists()
     finally:
         _reap_owned(proc, owned)
         _stop_log_scopes(logs)
+
+
+def _delay_first_sandbox_bash(bin_: Path, ready: Path) -> None:
+    """PATH bash that pauses once, before the real interpreter reads PPID."""
+    publish = _ready_publish(f'ready="{ready}"')
+    _exe(bin_ / "bash", f"""
+if [ "${{1:-}}" = "{SANDBOX}" ] && [ -z "${{A770B_BASH_DELAY_DONE:-}}" ]; then
+  export A770B_BASH_DELAY_DONE=1
+{publish}
+  /usr/bin/sleep 2
+fi
+exec /usr/bin/bash "$@"
+""")
+
+
+def test_b3_worker_checks_the_pid_its_leader_passed(tmp_path):
+    """Kill the leader while sandbox_run is still starting. A direct call passes no pid."""
+    bin_ = _tools(tmp_path)
+    ready = tmp_path / "worker.ready"
+    _delay_first_sandbox_bash(bin_, ready)
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
+    marker = seat / "worker-ran"
+    record = tmp_path / "worker.json"
+    direct_record = tmp_path / "direct.json"
+    nested_record = tmp_path / "nested.json"
+    env = _env(
+        tmp_path,
+        PATH=f"{bin_}:{os.environ['PATH']}",
+        A770B_NO_BRIDGE="1",
+        A770B_SANDBOX_RECORD_FILE=str(record),
+    )
+    command = f'printf ran > "{marker}"'
+    script = (
+        "(\n"
+        "export A770B_RUN_OWNER_PID=$$\n"
+        f'exec python3 "{RUN_LEAD}" -- bash "{SANDBOX}" "{seat}" "{cfg}" -- '
+        f"bash -c {json.dumps(command)}\n"
+        ")\n"
+        "wait\n"
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", script], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+    )
+    owned: list[int] = []
+    try:
+        delayed = _wait_ready(ready, proc)
+        leader = _ppid(delayed)
+        owned = _note_owned(proc.pid, [delayed, leader])
+        os.kill(leader, signal.SIGKILL)
+        _arm_pid_gone(delayed)
+        proc.wait(timeout=5)
+        err = proc.stderr.read() if proc.stderr else ""
+        assert "parent changed during arming" in err, err
+        assert not marker.exists()
+    finally:
+        _reap_owned(proc, owned)
+        _stop_records([record])
+    direct = subprocess.run(
+        ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
+        env=dict(env, A770B_SANDBOX_RECORD_FILE=str(direct_record)),
+        capture_output=True, text=True,
+    )
+    nested = subprocess.run(
+        ["/usr/bin/bash", "-c", f'/usr/bin/bash "{SANDBOX}" "{seat}" "{cfg}" -- true'],
+        env=dict(env, A770B_SANDBOX_RECORD_FILE=str(nested_record)),
+        capture_output=True, text=True,
+    )
+    try:
+        assert direct.returncode == 0, direct.stderr
+        assert nested.returncode == 0, nested.stderr
+    finally:
+        _stop_records([direct_record, nested_record])
 
 
 def test_b2_abandoned_scope_is_stopped_and_tools_are_bounded(tmp_path, monkeypatch):
