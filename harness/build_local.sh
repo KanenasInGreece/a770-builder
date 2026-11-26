@@ -9,18 +9,19 @@
 # Exit codes: 2 refused (worktree), 3 no model server; the opencode exit code is informational only.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
+_SANDBOX_OOM="$A770B_DATA/logs/sandbox-oom.json"
 _clear_stale_capture_markers_if_unlocked(){
   local lock
   mkdir -p "$A770B_DATA/logs"
   lock=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$A770B_DATA/logs/local-build.lock")
   if _inherited_lock_valid 9 "$lock" "${A770B_CARD_LOCK_PATH:-}"; then
-    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since" "$_SANDBOX_OOM"
     return 0
   fi
   (
     exec 8>>"$lock"
     flock -n 8 || exit 1
-    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since" "$_SANDBOX_OOM"
   ) 2>/dev/null || true
 }
 _clear_stale_capture_markers_if_unlocked
@@ -31,7 +32,7 @@ card_lock; seat_lock "$WT"
 # A previous run's usage file and log stamp are not this run's count.
 # Removed only after locks are held so a refused concurrent caller cannot clear an active run's capture.
 # The tap writes a new usage file when it starts. The stamp is written when this run starts.
-rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since" "$_SANDBOX_OOM"
 CTX=$(a770b_profile_var "$PROFILE" CTX)
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"
 if [ "${A770B_SERVED_ENGINE:-}" = strata ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
@@ -142,6 +143,8 @@ _orphan_watch_pid=$!
 # tee is still running after a SIGKILL of this shell, for as long as the worker holds the pipe.
 # It must not keep FD 7 or FD 9, or the card lock outlives this shell with the worker.
 if [ "${SANDBOX:-1}" = 1 ]; then
+  # The helper reads this after the pipeline returns, outside the leader's fence.
+  export A770B_SANDBOX_RECORD_FILE="$_SANDBOX_OOM"
   ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
       opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
 else
@@ -149,6 +152,11 @@ else
   ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead "$(a770b_opencode_bin)/opencode" run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
 fi
 rc=${PIPESTATUS[0]}
+# Continue policy is graded from the journal, so the leader's code is enough.
+# A helper failure must not replace the builder's own exit status.
+if [ "${SANDBOX:-1}" = 1 ] && [ -f "$_SANDBOX_OOM" ]; then
+  python3 "$A770B_PROJECT/harness/sandbox_oom.py" "$_SANDBOX_OOM" "$rc" || true
+fi
 # 137: the leader was SIGKILL'd and could not forward. The other arm: it is already dead and the worker file
 # is still there (the leader removes the file only after its own reap). Either way, unblock the pipe, then
 # keep the capture path below. The helper no-ops when the recorded identity does not match.

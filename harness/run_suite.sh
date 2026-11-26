@@ -603,6 +603,13 @@ suite_publish_serving_pid(){
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$pid" > "$tmp"
   else : > "$tmp"; fi
   mv -f -- "$tmp" "$HOST_PID_FILE"
+  # qualify's monitor reads this path during the suite. Phase 3 does not.
+  if [ -n "${A770B_QUALIFY_SERVING_PID_FILE:-}" ]; then
+    local qtmp="${A770B_QUALIFY_SERVING_PID_FILE}.tmp.$$"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$pid" > "$qtmp"
+    else : > "$qtmp"; fi
+    mv -f -- "$qtmp" "$A770B_QUALIFY_SERVING_PID_FILE"
+  fi
 }
 # suite_owner_alive <pid> — true while the suite shell exists and is not a zombie.
 suite_owner_alive(){
@@ -1475,6 +1482,8 @@ if isinstance(data, dict) and data.get("status"):
         "exit_code": data.get("exit_code", vrc),
         "infra_error": bool(data.get("infra_error")) or (outcome == "verify_error"),
         "timed_out": bool(data.get("timed_out")),
+        "oom": data.get("oom"),
+        "reason": data.get("reason"),
     }
     print(working, outcome, json.dumps(meta))
     raise SystemExit(0)
@@ -1490,6 +1499,8 @@ if is_real_local_build:
         "exit_code": vrc,
         "infra_error": True,
         "timed_out": False,
+        "oom": None,
+        "reason": None,
     }
     print("-", "verify_error", json.dumps(meta))
     raise SystemExit(0)
@@ -1539,6 +1550,8 @@ meta = {
     "exit_code": vrc,
     "infra_error": outcome == "verify_error",
     "timed_out": outcome == "verify_timeout",
+    "oom": None,
+    "reason": None,
 }
 print(working, outcome, json.dumps(meta))
 PY

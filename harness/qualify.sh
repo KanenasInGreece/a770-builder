@@ -116,6 +116,12 @@ stop_helpers() {
   if [ -n "${MEM:-}" ]; then
     kill -TERM "$MEM" 2>/dev/null || true
   fi
+  # The tracker is not the monitor. Reap it so a finished job leaves no writer.
+  if [ -n "${TRACKER:-}" ]; then
+    kill -TERM "$TRACKER" 2>/dev/null || true
+    wait "$TRACKER" 2>/dev/null || true
+    TRACKER=""
+  fi
 }
 
 release_suite_server() {
@@ -148,6 +154,16 @@ release_suite_server() {
 stop_server() {
   [ "${SERVER_STOPPED:-0}" = 1 ] && return 0
   SERVER_STOPPED=1
+  # Phase 3's target ends with the server. Stop the tracker before truncating
+  # so it cannot write the old pid back over the clear. Phase 5 publishes
+  # through run_suite.sh after this returns.
+  if [ -n "${TRACKER:-}" ]; then
+    kill -TERM "$TRACKER" 2>/dev/null || true
+    wait "$TRACKER" 2>/dev/null || true
+    TRACKER=""
+  fi
+  : > "$job/SERVING_CLEARED"
+  : > "$job/evidence/serving.pid" 2>/dev/null || true
   local cid="" engine
   [ -f "$job/cid" ] && [ ! -L "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
   [ -n "$cid" ] || return 0
@@ -562,6 +578,8 @@ run_suite_once() {
   printf '%s\n' "suite: ${cmd[*]}" >> "$job/evidence/argv.log"
   printf '%s\n' "profiles-file: ${A770B_PROFILES_FILE:-}" >> "$job/evidence/argv.log"
   # The suite's cleanup stops only the containers this suite recorded.
+  # Phase 5 uses the same serving-pid file the monitor already follows.
+  export A770B_QUALIFY_SERVING_PID_FILE="$job/evidence/serving.pid"
   A770B_LADDER_RUN=1 A770B_PROFILES_FILE=${A770B_PROFILES_FILE:-} A770B_SEAT="$job/scratch/seat" "${cmd[@]}" >"$log" 2>&1 &
   CHILD=$!
   plain_trunc "$job/suite.pid" || return 2
@@ -771,7 +789,36 @@ start_observers() {
     done
   ) &
   VRAM_PID=$!
-  ( trap - TERM INT EXIT; exec 7>&- 9>&-; exec python3 "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" ) &
+  plain_trunc "$job/evidence/serving.pid" || return 0
+  # Copy the phase's engine before the subshell. A local in the caller is
+  # visible here; the tracker must not depend on that local still being set.
+  track_engine=${engine:-}
+  # Phase 3 identity is $job/cid: docker's pid, or the Strata pid. The loop
+  # ends when stop_server signals it. It does not hold the lock fds.
+  (
+    trap - TERM INT EXIT
+    exec 7>&- 9>&-
+    while [ ! -f "$job/SERVING_CLEARED" ]; do
+      pid=""
+      cid=""
+      if [ -f "$job/cid" ] && [ ! -L "$job/cid" ]; then
+        cid=$(tr -d '[:space:]' < "$job/cid" || true)
+      fi
+      if [ -n "$cid" ] && [ ! -f "$job/SERVING_CLEARED" ]; then
+        if [ "$track_engine" = strata ]; then
+          pid=$(bash "$here/serve_strata.sh" pid 2>/dev/null || true)
+        elif printf '%s\n' "$cid" | grep -Eq '^[0-9a-f]{64}$'; then
+          pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null || true)
+        fi
+      fi
+      if [ ! -f "$job/SERVING_CLEARED" ] && printf '%s\n' "$pid" | grep -Eq '^[1-9][0-9]*$'; then
+        printf '%s\n' "$pid" > "$job/evidence/serving.pid"
+      fi
+      sleep 0.5 || exit 0
+    done
+  ) &
+  TRACKER=$!
+  ( trap - TERM INT EXIT; exec 7>&- 9>&-; exec python3 "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" --pid-file "$job/evidence/serving.pid" ) &
   MEM=$!
 }
 
@@ -1219,7 +1266,7 @@ cmd_start() {
   if [ "$launch" = systemd ]; then
     local -a args=() item
     forwarded_env
-    args=(systemd-run --user --collect --unit="qualify-$id" -p KillMode=mixed -p TimeoutStopSec=120 --working-directory="$A770B_PROJECT")
+    args=(systemd-run --user --collect --unit="qualify-$id" -p KillMode=mixed -p TimeoutStopSec=120 -p OOMPolicy=continue --working-directory="$A770B_PROJECT")
     for item in "${FORWARDED[@]}"; do
       [ -n "$item" ] || continue
       args+=(--setenv="$item")

@@ -111,6 +111,14 @@ fi
 echo; echo "## opencode transcript tail"; echo '```'; { grep -vE '^\s*$' "$BLOG" || true; } | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
 capture_timings
+echo; echo "## sandbox oom"
+# No file on stop-run or SANDBOX=0. Capture still succeeds.
+if [ -f "$A770B_DATA/logs/sandbox-oom.json" ] && [ ! -L "$A770B_DATA/logs/sandbox-oom.json" ]; then
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("oom", "unknown"))' \
+    "$A770B_DATA/logs/sandbox-oom.json" || echo "not recorded"
+else
+  echo "not recorded"
+fi
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"
 rm -f -- "$DIFF"
