@@ -108,7 +108,7 @@ if [ -n "${A770B_SPEC:-}" ] && [ -f "$A770B_SPEC" ]; then
 else
   echo "none: the run had no specification, so the profile is the template's defaults"
 fi
-echo; echo "## opencode transcript tail"; echo '```'; grep -vE '^\s*$' "$BLOG" | tail -30 | cut -c1-300; echo '```'
+echo; echo "## opencode transcript tail"; echo '```'; { grep -vE '^\s*$' "$BLOG" || true; } | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
 capture_timings
 } > "$OUT" 2>&1

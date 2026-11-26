@@ -1,0 +1,20 @@
+{
+  "instrument": "SUITE-1@1",
+  "profile": "candidate",
+  "stages": [
+    {
+      "id": "s1-frontend",
+      "language": "javascript+html",
+      "working": true,
+      "requests": 9,
+      "prompt_tokens": 15514,
+      "gen_tokens": 7668,
+      "max_prompt_tokens": 4000,
+      "max_completion_tokens": 800,
+      "length_stops": 1,
+      "counts_toward_pass": true,
+      "outcome": "timeout",
+      "wall_s": 2111
+    }
+  ]
+}

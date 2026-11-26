@@ -4,6 +4,7 @@
 #   verify <label|patch> [<worktree>] [--test "<cmd>"] [--timeout S]   re-run a capture's tests inside a fresh sandbox
 #   reset [<worktree>]                                          discard everything in the seat that is not committed (ignored files too)
 #   serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | stop | stop-run (end the run in progress by its own pid) | version (--version)
+#   qualify start|status|wait|result|export|stop|list   a qualification that continues after its caller exits
 #   profiles [--name N]   the registry card (config/registry/<card>.<mode>.json) with the served values, for a caller choosing a profile
 #   menu              ready / also / the cold full slice as JSON, for a caller picking a row
 #   doctor            what this machine lacks to run the seat, one line per check; exit 1 when anything is missing
@@ -957,6 +958,7 @@ case "${1:-}" in
   profiles) if [ -n "$A770B_PROFILES" ]; then shift; python3 "$A770B_PROJECT/harness/profiles.py" card --file "$A770B_PROFILES_FILE" --served "$@"; else empty_registry_line; fi ;;
   menu) if [ -n "$A770B_PROFILES" ]; then python3 "$A770B_PROJECT/harness/profiles.py" menu --file "$A770B_PROFILES_FILE" --sidecar "$A770B_DATA/logs/live-backend.json" --pidfile "$A770B_DATA/logs/llamacpp-a770.pid"; else python3 "$A770B_PROJECT/harness/profiles.py" menu --card "${A770B_CARD:-}" --mode "$A770B_CARD_MODE"; fi ;;
   doctor) doctor ;;
+  qualify) shift; exec bash "$A770B_PROJECT/harness/qualify.sh" "$@" ;;
   stop)
     card_lock
     strata_rc=0
@@ -1517,6 +1519,6 @@ PY
     reset_worktree "$WT"; trap - EXIT INT TERM
     echo "▶ verify: $verdict (public=$pub_state hidden=$hid_state) · reported: ${summary:-no pytest summary line} · $OUT"
     exit "$vrc" ;;
-  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME [--engine strata]] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] [--timeout S] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | version | check-update" >&2; exit 2 ;;
+  *) echo "usage: local-build.sh run [<worktree>] <brief.md> [--spec <spec.json>] [--profile <name>] [--timeout S] [--base-url http://host:port[/v1] --served-model-name NAME [--engine strata]] | verify <label|patch> [<worktree>] [--test \"<cmd>\"] [--timeout S] | reset [<worktree>] | serve <profile> | bench <profile> [--pp <sizes>] [--dry-run] | status | profiles [--name N] | menu | doctor | stop | stop-run | qualify start|status|wait|result|export|stop|list | version | check-update" >&2; exit 2 ;;
 esac
 fi

@@ -44,6 +44,8 @@ We look for the strongest configuration measured for a coding workload, card, mo
 
 The [kit](kit/PROFILE.md) defines how to measure load, throughput, useful context and coding performance. The useful window is the served context unless the operator sets a prefill absorb limit; decode speed is recorded and does not set that window. The harness starts or attaches to the engine, enforces the configured limits on managed runs, and captures results from the context sweep and graded coding tasks. A profile records the selected artifact, runtime settings and measurements so the local-build skill can use the tested configuration.
 
+The default way to profile a model on llama.cpp, vLLM, or SGLang is `local-build.sh qualify start`, then `qualify result` and `qualify export`. Strata is not yet supported by qualify; the manual ladder is the way to measure it. The rungs of `harness/ladder.sh` are what that command runs for those three engines, and that script is how to debug one rung rather than the default profiling step. A result holds the required statistics, the measurement switches for that engine, and whether each switch was confirmed. The runner returns facts and the verdict `needs-review`. Adding a profile stays a deliberate act.
+
 On Arc Pro B70, Inkling 2 Mini qualified with IQ4_NL weights on llama.cpp Vulkan, with a 65,536-token configured window and a 62,949-token context sweep sample. The tested vLLM XPU build could not load the looped architecture, and the tested llama.cpp SYCL build failed in long-context prefill. Qwen3.8 Flash-Next IQ3_S qualified through Strata's Intel SYCL engine, which tiers expert weights across device and host memory. See the [model artifacts](config/models.md) and [operating guide](docs/OPERATING.md).
 
 ## The catalogue

@@ -1,0 +1,6 @@
+corpus: kit/corpus/large.py (already generated)
+target   tokens   ttft_s    prefill_tps decode_tps vram_max  resets  
+  budget for 7930 tokens: 7200s — UNMEASURED (no llama-bench curve for this model; the deadline is a fixed generous one)
+8000     7888     8.1       970         66.4       21.77301025390625GiB 0       
+  budget for 99888 tokens: 7200s — UNMEASURED (no llama-bench curve for this model; the deadline is a fixed generous one)
+100000   99846    112.2     890         12.2       21.77313232421875GiB 0       

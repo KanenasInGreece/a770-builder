@@ -1,0 +1,16 @@
+{
+  "instrument": "llama-benchy",
+  "tool": "llama-benchy",
+  "prompt": 8192,
+  "gen": 128,
+  "flags": "uvx llama-benchy --base-url http://127.0.0.1:9/v1 --served-model-name local-builder --model local-builder --tokenizer tokenizer-dir --pp 8192 32768 65536 100000 --tg 128 --depth 0 --runs 3 --concurrency 1 --no-cache --skip-coherence --latency-mode generation --format json",
+  "at_depth": {
+    "8192": {"pp": 1768.7024842723774, "tg": 63.32384734300735},
+    "32768": {"pp": 1302.3227247986867, "tg": 29.38076490952528},
+    "65536": {"pp": 996.7720340671455, "tg": 17.105422890765677},
+    "100000": {"pp": 797.9084170787891, "tg": 11.947831158598161}
+  },
+  "source": "speed.json",
+  "requested_depths": [8192, 32768, 65536, 100000],
+  "missing_depths": []
+}
