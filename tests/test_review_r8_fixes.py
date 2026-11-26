@@ -132,8 +132,11 @@ runpy.run_path(lead, run_name="__main__")
 
 
 # The integration: the REAL build_local.sh and the REAL stop-run, with neither the receipt nor the owner channel
-# available. A sitecustomize on PYTHONPATH (active only inside run_lead.py) starts stop-run at the very moment the
-# fence forwards its TERM and holds that forward until stop-run's TERM is pending, so both arrive together.
+# available. The leader is python3 -I -B, which ignores PYTHONPATH and still imports a virtual environment's
+# site-packages. A throwaway environment under tmp_path holds the hook, and its bin is first on PATH only for
+# this run, so the real argv stays the isolated form stop-run recognises. The hook starts stop-run at the very
+# moment the fence forwards its TERM and holds that forward until stop-run's TERM is pending, so both arrive
+# together.
 STOP_AT_FENCE_SITE = r'''
 import os, signal, subprocess, sys, time
 if sys.argv and os.path.basename(sys.argv[0]) == "run_lead.py" and os.environ.get("R8_STOP_AT_FENCE"):
@@ -168,12 +171,35 @@ if sys.argv and os.path.basename(sys.argv[0]) == "run_lead.py" and os.environ.ge
 '''
 
 
+def _fence_race_venv_bin(tmp_path: Path) -> Path:
+    """Bin of a venv whose site-packages holds the fence-race hook.
+
+    The caller puts this directory first on PATH for the one build_local.sh run
+    under test. python3 -I still imports that environment's site-packages.
+    """
+    venv = tmp_path / "race-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+        check=True, timeout=60,
+    )
+    py = venv / "bin" / "python3"
+    listed = subprocess.check_output(
+        [str(py), "-c", "import site; print('\\n'.join(site.getsitepackages()))"],
+        text=True, timeout=30,
+    ).splitlines()
+    root = venv.resolve()
+    site_packages = next(
+        path for path in (Path(line) for line in listed)
+        if path.resolve().is_relative_to(root)
+    )
+    (site_packages / "sitecustomize.py").write_text(STOP_AT_FENCE_SITE, encoding="utf-8")
+    return py.parent
+
+
 def test_stop_racing_the_fence_without_receipt_or_owner_is_not_graded_by_the_suite(tmp_path):
     env = _base_env(tmp_path)
     suite = _one_stage_suite(tmp_path)
-    site = tmp_path / "site"
-    site.mkdir()
-    (site / "sitecustomize.py").write_text(STOP_AT_FENCE_SITE, encoding="utf-8")
+    venv_bin = _fence_race_venv_bin(tmp_path)
     failbin = r7._failbin(tmp_path, "ps_fails")
     stop_out = tmp_path / "stop-run.out"
     stub = tmp_path / "stubbin"
@@ -182,8 +208,9 @@ def test_stop_racing_the_fence_without_receipt_or_owner_is_not_graded_by_the_sui
     _make_exec(stub / "opencode", _with_opencode_v1(
         f"trap 'kill $! 2>/dev/null; echo 0 > \"{marker}\"; exit 0' TERM; sleep 60 & wait $!; exit 0"))
     fake_lb = _make_exec(tmp_path / "fake-lb.sh", f'''if [ "$1" = run ]; then
-  env -u LOCAL_TIMEOUT LOCAL_TIMEOUT=1 SANDBOX=0 PROFILE={PROFILE} PATH="{stub}:$PATH" \\
-    PYTHONPATH="{site}" R8_STOP_AT_FENCE="{LOCAL_BUILD}:{failbin}:{stop_out}" \\
+  env -u LOCAL_TIMEOUT LOCAL_TIMEOUT=1 SANDBOX=0 PROFILE={PROFILE} \\
+    PATH="{venv_bin}:{stub}:$PATH" \\
+    R8_STOP_AT_FENCE="{LOCAL_BUILD}:{failbin}:{stop_out}" \\
     bash "{BUILD_LOCAL}" "$2" "brief" > "{tmp_path}/build.out" 2>&1
   brc=$?
   mkdir -p "$A770B_DATA/results"
