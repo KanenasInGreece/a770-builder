@@ -54,7 +54,7 @@ plain_trunc() {
 }
 
 usage() {
-  printf '%s\n' "usage: qualify.sh start --engine <llama|llama.cpp|vllm|sglang|strata> --model <name> [--profiles-file <file>] [--ctx N] [--backend vulkan|sycl] [--tokenizer <dir>] [--kv T] [--kv-v T] [--extra <flags>] [--reasoning on|off] [--reasoning-budget N] [--stages a,b] [--refs-repeat N] [--absorb-max-s N] [--skip-window] [--no-suite] [--fit-only] [--dry-run] [--foreground] | status [job] | wait <job> [--timeout S] | result <job> [--json] | export <job> [--out <file>] [--allow-incomplete] | stop <job> | list" >&2
+  printf '%s\n' "usage: qualify.sh start --engine <llama|llama.cpp|vllm|sglang> --model <name> [--profiles-file <file>] [--ctx N] [--backend vulkan|sycl] [--tokenizer <dir>] [--kv T] [--kv-v T] [--extra <flags>] [--reasoning on|off] [--reasoning-budget N] [--stages a,b] [--refs-repeat N] [--absorb-max-s N] [--skip-window] [--no-suite] [--fit-only] [--dry-run] [--foreground] | status [job] | wait <job> [--timeout S] | result <job> [--json] | export <job> [--out <file>] [--allow-incomplete] | stop <job> | list" >&2
   exit 2
 }
 
@@ -119,11 +119,30 @@ stop_helpers() {
 }
 
 release_suite_server() {
-  # Phase 3 is stopped by stop_server from the id this job recorded.
-  # The suite stops its own containers by that same id (A770B_LADDER_RUN).
-  # A project-wide stop would tear down a server this job never started,
-  # including one still up when preflight or the pre-hook failed.
-  return 0
+  # Stop only pairs this job appended to owned.cids. A container that is not
+  # in that file was not started by this job, so it is left running.
+  # The latest line for an id wins: a later start of the same id has a new
+  # invocation, and stop-id refuses a mismatched one.
+  local file=$job/owned.cids line cid inv seen=" " idx
+  local -a entries=()
+  [ "${STUB:-0}" = 1 ] && return 0
+  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  refuse_link "$job/phases/stop-owned.log" || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    entries+=("$line")
+  done < "$file"
+  for (( idx=${#entries[@]}-1; idx>=0; idx-- )); do
+    cid=""
+    inv=""
+    read -r cid inv <<<"${entries[$idx]}"
+    [ -n "$cid" ] && [ -n "$inv" ] || continue
+    case "$seen" in
+      *" $cid "*) continue ;;
+    esac
+    seen="$seen$cid "
+    bash "$here/serve_compose.sh" stop-id "$cid" "$inv" >>"$job/phases/stop-owned.log" 2>&1 || true
+  done
 }
 
 stop_server() {
@@ -235,14 +254,34 @@ finish() {
   record_card || true
   run_post
   record_hooks || true
-  # Summarise reads the failure reason. The marker is still written below.
+  # The terminal state is the publication wait and result both read.
+  # Assemble and summarise finish first. The marker and the lock release
+  # come next. Only then does status.json leave "running".
   local state=${FINISH_STATE:-finished}
   local reason=${FAIL_REASON:-}
   local marker=${MARKER_NAME:-DONE}
+  "${py[@]}" assemble --job "$job" >/dev/null 2>&1 || true
+  if [ "$state" = failed ] && [ -n "$reason" ]; then
+    "${py[@]}" summarise --job "$job" --abort-reason "$reason" >/dev/null 2>&1 || true
+  else
+    "${py[@]}" summarise --job "$job" >/dev/null 2>&1 || true
+  fi
+  release_locks
+  if ! plain_trunc "$job/$marker"; then
+    exit 2
+  fi
+  MARKER=1
+  # The marker is already on disk. status_merge ignores a later writer unless
+  # the patch says this is the one terminal publish.
   merge "$(python3 - "$state" "$reason" "${RUN_PID:-}" "${RUN_START:-}" <<'PY'
 import json, sys
 state, reason, pid, start = sys.argv[1:5]
-body = {"state": state, "reason": reason or None, "event": "terminal " + state}
+body = {
+    "state": state,
+    "reason": reason or None,
+    "event": "terminal " + state,
+    "_allow_terminal": True,
+}
 if pid:
     body["pid"] = int(pid)
 if start:
@@ -250,14 +289,6 @@ if start:
 print(json.dumps(body))
 PY
 )"
-  "${py[@]}" assemble --job "$job" >/dev/null 2>&1 || true
-  "${py[@]}" summarise --job "$job" >/dev/null 2>&1 || true
-  if ! plain_trunc "$job/$marker"; then
-    release_locks
-    exit 2
-  fi
-  MARKER=1
-  release_locks
 }
 
 on_term() {
@@ -1027,6 +1058,8 @@ cmd_run() {
   trap on_exit EXIT
   mkdir -p "$job/evidence" "$job/phases" "$job/scratch"
   plain_trunc "$job/evidence/argv.log" || die "refusing a symlink argv log"
+  plain_trunc "$job/owned.cids" || die "refusing a symlink owned-container list"
+  export A770B_OWNED_CIDS_FILE=$job/owned.cids
   if ! take_card; then
     merge '{"state":"failed","reason":"lock","event":"lock refused"}'
     plain_trunc "$job/FAILED" || die "refusing a symlink marker"
@@ -1126,12 +1159,15 @@ cmd_start() {
     "${py[@]}" plan "$@"
     return $?
   fi
-  local tmp
-  tmp=$(mktemp)
-  if ! "${py[@]}" plan --emit "$tmp" "$@"; then
-    rm -f -- "$tmp"
+  # plan creates nothing. A refusal, including Strata, returns before any
+  # temp file or job directory exists. The payload stays in the shell until
+  # the plan is accepted.
+  local payload tmp
+  if ! payload=$("${py[@]}" plan "$@"); then
     return 2
   fi
+  tmp=$(mktemp)
+  printf '%s\n' "$payload" > "$tmp"
   if [ -L "$A770B_DATA" ]; then
     rm -f -- "$tmp"
     die "refusing a symlink in the job path"
@@ -1247,8 +1283,6 @@ cmd_wait() {
       finished) exit 0 ;;
       failed|lost|stopped) exit 4 ;;
     esac
-    if [ -f "$job/DONE" ]; then exit 0; fi
-    if [ -f "$job/FAILED" ] || [ -f "$job/STOPPED" ]; then exit 4; fi
     now=$(date +%s)
     if [ $((now - start)) -ge "$timeout" ]; then exit 124; fi
     sleep 0.2
@@ -1327,12 +1361,13 @@ cmd_stop() {
   else
     kill -TERM "$pid" 2>/dev/null || true
   fi
-  local start_s now
+  local start_s now state
   start_s=$(date +%s)
   while true; do
-    if [ -f "$job/STOPPED" ] || [ -f "$job/DONE" ] || [ -f "$job/FAILED" ]; then
-      exit 0
-    fi
+    state=$(${py[@]} status-show --job "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))')
+    case "$state" in
+      finished|failed|lost|stopped) exit 0 ;;
+    esac
     now=$(date +%s)
     if [ $((now - start_s)) -ge 120 ]; then
       die "stop timed out"

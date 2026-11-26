@@ -18,8 +18,9 @@ import qualify_lib as ql
 from test_qualify_lib import _gguf_args, _job, _min_row, _wrap
 from test_review_v059_fixes import RUN_SUITE_SH, _base_env, _make_exec
 
-# A shell command named eval. The words "eval time" and "evaluation" are not one.
-_EVAL_COMMAND = re.compile(r"""(^|[^A-Za-z0-9_])eval(?:\s*\(|\s+["'$`(])""")
+# A shell command named eval, including an unquoted `eval cmd`.
+# The measurement phrase "eval time" and the word "evaluation" are not one.
+_EVAL_COMMAND = re.compile(r"""(^|[;&|(\s])eval(?:\s+(?!time\b)|$|\()""")
 
 PROMPT_EVAL = (
     "prompt eval time =     15880.00 ms /  8192 tokens "
@@ -29,6 +30,16 @@ EVAL_TIME = (
     "eval time =      3200.00 ms /   128 tokens "
     "(   25.00 ms per token,    40.00 tokens per second)"
 )
+
+
+def test_eval_command_regex_matches_an_unquoted_command():
+    assert _EVAL_COMMAND.search("eval cmd")
+    assert _EVAL_COMMAND.search("foo; eval cmd")
+    assert _EVAL_COMMAND.search('eval "$x"')
+    assert _EVAL_COMMAND.search("eval(")
+    assert _EVAL_COMMAND.search("eval")
+    assert not _EVAL_COMMAND.search("prompt eval time = 1")
+    assert not _EVAL_COMMAND.search("evaluation")
 
 
 def test_qualify_sources_have_no_eval_command():
@@ -87,17 +98,17 @@ def test_build_plan_resolves_a_profile_tokenizer_without_a_flag(tmp_path, monkey
     cfg.write_text(json.dumps({"tokenizer": str(tok)}) + "\n", encoding="utf-8")
     row = _min_row("strata")
     row["model"] = "e2e.strata.json"
-    path = _profile(tmp_path, "strata", "e2e-row", row)
-    plan = ql.build_plan(
-        [
-            "--engine", "strata",
-            "--model", "e2e-row",
-            "--profiles-file", str(path),
-            "--stages", "s0-design",
-        ]
-    )
-    assert plan["tokenizer"] == str(tok)
-    assert plan["window"]["kit_tokens"] == 100
+    # qualify start refuses Strata. The resolver stays for the later cycle.
+    assert ql._resolve_plan_tokenizer(None, "strata", row) == str(tok)
+    with pytest.raises(ql.QualifyError, match="not yet supported by qualify"):
+        ql.build_plan(
+            [
+                "--engine", "strata",
+                "--model", "e2e-row",
+                "--profiles-file", str(_profile(tmp_path, "strata", "e2e-row", row)),
+                "--stages", "s0-design",
+            ]
+        )
 
 
 def test_statistics_follow_an_exportable_suite():

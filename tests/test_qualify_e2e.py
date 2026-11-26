@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import queue
+import signal
 import stat
 import subprocess
 import threading
@@ -72,7 +73,8 @@ def _corpus(path: Path) -> None:
 def _patch_docker(bin_dir: Path) -> None:
     script = bin_dir / "docker"
     text = script.read_text(encoding="utf-8")
-    text = text.replace("import json, os, re, sys\n", "import json, os, re, sys, time\n", 1)
+    if "import json, os, re, sys, time\n" not in text:
+        text = text.replace("import json, os, re, sys\n", "import json, os, re, sys, time\n", 1)
     hold = (
         "    if cmd == \"up\":\n"
         "        hold = os.environ.get(\"E2E_UP_HOLD\")\n"
@@ -109,6 +111,10 @@ class _Engine(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path == "/health":
+            hold = os.environ.get("E2E_HEALTH_HOLD")
+            if hold and os.path.exists(hold):
+                self._send(b'{"loading":true}', 503)
+                return
             self._send(b'{"ok":true}')
         elif path == "/v1/models":
             self._send(b'{"data":[{"id":"local-builder"}]}')
@@ -326,6 +332,8 @@ exit 0
         "E2E_UP_HOLD",
         "E2E_OPENCODE_HOLD",
         "E2E_S2_SOLUTION",
+        "E2E_HEALTH_HOLD",
+        "FAKE_DOCKER_STOP_SLEEP",
     ):
         env.pop(name, None)
     env["_E2E_ENGINE"] = engine
@@ -528,26 +536,37 @@ def _strata_config(env) -> None:
     env["A770B_FRAMEWORK_PORTS"] = env["A770B_PORT"]
 
 
-def test_strata_stops_at_the_reserved_port_before_a_server(tmp_path):
+def test_strata_is_refused_before_any_job_file(tmp_path):
     env = _world(tmp_path, port=9, engine="strata")
-    env["A770B_PORT"] = "9"
-    env["A770B_FRAMEWORK_PORTS"] = "9"
+    data = Path(env["A770B_DATA"])
+    assert not data.exists()
     _strata_config(env)
-    code, out, err = _run(env, _argv(env, stages="s0-design"), 90)
-    assert code == 4, out + err
-    directory = next(line.split(" ", 1)[1] for line in out.splitlines() if line.startswith("directory "))
-    job = Path(directory)
-    detail = _tails(job)
-    serve_log = (job / "phases" / "serve.log").read_text(encoding="utf-8", errors="replace")
-    assert "Strata port is reserved" in serve_log, detail
-    assert "another local-build run holds the card lock" not in detail
-    assert "serve.server" not in serve_log
-    result = json.loads((job / "result.json").read_text(encoding="utf-8"))
-    why = next(item for item in result["unmeasured"] if item.get("phase") == "serve")
-    assert why.get("command")
-    assert why.get("rc") not in (None, 0)
-    assert why.get("log") == "phases/serve.log"
-    assert "serve_strata.sh" in why["command"] or "local-build.sh" in why["command"]
+    code, out, err = _run(env, _argv(env, stages="s0-design"), 30)
+    assert code == 2, out + err
+    assert "not yet supported by qualify" in err
+    assert "manual ladder" in err
+    assert out == ""
+    assert not data.exists()
+    dry = _argv(env, stages="s0-design", extra=["--dry-run"])
+    code, out, err = _run(env, dry, 30)
+    assert code == 2, out + err
+    assert "not yet supported by qualify" in err
+    assert not data.exists()
+    # A profiles file whose row is Strata, asked for as another engine.
+    prof = _profile(tmp_path, "strata", "e2e.strata.json")
+    code, out, err = _run(
+        env,
+        [
+            "bash", str(QUALIFY), "start", "--engine", "vllm",
+            "--model", "e2e-row", "--profiles-file", str(prof),
+            "--tokenizer", env["_E2E_TOKENIZER"],
+        ],
+        30,
+    )
+    assert code == 2, out + err
+    assert "not yet supported by qualify" in err
+    assert "manual ladder" in err
+    assert not data.exists()
 
 
 def _lines_until(proc, timeout):
@@ -713,6 +732,134 @@ def _stop_suite_spared(job: Path) -> None:
     log = job / "phases" / "stop-suite.log"
     if log.is_file():
         assert "stopped (compose project" not in log.read_text(encoding="utf-8", errors="replace")
+
+
+def _owned_live(env, job: Path) -> list[str]:
+    text = (job / "owned.cids").read_text(encoding="utf-8")
+    found = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and _still_running(env, parts[0]):
+            found.append(parts[0])
+    return found
+
+
+def _term_runner(env, proc, job: Path) -> None:
+    status = json.loads((job / "status.json").read_text(encoding="utf-8"))
+    os.kill(int(status["pid"]), signal.SIGTERM)
+    proc.wait(timeout=40)
+
+
+def test_term_during_health_wait_stops_only_this_jobs_container(tmp_path):
+    server = None
+    hold = tmp_path / "health-hold"
+    hold.write_text("1\n", encoding="utf-8")
+    proc = None
+    os.environ["E2E_HEALTH_HOLD"] = str(hold)
+    try:
+        env = _world(tmp_path, port=9, engine="llama.cpp")
+        server = _serve_engine()
+        env["A770B_PORT"] = str(server.server_address[1])
+        env["A770B_HEALTH_PAUSE"] = "0.2"
+        env["A770B_HEALTH_TRIES"] = "40"
+        unrelated = "cd" * 32
+        _plant(env, "other-work", unrelated)
+        proc = subprocess.Popen(
+            _argv(env, stages="s0-design"),
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        found, early = _lines_until(proc, 90)
+        assert "directory" in found, early
+        job = Path(found["directory"])
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if (job / "owned.cids").is_file() and _owned_live(env, job):
+                break
+            if proc.poll() is not None:
+                err = proc.stderr.read()
+                raise AssertionError(f"runner exited {proc.returncode} before health\n{early}\n{err}\n{_tails(job)}")
+            time.sleep(0.05)
+        live = _owned_live(env, job)
+        assert live, (job / "owned.cids").read_text(encoding="utf-8")
+        assert _still_running(env, unrelated)
+        _term_runner(env, proc, job)
+        proc = None
+        for cid in live:
+            assert not _still_running(env, cid)
+        assert _still_running(env, unrelated)
+        assert (job / "STOPPED").is_file()
+        assert (job / "result.json").is_file()
+        assert (job / "report.md").is_file()
+        assert json.loads((job / "status.json").read_text(encoding="utf-8"))["state"] == "stopped"
+    finally:
+        os.environ.pop("E2E_HEALTH_HOLD", None)
+        hold.unlink(missing_ok=True)
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=10)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+
+
+def test_term_during_suite_stops_only_this_jobs_container(tmp_path):
+    server = None
+    hold = tmp_path / "opencode-hold"
+    hold.write_text("1\n", encoding="utf-8")
+    proc = None
+    try:
+        env = _world(tmp_path, port=9, engine="llama.cpp")
+        server = _serve_engine()
+        env["A770B_PORT"] = str(server.server_address[1])
+        env["E2E_OPENCODE_HOLD"] = str(hold)
+        # Longer than finish()'s 5s grace, so the suite's own stop is killed
+        # and the runner has to stop the recorded pair itself.
+        env["FAKE_DOCKER_STOP_SLEEP"] = "8"
+        unrelated = "ce" * 32
+        _plant(env, "other-work", unrelated)
+        proc = subprocess.Popen(
+            _argv(env, stages="s0-design", extra=["--skip-window"]),
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        found, early = _lines_until(proc, 90)
+        assert "directory" in found, early
+        job = Path(found["directory"])
+        pidfile = Path(str(hold) + ".pid")
+        deadline = time.time() + 180
+        while time.time() < deadline and not pidfile.is_file():
+            if proc.poll() is not None:
+                err = proc.stderr.read()
+                raise AssertionError(
+                    f"runner exited {proc.returncode} before opencode\n{early}\n{err}\n{_tails(job)}"
+                )
+            time.sleep(0.2)
+        assert pidfile.is_file(), _tails(job)
+        live = _owned_live(env, job)
+        assert live, (job / "owned.cids").read_text(encoding="utf-8")
+        assert _still_running(env, unrelated)
+        _term_runner(env, proc, job)
+        proc = None
+        for cid in live:
+            assert not _still_running(env, cid), cid
+        assert _still_running(env, unrelated)
+        assert (job / "STOPPED").is_file()
+        assert (job / "result.json").is_file()
+    finally:
+        hold.unlink(missing_ok=True)
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=10)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
 
 
 def test_unrelated_server_survives_preflight_failure(tmp_path):

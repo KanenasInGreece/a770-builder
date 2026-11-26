@@ -452,6 +452,11 @@ check_seat_path(){
 }
 
 SUITE_OWNED_CIDS_FILE=""
+SUITE_OWNED_CIDS_REMOVE=0
+# A caller that already named a regular file (qualify's job list) keeps it.
+# This suite appends to that file and does not delete it. A suite killed
+# before its own stop still leaves the pairs for the caller to stop.
+_caller_owned=${A770B_OWNED_CIDS_FILE:-}
 unset A770B_OWNED_CIDS_FILE
 if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] export kit seat per stage: $KIT_SEAT_SRC -> $SEAT (fresh=$FRESH)"
@@ -462,9 +467,15 @@ else
   seat_lock "$SEAT"
   check_seat_path "$SEAT"
   if [ "${A770B_LADDER_RUN:-0}" = 1 ] && [ ${#RUN_ATTACH[@]} -eq 0 ]; then
-    mkdir -p "$A770B_DATA/logs"
-    SUITE_OWNED_CIDS_FILE=$(mktemp "$A770B_DATA/logs/suite-owned-XXXXXX.cids")
-    export A770B_OWNED_CIDS_FILE="$SUITE_OWNED_CIDS_FILE"
+    if [ -n "$_caller_owned" ] && [ -f "$_caller_owned" ] && [ ! -L "$_caller_owned" ]; then
+      SUITE_OWNED_CIDS_FILE=$_caller_owned
+      export A770B_OWNED_CIDS_FILE="$SUITE_OWNED_CIDS_FILE"
+    else
+      mkdir -p "$A770B_DATA/logs"
+      SUITE_OWNED_CIDS_FILE=$(mktemp "$A770B_DATA/logs/suite-owned-XXXXXX.cids")
+      export A770B_OWNED_CIDS_FILE="$SUITE_OWNED_CIDS_FILE"
+      SUITE_OWNED_CIDS_REMOVE=1
+    fi
   fi
 fi
 
@@ -664,7 +675,9 @@ _suite_cleanup(){
       [ -n "$line" ] || continue
       entries+=("$line")
     done < "$SUITE_OWNED_CIDS_FILE"
-    rm -f "$SUITE_OWNED_CIDS_FILE"
+    if [ "$SUITE_OWNED_CIDS_REMOVE" = 1 ]; then
+      rm -f "$SUITE_OWNED_CIDS_FILE"
+    fi
     for (( idx=${#entries[@]}-1; idx>=0; idx-- )); do
       cid="" inv=""
       read -r cid inv <<<"${entries[$idx]}"

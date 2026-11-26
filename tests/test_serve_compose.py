@@ -82,7 +82,7 @@ def _fake_runtime(tmp_path: Path, *, ps_id: str = "cid123", host_pid: str = "424
         "inspect_error": inspect_error,
     }), encoding="utf-8")
     docker_script = f'''#!/usr/bin/env python3
-import json, os, re, sys
+import json, os, re, sys, time
 from pathlib import Path
 
 args = sys.argv[1:]
@@ -311,6 +311,12 @@ if args and args[0] == "logs":
     sys.exit(0)
 
 if args and args[0] == "stop":
+    delay = os.environ.get("FAKE_DOCKER_STOP_SLEEP", "")
+    if delay:
+        try:
+            time.sleep(float(delay))
+        except ValueError:
+            pass
     if cfg["stop_fails"] or daemon_down():
         sys.exit(1)
     cid = args[-1]

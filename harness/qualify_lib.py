@@ -158,6 +158,12 @@ def counted_pass_bar() -> float:
     return float(match.group(1))
 
 
+# qualify does not start Strata. The manual ladder measures it until a later cycle.
+STRATA_QUALIFY_REFUSAL = (
+    "Strata is not yet supported by qualify; the manual ladder is the way to measure it."
+)
+
+
 def canonical_engine(name: str) -> str:
     """Map the CLI spelling to the contract key. Unmapped names never reach it."""
     key = ENGINE_MAP.get(name)
@@ -629,6 +635,8 @@ def build_plan(argv: list[str]) -> dict:
     if unknown:
         raise QualifyError(f"unknown qualify option {unknown[0]}")
     engine = canonical_engine(args.engine)
+    if engine == "strata":
+        raise QualifyError(STRATA_QUALIFY_REFUSAL)
     refs = _positive_int(args.refs_repeat, "--refs-repeat")
     if args.absorb_max_s is None:
         absorb = None
@@ -649,6 +657,8 @@ def build_plan(argv: list[str]) -> dict:
             if engine != "llama.cpp":
                 raise QualifyError(NO_ROW)
             raise QualifyError(f"no registry row named {args.model!r}")
+    if row and row.get("engine") == "strata":
+        raise QualifyError(STRATA_QUALIFY_REFUSAL)
     if row and isinstance(row.get("engine"), str) and row["engine"] != engine:
         raise QualifyError(
             f"--engine {engine} is not the profile engine {row['engine']}"
@@ -1454,11 +1464,14 @@ _CHECK_PHASE = {
 }
 
 
-def _abort_phase(job: str) -> str | None:
-    status = _read_status(os.path.join(job, "status.json"))
-    if status.get("state") != "failed":
-        return None
-    reason = status.get("reason")
+def _abort_phase(job: str, abort_reason: str | None = None) -> str | None:
+    if abort_reason:
+        reason = abort_reason
+    else:
+        status = _read_status(os.path.join(job, "status.json"))
+        if status.get("state") != "failed":
+            return None
+        reason = status.get("reason")
     if reason == "load":
         return "serve"
     if reason in _PHASE_ORDER:
@@ -1466,9 +1479,16 @@ def _abort_phase(job: str) -> str | None:
     return None
 
 
-def _note_skipped(job: str, result: dict, checks: list, by_phase: dict, annotated: set) -> None:
+def _note_skipped(
+    job: str,
+    result: dict,
+    checks: list,
+    by_phase: dict,
+    annotated: set,
+    abort_reason: str | None = None,
+) -> None:
     """Name the phase that aborted when a later check never ran."""
-    abort = _abort_phase(job)
+    abort = _abort_phase(job, abort_reason)
     if abort not in _PHASE_ORDER:
         return
     start = _PHASE_ORDER.index(abort)
@@ -1509,7 +1529,7 @@ def _note_skipped(job: str, result: dict, checks: list, by_phase: dict, annotate
         )
 
 
-def summarise(job: str) -> dict:
+def summarise(job: str, abort_reason: str | None = None) -> dict:
     """Build result.json and report.md from the job's evidence. No verdict is decided."""
     plan = _load_json(os.path.join(job, "plan.json"))
     job_doc = _load_json(os.path.join(job, "job.json"))
@@ -1891,7 +1911,7 @@ def summarise(job: str) -> dict:
             f"exit {why.get('rc')}, log {why.get('log')})"
         )
         annotated.add(check.get("name"))
-    _note_skipped(job, result, checks, by_phase, annotated)
+    _note_skipped(job, result, checks, by_phase, annotated, abort_reason)
     if empties:
         result["checks"] = checks
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
@@ -3517,7 +3537,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if cmd == "summarise":
             job = rest[rest.index("--job") + 1]
-            summarise(job)
+            abort_reason = _flag(rest, "--abort-reason")
+            summarise(job, abort_reason)
             return 0
         if cmd == "export":
             parser = _PlanParser(add_help=False)

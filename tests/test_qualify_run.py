@@ -272,6 +272,21 @@ def _wait_file(path, timeout=20):
     return False
 
 
+def _wait_status(job, timeout=20, **expect):
+    """Poll status.json. The terminal marker is written before that publish."""
+    deadline = time.time() + timeout
+    last = {}
+    while time.time() < deadline:
+        try:
+            last = json.loads((job / "status.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            last = {}
+        if all(last.get(key) == value for key, value in expect.items()):
+            return last
+        time.sleep(0.05)
+    return last
+
+
 def _hook(path, label, code=0):
     path.write_text(f"#!/bin/sh\nprintf '%s\\n' {label} >> \"$1/hook.log\"\nexit {code}\n")
     path.chmod(0o755)
@@ -415,26 +430,47 @@ def test_i11_sglang_strata_and_missing_row(box, tmp_path):
     )
     assert refused.returncode == 2
     assert _jobs(box) == []
-    for engine in ("sglang", "strata"):
-        path = tmp_path / f"{engine}.json"
-        path.write_text(json.dumps(_wrap(_min_row(engine), "sample-row")))
-        done = _run(
-            box,
-            [
-                "start",
-                "--foreground",
-                "--engine",
-                engine,
-                "--model",
-                "sample-row",
-                "--profiles-file",
-                str(path),
-                "--tokenizer",
-                box["A770B_TOKENIZER_DIR"],
-            ],
-        )
-        assert done.returncode == 0, done.stderr
-    assert len(_jobs(box)) == 2
+    path = tmp_path / "sglang.json"
+    path.write_text(json.dumps(_wrap(_min_row("sglang"), "sample-row")))
+    done = _run(
+        box,
+        [
+            "start",
+            "--foreground",
+            "--engine",
+            "sglang",
+            "--model",
+            "sample-row",
+            "--profiles-file",
+            str(path),
+            "--tokenizer",
+            box["A770B_TOKENIZER_DIR"],
+        ],
+    )
+    assert done.returncode == 0, done.stderr
+    strata = tmp_path / "strata.json"
+    strata.write_text(json.dumps(_wrap(_min_row("strata"), "sample-row")))
+    before = set(Path(box["A770B_DATA"]).rglob("*"))
+    refused_row = _run(
+        box,
+        [
+            "start",
+            "--dry-run",
+            "--engine",
+            "vllm",
+            "--model",
+            "sample-row",
+            "--profiles-file",
+            str(strata),
+            "--tokenizer",
+            box["A770B_TOKENIZER_DIR"],
+        ],
+    )
+    assert refused_row.returncode == 2
+    assert "not yet supported by qualify" in refused_row.stderr
+    assert "manual ladder" in refused_row.stderr
+    assert set(Path(box["A770B_DATA"]).rglob("*")) == before
+    assert len(_jobs(box)) == 1
 
 
 def test_i4_post_hook_and_term_during_suite_sleep(box, tmp_path):
@@ -887,7 +923,7 @@ def test_i23_term_during_a_long_speed_child(box, tmp_path):
     os.kill(int(pid), signal.SIGTERM)
     proc.wait(timeout=20)
     assert _wait_file(job / "STOPPED", timeout=15)
-    assert json.loads((job / "status.json").read_text())["state"] == "stopped"
+    assert _wait_status(job, state="stopped")["state"] == "stopped"
 
 
 def test_i25_symlink_phase_log_is_refused(box, tmp_path):
@@ -932,7 +968,7 @@ def test_i3_handshake_of_a_fast_preflight_failure_is_not_a_lock(box):
     assert "refused the lock" not in launched.stderr
     job = _one(box)
     assert _wait_file(job / "FAILED", timeout=20)
-    assert json.loads((job / "status.json").read_text())["reason"] == "preflight"
+    assert _wait_status(job, state="failed", reason="preflight").get("reason") == "preflight"
 
 
 def test_stop_systemd_kill_reaches_the_runner(box, tmp_path):

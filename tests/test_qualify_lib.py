@@ -137,22 +137,35 @@ def test_i12_and_i14_dry_run_argv_once(kit_env, tmp_path, capsys):
         if token == "4":
             continue
         assert argv.count(token) == 1
-    for engine in ("sglang", "strata"):
-        plan = ql.build_plan(
+    plan = ql.build_plan(
+        [
+            "--engine",
+            "sglang",
+            "--model",
+            "sample-row",
+            "--profiles-file",
+            str(_write_profiles(tmp_path, "sglang")),
+            "--dry-run",
+            "--tokenizer",
+            "/tmp/tokenizer-dir",
+        ]
+    )
+    assert plan["profiling"]["flags"] == []
+    assert pc.flags("llama.cpp")[0] not in plan["serve_argv"]
+    with pytest.raises(ql.QualifyError, match="not yet supported by qualify"):
+        ql.build_plan(
             [
                 "--engine",
-                engine,
+                "strata",
                 "--model",
                 "sample-row",
                 "--profiles-file",
-                str(_write_profiles(tmp_path, engine)),
+                str(_write_profiles(tmp_path, "strata")),
                 "--dry-run",
                 "--tokenizer",
                 "/tmp/tokenizer-dir",
             ]
         )
-        assert plan["profiling"]["flags"] == []
-        assert pc.flags("llama.cpp")[0] not in plan["serve_argv"]
 
 
 def test_i17_absorb(kit_env):
@@ -247,11 +260,11 @@ def test_i11_profiles_file_check_before_any_plan(kit_env, tmp_path):
             ["--engine", "sglang", "--model", "sample-row", "--profiles-file", str(bad)]
         )
     assert not (tmp_path / "qualify").exists()
-    good = _write_profiles(tmp_path, "strata", "sample-row")
+    good = _write_profiles(tmp_path, "sglang", "sample-row")
     plan = ql.build_plan(
         [
             "--engine",
-            "strata",
+            "sglang",
             "--model",
             "sample-row",
             "--profiles-file",
@@ -260,8 +273,22 @@ def test_i11_profiles_file_check_before_any_plan(kit_env, tmp_path):
             "/tmp/tokenizer-dir",
         ]
     )
-    assert plan["engine"] == "strata"
+    assert plan["engine"] == "sglang"
     assert plan["profiling"]["flags"] == []
+    strata = _write_profiles(tmp_path, "strata", "sample-row")
+    with pytest.raises(ql.QualifyError, match="not yet supported by qualify"):
+        ql.build_plan(
+            [
+                "--engine",
+                "strata",
+                "--model",
+                "sample-row",
+                "--profiles-file",
+                str(strata),
+                "--tokenizer",
+                "/tmp/tokenizer-dir",
+            ]
+        )
     with pytest.raises(ql.QualifyError, match="no kit path"):
         ql.build_plan(["--engine", "vllm", "--model", "missing-row", "--tokenizer", "/tmp/tokenizer-dir"])
 
