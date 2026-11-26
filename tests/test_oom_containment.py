@@ -7,6 +7,7 @@ the user systemd bus is absent. Nothing here writes the workstation log tree.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -162,26 +163,202 @@ def _cmdline(pid: int) -> bytes:
         return b""
 
 
-def _scope_names() -> set[str]:
-    proc = subprocess.run(
-        ["systemctl", "--user", "list-units", "a770b-sbx-*", "--all",
-         "--no-legend", "--plain", "--no-pager"],
+def _argv0(pid: int) -> bytes:
+    return _cmdline(pid).split(b"\0", 1)[0]
+
+
+# Captured before any test stubs systemctl on PATH. Queries and cleanup call
+# this binary, so a stub earlier in PATH cannot hide or widen a unit.
+REAL_SYSTEMCTL = shutil.which("systemctl")
+# sandbox_run.sh names a770b-sbx-<its pid>-<random>.scope. Anything else in a
+# record is not this test's unit and must not be stopped.
+_SCOPE_UNIT = re.compile(r"^a770b-sbx-([1-9][0-9]*)-([0-9]+)\.scope$")
+
+
+def _note_owned(root: int, extra: list[int] | None = None) -> list[int]:
+    """Record pids before a signal. Cleanup uses this list and does not rescan."""
+    found = [root, *_descendants(root)]
+    if extra:
+        found.extend(extra)
+    owned: list[int] = []
+    for pid in found:
+        if pid > 0 and pid not in owned:
+            owned.append(pid)
+    return owned
+
+
+def _reap_owned(proc: subprocess.Popen, owned: list[int]) -> None:
+    """Signal the saved identities. An empty list does not search for others."""
+    if proc.poll() is None and not owned:
+        owned = _note_owned(proc.pid)
+    elif proc.poll() is None and proc.pid not in owned:
+        owned = [proc.pid, *owned]
+    _kill_ours(owned)
+    if proc.poll() is None:
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.wait(timeout=5)
+
+
+def _scope_unit(record: Path) -> str | None:
+    """Unit named by this test's record, or None when the record has no scope.
+
+    A name that is not a sandbox scope fails the read. It is not a stop target.
+    """
+    try:
+        raw = record.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AssertionError(f"could not read sandbox record {record}: {exc}") from exc
+    try:
+        body = json.loads(raw)
+    except ValueError as exc:
+        raise AssertionError(f"sandbox record {record} is not json: {exc}") from exc
+    if not isinstance(body, dict):
+        raise AssertionError(f"sandbox record {record} is not a record")
+    unit = body.get("unit")
+    if unit is None or unit == "":
+        return None
+    if not isinstance(unit, str) or _SCOPE_UNIT.fullmatch(unit) is None:
+        raise AssertionError(
+            f"sandbox record {record} does not name this test's scope: {unit!r}"
+        )
+    return unit
+
+
+def _require_recorded_scope(record: Path, root: int) -> str | None:
+    """The record's scope must be a live sandbox_run.sh under root."""
+    unit = _scope_unit(record)
+    if unit is None:
+        return None
+    match = _SCOPE_UNIT.fullmatch(unit)
+    assert match is not None
+    embedded = int(match.group(1))
+    if embedded != root and embedded not in _descendants(root):
+        raise AssertionError(f"{unit} is not owned by {root}")
+    if b"sandbox_run.sh" not in _cmdline(embedded):
+        raise AssertionError(f"{unit} is not this test's sandbox")
+    return unit
+
+
+def _stop_scope(unit: str | None) -> None:
+    """Stop one scope this test already named. Never asks systemd for others."""
+    if unit is None:
+        return
+    if _SCOPE_UNIT.fullmatch(unit) is None:
+        raise AssertionError(f"refusing to stop a unit this test does not own: {unit!r}")
+    if REAL_SYSTEMCTL is None:
+        raise AssertionError(f"could not stop {unit}: systemctl is not on PATH")
+    subprocess.run(
+        [REAL_SYSTEMCTL, "--user", "stop", "--", unit],
         capture_output=True, text=True,
     )
-    names = set()
-    if proc.returncode != 0:
-        return names
-    for line in proc.stdout.splitlines():
-        part = line.split()
-        if part and part[0].startswith("a770b-sbx-"):
-            names.add(part[0])
-    return names
+    subprocess.run(
+        [REAL_SYSTEMCTL, "--user", "reset-failed", "--", unit],
+        capture_output=True, text=True,
+    )
 
 
-def _reset_scopes(names) -> None:
-    for unit in names:
-        subprocess.run(["systemctl", "--user", "stop", "--", unit], capture_output=True)
-        subprocess.run(["systemctl", "--user", "reset-failed", "--", unit], capture_output=True)
+def _stop_records(records: list[Path]) -> None:
+    units: list[str] = []
+    for record in records:
+        if not record.exists():
+            continue
+        unit = _scope_unit(record)
+        if unit is not None and unit not in units:
+            units.append(unit)
+    for unit in units:
+        _stop_scope(unit)
+
+
+def _scopes_in_logs(logs: Path) -> list[str]:
+    """Scopes named by verify records still in this test's own log directory."""
+    if not logs.is_dir():
+        return []
+    units: list[str] = []
+    for path in logs.iterdir():
+        if not path.is_file():
+            continue
+        if path.name.startswith("verify-oom-") and path.name.endswith(".json"):
+            unit = _scope_unit(path)
+            if unit is not None and unit not in units:
+                units.append(unit)
+    return units
+
+
+def _stop_log_scopes(logs: Path, saved: list[str] | None = None) -> None:
+    """Stop scopes this test saved, plus any record still in its log directory."""
+    units = list(saved or [])
+    for unit in _scopes_in_logs(logs):
+        if unit not in units:
+            units.append(unit)
+    for unit in units:
+        _stop_scope(unit)
+
+
+def _observe_scope(unit: str) -> str:
+    """ActiveState of one named scope. A failed query fails; it does not search."""
+    if _SCOPE_UNIT.fullmatch(unit) is None:
+        raise AssertionError(f"refusing to observe a unit this test does not own: {unit!r}")
+    if REAL_SYSTEMCTL is None:
+        raise AssertionError(f"could not observe {unit}: systemctl is not on PATH")
+    shown = subprocess.run(
+        [REAL_SYSTEMCTL, "--user", "show", "--", unit, "-p", "ActiveState"],
+        capture_output=True, text=True,
+    )
+    if shown.returncode != 0 or "ActiveState=" not in shown.stdout:
+        detail = (shown.stderr or shown.stdout or "").strip()
+        raise AssertionError(f"could not observe {unit}: {detail or 'no ActiveState'}")
+    for line in shown.stdout.splitlines():
+        if line.startswith("ActiveState="):
+            state = line.split("=", 1)[1].strip()
+            if not state:
+                raise AssertionError(f"could not observe {unit}: empty ActiveState")
+            return state
+    raise AssertionError(f"could not observe {unit}: no ActiveState")
+
+
+def _wait_sleeper(root: int, ready: Path, token: str, proc: subprocess.Popen,
+                  seconds: float = 20) -> int:
+    """Host pid under root whose argv0 is token. A script that only mentions it does not count.
+
+    The sandbox pid namespace makes an in-sandbox $! unusable on the host.
+    A timeout fails. The search never leaves root's descendants.
+    """
+    deadline = time.monotonic() + seconds
+    want = token.encode()
+    while time.monotonic() < deadline:
+        if proc.poll() is not None and not ready.exists():
+            err = proc.stderr.read() if proc.stderr else ""
+            raise AssertionError(
+                f"exited {proc.returncode} before the sleeper was ready: {err}"
+            )
+        if ready.exists():
+            found = [pid for pid in _descendants(root) if _alive(pid) and _argv0(pid) == want]
+            if len(found) > 1:
+                raise AssertionError(f"more than one sleeper named {token}: {found}")
+            if len(found) == 1:
+                return found[0]
+        time.sleep(0.05)
+    raise AssertionError(f"sleeper {token} did not appear under {root}")
+
+
+def _sleeper_command(token: str, ready: Path) -> str:
+    """Background exec -a sleeper. The ready file appears by rename."""
+    launch = json.dumps(f"exec -a {token} sleep 120")
+    return (
+        f"bash -c {launch} & "
+        f'printf "%s\\n" ready > "{ready}.tmp" && mv -f "{ready}.tmp" "{ready}"; '
+        "wait"
+    )
 
 
 def _sandbox_cmd(env, seat, cfg, command, entered=None):
@@ -203,7 +380,7 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
     seat = _seat(tmp_path)
     cfg = _cfg(tmp_path)
     base = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}")
-    before = _scope_names()
+    records: list[Path] = []
     try:
         cases = (
             (False, {}),
@@ -214,6 +391,7 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
             ready.unlink(missing_ok=True)
             entered_file = tmp_path / f"entered-{int(entered)}"
             record = tmp_path / f"i2-{int(entered)}.json"
+            records.append(record)
             command = f'sleep 120 & echo ready > "{ready}"; sleep 120'
             env = dict(base, A770B_SANDBOX_RECORD_FILE=str(record), **extra)
             if entered:
@@ -233,6 +411,7 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
                 ["bash", "-c", script], env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             )
+            owned: list[int] = []
             try:
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline and not ready.exists():
@@ -251,23 +430,21 @@ def test_i2_parent_death_kills_sandbox_and_bridge(tmp_path):
                     assert body["isolation"] == "scope", body
                 else:
                     assert body["isolation"] == "none", body
-                desc = _descendants(proc.pid)
-                assert any(b"sandbox_run.sh" in _cmdline(pid) for pid in desc), "sandbox_run.sh was not a child of the caller"
+                _require_recorded_scope(record, proc.pid)
+                owned = _note_owned(proc.pid)
+                assert any(b"sandbox_run.sh" in _cmdline(pid) for pid in owned), "sandbox_run.sh was not a child of the caller"
                 if extra.get("A770B_SERVED_ENGINE") == "strata":
-                    assert any(b"usage_tap.py" in _cmdline(pid) for pid in desc), "usage_tap bridge was not started"
+                    assert any(b"usage_tap.py" in _cmdline(pid) for pid in owned), "usage_tap bridge was not started"
                 else:
-                    assert any(b"socat" in _cmdline(pid) for pid in desc), "socat bridge was not started"
+                    assert any(b"socat" in _cmdline(pid) for pid in owned), "socat bridge was not started"
                 os.kill(proc.pid, signal.SIGKILL)
                 proc.wait(timeout=5)
-                left = _wait_gone(desc)
+                left = _wait_gone(owned)
                 assert left == [], f"sandbox processes survived the caller: {left}"
             finally:
-                if proc.poll() is None:
-                    os.kill(proc.pid, signal.SIGKILL)
-                _kill_ours(_descendants(proc.pid))
-                proc.wait(timeout=5)
+                _reap_owned(proc, owned)
     finally:
-        _reset_scopes(_scope_names() - before)
+        _stop_records(records)
 
 
 def test_i3_stop_signal_and_verify_timeout_end_the_run(tmp_path):
@@ -277,12 +454,11 @@ def test_i3_stop_signal_and_verify_timeout_end_the_run(tmp_path):
     env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
     ready = seat / "lead-ready"
     token = f"i3lead{tmp_path.name}"
-    command = (
-        f'bash -c "exec -a {token} sleep 120" & echo ready > "{ready}"; wait'
-    )
+    command = _sleeper_command(token, ready)
     # A parent that waits reaps the leader. stop-run treats an unreaped zombie as still alive.
     exit_file = tmp_path / "lead.exit"
     leader_file = tmp_path / "leader.pid"
+    record = tmp_path / "i3-stop.json"
     script = (
         f'python3 "{RUN_LEAD}" -- bash "{SANDBOX}" "{seat}" "{cfg}" -- bash -c {json.dumps(command)} &\n'
         f'echo $! > "{leader_file}"\n'
@@ -290,18 +466,18 @@ def test_i3_stop_signal_and_verify_timeout_end_the_run(tmp_path):
         f'echo $? > "{exit_file}"\n'
     )
     proc = subprocess.Popen(
-        ["bash", "-c", script], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        ["bash", "-c", script],
+        env=dict(env, A770B_SANDBOX_RECORD_FILE=str(record)),
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
+    owned: list[int] = []
     try:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and not ready.exists():
-            if proc.poll() is not None:
-                raise AssertionError(proc.stderr.read() if proc.stderr else "leader exited")
-            time.sleep(0.1)
+        sleeper = _wait_sleeper(proc.pid, ready, token, proc)
         assert ready.exists()
+        assert _alive(sleeper) and _argv0(sleeper) == token.encode()
+        _require_recorded_scope(record, proc.pid)
         leader = int(leader_file.read_text(encoding="ascii").strip())
-        desc = _descendants(leader)
-        assert any(token.encode() in _cmdline(pid) for pid in desc), "grandchild was not alive to be stopped"
+        owned = _note_owned(proc.pid, [sleeper, leader])
         (Path(env["A770B_DATA"]) / "logs" / "run.pid").write_text(f"{leader}\n", encoding="ascii")
         stop = subprocess.run(
             ["bash", str(LOCAL_BUILD), "stop-run"],
@@ -311,13 +487,11 @@ def test_i3_stop_signal_and_verify_timeout_end_the_run(tmp_path):
         rc = int(exit_file.read_text(encoding="ascii").strip())
         assert stop.returncode == 0, stop.stderr
         assert rc == 143, (rc, stop.stdout, stop.stderr)
-        left = _wait_gone(desc)
+        left = _wait_gone([sleeper])
         assert left == [], left
     finally:
-        if proc.poll() is None:
-            os.kill(proc.pid, signal.SIGKILL)
-        _kill_ours(_descendants(proc.pid))
-        proc.wait(timeout=5)
+        _reap_owned(proc, owned)
+        _stop_records([record])
     ready.unlink(missing_ok=True)
 
     token = f"i3v{tmp_path.name}"
@@ -327,49 +501,37 @@ def test_i3_stop_signal_and_verify_timeout_end_the_run(tmp_path):
         "diff --git a/README b/README\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-seat\n+seat changed\n",
         encoding="utf-8",
     )
-    (results / "i3.spec.json").write_text(json.dumps({
-        "verify": {"test": f"bash -c 'exec -a {token} sleep 120' & echo ready > '{seat}/vready'; wait"},
-    }), encoding="utf-8")
     vready = seat / "vready"
+    (results / "i3.spec.json").write_text(json.dumps({
+        "verify": {"test": _sleeper_command(token, vready)},
+    }), encoding="utf-8")
     verify = subprocess.Popen(
         ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat), "--timeout", "8"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
+    owned = []
+    logs = Path(env["A770B_DATA"]) / "logs"
+    units: list[str] = []
     try:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and verify.poll() is None and not vready.exists():
-            time.sleep(0.1)
+        sleeper = _wait_sleeper(verify.pid, vready, token, verify)
+        assert vready.exists()
+        assert _alive(sleeper) and _argv0(sleeper) == token.encode()
+        owned = _note_owned(verify.pid, [sleeper])
+        for unit in _scopes_in_logs(logs):
+            embedded = int(_SCOPE_UNIT.fullmatch(unit).group(1))
+            assert embedded in owned, unit
+            units.append(unit)
+        assert not _bus() or units, "verify did not record its scope"
         rc = verify.wait(timeout=20)
         out = verify.stdout.read() if verify.stdout else ""
         assert rc == 124, out
         doc = json.loads((results / "i3.verify.json").read_text(encoding="utf-8"))
         assert doc["status"] == "timeout"
-        left = []
-        for name in os.listdir("/proc"):
-            if not name.isdigit():
-                continue
-            pid = int(name)
-            try:
-                cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
-            except OSError:
-                continue
-            if token.encode() in cmd:
-                left.append(pid)
+        left = _wait_gone([sleeper])
         assert left == [], left
     finally:
-        if verify.poll() is None:
-            os.kill(verify.pid, signal.SIGKILL)
-            verify.wait(timeout=5)
-        for name in os.listdir("/proc"):
-            if not name.isdigit():
-                continue
-            pid = int(name)
-            try:
-                cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
-            except OSError:
-                continue
-            if token.encode() in cmd:
-                _kill_ours([pid])
+        _reap_owned(verify, owned)
+        _stop_log_scopes(logs, units)
 
 
 def test_i4_entered_file_and_lock_fds_stay_out(tmp_path):
@@ -459,13 +621,16 @@ def test_i5_script_and_command_reach_bash_unexpanded(tmp_path):
     env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
     expected = "a b$HOME$$q'u"
     argv = ["bash", str(SANDBOX), str(seat), str(cfg), "--", "printf", "%s", "a b", "$HOME", "$$", "q'u"]
-    before = _scope_names()
+    direct = tmp_path / "i5-direct.json"
+    record = tmp_path / "i5.json"
     try:
-        proc = subprocess.run(argv, env=env, cwd=seat, capture_output=True, text=True)
+        proc = subprocess.run(
+            argv, env=dict(env, A770B_SANDBOX_RECORD_FILE=str(direct)),
+            cwd=seat, capture_output=True, text=True,
+        )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout == expected, (proc.stdout, proc.stderr)
         entered = tmp_path / "entered"
-        record = tmp_path / "i5.json"
         proc = subprocess.run(
             argv,
             env=dict(env, A770B_SANDBOX_ENTERED_FILE=str(entered), A770B_SANDBOX_RECORD_FILE=str(record)),
@@ -479,8 +644,10 @@ def test_i5_script_and_command_reach_bash_unexpanded(tmp_path):
             assert body["isolation"] == "scope", body
         else:
             assert body["isolation"] == "none", body
+        _scope_unit(record)
+        _scope_unit(direct)
     finally:
-        _reset_scopes(_scope_names() - before)
+        _stop_records([direct, record])
 
 
 def test_i6_scope_and_slice_have_no_limit(tmp_path):
@@ -498,7 +665,6 @@ def test_i6_scope_and_slice_have_no_limit(tmp_path):
     record = tmp_path / "data" / "logs" / "live.json"
     env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1",
                A770B_SANDBOX_RECORD_FILE=str(record))
-    before = _scope_names()
     proc = subprocess.Popen(
         ["bash", str(SANDBOX), str(seat), str(cfg), "--", "sleep", "30"],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
@@ -516,7 +682,8 @@ def test_i6_scope_and_slice_have_no_limit(tmp_path):
                 time.sleep(0.05)
         assert body is not None, "sandbox record was not written"
         assert body["isolation"] == "scope", body
-        unit = body["unit"]
+        unit = _require_recorded_scope(record, proc.pid)
+        assert unit is not None, body
         shown = None
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -550,15 +717,15 @@ def test_i6_scope_and_slice_have_no_limit(tmp_path):
         assert slice_show.returncode == 0, slice_show.stderr
         assert "MemoryMax=infinity" in slice_show.stdout, slice_show.stdout
     finally:
-        if proc.poll() is None:
-            os.kill(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=5)
+        owned = _note_owned(proc.pid) if proc.poll() is None else []
+        _reap_owned(proc, owned)
         if record.exists():
             subprocess.run([sys.executable, "-I", "-B", str(OOM_PY), str(record), "137"], check=False)
-        _reset_scopes(_scope_names() - before)
+        _stop_records([record])
 
 
 def test_i8_oom_record_grade_and_outside_kill(tmp_path, monkeypatch):
+    real_path = os.environ.get("PATH", "/usr/bin:/bin")
     sys.path.insert(0, str(ROOT / "harness"))
     import sandbox_oom
     monkeypatch.setattr(sandbox_oom, "_SETTLE_S", 0.4)
@@ -672,9 +839,12 @@ def test_i8_oom_record_grade_and_outside_kill(tmp_path, monkeypatch):
     assert json.loads(record.read_text(encoding="utf-8"))["oom"] == "unknown"
 
     # Outside kill of sandbox_run.sh, after bwrap is in the tree. Not an OOM.
+    # The grader stubs stay off this PATH. The leak query uses the real binary.
     bin_ = _tools(tmp_path)
     seat = _seat(tmp_path)
-    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}")
+    env = _env(tmp_path, PATH=f"{bin_}:{real_path}")
+    resolved = shutil.which("systemctl", path=env["PATH"])
+    assert resolved == REAL_SYSTEMCTL, resolved
     results = Path(env["A770B_DATA"]) / "results"
     patch = results / "i8.patch"
     patch.write_text(
@@ -682,13 +852,15 @@ def test_i8_oom_record_grade_and_outside_kill(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (results / "i8.spec.json").write_text(json.dumps({"verify": {"test": "sleep 60"}}), encoding="utf-8")
-    before = _scope_names()
+    logs = Path(env["A770B_DATA"]) / "logs"
     verify = subprocess.Popen(
         ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat), "--timeout", "30"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     target = None
     bwrap_pid = None
+    owned: list[int] = []
+    unit = None
     try:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and verify.poll() is None:
@@ -707,29 +879,29 @@ def test_i8_oom_record_grade_and_outside_kill(tmp_path, monkeypatch):
                 break
             time.sleep(0.05)
         assert target is not None and bwrap_pid is not None, "bwrap was not inside sandbox_run.sh"
-        desc = _descendants(target)
+        records = [
+            path for path in logs.iterdir()
+            if path.is_file() and path.name.startswith("verify-oom-") and path.name.endswith(".json")
+        ]
+        assert len(records) == 1, records
+        unit = _require_recorded_scope(records[0], verify.pid)
+        if _bus():
+            assert unit is not None and int(_SCOPE_UNIT.fullmatch(unit).group(1)) == target
+        owned = _note_owned(verify.pid, [target, bwrap_pid])
+        desc = [pid for pid in owned if pid == target or pid in _descendants(target) or pid == bwrap_pid]
         os.kill(target, signal.SIGKILL)
         verify.wait(timeout=20)
         doc = json.loads((results / "i8.verify.json").read_text(encoding="utf-8"))
         assert doc["status"] == "infra_error", doc
         assert doc["reason"] != "oom"
-        left = _wait_gone(desc + [bwrap_pid])
+        left = _wait_gone(desc)
         assert left == [], f"sandbox processes survived the outside kill: {left}"
-        leaked = []
-        for unit in _scope_names() - before:
-            shown = subprocess.run(
-                ["systemctl", "--user", "show", unit, "-p", "ActiveState"],
-                capture_output=True, text=True,
-            )
-            if "ActiveState=active" in shown.stdout or "ActiveState=activating" in shown.stdout:
-                leaked.append(unit)
-        assert leaked == [], leaked
+        if unit is not None:
+            state = _observe_scope(unit)
+            assert state not in ("active", "activating"), state
     finally:
-        if verify.poll() is None:
-            os.kill(verify.pid, signal.SIGKILL)
-            verify.wait(timeout=5)
-        _kill_ours(_descendants(verify.pid))
-        _reset_scopes(_scope_names() - before)
+        _reap_owned(verify, owned)
+        _stop_log_scopes(logs, [unit] if unit else None)
 
 
 def test_i9_without_systemd_run_still_runs_and_dies_with_parent(tmp_path):
@@ -749,6 +921,7 @@ def test_i9_without_systemd_run_still_runs_and_dies_with_parent(tmp_path):
         ["bash", str(SANDBOX), str(seat), str(cfg), "--", "bash", "-c", command],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
+    owned: list[int] = []
     try:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and not ready.exists():
@@ -756,7 +929,7 @@ def test_i9_without_systemd_run_still_runs_and_dies_with_parent(tmp_path):
                 raise AssertionError(proc.stderr.read() if proc.stderr else "exited")
             time.sleep(0.1)
         assert ready.exists(), "sandbox command did not start"
-        desc = _descendants(proc.pid)
+        owned = _note_owned(proc.pid)
         os.kill(proc.pid, signal.SIGKILL)
         proc.wait(timeout=5)
         err = proc.stderr.read() if proc.stderr else ""
@@ -764,13 +937,11 @@ def test_i9_without_systemd_run_still_runs_and_dies_with_parent(tmp_path):
         body = json.loads(record.read_text(encoding="utf-8"))
         assert body["isolation"] == "none"
         assert body["oom"] == "unknown"
-        left = _wait_gone(desc)
+        assert _scope_unit(record) is None
+        left = _wait_gone(owned)
         assert left == [], left
     finally:
-        if proc.poll() is None:
-            os.kill(proc.pid, signal.SIGKILL)
-        _kill_ours(_descendants(proc.pid))
-        proc.wait(timeout=5)
+        _reap_owned(proc, owned)
 
 
 def test_i10_sandbox_slice_path_is_null_when_absent(tmp_path):
@@ -822,6 +993,8 @@ exec /usr/bin/sleep "$@"
 if [ "${{1:-}}" = inspect ]; then cat "{docker_pid}"; fi
 exit 0
 """)
+    nvtop_log = tmp_path / "nvtop.log"
+    _exe(bin_ / "nvtop", f"printf '%s\\n' \"$*\" >> \"{nvtop_log}\"\nexit 0\n")
     _exe(bin_ / "a770b-qualify-stop", "exit 0\n")
     prefix = QUALIFY.read_text(encoding="utf-8").split("[ $# -ge 1 ] || usage", 1)[0]
     prefix = prefix.replace(
@@ -835,6 +1008,8 @@ exit 0
 set -m
 set +e
 . "{funcs}"
+# The sampler must not reach the real gpu_used_gib, which runs nvtop.
+gpu_used_gib() {{ printf '%s\\n' 0; }}
 export A770B_DOCKER="{bin_ / "docker"}"
 export STUB=0
 engine=llama
@@ -896,7 +1071,9 @@ stop_server
 printf 'OUT STOP_RC=%s\\n' "$?"
 printf 'OUT STOP_SECRET=%s\\n' "$(cat "{secret}")"
 """
-    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}")
+    # A configured match makes the real gpu_used_gib call nvtop. The override
+    # must be what keeps this test off that path. The stub records a call.
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_GPU_MATCH="red-gpu")
     proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=40)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     fields = {}
@@ -914,6 +1091,7 @@ printf 'OUT STOP_SECRET=%s\\n' "$(cat "{secret}")"
     assert fields.get("M5_SECRET") == "sentinel", fields
     assert fields.get("STOP_RC") == "1", fields
     assert fields.get("STOP_SECRET") == "sentinel", fields
+    assert not nvtop_log.exists(), nvtop_log.read_text(encoding="utf-8") if nvtop_log.exists() else ""
     pidfile = tmp_path / "suite-serving.pid"
     pidfile.write_text("999\n", encoding="ascii")
     suite_env = dict(env, A770B_QUALIFY_SERVING_PID_FILE=str(pidfile))
@@ -1220,12 +1398,13 @@ def test_shadow_modules_do_not_replace_stdlib(tmp_path):
     for name in ("ctypes.py", "os.py", "subprocess.py"):
         (seat / name).write_text(poison, encoding="utf-8")
     env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
-    before = _scope_names()
+    records: list[Path] = []
     try:
         for entered in (False, True):
             marker = seat / f"shadow-marker-{int(entered)}"
             marker.unlink(missing_ok=True)
             record = tmp_path / f"shadow-{int(entered)}.json"
+            records.append(record)
             run_env = dict(env, A770B_SANDBOX_RECORD_FILE=str(record))
             if entered:
                 run_env["A770B_SANDBOX_ENTERED_FILE"] = str(tmp_path / f"shadow-entered-{int(entered)}")
@@ -1239,32 +1418,49 @@ def test_shadow_modules_do_not_replace_stdlib(tmp_path):
             assert marker.read_text(encoding="utf-8") == "ok"
             if entered:
                 assert Path(run_env["A770B_SANDBOX_ENTERED_FILE"]).read_text(encoding="utf-8").strip() == "entered"
+            _scope_unit(record)
     finally:
-        _reset_scopes(_scope_names() - before)
+        _stop_records(records)
+
+
+def _ready_publish(assignment: str) -> str:
+    """Publish a ready file by rename so a reader never sees an empty file."""
+    return f"""
+{assignment}
+tmp=$(mktemp "$(dirname "$ready")/ready.XXXXXX") || exit 1
+printf '%s\\n' "$$" > "$tmp"
+mv -f "$tmp" "$ready"
+"""
 
 
 def _slow_python(bin_: Path) -> None:
-    _exe(bin_ / "python3", """
-if [ -n "${A770B_SLOW_NEEDLE:-}" ] && [[ " $* " == *" ${A770B_SLOW_NEEDLE} "* ]]; then
-  printf '%s\\n' "$$" > "${A770B_SLOW_READY:?}"
+    publish = _ready_publish('ready="${A770B_SLOW_READY:?}"')
+    _exe(bin_ / "python3", f"""
+if [ -n "${{A770B_SLOW_NEEDLE:-}}" ] && [[ " $* " == *" ${{A770B_SLOW_NEEDLE}} "* ]]; then
+{publish}
   /usr/bin/sleep 2
 fi
 exec /usr/bin/python3 "$@"
 """)
 
 
-def _wait_ready(path: Path, proc: subprocess.Popen, seconds: float = 20) -> None:
+def _wait_ready(path: Path, proc: subprocess.Popen, seconds: float = 20) -> int:
+    """Return the published pid. An empty file is not ready, and a timeout fails."""
     deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline and not path.exists():
-        if proc.poll() is not None:
+    while time.monotonic() < deadline:
+        if proc.poll() is not None and not path.exists():
             err = proc.stderr.read() if proc.stderr else ""
             raise AssertionError(f"parent exited {proc.returncode} before the delayed python: {err}")
+        if path.exists():
+            text = path.read_text(encoding="ascii", errors="replace").strip()
+            if text.isdigit():
+                return int(text)
         time.sleep(0.05)
-    assert path.exists(), "delayed python did not start"
+    raise AssertionError("delayed python did not publish a pid")
 
 
-def _arm_pid_gone(pid: int) -> None:
-    deadline = time.monotonic() + 5
+def _arm_pid_gone(pid: int, seconds: float = 5) -> None:
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline and _alive(pid):
         time.sleep(0.05)
     assert not _alive(pid), f"delayed python {pid} kept running after its parent died"
@@ -1277,7 +1473,7 @@ def test_b3_slow_start_does_not_arm_the_reaper(tmp_path):
     seat = _seat(tmp_path)
     cfg = _cfg(tmp_path)
     base = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
-    before = _scope_names()
+    saved_units: list[str] = []
     try:
         ready = tmp_path / "lead.ready"
         marker = tmp_path / "lead-ran"
@@ -1292,17 +1488,16 @@ def test_b3_slow_start_does_not_arm_the_reaper(tmp_path):
         proc = subprocess.Popen(
             ["bash", "-c", script], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         )
+        owned: list[int] = []
         try:
-            _wait_ready(ready, proc)
-            delayed = int(ready.read_text(encoding="ascii").strip())
+            delayed = _wait_ready(ready, proc)
+            owned = [proc.pid, delayed]
             os.kill(proc.pid, signal.SIGKILL)
             proc.wait(timeout=5)
             _arm_pid_gone(delayed)
             assert not marker.exists()
         finally:
-            if proc.poll() is None:
-                os.kill(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=5)
+            _reap_owned(proc, owned)
 
         ready = tmp_path / "entered.ready"
         marker = seat / "entered-ran"
@@ -1319,18 +1514,20 @@ def test_b3_slow_start_does_not_arm_the_reaper(tmp_path):
             ["bash", str(SANDBOX), str(seat), str(cfg), "--", "bash", "-c", f'printf ran > "{marker}"'],
             env=env, cwd=seat, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         )
+        owned = []
         try:
-            _wait_ready(ready, proc)
-            delayed = int(ready.read_text(encoding="ascii").strip())
+            delayed = _wait_ready(ready, proc)
+            unit = _require_recorded_scope(record, proc.pid)
+            if unit is not None:
+                saved_units.append(unit)
+            owned = _note_owned(proc.pid, [delayed])
             os.kill(proc.pid, signal.SIGKILL)
             proc.wait(timeout=5)
             _arm_pid_gone(delayed)
             assert not marker.exists()
         finally:
-            if proc.poll() is None:
-                os.kill(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=5)
-            _kill_ours(_descendants(proc.pid))
+            _reap_owned(proc, owned)
+            _stop_records([record])
 
         ready = tmp_path / "verify.ready"
         marker = seat / "verify-ran"
@@ -1348,22 +1545,25 @@ def test_b3_slow_start_does_not_arm_the_reaper(tmp_path):
             ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat), "--timeout", "30"],
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         )
+        owned = []
         try:
-            _wait_ready(ready, proc, seconds=30)
-            delayed = int(ready.read_text(encoding="ascii").strip())
+            delayed = _wait_ready(ready, proc, seconds=30)
+            owned = _note_owned(proc.pid, [delayed])
+            logs = Path(env["A770B_DATA"]) / "logs"
+            for unit in _scopes_in_logs(logs):
+                saved_units.append(unit)
             # The grader's parent is the command-substitution shell, not the
             # local-build process that owns the pipeline.
             parent = int(Path(f"/proc/{delayed}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[1])
+            owned.append(parent)
             os.kill(parent, signal.SIGKILL)
             _arm_pid_gone(delayed)
             assert not marker.exists()
         finally:
-            if proc.poll() is None:
-                os.kill(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=5)
-            _kill_ours(_descendants(proc.pid))
+            _reap_owned(proc, owned)
+            _stop_log_scopes(Path(env["A770B_DATA"]) / "logs", saved_units)
     finally:
-        _reset_scopes(_scope_names() - before)
+        _stop_log_scopes(Path(base["A770B_DATA"]) / "logs", saved_units)
 
 
 def test_b3_preexec_parent_is_the_pid_from_before_the_fork(tmp_path):
@@ -1372,26 +1572,23 @@ def test_b3_preexec_parent_is_the_pid_from_before_the_fork(tmp_path):
     marker = tmp_path / "arm-ran"
     env, patch, seat, _results = _verify_fixture(tmp_path, "arm", f"printf ran > '{marker}'")
     env = dict(env, A770B_SLOW_ARM_READY=str(ready))
-    before = _scope_names()
+    logs = Path(env["A770B_DATA"]) / "logs"
     proc = subprocess.Popen(
         ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat), "--timeout", "30"],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
+    owned: list[int] = []
     try:
-        _wait_ready(ready, proc)
-        delayed = int(ready.read_text(encoding="ascii").strip())
+        delayed = _wait_ready(ready, proc)
+        owned = [proc.pid, delayed]
         parent = int(Path(f"/proc/{delayed}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[1])
+        owned.append(parent)
         os.kill(parent, signal.SIGKILL)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and _alive(delayed):
-            time.sleep(0.05)
+        _arm_pid_gone(delayed)
         assert not marker.exists()
     finally:
-        if proc.poll() is None:
-            os.kill(proc.pid, signal.SIGKILL)
-            proc.wait(timeout=5)
-        _kill_ours(_descendants(proc.pid))
-        _reset_scopes(_scope_names() - before)
+        _reap_owned(proc, owned)
+        _stop_log_scopes(logs)
 
 
 def test_b2_abandoned_scope_is_stopped_and_tools_are_bounded(tmp_path, monkeypatch):
@@ -1569,3 +1766,170 @@ exit 0
     assert doc["status"] == "infra_error", (doc, proc.stdout, proc.stderr)
     assert doc["reason"] != "oom"
     assert doc["oom"]["public"] == "yes"
+
+
+def test_stop_record_rejects_a_unit_the_test_does_not_own(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({"unit": "ssh.service"}), encoding="utf-8")
+    try:
+        _stop_records([record])
+    except AssertionError as exc:
+        assert "does not name this test's scope" in str(exc)
+    else:
+        raise AssertionError(f"stopped a unit this test does not own: {calls}")
+    assert calls == []
+
+
+def test_stop_record_stops_only_the_named_scope(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if "list-units" in cmd:
+            raise AssertionError("cleanup enumerated units")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({"unit": "a770b-sbx-42-7.scope"}), encoding="utf-8")
+    empty = tmp_path / "none.json"
+    empty.write_text(json.dumps({"unit": None}), encoding="utf-8")
+    _stop_records([record, empty, tmp_path / "missing.json"])
+    stopped = [cmd for cmd in calls if "stop" in cmd]
+    assert stopped == [[REAL_SYSTEMCTL, "--user", "stop", "--", "a770b-sbx-42-7.scope"]]
+    assert all("list-units" not in cmd for cmd in calls)
+
+
+def test_failed_scope_query_does_not_widen(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if "list-units" in cmd:
+            raise AssertionError("a failed query enumerated units")
+        return subprocess.CompletedProcess(cmd, 1, "", "boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(AssertionError, match="could not observe"):
+        _observe_scope("a770b-sbx-42-7.scope")
+    assert calls == [[REAL_SYSTEMCTL, "--user", "show", "--", "a770b-sbx-42-7.scope", "-p", "ActiveState"]]
+
+
+def test_observe_scope_uses_the_real_systemctl_binary(monkeypatch, tmp_path):
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    _exe(stub / "systemctl", "#!/bin/bash\nprintf '%s\\n' 'ActiveState=active'\n")
+    monkeypatch.setenv("PATH", f"{stub}:/usr/bin:/bin")
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd[0])
+        return subprocess.CompletedProcess(cmd, 0, "ActiveState=inactive\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _observe_scope("a770b-sbx-9-1.scope") == "inactive"
+    assert seen == [REAL_SYSTEMCTL]
+
+
+def test_reap_uses_the_saved_pid_after_the_parent_is_gone(tmp_path):
+    child_file = tmp_path / "child"
+    script = f'sleep 60 & printf "%s\\n" "$!" > "{child_file}.tmp" && mv -f "{child_file}.tmp" "{child_file}"; wait'
+    proc = subprocess.Popen(
+        ["bash", "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    owned: list[int] = []
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not child_file.exists():
+            if proc.poll() is not None:
+                raise AssertionError("parent exited before the child pid was published")
+            time.sleep(0.05)
+        assert child_file.exists()
+        child = int(child_file.read_text(encoding="ascii").strip())
+        owned = [proc.pid, child]
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+        assert _alive(child), "child died with the parent, so the saved identity was not needed"
+        assert child not in _descendants(proc.pid)
+        _reap_owned(proc, owned)
+        assert _wait_gone([child], seconds=2) == []
+    finally:
+        _reap_owned(proc, owned)
+
+
+def test_sleeper_identity_is_argv0_not_a_script_that_mentions_the_token(tmp_path):
+    token = f"zzsleeper{tmp_path.name}"
+    ready = tmp_path / "ready"
+    # A following command keeps this shell alive, so its command line still
+    # mentions the token while argv0 stays bash.
+    decoy = json.dumps(f"sleep 30; echo {token}")
+    real = json.dumps(f"exec -a {token} sleep 30")
+    script = (
+        f"bash -c {decoy} & bash -c {real} & "
+        f'printf "%s\\n" ready > "{ready}.tmp" && mv -f "{ready}.tmp" "{ready}"; wait'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    owned: list[int] = []
+    try:
+        pid = _wait_sleeper(proc.pid, ready, token, proc)
+        owned = _note_owned(proc.pid, [pid])
+        assert pid != proc.pid
+        assert _argv0(pid) == token.encode()
+        assert token.encode() in _cmdline(proc.pid)
+        assert _argv0(proc.pid) != token.encode()
+        decoys = [item for item in owned if item != pid and token.encode() in _cmdline(item)]
+        assert decoys, "the script that only mentions the token was not running"
+    finally:
+        _reap_owned(proc, owned)
+
+
+def test_ready_publish_is_never_empty(tmp_path):
+    body = _ready_publish('ready="${A770B_SLOW_READY:?}"')
+    assert 'mv -f "$tmp" "$ready"' in body
+    assert '> "$ready"' not in body
+    ready = tmp_path / "ready"
+    script = _ready_publish(f'ready="{ready}"') + "\nexit 0\n"
+    seen_empty = False
+    proc = subprocess.Popen(["bash", "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + 5
+    while proc.poll() is None and time.monotonic() < deadline:
+        try:
+            text = ready.read_text(encoding="ascii")
+        except FileNotFoundError:
+            continue
+        if text == "":
+            seen_empty = True
+            break
+    err = proc.stderr.read() if proc.stderr else ""
+    assert proc.wait(timeout=5) == 0, err
+    assert not seen_empty
+    assert ready.read_text(encoding="ascii").strip().isdigit()
+
+
+def test_wait_ready_rejects_an_empty_file(tmp_path):
+    ready = tmp_path / "ready"
+    ready.write_text("", encoding="ascii")
+    proc = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        with pytest.raises(AssertionError, match="did not publish a pid"):
+            _wait_ready(ready, proc, seconds=0.3)
+    finally:
+        _reap_owned(proc, [proc.pid])
+
+
+def test_arm_pid_gone_fails_when_the_process_is_still_alive():
+    proc = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        with pytest.raises(AssertionError, match="kept running"):
+            _arm_pid_gone(proc.pid, seconds=0.2)
+    finally:
+        _reap_owned(proc, [proc.pid])
