@@ -1074,7 +1074,8 @@ exit 0
 """)
     nvtop_log = tmp_path / "nvtop.log"
     _exe(bin_ / "nvtop", f"printf '%s\\n' \"$*\" >> \"{nvtop_log}\"\nexit 0\n")
-    _exe(bin_ / "a770b-qualify-stop", "exit 0\n")
+    stop_log = tmp_path / "qualify-stop.log"
+    _exe(bin_ / "a770b-qualify-stop", f"printf '%s\\n' \"$*\" >> \"{stop_log}\"\nexit 0\n")
     prefix = QUALIFY.read_text(encoding="utf-8").split("[ $# -ge 1 ] || usage", 1)[0]
     prefix = prefix.replace(
         'here=$(cd "$(dirname "$0")" && pwd)',
@@ -1171,6 +1172,258 @@ printf 'OUT STOP_SECRET=%s\\n' "$(cat "{secret}")"
     assert fields.get("STOP_RC") == "1", fields
     assert fields.get("STOP_SECRET") == "sentinel", fields
     assert not nvtop_log.exists(), nvtop_log.read_text(encoding="utf-8") if nvtop_log.exists() else ""
+    live_job = tmp_path / "job-live"
+    strata_job = tmp_path / "job-strata"
+    phase_job = tmp_path / "job-phase5"
+    strata_here = tmp_path / "strata-here"
+    strata_here.mkdir()
+    (strata_here / "host_memory.py").symlink_to(HOST_MEMORY)
+    _exe(strata_here / "serve_strata.sh", "if [ \"${1:-}\" = pid ]; then printf '%s\\n' 4343; fi\nexit 0\n")
+    hold_file = tmp_path / "phase5-hold.pid"
+    marker = tmp_path / "phase5-error"
+    (tmp_path / "wait_target.py").write_text(
+        "import json, sys, time\n"
+        "path, pid, timeout = sys.argv[1:]\n"
+        "pid = int(pid)\n"
+        "deadline = time.monotonic() + float(timeout)\n"
+        "while time.monotonic() < deadline:\n"
+        "    try:\n"
+        "        lines = open(path, encoding='utf-8').read().splitlines()\n"
+        "    except OSError:\n"
+        "        lines = []\n"
+        "    for index, line in enumerate(lines):\n"
+        "        try:\n"
+        "            body = json.loads(line)\n"
+        "        except ValueError:\n"
+        "            continue\n"
+        "        target = body.get('target')\n"
+        "        if isinstance(target, dict) and target.get('pid') == pid:\n"
+        "            print(index)\n"
+        "            raise SystemExit(0)\n"
+        "    time.sleep(0.05)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "wait_clear.py").write_text(
+        "import json, sys, time\n"
+        "path, after, timeout = sys.argv[1:]\n"
+        "after = int(after)\n"
+        "deadline = time.monotonic() + float(timeout)\n"
+        "while time.monotonic() < deadline:\n"
+        "    try:\n"
+        "        lines = open(path, encoding='utf-8').read().splitlines()\n"
+        "    except OSError:\n"
+        "        lines = []\n"
+        "    for line in lines[after + 1:]:\n"
+        "        try:\n"
+        "            body = json.loads(line)\n"
+        "        except ValueError:\n"
+        "            continue\n"
+        "        if body.get('target') is None:\n"
+        "            raise SystemExit(0)\n"
+        "    time.sleep(0.05)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    # The suite command is stubbed. Publication is the real run_suite.sh function,
+    # so deleting its qualify-file write leaves the monitor without a target.
+    _exe(bin_ / "a770b-qualify-suite", f"""
+expected="{phase_job / "evidence" / "serving.pid"}"
+got="${{A770B_QUALIFY_SERVING_PID_FILE:-}}"
+if [ "$got" != "$expected" ]; then
+  printf 'export:%s\\n' "$got" > "{marker}"
+  exit 1
+fi
+eval "$(awk '/^suite_publish_serving_pid()/,/^}}/' "{RUN_SUITE}")"
+HOST_PID_FILE="{tmp_path / "suite-host.pid"}"
+/usr/bin/sleep 90 &
+hold=$!
+printf '%s\\n' "$hold" > "{hold_file}"
+cleanup() {{
+  if [ -n "${{hold:-}}" ] && kill -0 "$hold" 2>/dev/null; then
+    kill "$hold" 2>/dev/null || true
+    wait "$hold" 2>/dev/null || true
+  fi
+}}
+trap cleanup EXIT
+suite_publish_serving_pid "$hold" || {{ printf 'publish failed\\n' > "{marker}"; exit 1; }}
+if ! idx=$(python3 "{tmp_path / "wait_target.py"}" "{phase_job / "evidence" / "host-memory.jsonl"}" "$hold" 12); then
+  printf 'no target sample\\n' > "{marker}"
+  exit 1
+fi
+suite_publish_serving_pid "" || {{ printf 'clear failed\\n' > "{marker}"; exit 1; }}
+if ! python3 "{tmp_path / "wait_clear.py"}" "{phase_job / "evidence" / "host-memory.jsonl"}" "$idx" 12; then
+  printf 'no clear sample\\n' > "{marker}"
+  exit 1
+fi
+exit 0
+""")
+    named = [
+        tmp_path / "live-tracker.pid", tmp_path / "live-child.pid", tmp_path / "live-mem.pid",
+        tmp_path / "live-vram.pid", tmp_path / "strata-tracker.pid", tmp_path / "strata-mem.pid",
+        tmp_path / "strata-vram.pid", tmp_path / "phase-tracker.pid", tmp_path / "phase-mem.pid",
+        tmp_path / "phase-vram.pid", hold_file,
+    ]
+    more = f"""
+set -m
+set +e
+. "{funcs}"
+gpu_used_gib() {{ printf '%s\\n' 0; }}
+export A770B_DOCKER="{bin_ / "docker"}"
+export STUB=0
+orig_here=$here
+cleanup_named() {{
+  local mem="${{MEM:-}}" vram="${{VRAM_PID:-}}"
+  stop_helpers
+  [ -n "$mem" ] && wait "$mem" 2>/dev/null || true
+  [ -n "$vram" ] && wait "$vram" 2>/dev/null || true
+}}
+trap cleanup_named EXIT
+printf '%s\\n' 5151 > "{docker_pid}"
+export A770B_SLEEP_HOLD=1
+engine=llama
+job="{live_job}"
+mkdir -p "$job/evidence" "$job/phases"
+cid='{"cd" * 32}'
+printf '%s\\n' "$cid" > "$job/cid"
+start_observers
+printf '%s\\n' "${{TRACKER:-}}" > "{tmp_path / "live-tracker.pid"}"
+printf '%s\\n' "${{MEM:-}}" > "{tmp_path / "live-mem.pid"}"
+printf '%s\\n' "${{VRAM_PID:-}}" > "{tmp_path / "live-vram.pid"}"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  tr '\\000' '\\n' < "/proc/$MEM/cmdline" > "{tmp_path / "mem.argv"}" 2>/dev/null || true
+  if grep -qx -- '--pid-file' "{tmp_path / "mem.argv"}"; then break; fi
+  /usr/bin/sleep 0.05
+done
+child=""
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  child=$(awk -v p="$TRACKER" '$2 == p {{ print $1; exit }}' "{sleep_log}" 2>/dev/null || true)
+  [ -n "$child" ] && break
+  /usr/bin/sleep 0.05
+done
+printf '%s\\n' "$child" > "{tmp_path / "live-child.pid"}"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 5151 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT LIVE_BEFORE=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+saved_tracker=$TRACKER
+stop_server
+tracker_gone=0
+child_gone=0
+deadline=$((SECONDS + 3))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  tracker_gone=1
+  child_gone=1
+  if [ -n "$saved_tracker" ] && kill -0 "$saved_tracker" 2>/dev/null; then tracker_gone=0; fi
+  if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then child_gone=0; fi
+  [ "$tracker_gone" = 1 ] && [ "$child_gone" = 1 ] && break
+  /usr/bin/sleep 0.05
+done
+printf 'OUT LIVE_TRACKER_GONE=%s\\n' "$tracker_gone"
+printf 'OUT LIVE_CHILD_GONE=%s\\n' "$child_gone"
+if [ -f "$job/SERVING_CLEARED" ] && [ ! -L "$job/SERVING_CLEARED" ]; then printf 'OUT LIVE_CLEARED=1\\n'
+else printf 'OUT LIVE_CLEARED=0\\n'; fi
+if [ -f "$job/evidence/serving.pid" ] && [ ! -L "$job/evidence/serving.pid" ] && [ ! -s "$job/evidence/serving.pid" ]; then
+  printf 'OUT LIVE_PID_EMPTY=1\\n'
+else printf 'OUT LIVE_PID_EMPTY=0\\n'; fi
+printf 'OUT LIVE_STOP=%s\\n' "$(tr -d '[:space:]' < "{stop_log}" 2>/dev/null || true)"
+# stop_server leaves the monitor and the VRAM sampler. Reap every helper this job started
+# after the gone-check, including a tracker the stop failed to signal.
+kill_helper "$saved_tracker"
+kill -TERM "$child" 2>/dev/null || true
+wait "$saved_tracker" 2>/dev/null || true
+wait "$child" 2>/dev/null || true
+kill -TERM "$MEM" 2>/dev/null || true
+kill_helper "$VRAM_PID"
+wait "$MEM" 2>/dev/null || true
+wait "$VRAM_PID" 2>/dev/null || true
+unset A770B_SLEEP_HOLD TRACKER VRAM_PID MEM SERVER_STOPPED
+engine=strata
+here="{strata_here}"
+job="{strata_job}"
+mkdir -p "$job/evidence" "$job/phases"
+printf '%s\\n' owned > "$job/cid"
+start_observers
+printf '%s\\n' "${{TRACKER:-}}" > "{tmp_path / "strata-tracker.pid"}"
+printf '%s\\n' "${{MEM:-}}" > "{tmp_path / "strata-mem.pid"}"
+printf '%s\\n' "${{VRAM_PID:-}}" > "{tmp_path / "strata-vram.pid"}"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 4343 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT STRATA=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+stop_helpers
+wait "$MEM" 2>/dev/null || true
+wait "$VRAM_PID" 2>/dev/null || true
+unset TRACKER VRAM_PID MEM SERVER_STOPPED
+here=$orig_here
+engine=llama
+job="{phase_job}"
+mkdir -p "$job/evidence" "$job/phases" "$job/scratch/seat"
+start_observers
+printf '%s\\n' "${{TRACKER:-}}" > "{tmp_path / "phase-tracker.pid"}"
+printf '%s\\n' "${{MEM:-}}" > "{tmp_path / "phase-mem.pid"}"
+printf '%s\\n' "${{VRAM_PID:-}}" > "{tmp_path / "phase-vram.pid"}"
+stop_server
+unset SERVER_STOPPED
+GGUF=0
+PROFILE_NAME=candidate
+KV=
+KV_V=
+EXTRA=
+CTX=8192
+STUB=0
+run_suite_once "" 1
+printf 'OUT SUITE_RC=%s\\n' "$?"
+"""
+    try:
+        proc = subprocess.run(["bash", "-c", more], env=env, capture_output=True, text=True, timeout=45)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        more_fields = {}
+        for line in proc.stdout.splitlines():
+            if line.startswith("OUT ") and "=" in line:
+                key, value = line[4:].split("=", 1)
+                more_fields[key] = value
+        assert more_fields.get("LIVE_BEFORE") == "5151", proc.stdout + proc.stderr
+        assert more_fields.get("LIVE_TRACKER_GONE") == "1", more_fields
+        assert more_fields.get("LIVE_CHILD_GONE") == "1", more_fields
+        assert more_fields.get("LIVE_CLEARED") == "1", more_fields
+        assert more_fields.get("LIVE_PID_EMPTY") == "1", more_fields
+        assert more_fields.get("LIVE_STOP") == "cd" * 32, more_fields
+        mem_argv = (tmp_path / "mem.argv").read_text(encoding="utf-8").splitlines()
+        assert "host_memory.py" in " ".join(mem_argv), mem_argv
+        pid_at = mem_argv.index("--pid-file")
+        assert mem_argv[pid_at + 1] == str(live_job / "evidence" / "serving.pid"), mem_argv
+        assert more_fields.get("STRATA") == "4343", proc.stdout + proc.stderr
+        assert more_fields.get("SUITE_RC") == "0", (
+            more_fields, marker.read_text(encoding="utf-8") if marker.exists() else "", proc.stdout, proc.stderr,
+        )
+        phase_lines = [
+            json.loads(line)
+            for line in (phase_job / "evidence" / "host-memory.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        hold = int(hold_file.read_text(encoding="ascii").strip())
+        seen_at = None
+        for index, sample in enumerate(phase_lines):
+            target = sample.get("target")
+            if isinstance(target, dict) and target.get("pid") == hold:
+                seen_at = index
+                break
+        assert seen_at is not None, phase_lines
+        assert any(sample.get("target") is None for sample in phase_lines[seen_at + 1:]), phase_lines
+    finally:
+        for path in named:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="ascii", errors="replace").strip()
+            if text.isdigit() and int(text) > 1 and _alive(int(text)):
+                _kill_ours([int(text)])
     pidfile = tmp_path / "suite-serving.pid"
     pidfile.write_text("999\n", encoding="ascii")
     suite_env = dict(env, A770B_QUALIFY_SERVING_PID_FILE=str(pidfile))
