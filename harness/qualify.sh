@@ -847,9 +847,10 @@ start_observers() {
           pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null || true)
         fi
       fi
+      # Digits only, and not zero. A trailing * would also accept 12abc.
       case "$pid" in
-        [1-9]|[1-9][0-9]*) ;;
-        *) pid="" ;;
+        *[!0-9]*|'') pid="" ;;
+        0*) pid="" ;;
       esac
       # Rename onto the pid file. A truncate in place is empty for a reader.
       if [ ! -f "$job/SERVING_CLEARED" ] && [ "$pid" != "$last" ]; then

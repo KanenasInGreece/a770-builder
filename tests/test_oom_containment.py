@@ -2141,6 +2141,59 @@ exit 0
     return bin_
 
 
+def test_non_numeric_serving_pid_is_never_published(tmp_path):
+    """Docker's reply is published only when it is a positive decimal integer."""
+    count = tmp_path / "inspect-n"
+    job = tmp_path / "job"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    bin_ = _observer_bin(tmp_path, tmp_path / "unused.pid")
+    _exe(bin_ / "docker", f"""
+if [ "${{1:-}}" != inspect ]; then exit 0; fi
+n=0
+[ -f "{count}" ] && n=$(cat "{count}")
+n=$((n + 1))
+printf '%s\\n' "$n" > "{count}"
+case "$n" in
+  1) printf '%s\\n' '12abc' ;;
+  2) printf '%s\\n' '12 34' ;;
+  3) printf '%s\\n' '0' ;;
+  4) printf '%s\\n' '0123' ;;
+  *) printf '%s\\n' '5151' ;;
+esac
+exit 0
+""")
+    cid = "ab" * 32
+    fields = _run_observer(tmp_path, f"""
+export A770B_DOCKER="{bin_ / "docker"}"
+export STUB=0
+engine=llama
+job="{job}"
+start_observers
+printf '%s\\n' '{cid}' > "$job/cid"
+bad=0
+seen=""
+deadline=$((SECONDS + 8))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  cur=$(cat "$job/evidence/serving.pid" 2>/dev/null || true)
+  case "$cur" in
+    ''|5151) ;;
+    *) bad=1; seen=$cur ;;
+  esac
+  if [ "$cur" = 5151 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT BAD=%s\\n' "$bad"
+printf 'OUT SEEN=%s\\n' "$seen"
+printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+printf 'OUT INSPECTS=%s\\n' "$(cat "{count}" 2>/dev/null || echo 0)"
+""", bin_)
+    assert int(fields.get("INSPECTS", "0")) >= 5, fields
+    assert fields.get("BAD") == "0", fields
+    assert fields.get("PID") == "5151", fields
+    assert fields.get("SEEN", "") == "", fields
+
+
 def test_serving_pid_is_not_written_through_a_planted_temp_name(tmp_path):
     """The publication temp is created exclusively, not opened at a predictable path."""
     docker_pid = tmp_path / "docker.pid"
