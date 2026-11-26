@@ -674,8 +674,8 @@ def test_i5_script_and_command_reach_bash_unexpanded(tmp_path):
     seat = _seat(tmp_path)
     cfg = _cfg(tmp_path)
     env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
-    expected = "a b$HOME$$q'u"
-    argv = ["bash", str(SANDBOX), str(seat), str(cfg), "--", "printf", "%s", "a b", "$HOME", "$$", "q'u"]
+    # A unit separator keeps each argument. Concatenated "%s" output can match by accident.
+    argv = ["bash", str(SANDBOX), str(seat), str(cfg), "--", "printf", "%s\x1f", "a b", "$HOME", "$$", "q'u"]
     direct = tmp_path / "i5-direct.json"
     record = tmp_path / "i5.json"
     try:
@@ -684,7 +684,7 @@ def test_i5_script_and_command_reach_bash_unexpanded(tmp_path):
             cwd=seat, capture_output=True, text=True,
         )
         assert proc.returncode == 0, proc.stderr
-        assert proc.stdout == expected, (proc.stdout, proc.stderr)
+        assert proc.stdout.split("\x1f") == ["a b", "$HOME", "$$", "q'u", ""], (proc.stdout, proc.stderr)
         entered = tmp_path / "entered"
         proc = subprocess.run(
             argv,
@@ -692,7 +692,7 @@ def test_i5_script_and_command_reach_bash_unexpanded(tmp_path):
             cwd=seat, capture_output=True, text=True,
         )
         assert proc.returncode == 0, proc.stderr
-        assert proc.stdout == expected, (proc.stdout, proc.stderr)
+        assert proc.stdout.split("\x1f") == ["a b", "$HOME", "$$", "q'u", ""], (proc.stdout, proc.stderr)
         assert entered.read_text(encoding="utf-8").strip() == "entered"
         body = json.loads(record.read_text(encoding="utf-8"))
         if _bus():
