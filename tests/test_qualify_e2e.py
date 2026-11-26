@@ -242,6 +242,20 @@ if [ -n "$hold" ]; then
   trap '' TERM INT
   while [ -f "$hold" ]; do sleep 0.1; done
 fi
+solve=${E2E_S2_SOLUTION:-}
+if [ -n "$solve" ]; then
+  dir=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--dir" ]; then dir=$arg; fi
+    prev=$arg
+  done
+  if [ -n "$dir" ] && [ -f "$dir/python/logstats/stats.py" ]; then
+    cp -- "$solve" "$dir/python/logstats/stats.py"
+  fi
+  # A counted stage with a zero wall is not a measurement.
+  sleep 1
+fi
 exit 0
 """,
         encoding="utf-8",
@@ -311,6 +325,7 @@ exit 0
         "A770B_ALLOW_NO_NVTOP",
         "E2E_UP_HOLD",
         "E2E_OPENCODE_HOLD",
+        "E2E_S2_SOLUTION",
     ):
         env.pop(name, None)
     env["_E2E_ENGINE"] = engine
@@ -666,6 +681,131 @@ def test_stop_during_suite_calls_real_stop_run(tmp_path):
         if proc is not None and proc.poll() is None:
             proc.kill()
             proc.communicate(timeout=10)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+
+
+def _plant(env, project: str, cid: str) -> None:
+    state_path = Path(env["A770B_DATA"]).parent / "docker.state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["containers"].append({
+        "id": cid,
+        "name": f"{project}-llama-1",
+        "project": project,
+        "service": "llama",
+        "running": True,
+        "pid": "4242",
+        "labels": {
+            "com.docker.compose.project": project,
+            "com.docker.compose.service": "llama",
+        },
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _still_running(env, cid: str) -> bool:
+    state = json.loads((Path(env["A770B_DATA"]).parent / "docker.state.json").read_text(encoding="utf-8"))
+    return any(item.get("id") == cid and item.get("running") for item in state["containers"])
+
+
+def _stop_suite_spared(job: Path) -> None:
+    log = job / "phases" / "stop-suite.log"
+    if log.is_file():
+        assert "stopped (compose project" not in log.read_text(encoding="utf-8", errors="replace")
+
+
+def test_unrelated_server_survives_preflight_failure(tmp_path):
+    env = _world(tmp_path, port=9, engine="llama.cpp")
+    cid = "cd" * 32
+    _plant(env, "a770-builder", cid)
+    (Path(env["A770B_MODELS"]) / "sample.gguf").unlink()
+    code, out, err = _run(env, _argv(env, stages="s0-design"), 90)
+    assert code == 4, out + err
+    assert _still_running(env, cid)
+    directory = next(line.split(" ", 1)[1] for line in out.splitlines() if line.startswith("directory "))
+    _stop_suite_spared(Path(directory))
+
+
+def test_unrelated_server_survives_prehook_failure(tmp_path):
+    env = _world(tmp_path, port=9, engine="llama.cpp")
+    cid = "ce" * 32
+    _plant(env, "a770-builder", cid)
+    hook = tmp_path / "pre.sh"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    env["A770B_QUALIFY_PRE"] = str(hook)
+    code, out, err = _run(env, _argv(env, stages="s0-design"), 90)
+    assert code == 4, out + err
+    assert _still_running(env, cid)
+    directory = next(line.split(" ", 1)[1] for line in out.splitlines() if line.startswith("directory "))
+    job = Path(directory)
+    status = json.loads((job / "status.json").read_text(encoding="utf-8"))
+    assert status.get("reason") == "pre-hook"
+    _stop_suite_spared(job)
+
+
+def test_llama_cpp_passing_stage_exports_without_allow_incomplete(tmp_path):
+    server = None
+    try:
+        env = _world(tmp_path, port=9, engine="llama.cpp")
+        server = _serve_engine()
+        env["A770B_PORT"] = str(server.server_address[1])
+        # verify grades inside the sandbox, which has no network. The cache is
+        # this test's, filled before the run. It is not a server or a card job.
+        cache = tmp_path / "uv-cache"
+        cache.mkdir()
+        env["A770B_UV_CACHE"] = str(cache)
+        warmed = subprocess.run(
+            ["bash", str(ROOT / "harness" / "warm_cache.sh")],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert warmed.returncode == 0, warmed.stdout + warmed.stderr
+        env["E2E_S2_SOLUTION"] = str(
+            ROOT / "kit" / "hidden" / "solutions" / "s2-backend" / "python" / "logstats" / "stats.py"
+        )
+        env["FAKE_DOCKER_LOG_TEXT"] = (
+            "verbosity = 4\n"
+            "'enable_per_request_metrics': True\n"
+            "CPU_Host model buffer size = 512.00 MiB\n"
+            "prompt eval time =     15880.00 ms /  1601 tokens "
+            "(    9.92 ms per token,   100.80 tokens per second)\n"
+            "eval time =     2245000.00 ms / 10082 tokens "
+            "(  222.67 ms per token,     4.49 tokens per second)\n"
+            "print_timing: id  0 | task 7 | n_gen =    100, tg =   4.49 t/s\n"
+            "slot release: id  0 | task 7 | stop processing: n_tokens = 21446, truncated = 0\n"
+        )
+        foreign = "cf" * 32
+        _plant(env, "other-work", foreign)
+        code, out, err = _run(env, _argv(env, stages="s2-backend"), 300)
+        assert code == 0, f"exit {code}\n{out[-2000:]}\n{err[-4000:]}"
+        directory = next(line.split(" ", 1)[1] for line in out.splitlines() if line.startswith("directory "))
+        job = Path(directory)
+        detail = _tails(job)
+        result = json.loads((job / "result.json").read_text(encoding="utf-8"))
+        stages = (result.get("suite") or {}).get("stages") or []
+        assert stages, detail
+        assert all(stage.get("working") is True for stage in stages), detail
+        assert _still_running(env, foreign), detail
+        _stop_suite_spared(job)
+        row_path = job.parent.parent / "row-complete.json"
+        exported = subprocess.run(
+            ["bash", str(QUALIFY), "export", job.name, "--out", str(row_path)],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert exported.returncode == 0, exported.stderr + detail
+        row = json.loads(row_path.read_text(encoding="utf-8"))
+        assert row["fit"]["code"]
+        assert row["suite"]["passed"] == row["suite"]["runs"]
+        assert row["measured_tasks"]["s2-backend"]["quality"] == "pass"
+    finally:
         if server is not None:
             server.shutdown()
             server.server_close()

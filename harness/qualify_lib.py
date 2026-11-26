@@ -583,6 +583,45 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _model_host_path(name: str) -> str:
+    if not name:
+        return ""
+    if os.path.isabs(name):
+        return name
+    models = os.environ.get("A770B_MODELS") or ""
+    return os.path.join(models, name) if models else name
+
+
+def _directory_tokenizer(path: str) -> str | None:
+    if not path or os.path.islink(path) or not os.path.isdir(path):
+        return None
+    if os.path.isfile(os.path.join(path, "tokenizer.json")) or os.path.isfile(os.path.join(path, "tokenizer_config.json")):
+        return path
+    return None
+
+
+def _resolve_plan_tokenizer(explicit: str | None, engine: str, row: dict | None) -> str | None:
+    """Same order as qualify.sh resolve_tokenizer, at plan time."""
+    if explicit:
+        return explicit
+    env = os.environ.get("A770B_TOKENIZER_DIR") or ""
+    if env:
+        return env
+    model = ""
+    if isinstance(row, dict) and isinstance(row.get("model"), str):
+        model = row["model"]
+    host = _model_host_path(model)
+    if engine == "strata" and host and os.path.isfile(host) and not os.path.islink(host):
+        try:
+            cfg = _load_json(host)
+        except QualifyError:
+            cfg = {}
+        tok = cfg.get("tokenizer") if isinstance(cfg, dict) else None
+        if isinstance(tok, str) and tok.strip():
+            return tok.strip()
+    return _directory_tokenizer(host)
+
+
 def build_plan(argv: list[str]) -> dict:
     """Validate a start line. Creates nothing. Unmapped engines never hit the contract."""
     parser = _parser()
@@ -670,7 +709,7 @@ def build_plan(argv: list[str]) -> dict:
             "llama.cpp needs --backend vulkan|sycl or A770B_SERVED_BACKEND"
         )
 
-    tokenizer = args.tokenizer or os.environ.get("A770B_TOKENIZER_DIR") or None
+    tokenizer = _resolve_plan_tokenizer(args.tokenizer, engine, row)
     if gguf and engine == "llama.cpp" and not tokenizer:
         raise QualifyError(
             "a bare GGUF needs --tokenizer or A770B_TOKENIZER_DIR"
@@ -1400,6 +1439,76 @@ def _compaction(stages) -> dict:
     )
 
 
+_PHASE_ORDER = ("preflight", "pre-hook", "serve", "smoke", "speed", "window", "depth", "suite")
+_CHECK_PHASE = {
+    "load-ok": "serve",
+    "fit-under-cap": "serve",
+    "smoke-tool-call": "smoke",
+    "window-no-resets": "window",
+    "depth-probe": "depth",
+    "suite-completed": "suite",
+    "counted-stages-pass": "suite",
+    "references-pass": "suite",
+    "switches-confirmed": "serve",
+    "no-compaction-storm": "suite",
+}
+
+
+def _abort_phase(job: str) -> str | None:
+    status = _read_status(os.path.join(job, "status.json"))
+    if status.get("state") != "failed":
+        return None
+    reason = status.get("reason")
+    if reason == "load":
+        return "serve"
+    if reason in _PHASE_ORDER:
+        return reason
+    return None
+
+
+def _note_skipped(job: str, result: dict, checks: list, by_phase: dict, annotated: set) -> None:
+    """Name the phase that aborted when a later check never ran."""
+    abort = _abort_phase(job)
+    if abort not in _PHASE_ORDER:
+        return
+    start = _PHASE_ORDER.index(abort)
+    later = set(_PHASE_ORDER[start:])
+    unmeasured = result.get("unmeasured") if isinstance(result.get("unmeasured"), list) else []
+    have = {item.get("phase") for item in unmeasured if isinstance(item, dict)}
+    for phase in _PHASE_ORDER[start + 1:]:
+        if phase in have:
+            continue
+        if _phase_measured(phase, _evidence(job, f"{phase}.json")):
+            continue
+        item = {
+            "command": "not run",
+            "rc": 0,
+            "log": f"phases/{phase}.log",
+            "reason": f"skipped because {abort} failed",
+            "phase": phase,
+        }
+        unmeasured.append(item)
+        by_phase[phase] = item
+        have.add(phase)
+    result["unmeasured"] = unmeasured
+    for check in checks:
+        if check.get("result") != "unknown" or check.get("name") in annotated:
+            continue
+        phase = _CHECK_PHASE.get(check.get("name") or "")
+        if phase not in later:
+            continue
+        why = by_phase.get(phase) or {
+            "command": "not run",
+            "rc": 0,
+            "log": f"phases/{phase}.log",
+            "reason": f"skipped because {abort} failed",
+        }
+        check["reason"] = (
+            f"{why.get('reason')} (command {why.get('command')}, "
+            f"exit {why.get('rc')}, log {why.get('log')})"
+        )
+
+
 def summarise(job: str) -> dict:
     """Build result.json and report.md from the job's evidence. No verdict is decided."""
     plan = _load_json(os.path.join(job, "plan.json"))
@@ -1570,6 +1679,14 @@ def summarise(job: str) -> dict:
         depth_check = _check("depth-probe", "pass", "evidence/depth.json", "the depth probe scored a pass")
     elif collected.get("depth_pass") is False:
         depth_check = _check("depth-probe", "fail", "evidence/depth.json", "the depth probe scored a pass")
+    elif collected.get("depth_not_measured"):
+        depth_check = _check(
+            "depth-probe",
+            "unknown",
+            "evidence/depth.json",
+            "the depth probe scored a pass",
+            str(collected.get("depth_not_measured")),
+        )
     else:
         depth_check = _check("depth-probe", "unknown", None, "the depth probe scored a pass", "no depth score")
     if fit_only or plan.get("no_suite"):
@@ -1762,24 +1879,19 @@ def summarise(job: str) -> dict:
     for item in unmeasured:
         if isinstance(item, dict) and item.get("phase"):
             by_phase[item["phase"]] = item
-    phase_for = {
-        "load-ok": "serve",
-        "fit-under-cap": "serve",
-        "smoke-tool-call": "smoke",
-        "window-no-resets": "window",
-        "depth-probe": "depth",
-        "suite-completed": "suite",
-    }
+    annotated = set()
     for check in checks:
         if check.get("result") != "unknown":
             continue
-        why = by_phase.get(phase_for.get(check.get("name") or ""))
+        why = by_phase.get(_CHECK_PHASE.get(check.get("name") or ""))
         if not isinstance(why, dict) or not why.get("reason"):
             continue
         check["reason"] = (
             f"{why.get('reason')} (command {why.get('command')}, "
             f"exit {why.get('rc')}, log {why.get('log')})"
         )
+        annotated.add(check.get("name"))
+    _note_skipped(job, result, checks, by_phase, annotated)
     if empties:
         result["checks"] = checks
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
@@ -1856,15 +1968,15 @@ def _statistics_from(collected, plan, dotted, useful) -> dict:
     if isinstance(delivered, dict) and _number(delivered.get("prefill_tps")) and _number(delivered.get("decode_tps")):
         _fill_stat(stats, "speed.delivered", "recorded")
     suite = collected.get("suite") if isinstance(collected.get("suite"), dict) else {}
-    if suite.get("completed") is True or (isinstance(suite.get("stages"), list) and suite.get("stages")):
+    exported_suite = _export_suite({"suite": suite})
+    if exported_suite is not None:
         _fill_stat(stats, "suite", "recorded")
+        _fill_stat(stats, "fit.code", "recorded")
     requests = collected.get("requests") if isinstance(collected.get("requests"), dict) else {}
     if isinstance(requests.get("max_prompt_tokens"), int):
         _fill_stat(stats, "requests", "recorded")
     if isinstance(collected.get("measured_tasks"), dict) and collected.get("measured_tasks"):
         _fill_stat(stats, "measured_tasks", "recorded")
-    if isinstance(collected.get("fit_code"), str) and collected.get("fit_code"):
-        _fill_stat(stats, "fit.code", "recorded")
     absorb = collected.get("absorb")
     if isinstance(absorb, dict) and (absorb.get("8k") is not None or absorb.get("far_end") is not None):
         _fill_stat(stats, "speed.absorb_s", "recorded")
@@ -1874,7 +1986,7 @@ def _statistics_from(collected, plan, dotted, useful) -> dict:
         _fill_stat(stats, "instrument", profiles.kit_instrument())
     except (OSError, ValueError, ImportError):
         pass
-    if stats.get("suite") not in (None, "unknown") and stats.get("instrument") not in (None, "unknown"):
+    if exported_suite is not None and stats.get("instrument") not in (None, "unknown"):
         _fill_stat(stats, "evidence", "recorded")
     return stats
 
@@ -2683,11 +2795,16 @@ def _mapped_speed_path(job: str, text: str) -> str | None:
 
 
 def _log_rates(text: str) -> tuple[dict[int, float], dict[int, float]]:
-    """llama.cpp timing lines, keyed by the token count on that line."""
+    """llama.cpp timing lines. Decode is keyed by the preceding prompt depth.
+
+    The eval-time token count is n_gen, not the prompt. A prompt-eval count
+    one off the requested depth (a BOS token) still names that depth.
+    """
     import engine_record
 
     prefill: dict[int, float] = {}
     decode: dict[int, float] = {}
+    pending = None
     for line in (text or "").splitlines():
         if line.startswith(("+", "-")):
             continue
@@ -2698,9 +2815,18 @@ def _log_rates(text: str) -> tuple[dict[int, float], dict[int, float]]:
         rate = parsed[3]
         if "prompt eval time" in line:
             prefill[tokens] = rate
+            pending = tokens
         elif "eval time" in line:
-            decode[tokens] = rate
+            decode[pending if pending is not None else tokens] = rate
+            pending = None
     return prefill, decode
+
+
+def _rate_at(table: dict, depth: int):
+    for key in (depth, depth - 1, depth + 1):
+        if key in table:
+            return table[key]
+    return None
 
 
 def _metrics_rates(job: str, phase: str, engine: str) -> dict | None:
@@ -2768,9 +2894,11 @@ def _parse_speed(job: str, text: str) -> dict:
             prefill_by, decode_by = {}, {}
         for row in rows:
             depth = row["depth_tokens"]
-            if depth in prefill_by or depth in decode_by:
-                row["engine_prefill"] = prefill_by.get(depth)
-                row["engine_decode"] = decode_by.get(depth)
+            prefill = _rate_at(prefill_by, depth)
+            decode = _rate_at(decode_by, depth)
+            if prefill is not None or decode is not None:
+                row["engine_prefill"] = prefill
+                row["engine_decode"] = decode
                 row["engine_source"] = "server log"
     plan_engine = ""
     plan_path = os.path.join(job, "plan.json")
@@ -2787,6 +2915,13 @@ def _parse_speed(job: str, text: str) -> dict:
             rows[0]["engine_prefill"] = prefill
             rows[0]["engine_decode"] = decode
             rows[0]["engine_source"] = "/metrics"
+    elif len(rows) != 1 and plan_engine in ("vllm", "llama.cpp"):
+        for row in rows:
+            if row["engine_source"] == "unknown":
+                row["engine_reason"] = "one /metrics bracket covers more than one depth"
+    for row in rows:
+        if row["engine_source"] == "unknown" and not row.get("engine_reason"):
+            row["engine_reason"] = "no per-depth rate source"
     body = {"rows": rows, "profile_speed": profile, "at_depth": at_depth}
     prompt = doc.get("prompt")
     gen = doc.get("gen")
@@ -2847,8 +2982,17 @@ def _compaction_count(stage: dict) -> int | None:
     if not path or os.path.islink(path) or not os.path.isfile(path):
         return None
     count = 0
+    in_transcript = False
     try:
         for line in open(path, encoding="utf-8", errors="replace"):
+            heading = line.rstrip("\r\n")
+            if heading.startswith("## "):
+                if in_transcript:
+                    break
+                in_transcript = heading == "## opencode transcript tail"
+                continue
+            if not in_transcript:
+                continue
             if line.startswith(("+", "-")):
                 continue
             if _COMPACT_RE.search(line):
@@ -3000,6 +3144,17 @@ def _merge_suite(previous: dict, body: dict) -> dict:
         for key in ("max_prompt_tokens", "max_completion_tokens"):
             values = [item.get(key) for item in (left, right) if isinstance(item.get(key), int) and not isinstance(item.get(key), bool)]
             merged["requests"][key] = max(values) if values else None
+        stops = [
+            item.get("length_stops")
+            for item in (left, right)
+            if isinstance(item.get("length_stops"), int) and not isinstance(item.get("length_stops"), bool)
+        ]
+        merged["requests"]["length_stops"] = sum(stops) if stops else None
+        for key in ("prefill_tps", "decode_tps"):
+            if right.get(key) is None and left.get(key) is not None:
+                merged["requests"][key] = left.get(key)
+    if body.get("delivered") is None and isinstance(previous.get("delivered"), dict):
+        merged["delivered"] = previous["delivered"]
     peaks = [
         value
         for value in (previous.get("peak_prompt_tokens"), body.get("peak_prompt_tokens"))
@@ -3013,7 +3168,12 @@ def _merge_suite(previous: dict, body: dict) -> dict:
 def _parse_serve(text: str, rc: int) -> dict:
     """serve_compose.sh prints prose. A healthy start names the container and the VRAM line."""
     body: dict = {}
-    started = "started server container" in (text or "")
+    blob = text or ""
+    started = (
+        "started server container" in blob
+        or "· Strata" in blob
+        or "already up (" in blob
+    )
     body["load_ok"] = bool(rc == 0 and started)
     found = re.search(
         r"VRAM after load:\s*([0-9]+(?:\.[0-9]+)?)\s*GiB\s*≤\s*.*?\s+([0-9]+(?:\.[0-9]+)?)\s*GiB",
@@ -3051,7 +3211,8 @@ def _phase_measured(phase: str, body: dict) -> bool:
     if phase == "window":
         return isinstance(body.get("resets"), int) or body.get("ttft_8k") is not None
     if phase == "depth":
-        return isinstance(body.get("score"), int) or body.get("passed") is True or body.get("unanswered") is True
+        # unanswered is a measured failure to measure. It still needs a why.
+        return isinstance(body.get("score"), int) or body.get("passed") is True
     if phase == "suite":
         return bool(body.get("stages")) or body.get("completed") is True
     if phase == "smoke":
@@ -3059,27 +3220,28 @@ def _phase_measured(phase: str, body: dict) -> bool:
     return True
 
 
-def _attach_why(job: str, phase: str, body: dict, rc: int) -> dict:
+def _attach_why(job: str, phase: str, body: dict, rc: int, log: str | None = None) -> dict:
     if _phase_measured(phase, body):
         return body
+    rel = log or f"phases/{phase}.log"
     why = body.get("why")
     if isinstance(why, dict) and why.get("reason"):
         why.setdefault("command", _command_line(job, phase) or phase)
         why.setdefault("rc", rc)
-        why.setdefault("log", f"phases/{phase}.log")
+        why.setdefault("log", rel)
         body["why"] = why
         return body
     reason = body.get("not_measured") or f"{phase} produced no measurement"
     body["why"] = {
         "command": _command_line(job, phase) or phase,
         "rc": rc,
-        "log": f"phases/{phase}.log",
+        "log": rel,
         "reason": reason,
     }
     return body
 
 
-def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
+def apply_phase(job: str, phase: str, text: str, rc: int, log: str | None = None) -> None:
     """Store a phase. A stub JSON line wins; otherwise the real harness text is parsed."""
     body = _stub_body(phase, text)
     if body is None:
@@ -3095,7 +3257,7 @@ def apply_phase(job: str, phase: str, text: str, rc: int) -> None:
             body = _parse_serve(text, rc)
         else:
             body = {}
-    body = _attach_why(job, phase, body, rc)
+    body = _attach_why(job, phase, body, rc, log)
     body["rc"] = rc
     if phase == "gate":
         set_image(job, text)
@@ -3145,17 +3307,19 @@ def _vram_peak(job: str):
     return peak
 
 
-def _ram_from_evidence(job: str):
+def _ram_from_evidence(job: str, load_ok: bool = False):
     candidates = [os.path.join(job, "evidence", "engine-evidence.json")]
-    data = os.environ.get("A770B_DATA") or ""
-    pointer = os.path.join(data, "logs", "serve-evidence.path") if data else ""
-    if pointer and os.path.isfile(pointer) and not os.path.islink(pointer):
-        try:
-            target = open(pointer, encoding="utf-8").read().strip()
-        except OSError:
-            target = ""
-        if target:
-            candidates.insert(0, target)
+    # A global pointer from another run is not this job's measurement.
+    if load_ok is True:
+        data = os.environ.get("A770B_DATA") or ""
+        pointer = os.path.join(data, "logs", "serve-evidence.path") if data else ""
+        if pointer and os.path.isfile(pointer) and not os.path.islink(pointer):
+            try:
+                target = open(pointer, encoding="utf-8").read().strip()
+            except OSError:
+                target = ""
+            if target:
+                candidates.insert(0, target)
     for path in candidates:
         if not path or os.path.islink(path) or not os.path.isfile(path):
             continue
@@ -3283,7 +3447,7 @@ def assemble(job: str) -> None:
     if peak is not None:
         collected["vram_peak"] = peak
     if collected.get("ram_gb_extra") is None:
-        ram = _ram_from_evidence(job)
+        ram = _ram_from_evidence(job, collected.get("load_ok") is True)
         if ram is not None:
             collected["ram_gb_extra"] = ram
     far_point = _far_speed(job, window)
@@ -3400,9 +3564,10 @@ def main(argv: list[str] | None = None) -> int:
             job = _flag(rest, "--job")
             phase = _flag(rest, "--phase")
             rc_text = _flag(rest, "--rc") or "0"
+            log_rel = _flag(rest, "--log")
             if not job or not phase:
                 raise QualifyError("apply-phase needs --job and --phase")
-            apply_phase(job, phase, sys.stdin.read(), int(rc_text))
+            apply_phase(job, phase, sys.stdin.read(), int(rc_text), log_rel)
             return 0
         if cmd == "assemble":
             assemble(_flag(rest, "--job") or "")

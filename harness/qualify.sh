@@ -119,20 +119,11 @@ stop_helpers() {
 }
 
 release_suite_server() {
-  # stop-server runs before the suite. The suite's own local-build serve is a
-  # second container, and the one-shot stop does not see it. Compose down (or
-  # the Strata stop) is what leaves the card free for record_card.
-  [ "${STUB:-0}" = 1 ] && return 0
-  [ -n "${job:-}" ] && [ -f "$job/plan.json" ] && [ ! -L "$job/plan.json" ] || return 0
-  local engine
-  engine=$(pget engine 2>/dev/null || true)
-  [ -n "$engine" ] || return 0
-  refuse_link "$job/phases/stop-suite.log" || return 0
-  if [ "$engine" = strata ]; then
-    bash "$here/serve_strata.sh" stop >>"$job/phases/stop-suite.log" 2>&1 || true
-  else
-    bash "$here/serve_compose.sh" stop >>"$job/phases/stop-suite.log" 2>&1 || true
-  fi
+  # Phase 3 is stopped by stop_server from the id this job recorded.
+  # The suite stops its own containers by that same id (A770B_LADDER_RUN).
+  # A project-wide stop would tear down a server this job never started,
+  # including one still up when preflight or the pre-hook failed.
+  return 0
 }
 
 stop_server() {
@@ -244,8 +235,7 @@ finish() {
   record_card || true
   run_post
   record_hooks || true
-  "${py[@]}" assemble --job "$job" >/dev/null 2>&1 || true
-  "${py[@]}" summarise --job "$job" >/dev/null 2>&1 || true
+  # Summarise reads the failure reason. The marker is still written below.
   local state=${FINISH_STATE:-finished}
   local reason=${FAIL_REASON:-}
   local marker=${MARKER_NAME:-DONE}
@@ -260,6 +250,8 @@ if start:
 print(json.dumps(body))
 PY
 )"
+  "${py[@]}" assemble --job "$job" >/dev/null 2>&1 || true
+  "${py[@]}" summarise --job "$job" >/dev/null 2>&1 || true
   if ! plain_trunc "$job/$marker"; then
     release_locks
     exit 2
@@ -465,9 +457,9 @@ copy_profiles() {
   export A770B_PROFILES_FILE=$dest
   # The parent shell already exported the card registry's name list. env.sh
   # will not replace a list that is already set, so a candidate file's names
-  # would never become this run's profiles.
+  # would never become this run's profiles. The names are data, not a script.
   unset A770B_PROFILES
-  eval "$(python3 "$A770B_PROJECT/harness/profiles.py" env --file "$dest")"
+  A770B_PROFILES=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); profiles=data.get("profiles") if isinstance(data, dict) else None; print(" ".join(str(k) for k in profiles) if isinstance(profiles, dict) else "")' "$dest")
   export A770B_PROFILES
 }
 
@@ -538,7 +530,8 @@ run_suite_once() {
   refuse_link "$log" || return 2
   printf '%s\n' "suite: ${cmd[*]}" >> "$job/evidence/argv.log"
   printf '%s\n' "profiles-file: ${A770B_PROFILES_FILE:-}" >> "$job/evidence/argv.log"
-  A770B_PROFILES_FILE=${A770B_PROFILES_FILE:-} A770B_SEAT="$job/scratch/seat" "${cmd[@]}" >"$log" 2>&1 &
+  # The suite's cleanup stops only the containers this suite recorded.
+  A770B_LADDER_RUN=1 A770B_PROFILES_FILE=${A770B_PROFILES_FILE:-} A770B_SEAT="$job/scratch/seat" "${cmd[@]}" >"$log" 2>&1 &
   CHILD=$!
   plain_trunc "$job/suite.pid" || return 2
   printf '%s\n' "$CHILD" > "$job/suite.pid"
@@ -548,7 +541,7 @@ run_suite_once() {
   local rc=0
   wait "$CHILD" || rc=$?
   CHILD=
-  "${py[@]}" apply-phase --job "$job" --phase suite --rc "$rc" < "$log" >/dev/null || true
+  "${py[@]}" apply-phase --job "$job" --phase suite --rc "$rc" --log "phases/suite-pass-${pass}.log" < "$log" >/dev/null || true
   return "$rc"
 }
 
@@ -583,6 +576,11 @@ prepare_serve_env() {
 
 capture_cid() {
   local live="" file
+  # A reused server was not started by this job. Leave its id unrecorded so
+  # stop_server does not tear it down.
+  if [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] && grep -q "already up (" "$job/phases/serve.log"; then
+    return 0
+  fi
   if [ "$engine" = strata ]; then
     live=$(bash "$here/serve_strata.sh" id 2>/dev/null || true)
   else
@@ -612,9 +610,14 @@ confirm_switches() {
 }
 
 write_engine_evidence() {
-  local pointer=$A770B_DATA/logs/serve-evidence.path dest=$job/evidence/engine-evidence.json model
+  local pointer=$A770B_DATA/logs/serve-evidence.path dest=$job/evidence/engine-evidence.json model target
   if [ -f "$pointer" ] && [ ! -L "$pointer" ]; then
-    return 0
+    target=$(head -n 1 "$pointer" | tr -d '[:space:]' || true)
+    if [ -n "$target" ] && [ -f "$target" ] && [ ! -L "$target" ]; then
+      refuse_link "$dest" || return 0
+      cp -- "$target" "$dest" || true
+      return 0
+    fi
   fi
   [ -s "$job/phases/engine.log" ] || return 0
   case "$engine" in
@@ -628,6 +631,29 @@ write_engine_evidence() {
     *) model=$A770B_MODELS/$model ;;
   esac
   python3 "$here/engine_evidence.py" log --engine "$engine" --log "$job/phases/engine.log" --model "$model" --out "$dest" >/dev/null 2>&1 || true
+}
+
+note_serve_vram() {
+  # llama.cpp already prints this line. Strata and a reused container do not.
+  [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] && grep -q "VRAM after load:" "$job/phases/serve.log" && return 0
+  local used cap pointer target from_file
+  used=$(gpu_used_gib 2>/dev/null || true)
+  case "$used" in
+    ''|unavailable|*[!0-9.]*) return 0 ;;
+  esac
+  cap=${A770B_VRAM_CAP_GIB:-}
+  pointer=$A770B_DATA/logs/serve-evidence.path
+  if [ -f "$pointer" ] && [ ! -L "$pointer" ]; then
+    target=$(head -n 1 "$pointer" | tr -d '[:space:]' || true)
+    if [ -n "$target" ] && [ -f "$target" ] && [ ! -L "$target" ]; then
+      from_file=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); v=d.get("configured_vram_cap_gib"); print("" if v is None else v)' "$target" 2>/dev/null || true)
+      [ -n "$from_file" ] && cap=$from_file
+    fi
+  fi
+  [ -n "$cap" ] || return 0
+  refuse_link "$job/phases/serve.log" || return 0
+  printf 'VRAM after load: %s GiB ≤ configured %s GiB\n' "$used" "$cap" >> "$job/phases/serve.log"
+  "${py[@]}" apply-phase --job "$job" --phase serve --rc 0 < "$job/phases/serve.log" >/dev/null || true
 }
 
 snap_metrics() {
@@ -769,7 +795,7 @@ record_unmeasured() {
   refuse_link "$job/phases/${name}.log" || return 2
   printf '%s\n' "$name: $reason" >> "$job/evidence/argv.log"
   printf '%s\n' "$reason" > "$job/phases/${name}.log"
-  python3 -c 'import json,sys; print(json.dumps({"skipped": True, "why": {"command": sys.argv[1], "rc": 0, "log": "phases/" + sys.argv[2] + ".log", "reason": sys.argv[1]}}))' "$reason" "$name" \
+  python3 -c 'import json,sys; print(json.dumps({"skipped": True, "why": {"command": "not run", "rc": 0, "log": "phases/" + sys.argv[1] + ".log", "reason": sys.argv[2]}}))' "$name" "$reason" \
     | "${py[@]}" apply-phase --job "$job" --phase "$name" --rc 0 >/dev/null
 }
 
@@ -918,6 +944,7 @@ run_phases() {
     resolve_alias
   fi
   if [ "$STUB" != 1 ]; then
+    note_serve_vram || true
     confirm_switches || true
     write_engine_evidence || true
     snap_metrics after-serve || true
