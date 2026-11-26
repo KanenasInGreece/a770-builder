@@ -743,8 +743,9 @@ def test_i6_scope_and_slice_have_no_limit(tmp_path):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             shown = subprocess.run(
-                ["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "MemoryMax",
-                 "-p", "MemoryHigh", "-p", "MemorySwapMax", "-p", "TasksMax", "-p", "CPUQuotaPerSecUSec"],
+                ["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "Slice",
+                 "-p", "ControlGroup", "-p", "MemoryMax", "-p", "MemoryHigh",
+                 "-p", "MemorySwapMax", "-p", "TasksMax", "-p", "CPUQuotaPerSecUSec"],
                 capture_output=True, text=True,
             )
             if shown.returncode == 0 and "ActiveState=active" in shown.stdout:
@@ -753,6 +754,8 @@ def test_i6_scope_and_slice_have_no_limit(tmp_path):
         assert shown is not None and shown.returncode == 0, (shown.stdout if shown else "", shown.stderr if shown else "")
         fields = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
         assert fields.get("ActiveState") == "active", shown.stdout
+        assert fields.get("Slice") == "a770b-sandbox.slice", shown.stdout
+        assert "a770b-sandbox.slice" in fields.get("ControlGroup", ""), shown.stdout
         for key in ("MemoryMax", "MemoryHigh", "MemorySwapMax", "CPUQuotaPerSecUSec"):
             assert fields.get(key) == "infinity", (key, shown.stdout)
         # The user manager's DefaultTasksMax is inherited. A scope cap would be lower.
@@ -765,12 +768,28 @@ def test_i6_scope_and_slice_have_no_limit(tmp_path):
         assert fields.get("TasksMax") == "infinity" or fields.get("TasksMax") in inherited, (
             fields.get("TasksMax"), inherited,
         )
-        slice_show = subprocess.run(
-            ["systemctl", "--user", "show", "a770b-sandbox.slice", "-p", "MemoryMax", "-p", "ActiveState"],
-            capture_output=True, text=True,
+        slice_show = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            slice_show = subprocess.run(
+                ["systemctl", "--user", "show", "a770b-sandbox.slice", "-p", "ActiveState",
+                 "-p", "MemoryMax", "-p", "MemoryHigh", "-p", "MemorySwapMax",
+                 "-p", "TasksMax", "-p", "CPUQuotaPerSecUSec"],
+                capture_output=True, text=True,
+            )
+            if slice_show.returncode == 0 and "ActiveState=active" in slice_show.stdout:
+                break
+            time.sleep(0.1)
+        assert slice_show is not None and slice_show.returncode == 0, (
+            slice_show.stdout if slice_show else "", slice_show.stderr if slice_show else "",
         )
-        assert slice_show.returncode == 0, slice_show.stderr
-        assert "MemoryMax=infinity" in slice_show.stdout, slice_show.stdout
+        slice_fields = dict(line.split("=", 1) for line in slice_show.stdout.splitlines() if "=" in line)
+        assert slice_fields.get("ActiveState") == "active", slice_show.stdout
+        for key in ("MemoryMax", "MemoryHigh", "MemorySwapMax", "CPUQuotaPerSecUSec"):
+            assert slice_fields.get(key) == "infinity", (key, slice_show.stdout)
+        assert slice_fields.get("TasksMax") == "infinity" or slice_fields.get("TasksMax") in inherited, (
+            slice_fields.get("TasksMax"), inherited, slice_show.stdout,
+        )
     finally:
         owned = _note_owned(proc.pid) if proc.poll() is None else []
         _reap_owned(proc, owned)
