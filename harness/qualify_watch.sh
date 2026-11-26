@@ -55,14 +55,19 @@ trip_stage() {
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$job/watchdog-trips.log"
   fi
   record_trip "$rule" "$*"
-  do_stop >> "$job/watchdog.log" 2>&1 || true
+  if [ -L "$job/watchdog.log" ] || [ -L "$job" ]; then
+    do_stop >/dev/null 2>&1 || true
+  else
+    do_stop >> "$job/watchdog.log" 2>&1 || true
+  fi
   [ "${WD_NOFINALSLEEP:-0}" = 1 ] || sleep 90
 }
 
 trip_driver() {
-  local line=$1 pid start now
-  # Skip the suite before the 90s post-stop sleep, and only signal the recorded pid.
-  if [ -L "$job/DRIVER_ERROR" ] || [ -L "$job/SUITE_SKIP" ]; then
+  local line=$1 pid="" start="" now=""
+  # stop-run first, then the recorded suite pid. The 90s post-stop sleep is not
+  # waited here: the suite child must be signalled as soon as stop-run returns.
+  if [ -L "$job" ] || [ -L "$job/DRIVER_ERROR" ] || [ -L "$job/SUITE_SKIP" ]; then
     say "refusing a symlink driver marker"
     return 0
   fi
@@ -70,16 +75,26 @@ trip_driver() {
   printf '1\n' > "$job/SUITE_SKIP"
   if [ -f "$job/suite.pid" ] && [ ! -L "$job/suite.pid" ]; then
     pid=$(tr -d '[:space:]' < "$job/suite.pid" 2>/dev/null || true)
-    start=""
     if [ -f "$job/suite.start" ] && [ ! -L "$job/suite.start" ]; then
       start=$(tr -d '[:space:]' < "$job/suite.start" 2>/dev/null || true)
     fi
+  fi
+  say "TRIP: fresh engine/driver error: $line"
+  if [ ! -L "$job/watchdog-trips.log" ] && [ ! -L "$job" ]; then
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "fresh engine/driver error: $line" >> "$job/watchdog-trips.log"
+  fi
+  record_trip "driver" "fresh engine/driver error: $line"
+  if [ -L "$job/watchdog.log" ] || [ -L "$job" ]; then
+    do_stop >/dev/null 2>&1 || true
+  else
+    do_stop >> "$job/watchdog.log" 2>&1 || true
+  fi
+  if [ -n "$pid" ] && [ -n "$start" ]; then
     now=$("${py[@]}" starttime "$pid" 2>/dev/null || true)
-    if [ -n "$pid" ] && [ -n "$start" ] && [ "$now" = "$start" ]; then
+    if [ "$now" = "$start" ]; then
       kill -TERM "$pid" 2>/dev/null || true
     fi
   fi
-  trip_stage "driver" "fresh engine/driver error: $line"
 }
 
 now_s() {
@@ -193,9 +208,7 @@ while [ -e "$job/WATCH" ]; do
       if [ -f "$live" ] && [ ! -L "$live" ]; then
         cid=$(tr -d '[:space:]' < "$live" 2>/dev/null || true)
       fi
-      if [ -z "$cid" ]; then
-        cid=$(bash "$here/serve_strata.sh" id 2>/dev/null || true)
-      fi
+      # A Strata instance id is not a container. docker logs would fail every poll.
     fi
     if [ -z "$cid" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
       cid=$(tr -d '[:space:]' < "$cidfile" 2>/dev/null || true)

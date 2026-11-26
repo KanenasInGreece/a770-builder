@@ -1351,6 +1351,8 @@ process_task(){
     [ -n "$croot" ] && label=$(basename "$croot" .task.md)
   fi
   if [ -z "$label" ]; then
+    # The run's own refusal is the reason. The warning alone does not name it.
+    printf '%s\n' "$run_out" | tail -40 >&2
     echo "⚠ stage $id: run exited $rrc with no capture — recording as run_error (verifier did not run; measured_tasks not updated)" >&2
     emit_stage "$id" "$S_LANGUAGE" "" "" "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "run_error" "null" "${serve_ev_path:-}"
     write_results

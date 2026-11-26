@@ -41,34 +41,52 @@ fi
 } >> "$argvlog"
 chmod 600 "$argvlog" 2>/dev/null || true
 
-body=$job/scratch/smoke-body
 comp=$job/scratch/smoke-completion.json
 tool=$job/scratch/smoke-tool.json
 models=$job/scratch/smoke-models.json
+for target in "$models" "$comp" "$tool" "$comp.body" "$tool.body" "$job/phases/smoke.log"; do
+  if [ -L "$target" ]; then
+    printf '⛔ refusing a symlink in the smoke path\n' >&2
+    exit 2
+  fi
+done
 rm -f -- "$models" "$comp" "$tool"
 curl_cfg=()
 if [ -f "$cfg" ] && [ ! -L "$cfg" ]; then
   curl_cfg=(--config "$cfg")
 fi
 curl --silent --show-error --max-time 60 "${curl_cfg[@]}" "$url/models" >"$models" 2>>"$job/phases/smoke.log" || true
-python3 - "$alias" <<'PY' >"$comp.body"
-import json, sys
-alias = sys.argv[1]
-print(json.dumps({
+python3 - "$job" "$alias" "$comp.body" "$tool.body" <<'PY'
+import json, os, sys
+job, alias, comp_body, tool_body = sys.argv[1:]
+limit = 256
+plan = os.path.join(job, "plan.json")
+try:
+    if os.path.isfile(plan) and not os.path.islink(plan):
+        if json.load(open(plan, encoding="utf-8")).get("reasoning") == "on":
+            limit = 1024
+except (OSError, ValueError):
+    limit = 256
+
+def write(path, payload):
+    if os.path.islink(path):
+        raise SystemExit(2)
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.write(fd, (json.dumps(payload) + "\n").encode())
+    os.close(fd)
+
+write(comp_body, {
     "model": alias,
+    "max_tokens": limit,
     "messages": [{"role": "user", "content": "Reply with one word."}],
-}))
-PY
-curl --silent --show-error --max-time 120 "${curl_cfg[@]}" \
-  -H 'Content-Type: application/json' \
-  --data-binary @"$comp.body" \
-  "$url/chat/completions" >"$comp" 2>>"$job/phases/smoke.log" || true
-python3 - "$alias" <<'PY' >"$tool.body"
-import json, sys
-alias = sys.argv[1]
-print(json.dumps({
+})
+write(tool_body, {
     "model": alias,
-    "messages": [{"role": "user", "content": "Use the tool if you need a fact."}],
+    "max_tokens": limit,
+    "messages": [{
+        "role": "user",
+        "content": "What is the current weather in Athens? Call the get_weather tool to find out.",
+    }],
     "tool_choice": "auto",
     "tools": [{
         "type": "function",
@@ -82,8 +100,12 @@ print(json.dumps({
             },
         },
     }],
-}))
+})
 PY
+curl --silent --show-error --max-time 120 "${curl_cfg[@]}" \
+  -H 'Content-Type: application/json' \
+  --data-binary @"$comp.body" \
+  "$url/chat/completions" >"$comp" 2>>"$job/phases/smoke.log" || true
 curl --silent --show-error --max-time 120 "${curl_cfg[@]}" \
   -H 'Content-Type: application/json' \
   --data-binary @"$tool.body" \
