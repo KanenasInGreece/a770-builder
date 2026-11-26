@@ -1314,6 +1314,9 @@ exit 0
     assert doc["reason"] == "oom"
     assert doc["exit_code"] == 137
     assert proc.returncode == 137
+    report = (results / "zero.verify.md").read_text(encoding="utf-8")
+    assert "verdict: FAIL (exit 137) — recorded reason: oom" in report
+    assert "the exit code of the command is the verdict" not in report
     assert not journal_called.exists()
     assert fd1.read_text(encoding="utf-8").strip() == "/dev/null", fd1.read_text(encoding="utf-8")
     assert "sandbox_oom.py" in cmdline.read_text(encoding="utf-8")
@@ -1352,6 +1355,9 @@ exit 0
     assert doc["status"] == "pass", doc
     assert doc["oom"]["public"] == "no"
     assert doc["exit_code"] == 0
+    near_report = (results / "near.verify.md").read_text(encoding="utf-8")
+    assert "the exit code of the command is the verdict" in near_report
+    assert "recorded reason:" not in near_report
 
 
 def test_i1_i7_oom_scope_contains_the_hog(tmp_path):
@@ -2082,6 +2088,454 @@ def test_observe_scope_uses_the_real_systemctl_binary(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert _observe_scope("a770b-sbx-9-1.scope") == "inactive"
     assert seen == [REAL_SYSTEMCTL]
+
+
+def _qualify_funcs(tmp_path: Path) -> Path:
+    prefix = QUALIFY.read_text(encoding="utf-8").split("[ $# -ge 1 ] || usage", 1)[0]
+    prefix = prefix.replace(
+        'here=$(cd "$(dirname "$0")" && pwd)',
+        f'here="{ROOT / "harness"}"',
+        1,
+    )
+    funcs = tmp_path / "qualify-funcs.sh"
+    funcs.write_text(prefix, encoding="utf-8")
+    return funcs
+
+
+def _observer_script(tmp_path: Path, body: str) -> str:
+    """Source the real observer and always stop the helpers it starts."""
+    funcs = _qualify_funcs(tmp_path)
+    return f"""
+set -m
+set +e
+. "{funcs}"
+gpu_used_gib() {{ printf '%s\\n' 0; }}
+trap 'stop_helpers' EXIT
+{body}
+"""
+
+
+def _run_observer(tmp_path: Path, body: str, bin_: Path) -> dict[str, str]:
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_GPU_MATCH="red-gpu")
+    proc = subprocess.run(
+        ["bash", "-c", _observer_script(tmp_path, body)],
+        env=env, capture_output=True, text=True, timeout=40,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fields: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if line.startswith("OUT ") and "=" in line:
+            key, value = line[4:].split("=", 1)
+            fields[key] = value
+    return fields
+
+
+def _observer_bin(tmp_path: Path, docker_pid: Path) -> Path:
+    bin_ = _tools(tmp_path)
+    _exe(bin_ / "docker", f"""
+if [ "${{1:-}}" = inspect ]; then cat "{docker_pid}"; fi
+exit 0
+""")
+    _exe(bin_ / "nvtop", "exit 0\n")
+    _exe(bin_ / "a770b-qualify-stop", f"printf '%s\\n' \"$*\" >> \"{tmp_path}/qualify-stop.log\"\nexit 0\n")
+    return bin_
+
+
+def test_serving_pid_is_not_written_through_a_planted_temp_name(tmp_path):
+    """The publication temp is created exclusively, not opened at a predictable path."""
+    docker_pid = tmp_path / "docker.pid"
+    docker_pid.write_text("5151\n", encoding="ascii")
+    secret = tmp_path / "secret"
+    secret.write_text("sentinel\n", encoding="utf-8")
+    job = tmp_path / "job"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    bin_ = _observer_bin(tmp_path, docker_pid)
+    cid = "ab" * 32
+    fields = _run_observer(tmp_path, f"""
+export A770B_DOCKER="{bin_ / "docker"}"
+export STUB=0
+engine=llama
+job="{job}"
+start_observers
+# $$ in the tracker subshell is this shell, which is the predictable temp name.
+ln -sfn "{secret}" "$job/evidence/.serving.pid.$$"
+printf '%s\\n' '{cid}' > "$job/cid"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 5151 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+printf 'OUT SECRET=%s\\n' "$(cat "{secret}")"
+printf 'OUT LINK=%s\\n' "$([ -L "$job/evidence/.serving.pid.$$" ] && echo 1 || echo 0)"
+""", bin_)
+    assert fields.get("PID") == "5151", fields
+    assert fields.get("SECRET") == "sentinel", fields
+    assert fields.get("LINK") == "1", fields
+
+
+def test_serving_pid_retries_the_same_pid_when_rename_fails(tmp_path):
+    """last advances only after the rename, so one failed mv does not skip that pid."""
+    docker_pid = tmp_path / "docker.pid"
+    docker_pid.write_text("5151\n", encoding="ascii")
+    real_mv = shutil.which("mv")
+    assert real_mv
+    flag = tmp_path / "mv-failed"
+    bin_ = _observer_bin(tmp_path, docker_pid)
+    _exe(bin_ / "mv", f"""
+dest="${{@: -1}}"
+case "$dest" in
+  */evidence/serving.pid)
+    if [ ! -f "{flag}" ]; then : > "{flag}"; exit 1; fi
+    ;;
+esac
+exec "{real_mv}" "$@"
+""")
+    job = tmp_path / "job"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    cid = "cd" * 32
+    fields = _run_observer(tmp_path, f"""
+export A770B_DOCKER="{bin_ / "docker"}"
+export STUB=0
+engine=llama
+job="{job}"
+start_observers
+printf '%s\\n' '{cid}' > "$job/cid"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid" 2>/dev/null)" = 5151 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid" 2>/dev/null)"
+printf 'OUT MV_FAILED=%s\\n' "$([ -f "{flag}" ] && echo 1 || echo 0)"
+""", bin_)
+    assert fields.get("MV_FAILED") == "1", fields
+    assert fields.get("PID") == "5151", fields
+
+
+def test_serving_pid_is_empty_when_the_server_is_gone(tmp_path):
+    docker_pid = tmp_path / "docker.pid"
+    docker_pid.write_text("5151\n", encoding="ascii")
+    job = tmp_path / "job"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    bin_ = _observer_bin(tmp_path, docker_pid)
+    cid = "ef" * 32
+    pidfile = job / "evidence" / "serving.pid"
+    fields = _run_observer(tmp_path, f"""
+export A770B_DOCKER="{bin_ / "docker"}"
+export STUB=0
+engine=llama
+job="{job}"
+start_observers
+printf '%s\\n' '{cid}' > "$job/cid"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 5151 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+: > "{docker_pid}"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ ! -s "$job/evidence/serving.pid" ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT EMPTY=%s\\n' "$([ ! -s "$job/evidence/serving.pid" ] && echo 1 || echo 0)"
+printf 'OUT LEFT=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+""", bin_)
+    assert fields.get("PID") == "5151", fields
+    assert fields.get("EMPTY") == "1", fields
+    assert fields.get("LEFT") == "", fields
+    assert pidfile.read_bytes() == b""
+
+
+def test_reused_server_is_observed_and_not_recorded_as_owned(tmp_path):
+    """No $job/cid means the server is not owned. An already-up server is still sampled."""
+    docker_pid = tmp_path / "docker.pid"
+    docker_pid.write_text("4242\n", encoding="ascii")
+    live = "12" * 32
+    job = tmp_path / "job"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    bin_ = _observer_bin(tmp_path, docker_pid)
+    strata = tmp_path / "strata-here"
+    strata.mkdir()
+    (strata / "host_memory.py").symlink_to(HOST_MEMORY)
+    strata_log = tmp_path / "strata-calls.log"
+    _exe(strata / "serve_strata.sh", f"printf '%s\\n' \"$*\" >> \"{strata_log}\"\nif [ \"$1\" = pid ]; then printf '%s\\n' 4343; fi\nexit 0\n")
+    fields = _run_observer(tmp_path, f"""
+export A770B_DOCKER="{bin_ / "docker"}"
+export STUB=0
+engine=llama
+job="{job}"
+mkdir -p "$A770B_DATA/logs" "$job/phases"
+printf '%s\\n' '{live}' > "$A770B_DATA/logs/llamacpp-a770.cid"
+start_observers
+deadline=$((SECONDS + 2))
+while [ "$SECONDS" -lt "$deadline" ]; do /usr/bin/sleep 0.05; done
+printf 'OUT QUIET=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+printf '✓ llama already up (same argv)\\n' > "$job/phases/serve.log"
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 4242 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+printf 'OUT OWNED=%s\\n' "$([ -e "$job/cid" ] && echo 1 || echo 0)"
+stop_server
+printf 'OUT STOP=%s\\n' "$(cat "{tmp_path}/qualify-stop.log" 2>/dev/null || true)"
+stop_helpers
+unset TRACKER VRAM_PID MEM SERVER_STOPPED
+engine=strata
+here="{strata}"
+job="{tmp_path}/job-strata"
+mkdir -p "$job/evidence" "$job/phases"
+printf '✓ strata already up (same argv)\\n' > "$job/phases/serve.log"
+start_observers
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 4343 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT STRATA=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+printf 'OUT STRATA_OWNED=%s\\n' "$([ -e "$job/cid" ] && echo 1 || echo 0)"
+""", bin_)
+    assert fields.get("QUIET") == "", fields
+    assert fields.get("PID") == "4242", fields
+    assert fields.get("OWNED") == "0", fields
+    assert fields.get("STOP", "") == "", fields
+    assert fields.get("STRATA") == "4343", fields
+    assert fields.get("STRATA_OWNED") == "0", fields
+    assert "stop" not in strata_log.read_text(encoding="utf-8")
+
+
+def _end_named(pid: int) -> None:
+    """Signal one process this test started, then its recorded worker if that file names one."""
+    if pid > 1 and _alive(pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _alive(pid):
+        time.sleep(0.05)
+
+
+def _end_worker_record(data: Path) -> None:
+    record = data / "logs" / "run.worker-pgid"
+    if not record.is_file() or record.is_symlink():
+        return
+    parts = record.read_text(encoding="ascii", errors="replace").split()
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        return
+    pid = int(parts[0])
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+        start = stat.rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return
+    if start != parts[1]:
+        return
+    if _alive(pid):
+        os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _alive(pid):
+        time.sleep(0.05)
+
+
+def _exec_lead_text() -> str:
+    source = BUILD.read_text(encoding="utf-8")
+    start = source.index("exec_lead(){")
+    end = source.index("\n}\n", start)
+    return source[start:end + 2]
+
+
+def _argv(pid: int) -> list[str]:
+    raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def test_exec_lead_starts_isolated_and_stop_run_accepts_both_forms(tmp_path):
+    """-I -B is how the leader is started. stop-run accepts that form and the legacy one."""
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "sitecustomize.py").write_text(
+        "import sys\nsys.stderr.write('shadow\\n')\nraise SystemExit(86)\n",
+        encoding="utf-8",
+    )
+    env = _env(tmp_path, PYTHONPATH=str(shadow))
+    fn = _exec_lead_text()
+    # $$ inside the subshell is the outer shell, which stays alive across exec.
+    isolated = subprocess.run(
+        ["bash", "-c", f'export A770B_PROJECT="{ROOT}"\nunset LOCAL_TIMEOUT\n{fn}\n( exec_lead true )\n'],
+        env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert isolated.returncode == 0, isolated.stderr
+    assert "shadow" not in isolated.stderr
+    assert "python3 -I -B" in fn
+
+    pidfile = Path(env["A770B_DATA"]) / "logs" / "run.pid"
+    leader_file = tmp_path / "leader"
+    starter = f"""
+export A770B_PROJECT="{ROOT}"
+unset LOCAL_TIMEOUT
+{fn}
+(
+  printf '%s\\n' "$BASHPID" > "{pidfile}"
+  exec_lead bash -c 'sleep 60' sandbox_run.sh
+) &
+leader=$!
+printf '%s\\n' "$leader" > "{leader_file}"
+wait "$leader"
+"""
+    proc = subprocess.Popen(
+        ["bash", "-c", starter], env=env, start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+    )
+    leader = 0
+    legacy = None
+    legacy_pid = 0
+    data = Path(env["A770B_DATA"])
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if leader_file.exists():
+                text = leader_file.read_text(encoding="ascii").strip()
+                if text.isdigit() and _alive(int(text)):
+                    try:
+                        argv = _argv(int(text))
+                    except OSError:
+                        argv = []
+                    if (
+                        len(argv) >= 5
+                        and argv[1:3] == ["-I", "-B"]
+                        and os.path.realpath(argv[3]) == os.path.realpath(RUN_LEAD)
+                        and argv[4] == "--"
+                        and "sandbox_run.sh" in argv
+                    ):
+                        leader = int(text)
+                        break
+            time.sleep(0.05)
+        assert leader, "isolated leader did not publish -I -B"
+        stopped = subprocess.run(
+            ["bash", str(LOCAL_BUILD), "stop-run"], cwd=ROOT, env=env,
+            capture_output=True, text=True, timeout=40,
+        )
+        assert stopped.returncode == 0, stopped.stdout + stopped.stderr
+        assert f"ending run pid {leader}" in stopped.stdout
+        proc.wait(timeout=10)
+        err = proc.stderr.read() if proc.stderr else ""
+        assert proc.returncode == 143, err
+        assert not _alive(leader)
+
+        legacy_env = dict(env)
+        legacy_env.pop("PYTHONPATH", None)
+        legacy_file = tmp_path / "legacy"
+        legacy_script = f"""
+(
+  printf '%s\\n' "$BASHPID" > "{pidfile}"
+  exec python3 "{RUN_LEAD}" -- bash -c 'sleep 60' sandbox_run.sh
+) &
+legacy=$!
+printf '%s\\n' "$legacy" > "{legacy_file}"
+wait "$legacy"
+"""
+        legacy = subprocess.Popen(
+            ["bash", "-c", legacy_script], env=legacy_env, start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        legacy_pid = 0
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if legacy_file.exists():
+                text = legacy_file.read_text(encoding="ascii").strip()
+                if text.isdigit() and _alive(int(text)):
+                    argv = _argv(int(text))
+                    if len(argv) >= 3 and argv[1:3] == [str(RUN_LEAD), "--"] and "-I" not in argv:
+                        legacy_pid = int(text)
+                        break
+            time.sleep(0.05)
+        assert legacy_pid, "legacy leader did not stay up"
+        stopped = subprocess.run(
+            ["bash", str(LOCAL_BUILD), "stop-run"], cwd=ROOT, env=legacy_env,
+            capture_output=True, text=True, timeout=40,
+        )
+        assert stopped.returncode == 0, stopped.stdout + stopped.stderr
+        assert f"ending run pid {legacy_pid}" in stopped.stdout
+        legacy.wait(timeout=10)
+        assert legacy.returncode == 143
+        assert not _alive(legacy_pid)
+        legacy = None
+    finally:
+        if leader:
+            _end_named(leader)
+        if legacy_pid:
+            _end_named(legacy_pid)
+        _end_worker_record(data)
+        if proc.poll() is None:
+            _end_named(proc.pid)
+            proc.wait(timeout=5)
+        if legacy is not None and legacy.poll() is None:
+            _end_named(legacy.pid)
+            _end_worker_record(data)
+            legacy.wait(timeout=5)
+
+
+def test_run_lead_pid_rejects_anything_but_the_two_forms(tmp_path):
+    env = _env(tmp_path)
+    pidfile = Path(env["A770B_DATA"]) / "logs" / "run.pid"
+    impostor_dir = tmp_path / "elsewhere"
+    impostor_dir.mkdir()
+    impostor = impostor_dir / "run_lead.py"
+    impostor.write_bytes(RUN_LEAD.read_bytes())
+    forms = {
+        "only-I": ["-I", str(RUN_LEAD), "--"],
+        "swapped": ["-B", "-I", str(RUN_LEAD), "--"],
+        "extra": ["-I", "-B", "-s", str(RUN_LEAD), "--"],
+        "impostor": ["-I", "-B", str(impostor), "--"],
+    }
+    for name, flags in forms.items():
+        proc = subprocess.Popen(
+            ["python3", *flags, "bash", "-c", "sleep 60", "sandbox_run.sh"],
+            env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not _alive(proc.pid):
+                time.sleep(0.05)
+            assert _alive(proc.pid), name
+            pidfile.write_text(f"{proc.pid}\n", encoding="ascii")
+            stopped = subprocess.run(
+                ["bash", str(LOCAL_BUILD), "stop-run"], cwd=ROOT, env=env,
+                capture_output=True, text=True, timeout=30,
+            )
+            assert stopped.returncode != 0, (name, stopped.stdout, stopped.stderr)
+            assert "no run to stop" in stopped.stderr, (name, stopped.stderr)
+            assert _alive(proc.pid), name
+        finally:
+            if proc.poll() is None:
+                _end_named(proc.pid)
+                _end_worker_record(Path(env["A770B_DATA"]))
+                proc.wait(timeout=5)
+
+
+def test_run_phase_grades_an_entered_command_once():
+    text = LOCAL_BUILD.read_text(encoding="utf-8")
+    start = text.index("def run_phase(")
+    end = text.index("\ninv_override", start)
+    body = text[start:end]
+    assert body.count("sandbox_oom.grade(") == 1
+
+
+def test_capture_comment_limits_a_missing_record_to_an_early_stop():
+    text = CAPTURE.read_text(encoding="utf-8")
+    start = text.index("## sandbox oom")
+    window = text[start:start + 400]
+    assert "early stop" in window
+    assert "No file on stop-run" not in text
 
 
 def test_reap_uses_the_saved_pid_after_the_parent_is_gone(tmp_path):

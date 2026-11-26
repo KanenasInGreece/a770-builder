@@ -799,17 +799,46 @@ start_observers() {
   # Copy the phase's engine before the subshell. A local in the caller is
   # visible here; the tracker must not depend on that local still being set.
   track_engine=${engine:-}
-  # Phase 3 identity is $job/cid: docker's pid, or the Strata pid. The loop
-  # ends when stop_server signals it. It does not hold the lock fds.
+  # Owned identity is $job/cid. A reused server is only sampled, from the
+  # live id, and that id is not written into $job/cid. The loop ends when
+  # stop_server signals it. It does not hold the lock fds.
   (
     trap - TERM INT EXIT
     exec 7>&- 9>&-
     last=""
+    # Exclusive temp, then rename. last moves only after that rename, so a
+    # failed write is retried for the same pid. An empty file means the
+    # server we were sampling is gone. A reused server has no $job/cid;
+    # that id stays unwritten so stop_server does not own it.
+    publish_pid() {
+      local value="$1" tmp=""
+      tmp=$(mktemp "$job/evidence/.serving.pid.XXXXXX" 2>/dev/null) || return 1
+      if [ -n "$value" ]; then
+        printf '%s\n' "$value" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+      else
+        : > "$tmp" || { rm -f -- "$tmp"; return 1; }
+      fi
+      if mv -f -- "$tmp" "$job/evidence/serving.pid"; then
+        return 0
+      fi
+      rm -f -- "$tmp"
+      return 1
+    }
     while [ ! -f "$job/SERVING_CLEARED" ]; do
       pid=""
       cid=""
       if [ -f "$job/cid" ] && [ ! -L "$job/cid" ]; then
         cid=$(tr -d '[:space:]' < "$job/cid" || true)
+      elif [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] \
+          && grep -q "already up (" "$job/phases/serve.log"; then
+        if [ "$track_engine" = strata ]; then
+          cid="observed"
+        else
+          cidfile=${A770B_DATA:-}/logs/llamacpp-a770.cid
+          if [ -n "${A770B_DATA:-}" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
+            cid=$(tr -d '[:space:]' < "$cidfile" || true)
+          fi
+        fi
       fi
       if [ -n "$cid" ] && [ ! -f "$job/SERVING_CLEARED" ]; then
         if [ "$track_engine" = strata ]; then
@@ -818,13 +847,15 @@ start_observers() {
           pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null || true)
         fi
       fi
+      case "$pid" in
+        [1-9]|[1-9][0-9]*) ;;
+        *) pid="" ;;
+      esac
       # Rename onto the pid file. A truncate in place is empty for a reader.
-      if [ ! -f "$job/SERVING_CLEARED" ] && [ "$pid" != "$last" ] \
-          && printf '%s\n' "$pid" | grep -Eq '^[1-9][0-9]*$'; then
-        tmp="$job/evidence/.serving.pid.$$"
-        printf '%s\n' "$pid" > "$tmp"
-        mv -f -- "$tmp" "$job/evidence/serving.pid"
-        last=$pid
+      if [ ! -f "$job/SERVING_CLEARED" ] && [ "$pid" != "$last" ]; then
+        if publish_pid "$pid"; then
+          last=$pid
+        fi
       fi
       sleep 0.5 || exit 0
     done

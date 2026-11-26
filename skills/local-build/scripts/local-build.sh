@@ -1422,9 +1422,6 @@ def run_phase(cmd_args, raw_fh):
         # Setup that dies before "entered" is the harness, not the model.
         if not entered:
             return "not_run", (norm if norm != 0 else 2), "infra_error", oom, None
-        if oom == "yes":
-            status, code, reason = sandbox_oom.grade(norm, oom)
-            return status, code, None, oom, reason
         status, code, reason = sandbox_oom.grade(norm, oom)
         return status, code, None, oom, reason
     finally:
@@ -1587,7 +1584,29 @@ PY
         if [ "$vrc" = 124 ]; then verdict="FAIL (exit 124)"
         else verdict="FAIL (exit $vrc)"; fi;;
     esac
-    if ! { echo '```'; echo; echo "public: $pub_state"; echo "hidden: $hid_state"; echo "status: $v_status"; echo "verdict: $verdict — the exit code of the command is the verdict"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"; then
+    # The JSON reason is the record. An entered command can exit 0 and still
+    # be fail/oom/137; the sentence has to say that reason, not the raw exit.
+    v_reason=$(python3 -I -B -c 'import json,sys
+try:
+    body = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+if not isinstance(body, dict):
+    raise SystemExit(1)
+reason = body.get("reason")
+if reason is None:
+    print("")
+elif isinstance(reason, str):
+    print(reason)
+else:
+    raise SystemExit(1)
+' "$VJSON" 2>/dev/null) || v_reason=""
+    if [ -n "$v_reason" ]; then
+      v_note="recorded reason: $v_reason"
+    else
+      v_note="the exit code of the command is the verdict"
+    fi
+    if ! { echo '```'; echo; echo "public: $pub_state"; echo "hidden: $hid_state"; echo "status: $v_status"; echo "verdict: $verdict — $v_note"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"; then
       _verify_published=0
       rm -f -- "$VJSON" 2>/dev/null || true
       if [ -n "${A770B_VERIFY_OUT:-}" ]; then

@@ -128,7 +128,10 @@ exec_lead(){
   local fence=()
   [ -z "${LOCAL_TIMEOUT:-}" ] || fence=(--timeout "$LOCAL_TIMEOUT")   # 0 is no clock, as for timeout(1)
   export A770B_RUN_OWNER_PID="$$"                                # this shell, the leader's parent: the owner stop-run may tell
-  exec python3 "$(realpath -e -- "$A770B_PROJECT/harness/run_lead.py")" "${fence[@]}" -- "$@"   # absolute: run_pid_alive matches it exactly
+  # -I -B: ignore PYTHONPATH and the user site, write no bytecode. The absolute
+  # script and the -- / --timeout delimiter are what run_lead_pid matches,
+  # on this form and on the legacy form without these two flags.
+  exec python3 -I -B "$(realpath -e -- "$A770B_PROJECT/harness/run_lead.py")" "${fence[@]}" -- "$@"
 }
 # A previous leader killed before it could reap leaves the worker file beside a dead run.pid. End that group
 # before this run's leader replaces the file. A live leader is left to forward its own signals.
