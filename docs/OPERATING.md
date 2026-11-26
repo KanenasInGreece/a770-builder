@@ -530,11 +530,11 @@ writes a profile row next to the job. The runner records facts and named checks.
 `needs-review`. Nothing in the runner adds a profile: merging an exported row into the registry is a
 separate, deliberate act.
 
-`--engine` is `llama`, `llama.cpp`, `vllm`, `sglang`, or `strata`. The name `llama` is recorded as
+`--engine` is `llama`, `llama.cpp`, `vllm`, or `sglang`. The name `llama` is recorded as
 `llama.cpp`, and that canonical name is the only one passed to the profiling contract. A bare GGUF is a
-llama.cpp candidate and needs `--ctx`. vLLM, SGLang, and Strata take a registry profile name. A model
+llama.cpp candidate and needs `--ctx`. vLLM and SGLang take a registry profile name. A model
 on one of those engines that has no row yet has no kit path from a GGUF: write the candidate row
-outside the checkout, in the registry format, and pass it with `--profiles-file`. The measurement
+outside the checkout, in the registry format, and pass it with `--profiles-file`. Strata is not yet supported by qualify; the manual ladder (`harness/ladder.sh`) is the way to measure it. The measurement
 switches for the engine come from the profiling contract, and the result says whether the start receipt
 confirmed each one. A statistic the engine cannot yield is `unknown`, with the reason, never a zero
 standing in for a missing measurement. `--dry-run` prints the plan and starts nothing.

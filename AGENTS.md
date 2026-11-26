@@ -12,7 +12,7 @@ supports llama.cpp (Vulkan and SYCL), vLLM, SGLang and Strata. OpenCode calls th
 | Serve a card | `bash skills/local-build/scripts/local-build.sh serve <card>` |
 | Status | `bash skills/local-build/scripts/local-build.sh status` |
 | Pick a card | `bash skills/local-build/scripts/local-build.sh profiles` / `menu` |
-| Profile a model | `bash skills/local-build/scripts/local-build.sh qualify start --engine <llama or llama.cpp, vllm, sglang, or strata> --model <name>`, then `qualify result <job>` and `qualify export <job>` |
+| Profile a model | `bash skills/local-build/scripts/local-build.sh qualify start --engine <llama or llama.cpp, vllm, or sglang> --model <name>`, then `qualify result <job>` and `qualify export <job>` |
 | Validate the registry | `python3 harness/profiles.py check` |
 | Test | `uv run --with pytest python -m pytest -q tests/` |
 | Self-test | `env -u A770B_CARD_MODE -u A770B_PROFILES_FILE -u A770B_CORPUS_FILE A770B_PROJECT=$PWD bash tests/selftest.sh` |
@@ -35,7 +35,7 @@ differs, even when the kernel is the same.
 
 ## The ladder
 
-The default profiling step is `local-build.sh qualify start`, then `qualify result` and `qualify export`. A result holds the required statistics, the measurement switches for that engine, and whether each switch was confirmed. The runner returns facts and the verdict `needs-review`. It does not add a profile. `harness/ladder.sh` runs the same rungs and is how to debug one rung. It is not the default.
+The default profiling step for llama.cpp, vLLM, and SGLang is `local-build.sh qualify start`, then `qualify result` and `qualify export`. A result holds the required statistics, the measurement switches for that engine, and whether each switch was confirmed. The runner returns facts and the verdict `needs-review`. It does not add a profile. `harness/ladder.sh` runs the same rungs and is how to debug one rung. It is not the default.
 
 `ladder.sh` runs six rungs in order and stops at the first failure:
 
@@ -48,8 +48,7 @@ The default profiling step is `local-build.sh qualify start`, then `qualify resu
 
 To exercise a kit stage against an externally managed Strata candidate on loopback, follow the
 [Strata attach instructions](kit/PROFILE.md#an-attached-strata-candidate). For the native lifecycle, see
-[managed Strata](docs/OPERATING.md#managed-strata). Full Strata qualification requires
-managed serving and the rest of the ladder.
+[managed Strata](docs/OPERATING.md#managed-strata). Strata is not yet supported by qualify; the manual ladder is the way to measure it.
 
 A builder-class row is green on the task (suite at 80% or better, or a T1 pass), every probe passed, and no engine
 reset. Speed and window are recorded, not gates. The useful window is the served context (`prefill-absorb-v1`).
