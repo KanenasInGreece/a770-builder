@@ -1045,7 +1045,13 @@ def test_i9_without_systemd_run_still_runs_and_dies_with_parent(tmp_path):
 def test_i10_sandbox_slice_path_is_null_when_absent(tmp_path):
     sys.path.insert(0, str(ROOT / "harness"))
     import host_memory
-    uid = os.getuid()
+
+    def literal(root, who):
+        # The hierarchy systemd uses. Not sandbox_slice_dir(), which is under test.
+        return (Path(root) / "user.slice" / f"user-{who}.slice" / f"user@{who}.service"
+                / "a770b.slice" / "a770b-sandbox.slice")
+
+    uid = 424242 if os.getuid() != 424242 else 424243
     missing = tmp_path / "missing-root"
     missing.mkdir()
     assert host_memory.read_sandbox_slice(missing, uid) is None
@@ -1053,23 +1059,33 @@ def test_i10_sandbox_slice_path_is_null_when_absent(tmp_path):
     short.mkdir(parents=True)
     (short / "memory.current").write_text("0\n", encoding="ascii")
     assert host_memory.read_sandbox_slice(missing, uid) is None
-    real = host_memory.sandbox_slice_dir(missing, uid)
+    # A caller-uid directory must not satisfy a read that was given another uid.
+    decoy = literal(missing, os.getuid())
+    decoy.mkdir(parents=True)
+    (decoy / "memory.current").write_text("99\n", encoding="ascii")
+    assert host_memory.read_sandbox_slice(missing, uid) is None
+    real = literal(missing, uid)
     real.mkdir(parents=True)
     (real / "memory.current").write_text("0\n", encoding="ascii")
     (real / "memory.max").write_text("max\n", encoding="ascii")
     got = host_memory.read_sandbox_slice(missing, uid)
     assert got["memory_current"] == 0
     assert got["memory_max"] == "max"
+    assert got["source"] == str(real)
     absent = host_memory.sample(cgroup_root=str(tmp_path / "no-such"))
     assert absent["sandbox_slice"] is None
     present_root = tmp_path / "present-root"
-    present = host_memory.sandbox_slice_dir(present_root, uid)
+    present = literal(present_root, os.getuid())
     present.mkdir(parents=True)
     (present / "memory.current").write_text("0\n", encoding="ascii")
     (present / "memory.max").write_text("max\n", encoding="ascii")
+    other = literal(present_root, uid)
+    other.mkdir(parents=True)
+    (other / "memory.current").write_text("99\n", encoding="ascii")
     sample = host_memory.sample(cgroup_root=str(present_root))
     assert sample["sandbox_slice"] is not None
     assert sample["sandbox_slice"]["memory_current"] == 0
+    assert sample["sandbox_slice"]["source"] == str(present)
 
 
 def test_i11_qualify_tracks_the_server_and_continues_on_oom(tmp_path):
