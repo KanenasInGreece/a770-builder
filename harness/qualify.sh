@@ -153,7 +153,7 @@ release_suite_server() {
 
 stop_server() {
   [ "${SERVER_STOPPED:-0}" = 1 ] && return 0
-  SERVER_STOPPED=1
+  local rc=0 cid="" engine
   # Phase 3's target ends with the server. Stop the tracker before truncating
   # so it cannot write the old pid back over the clear. Phase 5 publishes
   # through run_suite.sh after this returns.
@@ -162,24 +162,29 @@ stop_server() {
     wait "$TRACKER" 2>/dev/null || true
     TRACKER=""
   fi
-  plain_trunc "$job/SERVING_CLEARED" || return 1
-  plain_trunc "$job/evidence/serving.pid" || return 1
-  local cid="" engine
+  # A failed clear is kept. It must not skip the owned-server stop. The flag
+  # is set only after that teardown, so a later call cannot skip a server
+  # this attempt has not stopped yet.
+  plain_trunc "$job/SERVING_CLEARED" || rc=1
+  plain_trunc "$job/evidence/serving.pid" || rc=1
   [ -f "$job/cid" ] && [ ! -L "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
-  [ -n "$cid" ] || return 0
-  refuse_link "$job/phases/stop-server.log" || return 0
-  refuse_link "$job/evidence/argv.log" || return 0
-  if command -v a770b-qualify-stop >/dev/null 2>&1; then
-    printf '%s\n' "stop: a770b-qualify-stop $cid" >> "$job/evidence/argv.log"
-    a770b-qualify-stop "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
-  elif [ "${STUB:-0}" != 1 ]; then
-    engine=$(pget engine 2>/dev/null || true)
-    if [ "$engine" = strata ]; then
-      bash "$here/serve_strata.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
-    else
-      bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+  if [ -n "$cid" ]; then
+    if refuse_link "$job/phases/stop-server.log" && refuse_link "$job/evidence/argv.log"; then
+      if command -v a770b-qualify-stop >/dev/null 2>&1; then
+        printf '%s\n' "stop: a770b-qualify-stop $cid" >> "$job/evidence/argv.log"
+        a770b-qualify-stop "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+      elif [ "${STUB:-0}" != 1 ]; then
+        engine=$(pget engine 2>/dev/null || true)
+        if [ "$engine" = strata ]; then
+          bash "$here/serve_strata.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+        else
+          bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+        fi
+      fi
     fi
   fi
+  SERVER_STOPPED=1
+  return "$rc"
 }
 
 record_hooks() {

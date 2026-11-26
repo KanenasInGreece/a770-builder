@@ -9,6 +9,7 @@ as no when a Started line was seen and the poll found nothing else.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -57,6 +58,15 @@ def _unit_name(unit):
     if unit.endswith(".scope") or unit.endswith(".service"):
         return unit
     return unit + ".scope"
+
+
+# sandbox_run.sh writes a770b-sbx-<pid>-<random>.scope. The opt-in OOM test
+# rewrites that same suffix to a770b-test-. No other name is stopped or reset.
+_OWNED_SCOPE = re.compile(r"^a770b-(?:sbx|test)-[1-9][0-9]*-[0-9]+\.scope$")
+
+
+def _owned_scope(unit):
+    return isinstance(unit, str) and _OWNED_SCOPE.fullmatch(unit) is not None
 
 
 def _read_record(path):
@@ -153,28 +163,51 @@ def _journal_oom(unit):
 
 
 def _decide(policy, shown, exit_code, unit):
+    # Kill policy trusts an observed oom-kill before the settle check. A scope
+    # can still be deactivating when the helper reads it. Any other unsettled
+    # result is unknown and does not read the journal. Exit 0 with a settled
+    # result other than oom-kill is no, also without the journal.
+    if policy == "kill" and shown is not None and shown.get("Result") == "oom-kill":
+        return "yes"
     if shown is not None and shown.get("ActiveState") in _UNSETTLED:
         return "unknown"
-    if policy == "kill" and shown is not None:
-        result = shown.get("Result", "")
-        # Result=oom-kill is yes at any exit code. Exit 0 with any other
-        # result is no. Neither case reads the journal.
-        if result == "oom-kill":
-            return "yes"
-        if exit_code == 0:
-            return "no"
+    if policy == "kill" and shown is not None and exit_code == 0:
+        return "no"
     return _journal_oom(unit)
 
 
-def _stop_if_unsettled(unit, shown):
-    # sandbox_run.sh has already exited, so a scope still active is abandoned.
-    # reset-failed does not stop an active unit.
-    if shown is not None and shown.get("ActiveState") in _UNSETTLED:
-        _run(["systemctl", "--user", "stop", "--", unit])
+def _report_cleanup(action, unit, proc):
+    """A stall or a non-zero status is printed. It is not ignored."""
+    if proc is None:
+        print(f"sandbox oom: {action} of {unit} timed out", file=sys.stderr)
+        return
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        print(
+            f"sandbox oom: {action} of {unit} failed: {detail or proc.returncode}",
+            file=sys.stderr,
+        )
+
+
+def _cleanup_scope(unit, shown):
+    """Stop an owned scope that has not been shown to have exited, then reset it.
+
+    A failed show is not evidence the scope is gone, so the stop is still
+    attempted. reset-failed does not stop an active unit. A name this sandbox
+    did not generate is left untouched.
+    """
+    if not _owned_scope(unit):
+        print(f"sandbox oom: refusing to stop or reset {unit}", file=sys.stderr)
+        return
+    if shown is None or shown.get("ActiveState") in _UNSETTLED:
+        _report_cleanup("stop", unit, _run(["systemctl", "--user", "stop", "--", unit]))
+    _report_cleanup(
+        "reset-failed", unit, _run(["systemctl", "--user", "reset-failed", "--", unit]),
+    )
 
 
 def update(path, exit_code):
-    """Set oom to yes, no, or unknown, then reset-failed the scope unit."""
+    """Set oom to yes, no, or unknown, and reset an owned scope afterwards."""
     try:
         body = _read_record(path)
     except (OSError, ValueError):
@@ -192,9 +225,8 @@ def update(path, exit_code):
     else:
         named = _unit_name(str(unit))
         shown = _wait_settled(named)
-        _stop_if_unsettled(named, shown)
+        _cleanup_scope(named, shown)
         oom = _decide(body.get("policy") or "", shown, code, named)
-        _run(["systemctl", "--user", "reset-failed", "--", named])
     body["oom"] = oom
     try:
         _write_record(path, body)

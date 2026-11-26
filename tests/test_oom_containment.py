@@ -1862,7 +1862,7 @@ exit 0
     monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
     record = tmp_path / "b2.json"
     record.write_text(json.dumps({
-        "isolation": "scope", "unit": "a770b-sbx-stuck.scope", "policy": "kill", "oom": "unknown",
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope", "policy": "kill", "oom": "unknown",
     }), encoding="utf-8")
     sandbox_oom.update(str(record), 0)
     text = log.read_text(encoding="utf-8")
@@ -1873,12 +1873,12 @@ exit 0
     _exe(bin_ / "systemctl", f"""
 printf '%s\\n' "$*" >> "{log}"
 case " $* " in
-  *" show "*) /usr/bin/sleep 3 ;;
+  *" show "*) exec /usr/bin/sleep 3 ;;
 esac
 exit 0
 """)
     record.write_text(json.dumps({
-        "isolation": "scope", "unit": "a770b-sbx-hang.scope", "policy": "continue", "oom": "unknown",
+        "isolation": "scope", "unit": "a770b-sbx-43-8.scope", "policy": "continue", "oom": "unknown",
     }), encoding="utf-8")
     started = time.monotonic()
     sandbox_oom.update(str(record), 1)
@@ -2179,3 +2179,358 @@ def test_arm_pid_gone_fails_when_the_process_is_still_alive():
             _arm_pid_gone(proc.pid, seconds=0.2)
     finally:
         _reap_owned(proc, [proc.pid])
+
+
+def _oom_mod(monkeypatch):
+    sys.path.insert(0, str(ROOT / "harness"))
+    import sandbox_oom
+    monkeypatch.setattr(sandbox_oom, "_SETTLE_S", 0.3)
+    monkeypatch.setattr(sandbox_oom, "_JOURNAL_S", 0.2)
+    monkeypatch.setattr(sandbox_oom, "_TOOL_TIMEOUT_S", 0.4)
+    return sandbox_oom
+
+
+def _grade_bin(tmp_path, name, systemctl_body, journal_body="exit 1\n"):
+    bin_ = tmp_path / name
+    _exe(bin_ / "systemctl", systemctl_body)
+    _exe(bin_ / "journalctl", journal_body)
+    return bin_
+
+
+def test_unsettled_oom_kill_is_yes_under_kill_policy(tmp_path, monkeypatch):
+    """Result=oom-kill is yes while the scope is still deactivating.
+
+    Any other unsettled result stays unknown and does not read the journal.
+    """
+    oom = _oom_mod(monkeypatch)
+    journal = tmp_path / "journal-called"
+    bin_ = _grade_bin(
+        tmp_path, "unset-bin",
+        "printf '%s\\n' 'ActiveState=deactivating' 'Result=oom-kill'\n",
+        f"printf 1 > '{journal}'\nexit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 0) == "yes"
+    assert json.loads(record.read_text(encoding="utf-8"))["oom"] == "yes"
+    assert not journal.exists()
+
+    journal_other = tmp_path / "journal-other"
+    bin_other = _grade_bin(
+        tmp_path, "other-bin",
+        "printf '%s\\n' 'ActiveState=deactivating' 'Result=success'\n",
+        f"printf 1 > '{journal_other}'\nexit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_other}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-8.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 0) == "unknown"
+    assert not journal_other.exists()
+
+    journal_continue = tmp_path / "journal-continue"
+    bin_continue = _grade_bin(
+        tmp_path, "continue-bin",
+        "printf '%s\\n' 'ActiveState=deactivating' 'Result=oom-kill'\n",
+        f"printf 1 > '{journal_continue}'\nexit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_continue}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-9.scope",
+        "policy": "continue", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 0) == "unknown"
+    assert not journal_continue.exists()
+
+
+def test_cleanup_refuses_a_unit_the_sandbox_did_not_generate(tmp_path, monkeypatch, capsys):
+    oom = _oom_mod(monkeypatch)
+    log = tmp_path / "ctl.log"
+    bin_ = _grade_bin(tmp_path, "refuse-bin", f"""
+printf '%s\\n' "$*" >> "{log}"
+printf '%s\\n' 'ActiveState=active' 'Result=success'
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    for unit in ("ssh.service", "a770b-sbx-42-7.service", "a770b-sbx-stuck.scope", "a770b-test-not.scope"):
+        log.write_text("", encoding="utf-8")
+        record.write_text(json.dumps({
+            "isolation": "scope", "unit": unit, "policy": "kill", "oom": "unknown",
+        }), encoding="utf-8")
+        oom.update(str(record), 0)
+        text = log.read_text(encoding="utf-8")
+        assert " stop " not in f" {text} ", (unit, text)
+        assert "reset-failed" not in text, (unit, text)
+    err = capsys.readouterr().err
+    assert "refusing to stop or reset ssh.service" in err
+    assert "refusing to stop or reset a770b-sbx-42-7.service" in err
+
+
+def test_opt_in_test_scope_is_still_stopped(tmp_path, monkeypatch, capsys):
+    oom = _oom_mod(monkeypatch)
+    log = tmp_path / "ctl.log"
+    bin_ = _grade_bin(tmp_path, "optin-bin", f"""
+printf '%s\\n' "$*" >> "{log}"
+printf '%s\\n' 'ActiveState=active' 'Result=success'
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-test-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    oom.update(str(record), 0)
+    text = log.read_text(encoding="utf-8")
+    assert " stop " in f" {text} ", text
+    assert "reset-failed" in text, text
+    assert "refusing" not in capsys.readouterr().err
+
+
+def test_failed_show_still_stops_an_owned_scope(tmp_path, monkeypatch):
+    oom = _oom_mod(monkeypatch)
+    log = tmp_path / "ctl.log"
+    bin_ = _grade_bin(tmp_path, "show-bin", f"""
+printf '%s\\n' "$*" >> "{log}"
+case " $* " in
+  *" show "*) exit 1 ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    oom.update(str(record), 1)
+    text = log.read_text(encoding="utf-8")
+    assert " stop " in f" {text} ", text
+
+
+def test_stop_failure_and_timeout_are_reported(tmp_path, monkeypatch, capsys):
+    oom = _oom_mod(monkeypatch)
+    bin_ = _grade_bin(tmp_path, "fail-bin", """
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=active' 'Result=success' ;;
+  *" stop "*) printf '%s\\n' 'stop refused' >&2; exit 1 ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    oom.update(str(record), 0)
+    err = capsys.readouterr().err
+    assert "stop of a770b-sbx-42-7.scope failed: stop refused" in err
+
+    bin_reset = _grade_bin(tmp_path, "reset-bin", """
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=failed' 'Result=success' ;;
+  *" reset-failed "*) printf '%s\\n' 'reset refused' >&2; exit 1 ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_reset}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-8.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    oom.update(str(record), 0)
+    err = capsys.readouterr().err
+    assert "reset-failed of a770b-sbx-42-8.scope failed: reset refused" in err
+
+    bin_hang = _grade_bin(tmp_path, "hang-bin", """
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=deactivating' 'Result=success' ;;
+  *" stop "*) exec /usr/bin/sleep 30 ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_hang}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-9.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    started = time.monotonic()
+    oom.update(str(record), 1)
+    assert time.monotonic() - started < 2.0
+    err = capsys.readouterr().err
+    assert "stop of a770b-sbx-42-9.scope timed out" in err
+
+
+def _end_session(proc: subprocess.Popen, pids: list[int]) -> None:
+    """Kill this test's session and the pids its stubs published. No scan."""
+    for pid in pids:
+        if pid > 0 and _alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _published_pid(path: Path) -> int:
+    try:
+        return int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def test_probe_and_reset_are_bounded_and_the_model_command_is_not(tmp_path):
+    """The throwaway probe and its reset-failed return. The model command does not sit under timeout."""
+    if shutil.which("bwrap") is None or shutil.which("setpriv") is None:
+        pytest.skip("bwrap and setpriv are required; this test does not stub them")
+    bin_ = _tools(tmp_path)
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
+    probe_parent = tmp_path / "probe.parent"
+    probe_pid = tmp_path / "probe.pid"
+    _exe(bin_ / "systemd-run", f"""
+ps -o comm= -p "$PPID" | tr -d '[:space:]' > "{probe_parent}"
+printf '%s\\n' "$$" > "{probe_pid}"
+exec /usr/bin/sleep 30
+""")
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
+    err = tmp_path / "probe.err"
+    proc = subprocess.Popen(
+        ["bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
+        env=env, stdout=subprocess.DEVNULL, stderr=err.open("w"),
+        start_new_session=True,
+    )
+    timed_out = False
+    try:
+        try:
+            proc.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    finally:
+        _end_session(proc, [_published_pid(probe_pid)])
+    assert probe_parent.read_text(encoding="ascii").strip() == "timeout", probe_parent.read_text(encoding="ascii")
+    assert not timed_out, "systemd-run probe was not bounded"
+    assert not _alive(_published_pid(probe_pid))
+    assert proc.returncode == 0, err.read_text(encoding="utf-8", errors="replace")
+    assert "isolation=none" in err.read_text(encoding="utf-8", errors="replace")
+
+    reset_parent = tmp_path / "reset.parent"
+    reset_pid = tmp_path / "reset.pid"
+    model_parent = tmp_path / "model.parent"
+    _exe(bin_ / "systemd-run", f"""
+case " $* " in
+  *" --collect "*)
+    ps -o comm= -p "$PPID" | tr -d '[:space:]' > "{probe_parent}"
+    exit 0
+    ;;
+esac
+ps -o comm= -p "$PPID" | tr -d '[:space:]' > "{model_parent}"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -- ]; then shift; exec "$@"; fi
+  shift
+done
+exit 1
+""")
+    _exe(bin_ / "systemctl", f"""
+case " $* " in
+  *" reset-failed "*)
+    ps -o comm= -p "$PPID" | tr -d '[:space:]' > "{reset_parent}"
+    printf '%s\\n' "$$" > "{reset_pid}"
+    exec /usr/bin/sleep 30
+    ;;
+esac
+exit 0
+""")
+    err2 = tmp_path / "reset.err"
+    proc = subprocess.Popen(
+        ["bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
+        env=env, stdout=subprocess.DEVNULL, stderr=err2.open("w"),
+        start_new_session=True,
+    )
+    timed_out = False
+    try:
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    finally:
+        _end_session(proc, [_published_pid(reset_pid)])
+    assert probe_parent.read_text(encoding="ascii").strip() == "timeout"
+    assert not timed_out, "reset-failed of the probe was not bounded"
+    assert reset_parent.read_text(encoding="ascii").strip() == "timeout"
+    assert not _alive(_published_pid(reset_pid))
+    model = model_parent.read_text(encoding="ascii").strip()
+    assert model and model != "timeout", model
+    assert proc.returncode == 0, err2.read_text(encoding="utf-8", errors="replace")
+
+
+def test_stop_server_tears_down_when_the_clear_fails(tmp_path):
+    """A refused clear still stops the owned server, and the flag is set after that stop."""
+    bin_ = _tools(tmp_path)
+    job = tmp_path / "job-clear"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    secret = tmp_path / "secret"
+    secret.write_text("sentinel\n", encoding="utf-8")
+    (job / "cid").write_text("abc123\n", encoding="ascii")
+    os.symlink(secret, job / "evidence" / "serving.pid")
+    during = tmp_path / "during"
+    got = tmp_path / "stopped"
+    prefix = QUALIFY.read_text(encoding="utf-8").split("[ $# -ge 1 ] || usage", 1)[0]
+    prefix = prefix.replace(
+        'here=$(cd "$(dirname "$0")" && pwd)',
+        f'here="{ROOT / "harness"}"',
+        1,
+    )
+    funcs = tmp_path / "qualify-funcs.sh"
+    funcs.write_text(prefix, encoding="utf-8")
+    script = f"""
+set +e
+. "{funcs}"
+a770b-qualify-stop() {{
+  if [ ! -f "{during}" ]; then
+    printf '%s\\n' "${{SERVER_STOPPED:-unset}}" > "{during}"
+  fi
+  printf '%s\\n' "$1" >> "{got}"
+}}
+export PATH="{bin_}:{os.environ['PATH']}"
+job="{job}"
+unset TRACKER SERVER_STOPPED
+stop_server
+printf 'OUT RC=%s\\n' "$?"
+printf 'OUT FLAG=%s\\n' "${{SERVER_STOPPED:-unset}}"
+stop_server
+printf 'OUT RC2=%s\\n' "$?"
+printf 'OUT SECRET=%s\\n' "$(cat "{secret}")"
+"""
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}")
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fields = {}
+    for line in proc.stdout.splitlines():
+        if line.startswith("OUT ") and "=" in line:
+            key, value = line[4:].split("=", 1)
+            fields[key] = value
+    assert got.is_file(), proc.stdout + proc.stderr
+    stopped = [line for line in got.read_text(encoding="ascii").splitlines() if line]
+    assert stopped == ["abc123"], proc.stdout + proc.stderr
+    assert during.read_text(encoding="ascii").strip() != "1", during.read_text(encoding="ascii")
+    assert fields.get("RC") == "1", fields
+    assert fields.get("FLAG") == "1", fields
+    assert fields.get("RC2") == "0", fields
+    assert fields.get("SECRET") == "sentinel", fields

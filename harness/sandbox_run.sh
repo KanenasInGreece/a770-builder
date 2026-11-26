@@ -115,14 +115,16 @@ probe="a770b-sbx-probe-$$-$RANDOM.scope"
 isolation=scope
 # --collect is only on the probe. The real unit stays readable after oom-kill.
 # No bus, or a refusal: still arm bwrap and still raise oom_score_adj.
-if ! systemd-run --user --scope --quiet --collect --expand-environment=no \
-     --unit="$probe" --slice=a770b-sandbox.slice -p OOMPolicy=continue -- /bin/true 7>&- 9>&-
+# The bound covers this probe and its reset only. The model command is not wrapped.
+if ! /usr/bin/timeout -k 1 5 systemd-run --user --scope --quiet --collect \
+     --expand-environment=no --unit="$probe" --slice=a770b-sandbox.slice \
+     -p OOMPolicy=continue -- /bin/true 7>&- 9>&-
 then
   echo "⚠ sandbox: systemd-run refused; isolation=none" >&2
   isolation=none
   unit=""
 else
-  systemctl --user reset-failed "$probe" 2>/dev/null || true
+  /usr/bin/timeout -k 1 5 systemctl --user reset-failed "$probe" 2>/dev/null || true
 fi
 if [ -n "${A770B_SANDBOX_RECORD_FILE:-}" ]; then
   python3 -I -B - "$A770B_SANDBOX_RECORD_FILE" "$isolation" "$unit" "$policy" <<'PY'
