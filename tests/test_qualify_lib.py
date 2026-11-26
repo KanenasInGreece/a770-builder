@@ -444,7 +444,7 @@ def test_i18_export_two_files(kit_env, tmp_path, monkeypatch):
     assert written["useful_ctx"] == plan["ctx"]
     assert written["instrument"] == profiles.kit_instrument()
     assert written["model"] == "sample.gguf"
-    assert written["depth_probe_100k"] == "2/3"
+    assert written["depth_probe_100k"] == "pass (2/3)"
     assert written["category"].startswith("__TODO__")
     assert written["vram_gib_after_load"] != 1.0
     assert written["timeout_s"] != 60
@@ -670,8 +670,16 @@ def test_kit_budget_uses_the_selected_row_not_a_larger_stage(kit_env, tmp_path, 
     monkeypatch.delenv("A770B_QUALIFY_KIT_PROMPT_TOKENS", raising=False)
     row = _min_row("vllm")
     row["measured_tasks"] = {
-        "s1-frontend": {"quality": "pass", "wall_s": 10, "context_tokens": 400, "thinking": "off"},
+        "s1-frontend": {"quality": "pass", "wall_s": 10, "context_tokens": 850607, "thinking": "off"},
         "s0-design": {"quality": "pass", "wall_s": 10, "context_tokens": 850607, "thinking": "off"},
+    }
+    row["requests"] = {
+        "max_prompt_tokens": 400,
+        "max_completion_tokens": 32,
+        "length_stops": 0,
+        "prefill_tps": None,
+        "decode_tps": None,
+        "source": "suite",
     }
     path = tmp_path / "profiles.json"
     path.write_text(json.dumps(_wrap(row, "sample-vllm")))
@@ -690,7 +698,28 @@ def test_kit_budget_uses_the_selected_row_not_a_larger_stage(kit_env, tmp_path, 
         ]
     )
     assert plan["window"]["kit_tokens"] == 400
-    assert "measured_tasks" in plan["window"]["kit_source"]
+    assert plan["window"]["kit_source"] == "requests.max_prompt_tokens"
+    bare = _min_row("vllm")
+    bare["measured_tasks"] = {
+        "s1-frontend": {"quality": "pass", "wall_s": 10, "context_tokens": 850607, "thinking": "off"},
+    }
+    bare_path = tmp_path / "cumulative.json"
+    bare_path.write_text(json.dumps(_wrap(bare, "sample-vllm")))
+    with pytest.raises(ql.QualifyError, match="kit prompt budget is unknown"):
+        ql.build_plan(
+            [
+                "--engine",
+                "vllm",
+                "--model",
+                "sample-vllm",
+                "--profiles-file",
+                str(bare_path),
+                "--tokenizer",
+                "/tmp/tokenizer-dir",
+                "--stages",
+                "s1-frontend",
+            ]
+        )
 
 
 def test_engine_thinking_kv_and_backend_errors(kit_env, tmp_path):
@@ -981,3 +1010,81 @@ def test_confirm_started_reads_engine_logs_and_metrics(kit_env, tmp_path, monkey
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_window_reset_aged_out_is_not_a_new_reset(kit_env, tmp_path):
+    plan = ql.build_plan(_gguf_args())
+    job = _job(tmp_path, plan)
+    collected = {"window_resets": -1, "statistics": _stats(), "hooks": {"pre_started": False}}
+    (job / "evidence" / "collected.json").write_text(json.dumps(collected))
+    result = ql.summarise(str(job))
+    check = next(item for item in result["checks"] if item["name"] == "window-no-resets")
+    assert check["result"] == "pass"
+
+
+def test_card_without_idle_baseline_names_that_gap(kit_env, tmp_path):
+    plan = ql.build_plan(_gguf_args())
+    job = _job(tmp_path, plan)
+    collected = {
+        "statistics": _stats(),
+        "hooks": {"pre_started": False},
+        "card_free": {"containers": 0, "vram_gib": 0.4, "idle_gib": None},
+    }
+    (job / "evidence" / "collected.json").write_text(json.dumps(collected))
+    result = ql.summarise(str(job))
+    check = next(item for item in result["checks"] if item["name"] == "card-free-after")
+    assert check["result"] == "unknown"
+    assert check["reason"] == "no idle VRAM baseline"
+
+
+def test_empty_patch_is_named_from_the_verify_evidence(kit_env, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    (data / "results").mkdir(parents=True)
+    monkeypatch.setenv("A770B_DATA", str(data))
+    label = "candidate-empty"
+    (data / "results" / f"{label}.verify.json").write_text(
+        json.dumps({"error": "patch is empty — that run changed nothing, there is nothing to verify"})
+    )
+    copied = ql._stage_copy({"id": "s0-design", "label": label, "outcome": "verify_error", "working": False})
+    assert copied["outcome"] == "empty_patch"
+    assert "changed nothing" in copied["empty_patch"]
+    plan = ql.build_plan(_gguf_args())
+    job = _job(tmp_path, plan)
+    collected = {
+        "statistics": _stats(),
+        "hooks": {"pre_started": False},
+        "suite": {"completed": False, "stages": [copied]},
+    }
+    (job / "evidence" / "collected.json").write_text(json.dumps(collected))
+    result = ql.summarise(str(job))
+    assert result["empty_patches"][0]["stage"] == "s0-design"
+    assert "verify.json" in result["empty_patches"][0]["evidence"] or "changed nothing" in result["empty_patches"][0]["evidence"]
+
+
+def test_allow_incomplete_export_writes_nulls_and_no_illegal_speed_key(kit_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--fit-only"]))
+    job = _job(tmp_path, plan)
+    collected = {
+        "load_ok": True,
+        "vram_after_load": 4.0,
+        "vram_cap": 15.3,
+        "hooks": {"pre_started": False},
+        "card_free": {"containers": 0, "vram_gib": 0.4, "idle_gib": 0.4},
+    }
+    (job / "evidence" / "collected.json").write_text(json.dumps(collected))
+    ql.summarise(str(job))
+    out = tmp_path / "row.json"
+    ql.export_job(str(job), str(out), True)
+    row = json.loads(out.read_text())
+    assert "decode_tps / speed.prefill_tps" not in row.get("speed", {})
+    assert row["vram_gib_after_load"] == 4.0
+    written_todo = out.with_name(out.name + ".todo.json")
+    assert written_todo.is_file()
+    todo = json.loads(written_todo.read_text())
+    assert todo["allow_incomplete"] is True
+    assert todo["missing_statistics"]
+    for key in ("useful_ctx", "ram_gb_extra"):
+        if key in row:
+            assert row[key] is None or isinstance(row[key], (int, float))

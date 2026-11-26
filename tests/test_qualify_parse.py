@@ -60,6 +60,17 @@ def test_window_depth_speed_and_suite_parse_fixture_text(tmp_path, monkeypatch):
     assert missing["passed"] is None
     assert missing["unanswered"] is True
 
+    echoed = "ANSWER:\ndepth probe at 100000: 3/3\ndepth probe at 100000: 1/3\n"
+    ql.apply_phase(str(job), "depth", echoed, 0)
+    last = json.loads((job / "evidence" / "depth.json").read_text())
+    assert last["score"] == 1
+    assert last["passed"] is False
+
+    aged = "8000     7888     8.1       970         66.4       1.5GiB -1\n"
+    ql.apply_phase(str(job), "window", aged, 0)
+    aged_window = json.loads((job / "evidence" / "window.json").read_text())
+    assert aged_window["resets"] == -1
+
     mapped = job / "evidence" / "speed-mapped.json"
     shutil.copy(os.path.join(FIXTURES, "speed-mapped.json"), mapped)
     text = "mapped → " + str(mapped) + "\n"
@@ -88,12 +99,22 @@ def test_window_depth_speed_and_suite_parse_fixture_text(tmp_path, monkeypatch):
     assert suite["stages"][0]["requests"] == 9
     assert suite["stages"][0]["prompt_tokens"] == 15514
     assert "compaction_lines" not in suite["stages"][0]
-    assert suite["requests"]["max_prompt_tokens"] == 15514
-    # A second pass adds a reference and keeps the counted stage.
+    assert suite["requests"]["max_prompt_tokens"] == 4000
+    assert suite["stages"][0]["prompt_tokens"] == 15514
+    assert suite["stages"][0]["max_prompt_tokens"] == 4000
+    assert suite["requests"]["length_stops"] == 1
+    # A second pass adds a reference stage. run_suite keeps ref-* inside stages.
     second = {
         "instrument": "SUITE-1@1",
-        "stages": [],
-        "references": {"passed": 1, "attempts": 1},
+        "stages": [
+            {
+                "id": "ref-python-pov",
+                "working": True,
+                "counts_toward_pass": False,
+                "requests": 1,
+                "wall_s": 3,
+            }
+        ],
     }
     second_path = job / "evidence" / "suite-pass-2.json"
     second_path.write_text(json.dumps(second))
