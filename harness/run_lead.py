@@ -36,8 +36,16 @@ import tempfile
 
 
 def _arm_parent_death():
-    """Die with the parent. The signal is not inherited across fork."""
-    parent = os.getppid()
+    """Die with the parent named before this interpreter started.
+
+    build_local.sh exports A770B_RUN_OWNER_PID. Reading getppid() as that
+    parent arms against the user manager if the parent was already killed.
+    """
+    raw = os.environ.get("A770B_RUN_OWNER_PID", "")
+    if raw.isdigit() and int(raw) > 1:
+        parent = int(raw)
+    else:
+        parent = os.getppid()
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != parent:
         print("run_lead.py: parent changed during arming", file=sys.stderr)

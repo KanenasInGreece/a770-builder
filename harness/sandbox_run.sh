@@ -61,7 +61,7 @@ if [ "${A770B_NO_BRIDGE:-0}" != 1 ]; then
   case "${A770B_SERVED_ENGINE:-}" in
     sglang|vllm|strata)
       setpriv --pdeathsig KILL -- bash -c 'if [ "$PPID" != "$1" ]; then echo "⛔ sandbox: parent changed during arming" >&2; exit 137; fi; shift; exec "$@"' _ "$$" \
-        python3 "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" \
+        python3 -I -B "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" \
         7>&- 9>&- >>"$A770B_DATA/logs/llama-bridge.log" 2>&1 & BRIDGE=$!
       ;;
     *)
@@ -108,7 +108,7 @@ isolation=scope
 # --collect is only on the probe. The real unit stays readable after oom-kill.
 # No bus, or a refusal: still arm bwrap and still raise oom_score_adj.
 if ! systemd-run --user --scope --quiet --collect --expand-environment=no \
-     --unit="$probe" --slice=a770b-sandbox.slice -p OOMPolicy=continue -- /bin/true
+     --unit="$probe" --slice=a770b-sandbox.slice -p OOMPolicy=continue -- /bin/true 7>&- 9>&-
 then
   echo "⚠ sandbox: systemd-run refused; isolation=none" >&2
   isolation=none
@@ -117,7 +117,7 @@ else
   systemctl --user reset-failed "$probe" 2>/dev/null || true
 fi
 if [ -n "${A770B_SANDBOX_RECORD_FILE:-}" ]; then
-  python3 - "$A770B_SANDBOX_RECORD_FILE" "$isolation" "$unit" "$policy" <<'PY'
+  python3 -I -B - "$A770B_SANDBOX_RECORD_FILE" "$isolation" "$unit" "$policy" <<'PY'
 import json, os, sys
 path, isolation, unit, policy = sys.argv[1:5]
 body = {"isolation": isolation, "unit": unit or None, "policy": policy, "oom": "unknown"}
@@ -161,19 +161,21 @@ _run_scoped() {
   return "$rc"
 }
 if [ -n "${A770B_SANDBOX_ENTERED_FILE:-}" ]; then
-  python3 - "$A770B_SANDBOX_ENTERED_FILE" "$HOME" "$A770B_PORT" "${ARGS[@]}" -- "$@" 7>&- 9>&- <<'PY'
+  # $$ is this shell, captured before Python starts. getppid() after startup
+  # can already be the user manager if this process was killed in between.
+  python3 -I -B - "$$" "$A770B_SANDBOX_ENTERED_FILE" "$HOME" "$A770B_PORT" "${ARGS[@]}" -- "$@" 7>&- 9>&- <<'PY'
 import ctypes, os, subprocess, sys
-parent = os.getppid()
+expected_parent = int(sys.argv[1])
 libc = ctypes.CDLL(None, use_errno=True)
-# PR_SET_PDEATHSIG is 1 and SIGKILL is 9. Compare with the parent taken first:
-# the user manager is a subreaper here, so pid 1 is the wrong check.
-if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != parent:
+# PR_SET_PDEATHSIG is 1 and SIGKILL is 9. The user manager is a subreaper
+# here, so a later getppid() of pid 1 is the wrong check.
+if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != expected_parent:
     sys.stderr.write("sandbox: parent changed during arming\n")
     sys.exit(137)
-entered_file = sys.argv[1]
-sb_home = sys.argv[2]
-sb_port = sys.argv[3]
-rest = sys.argv[4:]
+entered_file = sys.argv[2]
+sb_home = sys.argv[3]
+sb_port = sys.argv[4]
+rest = sys.argv[5:]
 sep = rest.index("--")
 bwrap_args = rest[:sep]
 cmd = rest[sep + 1:]
@@ -200,7 +202,7 @@ scope = (
     'shift; if ! printf 800 >/proc/self/oom_score_adj; then '
     'echo "sandbox: could not raise oom_score_adj" >&2; fi; exec "$@"'
 )
-argv = ["bwrap", *bwrap_args, "--", "python3", "-c", arm, inner, "_", *cmd]
+argv = ["bwrap", *bwrap_args, "--", "python3", "-I", "-B", "-c", arm, inner, "_", *cmd]
 me = str(os.getpid())
 if os.environ.get("A770B_SANDBOX_ISOLATION") == "scope":
     argv = [
@@ -236,6 +238,6 @@ sys.exit(rc)
 PY
 else
   rc=0
-  _run_scoped "${ARGS[@]}" -- python3 -c "$ARM_PY" "$INNER" _ "$@" || rc=$?
+  _run_scoped "${ARGS[@]}" -- python3 -I -B -c "$ARM_PY" "$INNER" _ "$@" || rc=$?
   exit "$rc"
 fi

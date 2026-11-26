@@ -851,6 +851,7 @@ def test_i27_systemd_or_setsid(box, tmp_path):
     assert "--collect" in text
     assert "KillMode=mixed" in text
     assert "TimeoutStopSec=120" in text
+    assert "OOMPolicy=continue" in text
     assert "--working-directory=" in text
     assert "qualify-" in text
     assert "qualify.sh" in text

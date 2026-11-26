@@ -114,8 +114,15 @@ capture_timings
 echo; echo "## sandbox oom"
 # No file on stop-run or SANDBOX=0. Capture still succeeds.
 if [ -f "$A770B_DATA/logs/sandbox-oom.json" ] && [ ! -L "$A770B_DATA/logs/sandbox-oom.json" ]; then
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("oom", "unknown"))' \
-    "$A770B_DATA/logs/sandbox-oom.json" || echo "not recorded"
+  python3 -I -B -c 'import json,sys
+try:
+    body = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+if not isinstance(body, dict):
+    raise SystemExit(1)
+print(body.get("oom", "unknown"))' \
+    "$A770B_DATA/logs/sandbox-oom.json" 2>/dev/null || echo "not recorded"
 else
   echo "not recorded"
 fi

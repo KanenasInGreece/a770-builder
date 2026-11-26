@@ -17,6 +17,9 @@ import time
 MESSAGE_ID = "fe6faa94e7774663a0da52717891d8ef"
 _SETTLE_S = 5.0
 _JOURNAL_S = 2.0
+# Bounds the systemctl and journalctl calls. It is not a limit on model code.
+_TOOL_TIMEOUT_S = 5.0
+_UNSETTLED = ("active", "activating", "reloading", "deactivating")
 
 
 def normalize_status(rc):
@@ -35,7 +38,12 @@ def grade(exit_code, oom, signaled=False, timed_out=False):
     if timed_out:
         return "timeout", 124, None
     if signaled:
-        code = exit_code if isinstance(exit_code, int) and exit_code >= 128 else 128
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code < 0:
+            code = 128 + (-exit_code)
+        elif isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code >= 128:
+            code = exit_code
+        else:
+            code = 128
         return "infra_error", code, None
     if oom == "yes":
         code = 137 if exit_code == 0 else exit_code
@@ -64,18 +72,28 @@ def _write_record(path, body):
         fh.write("\n")
 
 
+def _run(argv):
+    """One systemctl or journalctl call. A stall returns None; it does not wait."""
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, timeout=_TOOL_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def _systemctl_show(unit):
-    proc = subprocess.run(
-        ["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "Result"],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
+    proc = _run(["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "Result"])
+    if proc is None or proc.returncode != 0:
         return None
     shown = {}
     for line in proc.stdout.splitlines():
         key, sep, value = line.partition("=")
-        if sep:
+        if sep and key and value:
             shown[key] = value
+    # An empty or half-parsed reply is not a settled unit. Exit 0 alone is not.
+    if not shown.get("ActiveState") or not shown.get("Result"):
+        return None
     return shown
 
 
@@ -87,7 +105,7 @@ def _wait_settled(unit):
         shown = _systemctl_show(unit)
         if shown is None:
             return None
-        if shown.get("ActiveState") not in ("active", "deactivating"):
+        if shown.get("ActiveState") not in _UNSETTLED:
             return shown
         if time.monotonic() >= deadline:
             return shown
@@ -95,11 +113,8 @@ def _wait_settled(unit):
 
 
 def _journal_entries(unit):
-    proc = subprocess.run(
-        ["journalctl", "--user", "-o", "json", "--no-pager", f"USER_UNIT={unit}"],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
+    proc = _run(["journalctl", "--user", "-o", "json", "--no-pager", f"USER_UNIT={unit}"])
+    if proc is None or proc.returncode != 0:
         return None
     yes = False
     started = False
@@ -137,22 +152,25 @@ def _journal_oom(unit):
         time.sleep(0.2)
 
 
-def _decide(policy, unit, exit_code):
-    shown = _wait_settled(unit)
-    if shown is not None and shown.get("ActiveState") in ("active", "deactivating"):
+def _decide(policy, shown, exit_code, unit):
+    if shown is not None and shown.get("ActiveState") in _UNSETTLED:
         return "unknown"
     if policy == "kill" and shown is not None:
         result = shown.get("Result", "")
-        # Result=oom-kill with a non-zero exit is yes. Exit 0 with any other
-        # result is no. Both at once (oom-kill and exit 0) is unknown, and
-        # that contradiction is not resolved from the journal.
-        if result == "oom-kill" and exit_code == 0:
-            return "unknown"
-        if result == "oom-kill" and exit_code != 0:
+        # Result=oom-kill is yes at any exit code. Exit 0 with any other
+        # result is no. Neither case reads the journal.
+        if result == "oom-kill":
             return "yes"
-        if exit_code == 0 and result != "oom-kill":
+        if exit_code == 0:
             return "no"
     return _journal_oom(unit)
+
+
+def _stop_if_unsettled(unit, shown):
+    # sandbox_run.sh has already exited, so a scope still active is abandoned.
+    # reset-failed does not stop an active unit.
+    if shown is not None and shown.get("ActiveState") in _UNSETTLED:
+        _run(["systemctl", "--user", "stop", "--", unit])
 
 
 def update(path, exit_code):
@@ -172,11 +190,11 @@ def update(path, exit_code):
     if body.get("isolation") == "none" or not unit:
         oom = "unknown"
     else:
-        oom = _decide(body.get("policy") or "", _unit_name(str(unit)), code)
-        subprocess.run(
-            ["systemctl", "--user", "reset-failed", _unit_name(str(unit))],
-            capture_output=True, text=True,
-        )
+        named = _unit_name(str(unit))
+        shown = _wait_settled(named)
+        _stop_if_unsettled(named, shown)
+        oom = _decide(body.get("policy") or "", shown, code, named)
+        _run(["systemctl", "--user", "reset-failed", "--", named])
     body["oom"] = oom
     try:
         _write_record(path, body)

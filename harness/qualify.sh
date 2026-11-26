@@ -118,7 +118,7 @@ stop_helpers() {
   fi
   # The tracker is not the monitor. Reap it so a finished job leaves no writer.
   if [ -n "${TRACKER:-}" ]; then
-    kill -TERM "$TRACKER" 2>/dev/null || true
+    kill_helper "$TRACKER"
     wait "$TRACKER" 2>/dev/null || true
     TRACKER=""
   fi
@@ -158,12 +158,12 @@ stop_server() {
   # so it cannot write the old pid back over the clear. Phase 5 publishes
   # through run_suite.sh after this returns.
   if [ -n "${TRACKER:-}" ]; then
-    kill -TERM "$TRACKER" 2>/dev/null || true
+    kill_helper "$TRACKER"
     wait "$TRACKER" 2>/dev/null || true
     TRACKER=""
   fi
-  : > "$job/SERVING_CLEARED"
-  : > "$job/evidence/serving.pid" 2>/dev/null || true
+  plain_trunc "$job/SERVING_CLEARED" || return 1
+  plain_trunc "$job/evidence/serving.pid" || return 1
   local cid="" engine
   [ -f "$job/cid" ] && [ ! -L "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
   [ -n "$cid" ] || return 0
@@ -779,6 +779,8 @@ start_observers() {
   plain_trunc "$job/VRAM_SAMPLE" || return 0
   refuse_link "$job/evidence/vram-samples.txt" || return 0
   refuse_link "$job/evidence/host-memory.jsonl" || return 0
+  # Refuse a symlink before any sampler starts, or a bad pid file leaves VRAM running.
+  plain_trunc "$job/evidence/serving.pid" || return 0
   (
     trap - TERM INT EXIT
     exec 7>&- 9>&-
@@ -789,7 +791,6 @@ start_observers() {
     done
   ) &
   VRAM_PID=$!
-  plain_trunc "$job/evidence/serving.pid" || return 0
   # Copy the phase's engine before the subshell. A local in the caller is
   # visible here; the tracker must not depend on that local still being set.
   track_engine=${engine:-}
@@ -798,6 +799,7 @@ start_observers() {
   (
     trap - TERM INT EXIT
     exec 7>&- 9>&-
+    last=""
     while [ ! -f "$job/SERVING_CLEARED" ]; do
       pid=""
       cid=""
@@ -811,14 +813,19 @@ start_observers() {
           pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null || true)
         fi
       fi
-      if [ ! -f "$job/SERVING_CLEARED" ] && printf '%s\n' "$pid" | grep -Eq '^[1-9][0-9]*$'; then
-        printf '%s\n' "$pid" > "$job/evidence/serving.pid"
+      # Rename onto the pid file. A truncate in place is empty for a reader.
+      if [ ! -f "$job/SERVING_CLEARED" ] && [ "$pid" != "$last" ] \
+          && printf '%s\n' "$pid" | grep -Eq '^[1-9][0-9]*$'; then
+        tmp="$job/evidence/.serving.pid.$$"
+        printf '%s\n' "$pid" > "$tmp"
+        mv -f -- "$tmp" "$job/evidence/serving.pid"
+        last=$pid
       fi
       sleep 0.5 || exit 0
     done
   ) &
   TRACKER=$!
-  ( trap - TERM INT EXIT; exec 7>&- 9>&-; exec python3 "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" --pid-file "$job/evidence/serving.pid" ) &
+  ( trap - TERM INT EXIT; exec 7>&- 9>&-; exec python3 -I -B "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" --pid-file "$job/evidence/serving.pid" ) &
   MEM=$!
 }
 

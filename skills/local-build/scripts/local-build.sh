@@ -1292,17 +1292,19 @@ PY
     PUB_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PUB_CMD[@]}")
     HID_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${HID_CMD[@]}")
     v_py_rc=0
-    v_py_out=$(python3 - "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" "$VRAW" "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "${timeout:-}" "$PUB_JSON" "$HID_JSON" "$A770B_DATA/logs" <<'PY'
+    # BASHPID, not $$, because this python is a child of the command substitution.
+    v_py_out=$(python3 -I -B - "$BASHPID" "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" "$VRAW" "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "${timeout:-}" "$PUB_JSON" "$HID_JSON" "$A770B_DATA/logs" <<'PY'
 import ctypes, json, os, signal, subprocess, sys, tempfile, time
 
-sandbox_sh, wt, cfg, raw_path, json_path, handoff_path, label, timeout_s, pub_json, hid_json, log_dir = sys.argv[1:12]
+# The shell passes its pid. getppid() after startup can already be the
+# user manager if that shell was killed while Python was starting.
+expected_parent = int(sys.argv[1])
+sandbox_sh, wt, cfg, raw_path, json_path, handoff_path, label, timeout_s, pub_json, hid_json, log_dir = sys.argv[2:13]
 sys.path.insert(0, os.path.dirname(os.path.abspath(sandbox_sh)))
 import sandbox_oom
 
-# Die with this interpreter's parent. Verify only: the skill shell is not armed.
-_verify_parent = os.getppid()
 _libc = ctypes.CDLL(None, use_errno=True)
-if _libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != _verify_parent:
+if _libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != expected_parent:
     sys.stderr.write("verify: parent changed during arming\n")
     sys.exit(137)
 
@@ -1315,10 +1317,25 @@ deadline = (time.monotonic() + timeout_val) if timeout_val is not None else None
 oom_py = os.path.join(os.path.dirname(os.path.abspath(sandbox_sh)), "sandbox_oom.py")
 
 
+# Captured before Popen forks. The child compares against this, not a
+# getppid() it would treat as the original parent after a reparent.
+_owner_pid = os.getpid()
+
+
 def _arm_child():
-    parent = os.getppid()
+    # The test sets this path and kills the parent while this child sleeps.
+    # The expected pid was captured before the fork, so the check still sees
+    # the death. Production leaves the variable unset.
+    ready = os.environ.get("A770B_SLOW_ARM_READY", "")
+    if ready:
+        try:
+            with open(ready, "w", encoding="ascii") as handle:
+                handle.write(str(os.getpid()))
+        except OSError:
+            os._exit(137)
+        time.sleep(2)
     libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != parent:
+    if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != _owner_pid:
         os._exit(137)
 
 
@@ -1332,15 +1349,30 @@ def _entered(path):
 
 def _record_oom(record_path, rc):
     # After proc.wait has returned. This call is not inside the timed wait.
-    subprocess.run([sys.executable, oom_py, record_path, str(rc)], check=False)
+    # Its wall time is added back so a hidden phase is not charged for it.
+    global deadline
+    started = time.monotonic()
     try:
-        with open(record_path, encoding="utf-8") as fh:
-            return json.load(fh).get("oom", "unknown")
-    except (OSError, ValueError):
-        return "unknown"
+        subprocess.run(
+            [sys.executable, "-I", "-B", oom_py, record_path, str(rc)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            with open(record_path, encoding="utf-8") as fh:
+                body = json.load(fh)
+            if not isinstance(body, dict):
+                return "unknown"
+            return body.get("oom", "unknown")
+        except (OSError, ValueError):
+            return "unknown"
+    finally:
+        if deadline is not None:
+            deadline += time.monotonic() - started
 
 
-def run_phase(cmd_args, raw_fh, record_path):
+def run_phase(cmd_args, raw_fh):
     if deadline is not None:
         rem = deadline - time.monotonic()
         if rem <= 0:
@@ -1350,6 +1382,8 @@ def run_phase(cmd_args, raw_fh, record_path):
     fd, entered_file = tempfile.mkstemp(prefix="verify-entered-", dir=log_dir)
     os.close(fd)
     os.unlink(entered_file)
+    rec_fd, record_path = tempfile.mkstemp(prefix="verify-oom-", suffix=".json", dir=log_dir)
+    os.close(rec_fd)
     try:
         os.unlink(record_path)
     except OSError:
@@ -1391,26 +1425,26 @@ def run_phase(cmd_args, raw_fh, record_path):
             return ("timeout" if entered else "not_run"), 124, "timeout", oom, None
         if signaled:
             return "not_run", norm, "infra_error", oom, None
+        # Setup that dies before "entered" is the harness, not the model.
+        if not entered:
+            return "not_run", (norm if norm != 0 else 2), "infra_error", oom, None
         if oom == "yes":
             status, code, reason = sandbox_oom.grade(norm, oom)
             return status, code, None, oom, reason
-        if not entered:
-            return "not_run", (norm if norm != 0 else 2), "infra_error", oom, None
         status, code, reason = sandbox_oom.grade(norm, oom)
         return status, code, None, oom, reason
     finally:
-        try:
-            os.unlink(entered_file)
-        except OSError:
-            pass
+        for path in (entered_file, record_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 inv_override = None
-pub_record = os.path.join(log_dir, "verify-oom-public.json")
-hid_record = os.path.join(log_dir, "verify-oom-hidden.json")
 with open(raw_path, "w", encoding="utf-8", errors="replace") as raw_fh:
     if has_public:
-        pub_state, pub_rc, pub_inv, pub_oom, pub_reason = run_phase(pub_cmd, raw_fh, pub_record)
+        pub_state, pub_rc, pub_inv, pub_oom, pub_reason = run_phase(pub_cmd, raw_fh)
         if pub_inv is not None:
             inv_override = pub_inv
     else:
@@ -1418,7 +1452,7 @@ with open(raw_path, "w", encoding="utf-8", errors="replace") as raw_fh:
 
     if has_hidden:
         if (not has_public or pub_state == "pass") and inv_override is None:
-            hid_state, hid_rc, hid_inv, hid_oom, hid_reason = run_phase(hid_cmd, raw_fh, hid_record)
+            hid_state, hid_rc, hid_inv, hid_oom, hid_reason = run_phase(hid_cmd, raw_fh)
             if hid_inv is not None:
                 inv_override = hid_inv
         else:

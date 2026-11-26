@@ -714,6 +714,10 @@ _suite_cleanup(){
   write_results || { echo "⚠ could not write final suite execution record: $OUTFILE" >&2; [ "$rc" -ne 0 ] || rc=1; }
   rm -f "$RESULTS_NDJSON"
   rm -f "$HOST_PID_FILE" "$HOST_SELECTION_FILE"
+  # Phase 5 publishes here. Leaving the qualify path set keeps a dead pid.
+  if [ -n "${A770B_QUALIFY_SERVING_PID_FILE:-}" ]; then
+    rm -f -- "$A770B_QUALIFY_SERVING_PID_FILE"
+  fi
   exit "$rc"
 }
 

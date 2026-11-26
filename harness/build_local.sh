@@ -152,16 +152,16 @@ else
   ( cd "$WT" && printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead "$(a770b_opencode_bin)/opencode" run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
 fi
 rc=${PIPESTATUS[0]}
-# Continue policy is graded from the journal, so the leader's code is enough.
-# A helper failure must not replace the builder's own exit status.
-if [ "${SANDBOX:-1}" = 1 ] && [ -f "$_SANDBOX_OOM" ]; then
-  python3 "$A770B_PROJECT/harness/sandbox_oom.py" "$_SANDBOX_OOM" "$rc" || true
-fi
 # 137: the leader was SIGKILL'd and could not forward. The other arm: it is already dead and the worker file
-# is still there (the leader removes the file only after its own reap). Either way, unblock the pipe, then
-# keep the capture path below. The helper no-ops when the recorded identity does not match.
+# is still there (the leader removes the file only after its own reap). Signal that group before the OOM
+# helper, which can wait on the scope. The helper no-ops when the recorded identity does not match.
 if [ "$rc" -eq 137 ] || { _leader_proc_gone && [ -f "$A770B_WORKER_PGID_FILE" ]; }; then
   signal_recorded_worker_group "$A770B_WORKER_PGID_FILE" || true
+fi
+# Continue policy is graded from the journal, so the leader's code is enough.
+# A helper failure must not replace the builder's own exit status. Lock fds stay here.
+if [ "${SANDBOX:-1}" = 1 ] && [ -f "$_SANDBOX_OOM" ]; then
+  python3 -I -B "$A770B_PROJECT/harness/sandbox_oom.py" "$_SANDBOX_OOM" "$rc" 7>&- 9>&- || true
 fi
 _stop_orphan_watch
 rm -f "$RUNPID"
