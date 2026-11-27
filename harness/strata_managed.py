@@ -13,6 +13,7 @@ import secrets
 import select
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,12 @@ from strata_attach import Endpoint, attach_check, read_key
 
 PIN = "12d491da4a6904eb49aaa6f2f63ec4b1a17582e3"
 STOP_TIMEOUT = 48
+# The supervisor's waits for its server: after owner EOF, then after SIGTERM and SIGKILL.
+# With the engine waits they total under 30 s, inside STOP_TIMEOUT.
+SERVER_EOF_S = 10
+SERVER_SIGNAL_S = 5
+ENGINE_SIGNAL_S = 3
+INTERRUPTS = (signal.SIGTERM, signal.SIGINT)
 SERVER_GATE = """
 import os
 import sys
@@ -35,6 +42,21 @@ os.execv(command[0], command)
 """
 
 
+class Interrupted(BaseException):
+    """SIGTERM or SIGINT during start. Not an Exception, so no handler swallows it."""
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def interrupt(signum, _frame):
+    # Ignore both first: a second signal must not cut the cleanup short.
+    for other in INTERRUPTS:
+        signal.signal(other, signal.SIG_IGN)
+    raise Interrupted(signum)
+
+
 def file_digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -44,7 +66,7 @@ def process_identity(pid):
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
         return fields[19] if fields[0] not in ("Z", "X") else None
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 
@@ -261,10 +283,11 @@ def server_alive(state):
     return started is not None and process_identity(state["server_pid"]) == started
 
 
-def engine_alive(state):
+def engine_processes(state):
+    """Yield (pid, start time) of each live engine recorded for this launch's server."""
     started = state.get("server_start")
     if started is None:
-        return False
+        return
     parent = {"pid": state["server_pid"], "token": f"l:{started}"}
     # Strata gives its engine a separate process group and records it under this launch's private XDG state.
     for path in (Path(state["run"]) / "xdg-state/strata/procs").glob("*.json"):
@@ -273,8 +296,11 @@ def engine_alive(state):
             continue
         identity = process_identity(record["pid"])
         if identity is not None and record["token"] == f"l:{identity}":
-            return True
-    return False
+            yield record["pid"], identity
+
+
+def engine_alive(state):
+    return any(True for _ in engine_processes(state))
 
 
 def occupied(state):
@@ -297,6 +323,17 @@ def signal_and_wait(pid, started, signum, timeout):
         return True
     finally:
         os.close(fd)
+
+
+def end_engines(state, grace):
+    """SIGTERM, then SIGKILL, this launch's verified engines, waiting after each."""
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        # Signal every engine before waiting, so they share one grace period.
+        for pid, started in list(engine_processes(state)):
+            signal_and_wait(pid, started, signum, 0)
+        deadline = time.monotonic() + grace
+        while engine_alive(state) and time.monotonic() < deadline:
+            time.sleep(0.1)
 
 
 def observed_pinned_host_memory(log_path):
@@ -340,18 +377,21 @@ def stop(path, expected=None):
     if expected is not None and expected != state["id"]:
         raise ValueError("Strata instance changed; refusing to stop it")
     if process_alive(state) and not signal_and_wait(state["pid"], state["start"], signal.SIGTERM, STOP_TIMEOUT):
-        raise ValueError("owned Strata supervisor stop timed out; retaining ownership record")
+        signal_and_wait(state["pid"], state["start"], signal.SIGKILL, 3)
     # The supervisor can add the server identity while handling the foreground stop.
     current = read_state(path)
-    if current is None or current["id"] != state["id"]:
+    if current is None:
+        # Another stopper removed the record. That is success only if nothing is left.
+        if occupied(state):
+            raise ValueError("owned Strata processes remain alive after their record was removed")
+        return
+    if current["id"] != state["id"]:
         raise ValueError("Strata ownership changed during stop")
     if server_alive(current):
         pid, started = current["server_pid"], current["server_start"]
         if not signal_and_wait(pid, started, signal.SIGTERM, 3):
             signal_and_wait(pid, started, signal.SIGKILL, 3)
-    deadline = time.monotonic() + min(3, STOP_TIMEOUT)
-    while engine_alive(current) and time.monotonic() < deadline:
-        time.sleep(0.1)
+    end_engines(current, min(ENGINE_SIGNAL_S, STOP_TIMEOUT))
     if occupied(current):
         raise ValueError("owned Strata processes remain alive; retaining ownership record")
     evidence_path = Path(current["run"]) / "evidence.json"
@@ -360,7 +400,40 @@ def stop(path, expected=None):
     if evidence is not None and observed is not None:
         evidence["observed_pinned_host_memory"] = observed
         write_state(evidence_path, evidence)
+    latest = read_state(path)
+    if latest is not None and latest["id"] != state["id"]:
+        raise ValueError("Strata ownership changed during stop")
     path.unlink(missing_ok=True)
+
+
+def stop_owned(path, instance):
+    """Stop this instance if it still holds the record; leave any other one alone."""
+    state = read_state(path)
+    if state is not None and state["id"] == instance:
+        stop(path, instance)
+
+
+def record_owned(owned, instance):
+    """Append the id to the caller's stop list, which must already be a regular file."""
+    # O_NONBLOCK makes a FIFO with no reader fail instead of blocking the start.
+    fd = os.open(owned, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("A770B_STRATA_OWNED_FILE is not a regular file")
+        line = f"{instance}\n".encode()
+        if os.write(fd, line) != len(line):
+            raise ValueError("could not record the Strata instance id")
+    finally:
+        os.close(fd)
+
+
+def close_quietly(fd):
+    # A signal can land between a close and the name being cleared.
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def launch_mac(key, config, argv):
@@ -432,6 +505,26 @@ def write_enforcement_receipt(enforcement):
                 pass
 
 
+def end_launch(server, plan):
+    """End the server after owner EOF, then this run's engines. Nothing escapes."""
+    try:
+        try:
+            server.wait(timeout=SERVER_EOF_S)
+        except subprocess.TimeoutExpired:
+            server.terminate()
+            try:
+                server.wait(timeout=SERVER_SIGNAL_S)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=SERVER_SIGNAL_S)
+    except Exception as exc:  # The engines below must still be ended.
+        print(f"Strata server did not end: {exc}", file=sys.stderr, flush=True)
+    try:
+        end_engines(plan, ENGINE_SIGNAL_S)
+    except Exception as exc:
+        print(f"Strata engines did not end: {exc}", file=sys.stderr, flush=True)
+
+
 def supervise(plan_path, gate_fd):
     # EOF means the foreground exited before recording ownership.
     with os.fdopen(gate_fd, "rb") as gate:
@@ -500,7 +593,7 @@ def supervise(plan_path, gate_fd):
                 os.close(fd)
         os.close(write_fd)  # EOF requests Strata's owner-guard shutdown.
         if server is not None:
-            server.wait(timeout=STOP_TIMEOUT - 1)
+            end_launch(server, plan)
 
 
 def start(path, config, ctx, timeout):
@@ -540,45 +633,62 @@ def start(path, config, ctx, timeout):
             "python": str(python), "terminal": str(terminal), "min_ram_mib": minimum, "run": str(run)}
     plan_path = run / "launch.json"
     write_state(plan_path, plan)
-    gate_read, gate_write = os.pipe()
-    proc = None
+    gate_read = gate_write = proc = None
+    previous = {}
     try:
-        with (run / "server.log").open("ab") as log:
-            proc = subprocess.Popen([sys.executable, __file__, "supervise", str(plan_path),
-                                     "--gate-fd", str(gate_read)], start_new_session=True,
-                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, pass_fds=(gate_read,))
-        os.close(gate_read)
-        gate_read = None
-        identity = process_identity(proc.pid)
-        if identity is None:
-            raise ValueError("Strata supervisor exited before launch")
-        write_state(path, {**plan, "pid": proc.pid, "start": identity})
-        os.write(gate_write, b"1")
-        os.close(gate_write)
-        gate_write = None
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and proc.poll() is None:
+        try:
+            for signum in INTERRUPTS:
+                previous[signum] = signal.signal(signum, interrupt)
+            gate_read, gate_write = os.pipe()
+            with (run / "server.log").open("ab") as log:
+                proc = subprocess.Popen([sys.executable, __file__, "supervise", str(plan_path),
+                                         "--gate-fd", str(gate_read)], start_new_session=True,
+                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log, pass_fds=(gate_read,))
+            os.close(gate_read)
+            gate_read = None
+            identity = process_identity(proc.pid)
+            if identity is None:
+                raise ValueError("Strata supervisor exited before launch")
+            write_state(path, {**plan, "pid": proc.pid, "start": identity})
+            owned = os.environ.get("A770B_STRATA_OWNED_FILE")
+            if owned:
+                record_owned(owned, instance)
+            os.write(gate_write, b"1")
+            os.close(gate_write)
+            gate_write = None
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and proc.poll() is None:
+                state = read_state(path)
+                if state and state["id"] == instance and process_alive(state) and health_matches(state, key):
+                    write_state(run / "evidence.json", {**evidence, "ctx": ctx, "port": port, "log_dir": str(run),
+                               "host_memavailable_floor_mib": minimum, "card_mode": os.environ.get("A770B_CARD_MODE"),
+                               "configured_vram_cap_gib": os.environ.get("A770B_VRAM_CAP_GIB"),
+                               "gpu_match": os.environ.get("A770B_GPU_MATCH")})
+                    return state
+                time.sleep(0.25)
+            raise ValueError(f"owned Strata failed readiness; see {run / 'server.log'}")
+        except BaseException:
+            for signum in previous:
+                signal.signal(signum, signal.SIG_IGN)
+            # A supervisor still waiting on the gate exits on this EOF.
+            close_quietly(gate_write)
+            gate_write = None
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=STOP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    pass  # stop() below escalates.
             state = read_state(path)
-            if state and state["id"] == instance and process_alive(state) and health_matches(state, key):
-                write_state(run / "evidence.json", {**evidence, "ctx": ctx, "port": port, "log_dir": str(run),
-                           "host_memavailable_floor_mib": minimum, "card_mode": os.environ.get("A770B_CARD_MODE"),
-                           "configured_vram_cap_gib": os.environ.get("A770B_VRAM_CAP_GIB"),
-                           "gpu_match": os.environ.get("A770B_GPU_MATCH")})
-                return state
-            time.sleep(0.25)
-        raise ValueError(f"owned Strata failed readiness; see {run / 'server.log'}")
-    except BaseException:
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            proc.wait(timeout=STOP_TIMEOUT)
-        state = read_state(path)
-        if state and state["id"] == instance:
-            stop(path, instance)
-        raise
+            if state and state["id"] == instance:
+                stop(path, instance)
+            raise
+        finally:
+            close_quietly(gate_read)
+            close_quietly(gate_write)
     finally:
-        for fd in (gate_read, gate_write):
-            if fd is not None:
-                os.close(fd)
+        for signum, handler in previous.items():
+            signal.signal(signum, signal.SIG_DFL if handler is None else handler)
 
 
 def admit(path):
@@ -596,7 +706,8 @@ def admit(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("start", "status", "stop", "id", "pid", "model", "tokenizer",
-                                             "config-model", "verify", "observe", "admit", "supervise"))
+                                             "config-model", "verify", "observe", "admit", "supervise",
+                                             "stop-owned"))
     parser.add_argument("value", nargs="?")
     parser.add_argument("--gate-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--ctx", type=int, default=0)
@@ -625,6 +736,12 @@ def main():
         if args.command == "stop":
             stop(path, args.value)
             return 0
+        if args.command == "stop-owned":
+            # stop() with no id would stop any instance.
+            if not args.value:
+                raise ValueError("stop-owned needs an instance id")
+            stop_owned(path, args.value)
+            return 0
         state = read_state(path)
         if not state or not occupied(state):
             return 1
@@ -645,6 +762,9 @@ def main():
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         print(f"managed Strata: {exc}", file=sys.stderr)
         return 2
+    except Interrupted as exc:
+        print("managed Strata: start was interrupted", file=sys.stderr)
+        return 128 + exc.signum
 
 
 if __name__ == "__main__":
