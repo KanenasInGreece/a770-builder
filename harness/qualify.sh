@@ -630,8 +630,34 @@ fail_job() {
   MARKER_NAME=FAILED
 }
 
+# Each non-null field of the plan's thinking object becomes THINKING_<FIELD>.
+# A null one is unset, so a value inherited from the caller never reaches a serve.
+export_thinking() {
+  local key var value
+  for key in mode effort budget budget_message preserve; do
+    var=THINKING_${key^^}
+    # The trailing x keeps a message's own final newline through $().
+    value=$(python3 - "$job/plan.json" "$key" <<'PY'
+import json, sys
+plan = json.load(open(sys.argv[1], encoding="utf-8"))
+value = (plan.get("thinking") or {}).get(sys.argv[2])
+if isinstance(value, bool):
+    value = "true" if value else "false"
+if value is not None:
+    sys.stdout.write(str(value))
+PY
+    printf x)
+    value=${value%x}
+    if [ -n "$value" ]; then
+      export "$var=$value"
+    else
+      unset "$var"
+    fi
+  done
+}
+
 prepare_serve_env() {
-  local backend image_row budget
+  local backend image_row
   backend=$(pget backend)
   image_row=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print((d.get("row_fields") or {}).get("vllm_image") or "")' "$job/plan.json" 2>/dev/null || true)
   if [ -n "$image_row" ]; then
@@ -645,9 +671,7 @@ prepare_serve_env() {
   [ -n "$KV" ] && export KV_K=$KV
   [ -n "$KV_V" ] && export KV_V=$KV_V
   export REASONING=$(pget reasoning)
-  export THINKING_MODE=$REASONING
-  budget=$(pget reasoning_budget)
-  [ -n "$budget" ] && export THINKING_BUDGET=$budget
+  export_thinking
   if [ -n "$backend" ]; then
     export A770B_SERVED_BACKEND=$backend
   fi
