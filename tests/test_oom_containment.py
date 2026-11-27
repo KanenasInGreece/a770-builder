@@ -3578,15 +3578,15 @@ exit 0
     monkeypatch.undo()
     oom = _oom_mod(monkeypatch)
 
-    def fail_write(_path, _body):
-        wrote.write_text("yes", encoding="ascii")
+    def fail_write(_path, body):
+        wrote.write_text(body["oom"], encoding="ascii")
         raise OSError("disk")
 
     monkeypatch.setattr(oom, "_write_record", fail_write)
     bin_write = _grade_bin(tmp_path, "write-bin", f"""
 printf '%s\\n' "$*" >> "{log}"
 case " $* " in
-  *" show "*) printf '%s\\n' 'ActiveState=active' 'Result=success' ;;
+  *" show "*) printf '%s\\n' 'ActiveState=active' 'Result=oom-kill' ;;
   *" stop "*)
     if [ ! -f "{wrote}" ]; then printf '%s\\n' early > "{early}"; fi
     ;;
@@ -3598,9 +3598,72 @@ exit 0
         "isolation": "scope", "unit": "a770b-sbx-42-8.scope",
         "policy": "kill", "oom": "unknown",
     }), encoding="utf-8")
-    assert oom.update(str(record), 1) == "unknown"
+    with pytest.raises(OSError, match="disk"):
+        oom.update(str(record), 0)
+    assert wrote.read_text(encoding="ascii") == "yes"
+    assert json.loads(record.read_text(encoding="utf-8"))["oom"] == "unknown"
     assert " stop " in f" {log.read_text(encoding='utf-8')} "
     assert not early.exists()
+    assert oom.main(["sandbox_oom.py", str(record), "0"]) == 1
+
+
+def test_cleanup_runs_when_the_settle_read_raises(tmp_path, monkeypatch):
+    """A settle that raises still stops the scope. It used to skip the finally."""
+    oom = _oom_mod(monkeypatch)
+    log = tmp_path / "ctl.log"
+
+    def explode(_unit):
+        raise RuntimeError("settle failed")
+
+    monkeypatch.setattr(oom, "_wait_settled", explode)
+    bin_ = _grade_bin(tmp_path, "settle-bin", f"""
+printf '%s\\n' "$*" >> "{log}"
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-9.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="settle failed"):
+        oom.update(str(record), 0)
+    assert " stop " in f" {log.read_text(encoding='utf-8')} "
+
+
+def test_unpublished_oom_yes_is_an_infrastructure_error(tmp_path):
+    """A positive OOM decision whose record write fails does not grade as pass."""
+    marker = tmp_path / "ran"
+    env, patch, seat, results = _verify_fixture(
+        tmp_path, "publish", f"printf ran > '{marker}'",
+    )
+    _confine_harness_outputs(env, tmp_path)
+    logs = Path(env["A770B_DATA"]) / "logs"
+    bin_ = tmp_path / "bin"
+    _scope_exec_stub(bin_ / "systemd-run")
+    _exe(bin_ / "systemctl", f"""
+case " $* " in
+  *" show "*)
+    chmod 444 "{logs}"/verify-oom-*.json 2>/dev/null || true
+    printf '%s\\n' 'ActiveState=inactive' 'Result=oom-kill'
+    ;;
+esac
+exit 0
+""")
+    _exe(bin_ / "journalctl", "exit 1\n")
+    proc = subprocess.run(
+        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    try:
+        assert marker.read_text(encoding="utf-8") == "ran", proc.stderr
+        doc = json.loads((results / "publish.verify.json").read_text(encoding="utf-8"))
+        assert doc["status"] == "infra_error", doc
+        assert doc["public"] != "pass", doc
+        assert doc.get("reason") != "oom", doc
+        assert "could not publish the record" in proc.stderr, proc.stderr
+    finally:
+        _stop_log_scopes(logs)
 
 
 def test_verify_shows_a_failed_stop_on_its_stderr(tmp_path):

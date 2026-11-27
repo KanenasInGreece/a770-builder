@@ -237,8 +237,12 @@ def update(path, exit_code):
     unit = body.get("unit") or ""
     if body.get("isolation") == "none" or not unit:
         oom = "unknown"
-    else:
-        named = _unit_name(str(unit))
+        body["oom"] = oom
+        _write_record(path, body)
+        return oom
+    named = _unit_name(str(unit))
+    shown = None
+    try:
         shown, kill_seen = _wait_settled(named)
         policy = body.get("policy") or ""
         decision = shown
@@ -247,31 +251,25 @@ def update(path, exit_code):
         if policy == "kill" and kill_seen:
             decision = dict(shown or {})
             decision["Result"] = "oom-kill"
-        try:
-            oom = _decide(policy, decision, code, named)
-            body["oom"] = oom
-            try:
-                _write_record(path, body)
-            except OSError:
-                return oom
-            return oom
-        finally:
-            # Stop and reset after the record is written, and still after a
-            # decision or write that raises.
-            _cleanup_scope(named, shown)
-    body["oom"] = oom
-    try:
+        oom = _decide(policy, decision, code, named)
+        body["oom"] = oom
         _write_record(path, body)
-    except OSError:
         return oom
-    return oom
+    finally:
+        # Stop and reset after the record is written, and still when the
+        # settle, the decision, or the write raises.
+        _cleanup_scope(named, shown)
 
 
 def main(argv):
     if len(argv) != 3:
         print("usage: sandbox_oom.py <record file> <exit code>", file=sys.stderr)
         return 2
-    update(argv[1], argv[2])
+    try:
+        update(argv[1], argv[2])
+    except OSError as exc:
+        print(f"sandbox oom: could not publish the record: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

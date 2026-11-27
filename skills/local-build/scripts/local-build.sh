@@ -1344,10 +1344,12 @@ def _entered(path):
 def _record_oom(record_path, rc):
     # After proc.wait has returned. This call is not inside the timed wait.
     # Its wall time is added back so a hidden phase is not charged for it.
+    # A non-zero helper means the decided value was not published. The caller
+    # must not grade from the previous or truncated record.
     global deadline
     started = time.monotonic()
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, "-I", "-B", oom_py, record_path, str(rc)],
             check=False,
             stdout=subprocess.DEVNULL,
@@ -1356,10 +1358,12 @@ def _record_oom(record_path, rc):
             with open(record_path, encoding="utf-8") as fh:
                 body = json.load(fh)
             if not isinstance(body, dict):
-                return "unknown"
-            return body.get("oom", "unknown")
+                oom = "unknown"
+            else:
+                oom = body.get("oom", "unknown")
         except (OSError, ValueError):
-            return "unknown"
+            oom = "unknown"
+        return oom, proc.returncode == 0
     finally:
         if deadline is not None:
             deadline += time.monotonic() - started
@@ -1415,7 +1419,7 @@ def run_phase(cmd_args, raw_fh):
         # The deadline was only the wait above. Do not consult it again.
         entered = _entered(entered_file)
         norm, signaled = sandbox_oom.normalize_status(rc if not timed_out else 124)
-        oom = _record_oom(record_path, norm)
+        oom, published = _record_oom(record_path, norm)
         if timed_out:
             return ("timeout" if entered else "not_run"), 124, "timeout", oom, None
         if signaled:
@@ -1423,6 +1427,11 @@ def run_phase(cmd_args, raw_fh):
         # Setup that dies before "entered" is the harness, not the model.
         if not entered:
             return "not_run", (norm if norm != 0 else 2), "infra_error", oom, None
+        # The command did run. A record that was not published is not a pass
+        # and not an OOM grade taken from whatever bytes were left behind.
+        if not published:
+            code = norm if isinstance(norm, int) and not isinstance(norm, bool) and norm != 0 else 2
+            return "not_run", code, "infra_error", oom, None
         status, code, reason = sandbox_oom.grade(norm, oom)
         return status, code, None, oom, reason
     finally:
