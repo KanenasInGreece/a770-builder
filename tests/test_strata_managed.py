@@ -105,7 +105,7 @@ def test_post_check_refusal_does_not_promote_launch_receipt_to_continuous(tmp_pa
     monkeypatch.setattr(managed, "read_key", lambda: "key")
     monkeypatch.setattr(managed, "process_alive", lambda _state: True)
     monkeypatch.setattr(managed, "health_matches", lambda _state, _key: True)
-    monkeypatch.setattr(managed, "ram_ok", lambda _minimum: False)
+    monkeypatch.setattr(managed, "ram_check", lambda _minimum: (False, 10))
     assert managed.admit(tmp_path / "state.json") is False
     assert json.loads(receipt.read_text(encoding="utf-8"))["enforcement"] == "launch"
 
@@ -118,7 +118,7 @@ def test_verified_healthy_admission_promotes_receipt_to_continuous(tmp_path, mon
     monkeypatch.setattr(managed, "read_key", lambda: "key")
     monkeypatch.setattr(managed, "process_alive", lambda _state: True)
     monkeypatch.setattr(managed, "health_matches", lambda _state, _key: True)
-    monkeypatch.setattr(managed, "ram_ok", lambda _minimum: True)
+    monkeypatch.setattr(managed, "ram_check", lambda _minimum: (True, 50000))
     assert managed.admit(tmp_path / "state.json") is True
     assert json.loads(receipt.read_text(encoding="utf-8"))["enforcement"] == "continuous"
 

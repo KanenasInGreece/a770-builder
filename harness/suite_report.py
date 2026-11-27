@@ -305,6 +305,8 @@ def outcome_label(s):
         return "RUN_ERROR"
     if o == "run_interrupted":
         return "RUN_INTERRUPTED"
+    if o == "strata_floor_stop":
+        return "STRATA_FLOOR_STOP"
     if o == "pass":
         return "PASS"
     if o == "fail":

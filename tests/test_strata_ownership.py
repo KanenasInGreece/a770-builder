@@ -561,6 +561,17 @@ def test_a_strata_runner_creates_the_owned_list_and_stops_from_it(
     env.pop("A770B_QUALIFY_STUB")
     for stand_in in Path(env["PATH"]).glob("a770b-qualify-*"):
         stand_in.unlink()
+    # gate checks the checkout and the card before this pre-hook. The stand-in
+    # names the digest so the run can reach the owned list without the card.
+    real_py = Path(shutil.which("python3")).resolve()
+    wrapper = Path(env["PATH"]) / "python3"
+    wrapper.unlink()
+    _make_exec(wrapper, f"""
+case "$2" in
+  gate) printf '%s\\n' 'strata@sha256:{env["A770B_STRATA_ENGINE_SHA256"]}'; exit 0 ;;
+esac
+exec {real_py} "$@"
+""")
     got = _run(env, ["run", "--job", str(job)])
     assert got.returncode == 4, got.stdout + got.stderr
     assert (job / "seen").read_text().strip() == str(job / "strata-owned.ids")

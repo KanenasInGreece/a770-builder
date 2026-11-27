@@ -536,21 +536,15 @@ def _strata_config(env) -> None:
     env["A770B_FRAMEWORK_PORTS"] = env["A770B_PORT"]
 
 
-def test_strata_is_refused_before_any_job_file(tmp_path):
+def test_strata_dry_run_is_accepted_and_a_mismatched_engine_is_refused(tmp_path):
     env = _world(tmp_path, port=9, engine="strata")
     data = Path(env["A770B_DATA"])
     assert not data.exists()
     _strata_config(env)
-    code, out, err = _run(env, _argv(env, stages="s0-design"), 30)
-    assert code == 2, out + err
-    assert "not yet supported by qualify" in err
-    assert "manual ladder" in err
-    assert out == ""
-    assert not data.exists()
     dry = _argv(env, stages="s0-design", extra=["--dry-run"])
     code, out, err = _run(env, dry, 30)
-    assert code == 2, out + err
-    assert "not yet supported by qualify" in err
+    assert code == 0, out + err
+    assert "starts nothing" in out
     assert not data.exists()
     # A profiles file whose row is Strata, asked for as another engine.
     prof = _profile(tmp_path, "strata", "e2e.strata.json")
@@ -564,8 +558,7 @@ def test_strata_is_refused_before_any_job_file(tmp_path):
         30,
     )
     assert code == 2, out + err
-    assert "not yet supported by qualify" in err
-    assert "manual ladder" in err
+    assert "is not the profile engine" in err
     assert not data.exists()
 
 

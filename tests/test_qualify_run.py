@@ -503,8 +503,7 @@ def test_i11_sglang_strata_and_missing_row(box, tmp_path):
         ],
     )
     assert refused_row.returncode == 2
-    assert "not yet supported by qualify" in refused_row.stderr
-    assert "manual ladder" in refused_row.stderr
+    assert "is not the profile engine" in refused_row.stderr
     assert set(Path(box["A770B_DATA"]).rglob("*")) == before
     assert len(_jobs(box)) == 1
 
