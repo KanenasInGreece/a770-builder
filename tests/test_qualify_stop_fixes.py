@@ -554,3 +554,20 @@ def test_t16_a_symlinked_owned_list_stops_and_removes_nothing(tmp_path, target):
     assert listing.exists() == (target == "listing")
     assert "owned-container list is a symlink" in got.stderr
     assert "could not stop a server" in got.stderr
+
+
+# --- 2.9a the skill wrapper
+
+
+@pytest.mark.parametrize("command", ["start", "list"])
+def test_t15_a_symlinked_data_directory_gets_nothing(box, tmp_path, command):
+    real = tmp_path / "real-data"
+    real.mkdir()
+    link = tmp_path / "linked-data"
+    link.symlink_to(real)
+    box["A770B_DATA"] = str(link)
+    args = [command, *_gguf(box)] if command == "start" else [command]
+    got = subprocess.run(["bash", str(LOCAL_BUILD), "qualify", *args], env=box,
+                         capture_output=True, text=True, timeout=60)
+    assert got.returncode == (2 if command == "start" else 0), got.stderr
+    assert list(real.iterdir()) == []
