@@ -52,9 +52,12 @@ def _env(tmp: Path, **extra) -> dict:
     (data / "logs").mkdir(parents=True, exist_ok=True)
     (data / "results").mkdir(parents=True, exist_ok=True)
     (data / "hidden").mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    for key in ("A770B_CARD_LOCK_PATH", "A770B_SEAT_LOCK_PATH", "A770B_ATTACHED", "A770B_SERVED_ENGINE"):
-        env.pop(key, None)
+    scratch = tmp / "tmp"
+    scratch.mkdir(exist_ok=True)
+    # An inherited harness path is an operator's file. Drop every A770B_* name
+    # before this fixture's own values, so a test cannot unlink or replace it.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("A770B_")}
+    env["TMPDIR"] = str(scratch)
     env.update(
         HOME=str(tmp / "home"),
         A770B_PROJECT=str(ROOT),
@@ -72,6 +75,43 @@ def _env(tmp: Path, **extra) -> dict:
     (tmp / "refused").mkdir(exist_ok=True)
     env.update(extra)
     return env
+
+
+def test_env_drops_inherited_harness_paths(tmp_path, monkeypatch):
+    """A path inherited from the operator stays outside this fixture."""
+    outside = tmp_path.parent / f"{tmp_path.name}-operator"
+    outside.mkdir()
+    try:
+        verify_out = outside / "verify.json"
+        worker = outside / "worker-pgid"
+        record = outside / "sandbox-oom.json"
+        verify_out.write_text('{"status":"keep"}\n', encoding="utf-8")
+        worker.write_text("1 2\n", encoding="utf-8")
+        record.write_text('{"oom":"keep"}\n', encoding="utf-8")
+        monkeypatch.setenv("A770B_VERIFY_OUT", str(verify_out))
+        monkeypatch.setenv("A770B_WORKER_PGID_FILE", str(worker))
+        monkeypatch.setenv("A770B_SANDBOX_RECORD_FILE", str(record))
+        monkeypatch.setenv("A770B_CARD_LOCK_PATH", str(outside / "card.lock"))
+        monkeypatch.setenv("TMPDIR", str(outside))
+        env = _env(tmp_path)
+        leaked = [key for key in env if key.startswith("A770B_") and env[key].startswith(str(outside))]
+        assert leaked == [], leaked
+        assert "A770B_VERIFY_OUT" not in env
+        assert "A770B_WORKER_PGID_FILE" not in env
+        assert "A770B_SANDBOX_RECORD_FILE" not in env
+        assert "A770B_CARD_LOCK_PATH" not in env
+        assert env["TMPDIR"] == str(tmp_path / "tmp")
+        assert env["A770B_DATA"] == str(tmp_path / "data")
+        assert env["A770B_PROJECT"] == str(ROOT)
+        own = tmp_path / "own-verify.json"
+        replaced = _env(tmp_path, A770B_VERIFY_OUT=str(own), TMPDIR=str(tmp_path / "custom-tmp"))
+        assert replaced["A770B_VERIFY_OUT"] == str(own)
+        assert replaced["TMPDIR"] == str(tmp_path / "custom-tmp")
+        assert verify_out.read_text(encoding="utf-8") == '{"status":"keep"}\n'
+        assert worker.read_text(encoding="utf-8") == "1 2\n"
+        assert record.read_text(encoding="utf-8") == '{"oom":"keep"}\n'
+    finally:
+        shutil.rmtree(outside)
 
 
 def _seat(tmp: Path) -> Path:
@@ -339,14 +379,26 @@ def _stop_log_scopes(logs: Path, saved: list[str] | None = None) -> None:
         _stop_scope(unit)
 
 
+# Terminal ActiveState values. deactivating is still changing; active is a leak.
+_FINISHED_SCOPE_STATES = frozenset({"inactive", "failed"})
+
+
+def _scope_is_finished(state: str) -> bool:
+    """True when the named scope is no longer running or changing."""
+    return state in _FINISHED_SCOPE_STATES
+
+
 def _observe_scope(unit: str) -> str:
-    """ActiveState of one named scope. A failed query fails; it does not search."""
+    """ActiveState of one named scope. A failed query fails; it does not search.
+
+    -p belongs before --. After --, systemd reads -p and ActiveState as unit names.
+    """
     if _SCOPE_UNIT.fullmatch(unit) is None:
         raise AssertionError(f"refusing to observe a unit this test does not own: {unit!r}")
     if REAL_SYSTEMCTL is None:
         raise AssertionError(f"could not observe {unit}: systemctl is not on PATH")
     shown = subprocess.run(
-        [REAL_SYSTEMCTL, "--user", "show", "--", unit, "-p", "ActiveState"],
+        [REAL_SYSTEMCTL, "--user", "show", "-p", "ActiveState", "--", unit],
         capture_output=True, text=True,
     )
     if shown.returncode != 0 or "ActiveState=" not in shown.stdout:
@@ -972,7 +1024,11 @@ def test_i8_oom_record_grade_and_outside_kill(tmp_path, monkeypatch):
         assert left == [], f"sandbox processes survived the outside kill: {left}"
         if unit is not None:
             state = _observe_scope(unit)
-            assert state not in ("active", "activating"), state
+            deadline = time.monotonic() + 5
+            while not _scope_is_finished(state) and time.monotonic() < deadline:
+                time.sleep(0.05)
+                state = _observe_scope(unit)
+            assert _scope_is_finished(state), state
     finally:
         _reap_owned(verify, owned)
         _stop_log_scopes(logs, [unit] if unit else None)
@@ -1471,6 +1527,29 @@ printf 'OUT SUITE_RC=%s\\n' "$?"
     assert dry.returncode == 0, dry.stdout + dry.stderr
     assert not pidfile.exists()
 
+def _sandbox_oom_section(report: str) -> str:
+    """Body of the sandbox oom heading, and nothing the capture wrote above it."""
+    marker = "## sandbox oom"
+    _head, sep, tail = report.partition(marker)
+    if not sep:
+        raise AssertionError("capture wrote no sandbox oom section")
+    body, _sep, _rest = tail.partition("\n## ")
+    return body
+
+
+def test_sandbox_oom_section_ignores_the_same_words_elsewhere():
+    """The transcript can contain the words. Only the sandbox oom section counts."""
+    report = (
+        "# Task capture — sample — 2026-11-27T00:00:00+00:00\n"
+        "\n## opencode transcript tail\n```\nnot recorded\n```\n"
+        "\n## server-side timings during the run\nrates not measured\n"
+        "\n## sandbox oom\nyes\n"
+    )
+    section = _sandbox_oom_section(report)
+    assert section.strip() == "yes"
+    assert "not recorded" not in section
+
+
 def test_i12_stale_record_is_removed_and_absence_is_not_recorded(tmp_path):
     env = _env(tmp_path)
     logs = Path(env["A770B_DATA"]) / "logs"
@@ -1526,7 +1605,8 @@ def test_i12_stale_record_is_removed_and_absence_is_not_recorded(tmp_path):
     )
     assert cap.returncode == 0, cap.stderr
     report = (Path(env["A770B_DATA"]) / "results" / "i12.task.md").read_text(encoding="utf-8")
-    assert "\nnot recorded\n" in report or report.rstrip().endswith("not recorded")
+    section = _sandbox_oom_section(report)
+    assert any(line == "not recorded" for line in section.splitlines()), section
     stale.write_text('{"oom":"yes"}\n', encoding="utf-8")
     cap2 = subprocess.run(
         ["bash", str(CAPTURE), "i12b", str(seat), str(blog)],
@@ -2552,7 +2632,17 @@ def test_failed_scope_query_does_not_widen(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(AssertionError, match="could not observe"):
         _observe_scope("a770b-sbx-42-7.scope")
-    assert calls == [[REAL_SYSTEMCTL, "--user", "show", "--", "a770b-sbx-42-7.scope", "-p", "ActiveState"]]
+    assert calls == [[
+        REAL_SYSTEMCTL, "--user", "show", "-p", "ActiveState", "--", "a770b-sbx-42-7.scope",
+    ]]
+
+
+def test_scope_is_finished_rejects_a_unit_still_changing():
+    """active and activating are not the only unfinished states."""
+    assert _scope_is_finished("inactive")
+    assert _scope_is_finished("failed")
+    for state in ("active", "activating", "deactivating", "reloading", "maintenance"):
+        assert not _scope_is_finished(state), state
 
 
 def test_observe_scope_uses_the_real_systemctl_binary(monkeypatch, tmp_path):
