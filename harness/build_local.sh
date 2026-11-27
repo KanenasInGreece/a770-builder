@@ -148,7 +148,9 @@ _orphan_watch_pid=$!
 if [ "${SANDBOX:-1}" = 1 ]; then
   # The helper reads this after the pipeline returns, outside the leader's fence.
   export A770B_SANDBOX_RECORD_FILE="$_SANDBOX_OOM"
-  ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
+  # $BASHPID is this subshell. exec replaces it with the leader, so the same
+  # pid is what sandbox_run.sh must arm against. $$ would be the outer shell.
+  ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead bash "$(dirname "$0")/sandbox_run.sh" --parent "$BASHPID" "$WT" "$CFG" -- \
       opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
 else
   echo "⚠ SANDBOX=0: running opencode UNCONFINED (testing only)" | tee -a "$LOG" 7>&- 9>&-

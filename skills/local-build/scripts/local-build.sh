@@ -1382,9 +1382,8 @@ def run_phase(cmd_args, raw_fh):
     except OSError:
         pass
     env = dict(os.environ)
-    # The grader's own preexec arms this child. An inherited leader pid is not
-    # that parent, and sandbox_run.sh would exit 137 before the command.
-    env.pop("A770B_SPAWNER_PID", None)
+    # The grader's own preexec arms this child. The sandbox takes no parent
+    # argument here: its parent is this process.
     env["A770B_NO_BRIDGE"] = "1"
     env["A770B_SANDBOX_ENTERED_FILE"] = entered_file
     env["A770B_SANDBOX_RECORD_FILE"] = record_path

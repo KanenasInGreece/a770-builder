@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sandbox_run.sh — run a command inside a bubblewrap boundary that sees ONLY the seat worktree, with NO network
 # except a loopback route to the model server.
-#   sandbox_run.sh <worktree> <profile-config.jsonc> -- <command…>
+#   sandbox_run.sh [--parent <pid>] <worktree> <profile-config.jsonc> -- <command…>
 # Inside: /usr,/etc read-only; a private empty $HOME on tmpfs with exactly these mounts:
 #   <worktree>                          read-write   (the only writable tree) — EXCEPT its whole .git directory,
 #                                                    mounted read-only: the model reads history and status but can plant
@@ -32,52 +32,38 @@ if ( : >&7 ) 2>/dev/null; then exec 7>&-; fi
 if ( : >&9 ) 2>/dev/null; then exec 9>&-; fi
 # The death signal is not inherited across fork. Re-exec once under setpriv.
 # The guard is this pid and is unset after the check, so a nested call arms too.
-# A770B_SPAWNER_PID is the leader's pid, passed before this process started.
-# PPID read after that leader died is the adopter, so a gone spawner is still
-# the parent to arm against. A live spawner that is not our parent was inherited
-# from an ancestor; arming against it aborts a healthy run. A direct call passes
-# nothing and uses PPID. The pid is unset on every path below, including when
-# setpriv is not re-executed, so a later command cannot inherit it.
-_arm_against_spawner() {
-  local pid="${1:-}" stat state
-  case "$pid" in
-    ''|*[!0-9]*) return 1 ;;
+# --parent is the leader's pid, on the command line so it is not inherited.
+# After arming, $PPID is compared with that pid and with nothing else. A direct
+# or nested call passes no --parent and arms against its own parent, captured
+# before the re-exec. The arguments, including --parent, are the re-exec's.
+_expected=""
+if [ "${1:-}" = "--parent" ]; then
+  case "${2:-}" in
+    ''|*[!0-9]*|0*)
+      echo "⛔ sandbox: --parent needs a positive decimal integer" >&2
+      exit 2
+      ;;
   esac
-  if [ "$pid" = "$PPID" ]; then
-    return 0
-  fi
-  if [ ! -d "/proc/$pid" ]; then
-    return 0
-  fi
-  # The process can exit after the directory check. A gone spawner is the
-  # parent to arm against. A live one whose stat cannot be read is not.
-  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || {
-    if [ ! -d "/proc/$pid" ]; then
-      return 0
-    fi
-    return 1
-  }
-  state=${stat##*)}
-  state=${state# }
-  state=${state%% *}
-  [ "$state" = "Z" ] || [ "$state" = "X" ]
-}
-if [ "${A770B_PDEATH_ARMED_PID:-}" != "$$" ] && command -v setpriv >/dev/null 2>&1; then
-  if _arm_against_spawner "${A770B_SPAWNER_PID:-}"; then
-    export A770B_PDEATH_PARENT="${A770B_SPAWNER_PID}"
+  _expected=$2
+fi
+if [ "${A770B_PDEATH_ARMED_PID:-}" != "$$" ]; then
+  if [ -n "$_expected" ]; then
+    export A770B_PDEATH_PARENT="$_expected"
   else
     export A770B_PDEATH_PARENT="${PPID}"
   fi
-  export A770B_PDEATH_ARMED_PID="$$"
-  exec setpriv --pdeathsig KILL -- /usr/bin/bash "$0" "$@"
+  if command -v setpriv >/dev/null 2>&1; then
+    export A770B_PDEATH_ARMED_PID="$$"
+    exec setpriv --pdeathsig KILL -- /usr/bin/bash "$0" "$@"
+  fi
 fi
-# This process was not re-executed under setpriv. Consume a spawner pid the
-# branch above did not already copy, then drop the variable.
-if [ -z "${A770B_PDEATH_PARENT:-}" ] && _arm_against_spawner "${A770B_SPAWNER_PID:-}"; then
-  export A770B_PDEATH_PARENT="${A770B_SPAWNER_PID}"
+if [ -n "$_expected" ]; then
+  shift 2
 fi
-unset A770B_SPAWNER_PID || true
-if [ -n "${A770B_PDEATH_PARENT:-}" ] && [ "$PPID" != "$A770B_PDEATH_PARENT" ]; then
+if [ -z "${A770B_PDEATH_PARENT:-}" ]; then
+  export A770B_PDEATH_PARENT="${PPID}"
+fi
+if [ "$PPID" != "$A770B_PDEATH_PARENT" ]; then
   echo "⛔ sandbox: parent changed during arming" >&2
   exit 137
 fi

@@ -2171,7 +2171,7 @@ def test_b3_worker_checks_the_pid_its_leader_passed(tmp_path):
     script = (
         "(\n"
         "export A770B_RUN_OWNER_PID=$$\n"
-        f'exec python3 "{RUN_LEAD}" -- bash "{SANDBOX}" "{seat}" "{cfg}" -- '
+        f'exec python3 "{RUN_LEAD}" -- bash "{SANDBOX}" --parent "$BASHPID" "{seat}" "{cfg}" -- '
         f"bash -c {json.dumps(command)}\n"
         ")\n"
         "wait\n"
@@ -2218,8 +2218,22 @@ def _confine_harness_outputs(env, tmp_path):
     return env
 
 
-def _sandbox_tool_bins(tmp_path, seen: Path | None = None) -> Path:
-    """Stubs the scope tools. The probe records a spawner pid when asked."""
+def test_parent_argument_is_a_positive_decimal_integer():
+    """Anything else is usage, before a worktree is required."""
+    for value in ("", "0", "01", "-1", "1a", " 1"):
+        args = ["/usr/bin/bash", str(SANDBOX), "--parent"]
+        if value != "":
+            args.append(value)
+        proc = subprocess.run(args, capture_output=True, text=True, check=False)
+        assert proc.returncode == 2, (value, proc.returncode, proc.stderr)
+        assert "positive decimal integer" in proc.stderr, proc.stderr
+
+
+def test_parent_argument_mismatch_exits_137_and_a_match_runs(tmp_path):
+    """The passed pid is compared with $PPID after arming. No process table is consulted."""
+    marker = tmp_path / "ran"
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
     bin_ = _tools(tmp_path)
     _exe(bin_ / "bwrap", """
 while [ "$#" -gt 0 ]; do
@@ -2228,180 +2242,105 @@ while [ "$#" -gt 0 ]; do
 done
 exit 0
 """)
-    record = ""
-    if seen is not None:
-        record = f'printf \'%s\' "${{A770B_SPAWNER_PID-}}" > "{seen}"\n'
-    _exe(bin_ / "systemd-run", f"""
-case " $* " in
-  *" --collect "*)
-    {record}exit 0
-    ;;
-esac
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = -- ]; then shift; exec "$@"; fi
-  shift
-done
-exit 1
-""")
+    _scope_exec_stub(bin_ / "systemd-run")
     _exe(bin_ / "systemctl", "exit 0\n")
-    return bin_
-
-
-def test_run_lead_keeps_spawner_pid_off_a_non_sandbox_worker(tmp_path):
-    """A worker that is not this harness's sandbox_run.sh does not see the pid."""
-    env = _confine_harness_outputs(os.environ.copy(), tmp_path)
-    env["A770B_SPAWNER_PID"] = "1"
-    env["A770B_DATA"] = str(tmp_path)
-    (tmp_path / "logs").mkdir()
-    script = 'import os; print(os.environ.get("A770B_SPAWNER_PID", "unset"))'
-    proc = subprocess.run(
-        [sys.executable, str(RUN_LEAD), "--", sys.executable, "-c", script],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "unset"
-
-    proc = subprocess.run(
-        [sys.executable, str(RUN_LEAD), "--", "bash", "-c",
-         'printf %s "${A770B_SPAWNER_PID-unset}"'],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "unset"
-
-    impostor = tmp_path / "sandbox_run.sh"
-    impostor.write_text('#!/bin/bash\nprintf %s "${A770B_SPAWNER_PID-unset}"\n', encoding="utf-8")
-    impostor.chmod(0o755)
-    proc = subprocess.run(
-        [sys.executable, str(RUN_LEAD), "--", "bash", str(impostor)],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "unset"
-
-
-def test_direct_sandbox_ignores_a_live_inherited_spawner_pid(tmp_path):
-    """A live pid that is not the parent must not abort a direct sandbox_run.sh."""
-    seen = tmp_path / "probe-spawner"
-    bin_ = _sandbox_tool_bins(tmp_path, seen)
-    seat = _seat(tmp_path)
-    cfg = _cfg(tmp_path)
-    stranger = subprocess.Popen(["sleep", "60"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
+    stranger = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        env = _confine_harness_outputs(
-            _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1"),
-            tmp_path,
-        )
-        env["A770B_SPAWNER_PID"] = str(stranger.pid)
-        proc = subprocess.run(
-            ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
+        refused = subprocess.run(
+            ["/usr/bin/bash", str(SANDBOX), "--parent", str(stranger.pid), str(seat), str(cfg), "--",
+             "bash", "-c", f'printf ran > "{marker}"'],
             env=env, capture_output=True, text=True, check=False,
         )
-        assert proc.returncode == 0, proc.stderr
-        assert "parent changed during arming" not in proc.stderr
-        assert seen.read_text(encoding="utf-8") == ""
+        assert refused.returncode == 137, refused.stderr
+        assert "parent changed during arming" in refused.stderr, refused.stderr
+        assert not marker.exists()
+        accepted = subprocess.run(
+            ["/usr/bin/bash", str(SANDBOX), "--parent", str(os.getpid()), str(seat), str(cfg), "--",
+             "bash", "-c", f'printf ran > "{marker}"'],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert accepted.returncode == 0, accepted.stderr
+        assert marker.read_text(encoding="utf-8") == "ran"
     finally:
         if stranger.poll() is None:
             stranger.kill()
         stranger.wait(timeout=5)
 
 
-def test_spawner_gone_between_the_check_and_the_read_is_armed(tmp_path):
-    """The directory check passed. The process is gone before its stat is read."""
-    spawned = subprocess.run(
-        ["bash", "-c", "sleep 60 >/dev/null 2>&1 & printf '%s\\n' $!"],
-        capture_output=True, text=True, check=True,
-    )
-    pid = int(spawned.stdout.strip())
-    assert _alive(pid)
-    marker = tmp_path / "gone"
-    bin_ = _sandbox_tool_bins(tmp_path)
-    _exe(bin_ / "cat", f"""
-if [ "${{1:-}}" = "/proc/{pid}/stat" ]; then
-  kill {pid} 2>/dev/null || true
-  n=0
-  while [ "$n" -lt 50 ]; do
-    if [ ! -d "/proc/{pid}" ]; then
-      printf gone > "{marker}"
-      break
-    fi
-    n=$((n + 1))
-    /usr/bin/sleep 0.02
-  done
-fi
-exec /usr/bin/cat "$@"
-""")
-    seat = _seat(tmp_path)
-    cfg = _cfg(tmp_path)
-    try:
-        env = _confine_harness_outputs(
-            _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1"),
-            tmp_path,
-        )
-        env["A770B_SPAWNER_PID"] = str(pid)
-        proc = subprocess.run(
-            ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
-            env=env, capture_output=True, text=True, check=False, timeout=30,
-        )
-    finally:
-        if _alive(pid):
-            os.kill(pid, signal.SIGKILL)
-    assert marker.is_file() and marker.read_text(encoding="ascii").strip() == "gone"
-    assert proc.returncode == 137, proc.stderr
-    assert "parent changed during arming" in proc.stderr, proc.stderr
-
-
-def test_sandbox_unsets_spawner_pid_before_it_starts_a_child(tmp_path):
-    """The probe is a real child of sandbox_run.sh. It must not inherit the pid."""
-    seen = tmp_path / "probe-spawner"
-    bin_ = _sandbox_tool_bins(tmp_path, seen)
-    seat = _seat(tmp_path)
-    cfg = _cfg(tmp_path)
-    env = _confine_harness_outputs(
-        _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1"),
-        tmp_path,
-    )
-    # This pid is the shell's parent, so arming accepts it. The leak is inheritance.
-    env["A770B_SPAWNER_PID"] = str(os.getpid())
-    proc = subprocess.run(
-        ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert seen.read_text(encoding="utf-8") == ""
-
-
-def test_verify_drops_an_inherited_spawner_pid(tmp_path):
-    """A dead inherited pid must not make verify exit 137. The grader still arms."""
-    env, patch, seat, results = _verify_fixture(tmp_path, "stale-pid", "true")
-    _confine_harness_outputs(env, tmp_path)
-    bin_ = tmp_path / "bin"
-    _scope_exec_stub(bin_ / "systemd-run")
-    _exe(bin_ / "systemctl", """
-case " $* " in
-  *" show "*) printf '%s\\n' 'ActiveState=inactive' 'Result=success' ;;
-esac
-exit 0
-""")
-    _exe(bin_ / "journalctl", "exit 1\n")
-    dead = subprocess.Popen(["sleep", "60"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def test_inherited_spawner_pid_has_no_effect(tmp_path):
+    """A dead inherited pid used to abort a direct sandbox. The variable is ignored."""
+    dead = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     dead_pid = dead.pid
     dead.kill()
     dead.wait(timeout=5)
     assert not _alive(dead_pid)
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
+    bin_ = _tools(tmp_path)
+    _exe(bin_ / "bwrap", """
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -- ]; then shift; exec "$@"; fi
+  shift
+done
+exit 0
+""")
+    _scope_exec_stub(bin_ / "systemd-run")
+    _exe(bin_ / "systemctl", "exit 0\n")
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
     env["A770B_SPAWNER_PID"] = str(dead_pid)
-    logs = Path(env["A770B_DATA"]) / "logs"
+    marker = tmp_path / "ran"
     proc = subprocess.run(
-        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat)],
+        ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "bash", "-c", f'printf ran > "{marker}"'],
         env=env, capture_output=True, text=True, check=False,
     )
-    try:
-        assert proc.returncode == 0, proc.stderr
-        assert "parent changed during arming" not in proc.stderr
-        doc = json.loads((results / "stale-pid.verify.json").read_text(encoding="utf-8"))
-        assert doc["status"] == "pass", doc
-    finally:
-        _stop_log_scopes(logs)
+    assert proc.returncode == 0, proc.stderr
+    assert "parent changed during arming" not in proc.stderr
+    assert marker.read_text(encoding="utf-8") == "ran"
+
+
+def test_build_local_passes_the_leader_pid_as_parent(tmp_path):
+    """The real build_local.sh passes --parent from the subshell that becomes the leader."""
+    bin_ = _tools(tmp_path)
+    seen = tmp_path / "seen"
+    _exe(bin_ / "curl", "exit 0\n")
+    _exe(bin_ / "bash", f"""
+case "${{1:-}}" in
+  *sandbox_run.sh)
+    tr '\\0' '\\n' < /proc/"$PPID"/cmdline > "{seen}/cmdline"
+    printf '%s\\n' "$PPID" > "{seen}/ppid"
+    printf '%s\\n' "$@" > "{seen}/argv"
+    exit 0
+    ;;
+esac
+exec /usr/bin/bash "$@"
+""")
+    seen.mkdir()
+    registry = tmp_path / "registry.json"
+    registry.write_bytes((ROOT / "config" / "registry" / "a770.display.json").read_bytes())
+    seat = _seat(tmp_path)
+    brief = tmp_path / "brief.md"
+    brief.write_text("# task\n", encoding="utf-8")
+    env = _env(
+        tmp_path,
+        PATH=f"{bin_}:{os.environ['PATH']}",
+        PROFILE="qwen35-9b-q4km-vulkan",
+        A770B_PROFILES_FILE=str(registry),
+        A770B_CARD_MODE="display",
+        SANDBOX="1",
+    )
+    proc = subprocess.run(
+        ["bash", str(BUILD), str(seat), str(brief)],
+        env=env, cwd=ROOT, capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    argv = (seen / "argv").read_text(encoding="utf-8").splitlines()
+    assert argv[1] == "--parent", argv
+    parent = argv[2]
+    assert parent.isdigit() and int(parent) > 0
+    assert parent == (seen / "ppid").read_text(encoding="ascii").strip()
+    leader = (seen / "cmdline").read_text(encoding="utf-8")
+    assert "run_lead.py" in leader, leader
 
 
 def test_b2_abandoned_scope_is_stopped_and_tools_are_bounded(tmp_path, monkeypatch):
