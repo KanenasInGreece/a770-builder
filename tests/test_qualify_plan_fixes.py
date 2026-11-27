@@ -13,6 +13,7 @@ import pytest
 
 # test_qualify_lib puts harness/ on sys.path, so it is imported before qualify_lib.
 from test_qualify_lib import _min_row, _wrap
+import host_memory
 import prompt_budget
 import qualify_lib as ql
 from test_qualify_e2e import QUALIFY, _run as _run_e2e, _serve_engine, _world
@@ -290,3 +291,84 @@ def test_t4_prompt_budget_counts_the_whole_text(tmp_path, make):
     got = prompt_budget.count_tokens(
         "", "", LONG_TEXT, tokenize="openai", tokenizer=make(tmp_path))
     assert got == 400
+
+
+def test_t5_monitor_records_no_target_once_the_start_time_changes(tmp_path, monkeypatch):
+    pid_file = tmp_path / "serving.pid"
+    out = tmp_path / "memory.jsonl"
+    me, parent = os.getpid(), os.getppid()
+    # (pid in the file, start time the stubbed reader gives) for each sample.
+    steps = [(me, "100"), (me, "100"), (me, "200"), (me, "200"), (parent, "300"),
+             (parent, "300")]
+    at = {"i": 0}
+    pid_file.write_text(f"{steps[0][0]}\n", encoding="ascii")
+    monkeypatch.setattr(host_memory, "pid_starttime",
+                        lambda pid: steps[at["i"]][1], raising=False)
+
+    class Done(Exception):
+        pass
+
+    def next_step(_seconds):
+        at["i"] += 1
+        if at["i"] == len(steps):
+            raise Done
+        pid_file.write_text(f"{steps[at['i']][0]}\n", encoding="ascii")
+
+    monkeypatch.setattr(host_memory.time, "sleep", next_step)
+    with pytest.raises(Done):
+        host_memory.monitor(out, pid_file=pid_file)
+    targets = [json.loads(line)["target"] for line in out.read_text().splitlines()]
+    assert [t and t["pid"] for t in targets] == [me, me, None, None, parent, parent]
+
+
+def test_start_time_reader_reads_field_22(tmp_path):
+    proc = tmp_path / "7"
+    proc.mkdir()
+    fields = " ".join(str(n) for n in range(3, 53))
+    (proc / "stat").write_text(f"7 (a b) c) {fields}\n", encoding="ascii")
+    assert host_memory.pid_starttime(7, tmp_path) == "22"
+    assert host_memory.pid_starttime(8, tmp_path) is None
+
+
+def test_t6_a_replaced_shared_cid_does_not_move_the_sampling(tmp_path):
+    first, second = "a" * 64, "b" * 64
+    job = tmp_path / "job"
+    for name in ("phases", "evidence"):
+        (job / name).mkdir(parents=True)
+    (job / "cid").write_text("", encoding="utf-8")
+    (job / "phases" / "serve.log").write_text("server already up (x)\n", encoding="utf-8")
+    data = tmp_path / "data"
+    (data / "logs").mkdir(parents=True)
+    shared = data / "logs" / "llamacpp-a770.cid"
+    shared.write_text(first + "\n", encoding="utf-8")
+    docker = tmp_path / "docker"
+    asked = tmp_path / "asked.log"
+    _make_exec(docker, f'cid="${{@: -1}}"; echo "$cid" >> {asked}; '
+                       f'case "$cid" in {first}) echo 111;; *) echo 222;; esac')
+    # The real tracker, cut out of qualify.sh with the two helpers it calls.
+    script = tmp_path / "track.sh"
+    script.write_text(f'''set -u
+for fn in refuse_link plain_trunc start_observers; do
+  eval "$(sed -n "/^$fn() {{/,/^}}/p" {QUALIFY})"
+done
+gpu_used_gib() {{ return 1; }}
+job={job}; here={tmp_path}; engine=llama.cpp
+export A770B_DATA={data} A770B_DOCKER={docker}
+start_observers
+wait_for() {{ for _ in $(seq 200); do eval "$1" && return 0; sleep 0.1; done; return 1; }}
+wait_for '[ "$(cat "$job/evidence/serving.pid")" = 111 ]' || exit 3
+printf '%s\\n' {second} > {shared}
+sleep 2
+cp "$job/evidence/serving.pid" {tmp_path}/published
+: > "$job/SERVING_CLEARED"
+rm -f "$job/VRAM_SAMPLE"
+kill "$VRAM_PID" 2>/dev/null
+wait "$TRACKER" "$MEM" "$VRAM_PID" 2>/dev/null
+exit 0
+''', encoding="utf-8")
+    (tmp_path / "host_memory.py").write_text("", encoding="utf-8")
+    run = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                         timeout=60)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert (tmp_path / "published").read_text().strip() == "111"
+    assert set(asked.read_text().split()) == {first}

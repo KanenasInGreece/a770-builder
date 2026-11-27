@@ -856,6 +856,7 @@ start_observers() {
     trap - TERM INT EXIT
     exec 7>&- 9>&-
     last=""
+    reused=""
     # Exclusive temp, then rename. last moves only after that rename, so a
     # failed write is retried for the same pid. An empty file means the
     # server we were sampling is gone. A reused server leaves $job/cid
@@ -882,15 +883,17 @@ start_observers() {
         cid=$(tr -d '[:space:]' < "$job/cid" || true)
       fi
       # Strata never prints this reuse line. Only the llama.cpp and compose
-      # paths do, and they record the live id in the shared cid file.
-      if [ -z "$cid" ] && [ "$track_engine" != strata ] \
+      # paths do, and they record the live id in the shared cid file. The first
+      # id read is kept, so a later container cannot redirect the sampling.
+      if [ -z "$cid" ] && [ -z "$reused" ] && [ "$track_engine" != strata ] \
           && [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] \
           && grep -q "already up (" "$job/phases/serve.log"; then
         cidfile=${A770B_DATA:-}/logs/llamacpp-a770.cid
         if [ -n "${A770B_DATA:-}" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
-          cid=$(tr -d '[:space:]' < "$cidfile" || true)
+          reused=$(tr -d '[:space:]' < "$cidfile" || true)
         fi
       fi
+      [ -n "$cid" ] || cid=$reused
       if [ -n "$cid" ] && [ ! -f "$job/SERVING_CLEARED" ]; then
         if [ "$track_engine" = strata ]; then
           pid=$(bash "$here/serve_strata.sh" pid 2>/dev/null || true)
