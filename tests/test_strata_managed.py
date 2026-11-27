@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 
 import pytest
@@ -474,9 +475,13 @@ def test_stop_retains_ownership_if_engine_survives(tmp_path, monkeypatch):
                                              "parent": {"pid": 100, "token": "l:abc"}})
     monkeypatch.setattr(managed, "process_identity", lambda pid: "def" if pid == 101 else None)
     monkeypatch.setattr(managed, "STOP_TIMEOUT", 0)
+    # 101 is a made-up engine; the real pid of that number must never be signalled.
+    sent = []
+    monkeypatch.setattr(managed, "signal_and_wait", lambda *args: sent.append(args[:3]))
     with pytest.raises(ValueError, match="retaining ownership"):
         managed.stop(path, "fixture")
     assert path.exists()
+    assert sent == [(101, "def", signal.SIGTERM), (101, "def", signal.SIGKILL)]
 
 
 def test_server_entrypoint_waits_for_recorded_ownership(tmp_path, monkeypatch):

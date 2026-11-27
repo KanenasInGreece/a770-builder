@@ -4,8 +4,22 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"; . "$here/guard.sh"
 managed=(python3 "$here/strata_managed.py")
+# `existing` is non-empty exactly when start could only reuse an instance, and a reused
+# one belongs to whoever started it.
+refuse_instance() {
+  if [ -z "$existing" ]; then
+    "${managed[@]}" stop "$id" || exit 3
+  else
+    echo "the reused Strata instance is left running" >&2
+  fi
+  exit 3
+}
 case "${1:-}" in
   status|id|pid|model|tokenizer|config-model|verify|observe) exec "${managed[@]}" "$@" ;;
+  stop-owned)
+    card_lock
+    "${managed[@]}" "$@"
+    ;;
   stop|stop-id)
     card_lock
     if [ "$1" = stop-id ]; then "${managed[@]}" stop "${2:?instance id}"; else "${managed[@]}" stop; fi
@@ -45,13 +59,11 @@ case "${1:-}" in
     if ! used=$(gpu_used_gib) || ! python3 -c 'import sys; used,cap=map(float,sys.argv[1:]); sys.exit(not (0 <= used <= cap))' \
       "$used" "$A770B_VRAM_CAP_GIB"; then
       echo "owned Strata exceeded the configured VRAM cap or telemetry was unavailable (used: ${used:-unavailable} GiB)" >&2
-      "${managed[@]}" stop "$id" || exit 3
-      exit 3
+      refuse_instance
     fi
     if ! "${managed[@]}" admit; then
       echo "managed Strata did not pass post-start admission; continuous host RAM enforcement was not recorded" >&2
-      "${managed[@]}" stop "$id" || exit 3
-      exit 3
+      refuse_instance
     fi
     # The receipt is written only after the cap and admission have accepted this start.
     python3 - "$here" "$evidence" "$A770B_DATA" <<'PY' || true
@@ -68,5 +80,5 @@ profiling_contract.merge_receipt_file(evidence, receipt_path)
 PY
     printf '%s\n' "$evidence"
     ;;
-  *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | status | id | pid | model | tokenizer <config> | config-model <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
+  *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | stop-owned <id> | status | id | pid | model | tokenizer <config> | config-model <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
 esac

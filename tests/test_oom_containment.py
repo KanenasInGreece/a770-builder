@@ -1270,7 +1270,9 @@ printf 'OUT STOP_SECRET=%s\\n' "$(cat "{secret}")"
     strata_here = tmp_path / "strata-here"
     strata_here.mkdir()
     (strata_here / "host_memory.py").symlink_to(HOST_MEMORY)
-    _exe(strata_here / "serve_strata.sh", "if [ \"${1:-}\" = pid ]; then printf '%s\\n' 4343; fi\nexit 0\n")
+    # The tracker publishes the pid only while `id` still names the job's instance.
+    _exe(strata_here / "serve_strata.sh",
+         'case "${1:-}" in id) echo owned ;; pid) echo 4343 ;; esac\nexit 0\n')
     hold_file = tmp_path / "phase5-hold.pid"
     marker = tmp_path / "phase5-error"
     (tmp_path / "wait_target.py").write_text(
