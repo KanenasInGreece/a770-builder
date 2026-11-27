@@ -2218,6 +2218,66 @@ def _confine_harness_outputs(env, tmp_path):
     return env
 
 
+def _private_lead_env(tmp_path: Path) -> dict:
+    """Drop inherited harness paths before a test starts the real leader."""
+    scratch = tmp_path / "lead-tmp"
+    data = tmp_path / "lead-data"
+    scratch.mkdir(exist_ok=True)
+    (data / "logs").mkdir(parents=True, exist_ok=True)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("A770B_")}
+    env["TMPDIR"] = str(scratch)
+    env["A770B_DATA"] = str(data)
+    return env
+
+
+def test_non_sandbox_worker_launch_keeps_an_outside_receipt(tmp_path, monkeypatch):
+    """A worker that is not the sandbox must not replace an inherited receipt."""
+    outside = tmp_path.parent / f"{tmp_path.name}-operator-receipt"
+    outside.mkdir()
+    receipt = outside / "run.worker-pgid"
+    receipt.write_text("keep\n", encoding="ascii")
+    data = outside / "data"
+    (data / "logs").mkdir(parents=True)
+    data_receipt = data / "logs" / "run.worker-pgid"
+    data_receipt.write_text("keep-data\n", encoding="ascii")
+    monkeypatch.setenv("A770B_WORKER_PGID_FILE", str(receipt))
+    monkeypatch.setenv("A770B_DATA", str(data))
+    monkeypatch.setenv("TMPDIR", str(outside))
+    try:
+        env = _private_lead_env(tmp_path)
+        proc = subprocess.run(
+            [sys.executable, str(RUN_LEAD), "--", sys.executable, "-c", "raise SystemExit(0)"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        proc = subprocess.run(
+            [sys.executable, str(RUN_LEAD), "--", "bash", "-c", "exit 0"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        impostor = tmp_path / "sandbox_run.sh"
+        impostor.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        impostor.chmod(0o755)
+        proc = subprocess.run(
+            [sys.executable, str(RUN_LEAD), "--", "bash", str(impostor)],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert receipt.read_text(encoding="ascii") == "keep\n"
+        assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
+        monkeypatch.delenv("A770B_WORKER_PGID_FILE", raising=False)
+        data_receipt.write_text("keep-data\n", encoding="ascii")
+        data_env = _private_lead_env(tmp_path)
+        proc = subprocess.run(
+            [sys.executable, str(RUN_LEAD), "--", "bash", "-c", "exit 0"],
+            env=data_env, capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)
+
+
 def test_parent_argument_is_a_positive_decimal_integer():
     """Anything else is usage, before a worktree is required."""
     for value in ("", "0", "01", "-1", "1a", " 1"):
