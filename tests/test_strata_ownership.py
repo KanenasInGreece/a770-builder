@@ -496,3 +496,167 @@ def test_t17_a_failed_check_stops_only_a_started_instance(tmp_path, failure, reu
     seen = calls.read_text().splitlines()
     assert ("stop the-id" in seen) is (not reused), seen
     assert ("reused Strata instance is left running" in got.stderr) is reused
+
+
+# --- T17 qualify
+
+
+def _strata_stops(tmp_path, body, *, listing, rc=0):
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "cid").write_text("observed-only\n")
+    if listing is not None:
+        (job / "strata-owned.ids").write_text(listing)
+    calls = tmp_path / "strata-calls.log"
+    _make_exec(tmp_path / "fake-harness" / "serve_strata.sh",
+               f'echo "$*" >> "{calls}"; exit {rc}')
+    _job, compose, out = _functions(tmp_path, body, engine="strata")
+    assert compose == []
+    return calls.read_text().splitlines() if calls.exists() else [], out
+
+
+@pytest.mark.parametrize("function", ["stop_server", "release_suite_server"])
+@pytest.mark.parametrize("listing,expected", [
+    (None, []),
+    ("", []),
+    ("one\ntwo\none\n", ["stop-owned one", "stop-owned two"]),
+    ("one\ntwo", ["stop-owned two", "stop-owned one"]),
+])
+def test_t17_qualify_stops_only_the_listed_instances(tmp_path, function, listing,
+                                                     expected):
+    calls, out = _strata_stops(tmp_path, f'{function}; echo "rc=$?"', listing=listing)
+    assert calls == expected and out.split() == ["rc=0"]
+
+
+@pytest.mark.parametrize("function", ["stop_server", "release_suite_server"])
+def test_a_failed_instance_stop_or_a_linked_list_is_a_failed_stop(tmp_path, function):
+    calls, out = _strata_stops(tmp_path, f'{function}; echo "rc=$?"', listing="one\n",
+                               rc=2)
+    assert calls == ["stop-owned one"] and out.split() == ["rc=1"]
+    other = tmp_path / "linked"
+    other.mkdir()
+    (other / "list").write_text("one\n")
+    calls, out = _strata_stops(
+        other, f'ln -s "{other}/list" "$job/strata-owned.ids"; {function}; echo "rc=$?"',
+        listing=None)
+    assert calls == [] and out.split() == ["rc=1"]
+
+
+def test_a_strata_runner_creates_the_owned_list_and_stops_from_it(
+        box, tmp_path, config):  # noqa: F811
+    box = dict(box, A770B_DATA=str(tmp_path / "planted"))
+    job = _queued_job(box, tmp_path)
+    plan = json.loads((job / "plan.json").read_text())
+    plan.update(engine="strata", backend="strata", gguf=False, artifact=str(config))
+    (job / "plan.json").write_text(json.dumps(plan))
+    hook = _make_exec(tmp_path / "pre.sh", 'printf "%s\\n" "$A770B_STRATA_OWNED_FILE" '
+                      '> "$1/seen"; echo planted-id >> "$A770B_STRATA_OWNED_FILE"; exit 1')
+    # The fixture's nvtop must not read this host's card.
+    nvtop = Path(box["PATH"]) / "nvtop"
+    nvtop.unlink(missing_ok=True)
+    _make_exec(nvtop, "echo '[]'")
+    env = dict(box, A770B_QUALIFY_PRE=str(hook), A770B_ALLOW_NO_NVTOP="1",
+               A770B_ONEAPI_DEVICE_SELECTOR="level_zero:1",
+               A770B_STRATA_ENGINE_SHA256=managed.file_digest(config.parent / "strata"))
+    env.pop("A770B_QUALIFY_STUB")
+    for stand_in in Path(env["PATH"]).glob("a770b-qualify-*"):
+        stand_in.unlink()
+    got = _run(env, ["run", "--job", str(job)])
+    assert got.returncode == 4, got.stdout + got.stderr
+    assert (job / "seen").read_text().strip() == str(job / "strata-owned.ids")
+    status = json.loads((job / "status.json").read_text())
+    assert status["reason"] == "pre-hook", status
+    log = (job / "phases" / "stop-server.log").read_text()
+    assert "serve_strata.sh stop-owned planted-id" in log
+    assert "stop-id" not in log
+    assert "Strata engine logs are not scanned" in (job / "watchdog.log").read_text()
+
+
+# --- 3.7 the Phase 3 tracker
+
+
+@pytest.mark.parametrize("current,published", [("mine", "4343"), ("other", "")])
+def test_the_tracker_publishes_only_its_own_instance(tmp_path, current, published):
+    calls = tmp_path / "asked.log"
+    _make_exec(tmp_path / "fake-harness" / "serve_strata.sh",
+               f'echo "$1" >> "{calls}"; case "$1" in id) echo {current} ;; '
+               'pid) echo 4343 ;; esac')
+    body = f'''
+gpu_used_gib() {{ echo 1; }}
+engine=strata
+echo mine > "$job/cid"
+start_observers
+for _ in $(seq 100); do
+  [ "$(grep -c '^id$' "{calls}" 2>/dev/null)" -ge 3 ] 2>/dev/null && break
+  sleep 0.1
+done
+echo "published=$(cat "$job/evidence/serving.pid")"
+echo "asked=$(grep -c '^id$' "{calls}")"
+rm -f "$job/VRAM_SAMPLE"
+: > "$job/SERVING_CLEARED"
+kill "$TRACKER" "$VRAM_PID" "$MEM" 2>/dev/null
+wait 2>/dev/null
+'''
+    _job, _calls, out = _functions(tmp_path, body, engine="strata")
+    lines = dict(line.split("=", 1) for line in out.splitlines())
+    assert int(lines["asked"]) >= 3 and lines["published"] == published
+
+
+# --- T17 run_suite.sh cleanup
+
+
+def _suite(tmp_path, body, *, stop_rc=0, **extra):
+    calls = tmp_path / "strata-calls.log"
+    bin_ = tmp_path / "bin"
+    _make_exec(bin_ / "python3", f'''
+if [[ "$1" == *strata_managed.py ]]; then shift; echo "$*" >> "{calls}"; exit {stop_rc}; fi
+exec "{shutil.which('python3')}" "$@"''')
+    got, ran = _suite_run(tmp_path, body, PATH=f"{bin_}:{os.environ['PATH']}", **extra)
+    assert ran.exists(), got.stdout + got.stderr
+    return got, calls.read_text().splitlines() if calls.exists() else []
+
+
+def test_t17_the_suite_stops_the_callers_listed_instances_and_keeps_the_list(tmp_path):
+    owned = tmp_path / "caller.ids"
+    owned.write_text("early\n")
+    _got, calls = _suite(
+        tmp_path, 'printf "late\\nearly\\nlate\\n" >> "$A770B_STRATA_OWNED_FILE"',
+        A770B_LADDER_RUN="1", A770B_STRATA_OWNED_FILE=str(owned))
+    assert calls == ["stop-owned late", "stop-owned early"]
+    assert owned.read_text().split() == ["early", "late", "early", "late"]
+
+
+@pytest.mark.parametrize("stop_rc", [0, 2])
+def test_t17_the_suite_removes_its_own_list_and_reports_a_failed_stop(tmp_path,
+                                                                      stop_rc):
+    seen = tmp_path / "seen"
+    got, calls = _suite(
+        tmp_path,
+        f'echo "$A770B_STRATA_OWNED_FILE" > "{seen}"; '
+        'echo mine >> "$A770B_STRATA_OWNED_FILE"',
+        stop_rc=stop_rc, A770B_LADDER_RUN="1")
+    listing = Path(seen.read_text().strip())
+    assert listing.parent == tmp_path / "data" / "logs" and not listing.exists()
+    assert calls == ["stop-owned mine"]
+    assert ("could not stop a server" in got.stderr) is bool(stop_rc)
+
+
+def test_t17_the_suite_stops_nothing_from_a_linked_list(tmp_path):
+    other = tmp_path / "other"
+    other.write_text("theirs\n")
+    owned = tmp_path / "caller.ids"
+    owned.write_text("")
+    got, calls = _suite(
+        tmp_path, f'rm -f "{owned}"; ln -s "{other}" "{owned}"',
+        A770B_LADDER_RUN="1", A770B_STRATA_OWNED_FILE=str(owned))
+    assert calls == [] and owned.is_symlink()
+    assert "owned-instance list is a symlink" in got.stderr
+
+
+def test_a_suite_outside_a_ladder_run_hands_no_list_to_its_stages(tmp_path):
+    owned = tmp_path / "caller.ids"
+    owned.write_text("theirs\n")
+    seen = tmp_path / "seen"
+    _got, calls = _suite(tmp_path, f'echo "[${{A770B_STRATA_OWNED_FILE:-}}]" > "{seen}"',
+                         A770B_STRATA_OWNED_FILE=str(owned))
+    assert seen.read_text().strip() == "[]" and calls == []

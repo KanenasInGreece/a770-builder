@@ -461,6 +461,11 @@ SUITE_OWNED_CIDS_REMOVE=0
 # before its own stop still leaves the pairs for the caller to stop.
 _caller_owned=${A770B_OWNED_CIDS_FILE:-}
 unset A770B_OWNED_CIDS_FILE
+# Strata instance ids are kept the same way, one per line.
+SUITE_OWNED_STRATA_FILE=""
+SUITE_OWNED_STRATA_REMOVE=0
+_caller_strata=${A770B_STRATA_OWNED_FILE:-}
+unset A770B_STRATA_OWNED_FILE
 if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] export kit seat per stage: $KIT_SEAT_SRC -> $SEAT (fresh=$FRESH)"
   WT="$SEAT"
@@ -479,6 +484,14 @@ else
       export A770B_OWNED_CIDS_FILE="$SUITE_OWNED_CIDS_FILE"
       SUITE_OWNED_CIDS_REMOVE=1
     fi
+    if [ -n "$_caller_strata" ] && [ -f "$_caller_strata" ] && [ ! -L "$_caller_strata" ]; then
+      SUITE_OWNED_STRATA_FILE=$_caller_strata
+    else
+      mkdir -p "$A770B_DATA/logs"
+      SUITE_OWNED_STRATA_FILE=$(mktemp "$A770B_DATA/logs/suite-owned-XXXXXX.strata")
+      SUITE_OWNED_STRATA_REMOVE=1
+    fi
+    export A770B_STRATA_OWNED_FILE="$SUITE_OWNED_STRATA_FILE"
   fi
 fi
 
@@ -665,6 +678,7 @@ if [ "$DRYRUN" != 1 ]; then
     echo "⛔ cannot clear the serving pid file" >&2
     rm -f -- "$RESULTS_NDJSON"
     [ "$SUITE_OWNED_CIDS_REMOVE" != 1 ] || rm -f -- "$SUITE_OWNED_CIDS_FILE"
+    [ "$SUITE_OWNED_STRATA_REMOVE" != 1 ] || rm -f -- "$SUITE_OWNED_STRATA_FILE"
     exit 2
   fi
   if pid=$(suite_serving_pid); then suite_publish_serving_pid "$pid" || suite_warn_publish; fi
@@ -735,6 +749,30 @@ _suite_cleanup(){
     done
   elif [ -n "$SUITE_OWNED_CIDS_FILE" ] && [ "$SUITE_OWNED_CIDS_REMOVE" = 1 ]; then
     rm -f "$SUITE_OWNED_CIDS_FILE"
+  fi
+  if [ -n "$SUITE_OWNED_STRATA_FILE" ] && [ -L "$SUITE_OWNED_STRATA_FILE" ]; then
+    echo "⚠ the owned-instance list is a symlink; nothing was stopped from it" >&2
+    stop_rc=1
+  elif [ -n "$SUITE_OWNED_STRATA_FILE" ] && [ -f "$SUITE_OWNED_STRATA_FILE" ]; then
+    entries=()
+    seen=" "
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      entries+=("$line")
+    done < "$SUITE_OWNED_STRATA_FILE"
+    if [ "$SUITE_OWNED_STRATA_REMOVE" = 1 ]; then
+      rm -f "$SUITE_OWNED_STRATA_FILE"
+    fi
+    for (( idx=${#entries[@]}-1; idx>=0; idx-- )); do
+      line=${entries[$idx]}
+      case "$seen" in *" $line "*) continue ;; esac
+      seen="$seen$line "
+      if ! bash "$here/serve_strata.sh" stop-owned "$line"; then
+        stop_rc=1
+      fi
+    done
+  elif [ -n "$SUITE_OWNED_STRATA_FILE" ] && [ "$SUITE_OWNED_STRATA_REMOVE" = 1 ]; then
+    rm -f "$SUITE_OWNED_STRATA_FILE"
   fi
   if [ "$stop_rc" -ne 0 ]; then
     echo "⚠ could not stop a server started by this suite run" >&2

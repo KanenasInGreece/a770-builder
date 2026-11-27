@@ -176,9 +176,46 @@ stop_owned_cids() {
   return "$rc"
 }
 
+# Stops only the Strata instances in strata-owned.ids, newest first and each once.
+# Returns what stop_owned_cids returns.
+stop_owned_strata() {
+  local log=$1 file=$job/strata-owned.ids line seen=" " idx one rc=0
+  local -a entries=()
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+  if [ -L "$file" ] || [ ! -f "$file" ]; then
+    printf '⛔ unreadable owned-instance list: %s\n' "$file" >&2
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    entries+=("$line")
+  done < "$file" || return 1
+  for (( idx=${#entries[@]}-1; idx>=0; idx-- )); do
+    line=${entries[$idx]}
+    case "$seen" in
+      *" $line "*) continue ;;
+    esac
+    seen="$seen$line "
+    one=0
+    stop_logged "$log" bash "$here/serve_strata.sh" stop-owned "$line" || one=$?
+    if [ "$one" = 1 ]; then
+      rc=1
+    elif [ "$one" = 2 ] && [ "$rc" = 0 ]; then
+      rc=2
+    fi
+  done
+  return "$rc"
+}
+
 release_suite_server() {
   [ "${STUB:-0}" = 1 ] && return 0
-  stop_owned_cids "$job/phases/stop-owned.log"
+  local rc=0 one=0
+  stop_owned_cids "$job/phases/stop-owned.log" || rc=$?
+  stop_owned_strata "$job/phases/stop-owned.log" || one=$?
+  if [ "$one" = 1 ] || [ "$rc" = 0 ]; then
+    rc=$one
+  fi
+  return "$rc"
 }
 
 stop_server() {
@@ -207,12 +244,10 @@ stop_server() {
     fi
   elif [ "${STUB:-0}" != 1 ]; then
     engine=$(pget engine 2>/dev/null || true)
+    # $job/cid is only observed: it may name a server this job reused.
     if [ "$engine" = strata ]; then
-      if [ -n "$cid" ]; then
-        stop_logged "$job/phases/stop-server.log" bash "$here/serve_strata.sh" stop-id "$cid" || stop_rc=$?
-      fi
+      stop_owned_strata "$job/phases/stop-server.log" || stop_rc=$?
     else
-      # On a Compose engine $job/cid is only observed: it may name a reused container.
       stop_owned_cids "$job/phases/stop-server.log" || stop_rc=$?
     fi
   fi
@@ -724,8 +759,8 @@ prepare_serve_env() {
 
 capture_cid() {
   local live="" file
-  # A reused server was not started by this job. Leave its id unrecorded so
-  # stop_server does not tear it down.
+  # The id is only observed: stop_server reads the owned lists. A reused Compose
+  # server prints this line and leaves the id unrecorded.
   if [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] && grep -q "already up (" "$job/phases/serve.log"; then
     return 0
   fi
@@ -893,10 +928,10 @@ start_observers() {
   # Copy the phase's engine before the subshell. A local in the caller is
   # visible here; the tracker must not depend on that local still being set.
   track_engine=${engine:-}
-  # Owned identity is a non-empty $job/cid. cmd_run creates that file
-  # empty. A reused server leaves it empty and is only sampled, from the
-  # live id, which is not written back. The loop ends when stop_server
-  # signals it. It does not hold the lock fds.
+  # $job/cid is the observed id. cmd_run creates that file empty. A reused
+  # Compose server leaves it empty and is sampled from the live id, which is
+  # not written back. The loop ends when stop_server signals it. It does not
+  # hold the lock fds.
   (
     trap - TERM INT EXIT
     exec 7>&- 9>&-
@@ -904,8 +939,7 @@ start_observers() {
     reused=""
     # Exclusive temp, then rename. last moves only after that rename, so a
     # failed write is retried for the same pid. An empty file means the
-    # server we were sampling is gone. A reused server leaves $job/cid
-    # empty, so stop_server does not own it.
+    # server we were sampling is gone.
     publish_pid() {
       local value="$1" tmp=""
       tmp=$(mktemp "$job/evidence/.serving.pid.XXXXXX" 2>/dev/null) || return 1
@@ -941,7 +975,10 @@ start_observers() {
       [ -n "$cid" ] || cid=$reused
       if [ -n "$cid" ] && [ ! -f "$job/SERVING_CLEARED" ]; then
         if [ "$track_engine" = strata ]; then
-          pid=$(bash "$here/serve_strata.sh" pid 2>/dev/null || true)
+          # Another instance's server must not be sampled as this job's.
+          if [ "$(bash "$here/serve_strata.sh" id 2>/dev/null)" = "$cid" ]; then
+            pid=$(bash "$here/serve_strata.sh" pid 2>/dev/null || true)
+          fi
         elif printf '%s\n' "$cid" | grep -Eq '^[0-9a-f]{64}$'; then
           pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null || true)
         fi
@@ -1262,6 +1299,8 @@ cmd_run() {
   plain_trunc "$job/evidence/argv.log" || die "refusing a symlink argv log"
   plain_trunc "$job/owned.cids" || die "refusing a symlink owned-container list"
   export A770B_OWNED_CIDS_FILE=$job/owned.cids
+  plain_trunc "$job/strata-owned.ids" || die "refusing a symlink owned-instance list"
+  export A770B_STRATA_OWNED_FILE=$job/strata-owned.ids
   if ! take_card; then
     merge '{"state":"failed","reason":"lock","event":"lock refused"}'
     plain_trunc "$job/FAILED" || die "refusing a symlink marker"

@@ -901,7 +901,8 @@ def test_real_serve_lines_use_the_alias_and_not_admit():
     text = open(QUALIFY, encoding="utf-8").read()
     assert 'serve_strata.sh" admit' not in text
     assert 'serve_strata.sh" config-model' in text
-    assert 'serve_strata.sh" stop-id' in text
+    assert 'serve_strata.sh" stop-owned' in text
+    assert 'serve_strata.sh" stop-id' not in text
     assert '--served-model-name "$alias"' in text
     assert "--tokenize openai" in text
     assert "A770B_SWEEP_STREAM=1" in text
