@@ -513,6 +513,7 @@ HOST_PID_FILE="${OUTFILE%.json}.serving-pid"
 HOST_SELECTION_FILE="${OUTFILE%.json}.serving-selection.json"
 export A770B_SERVING_SELECTION_FILE="$HOST_SELECTION_FILE"
 HOST_PID_WATCH_PID=""
+HOST_PID_WARNED="$RESULTS_NDJSON.pid-warned"
 HOST_MEMORY_ENFORCEMENT_FILE="${OUTFILE%.json}.budget-gate-receipt"
 export A770B_BUDGET_GATE_RECEIPT="$HOST_MEMORY_ENFORCEMENT_FILE"
 rm -f -- "$HOST_MEMORY_ENFORCEMENT_FILE"
@@ -630,6 +631,11 @@ suite_publish_serving_pid(){
   fi
   return "$rc"
 }
+# One warning per stage, shared with the watcher's subshell through a flag file.
+suite_warn_publish(){
+  ( set -C; : > "$HOST_PID_WARNED" ) 2>/dev/null || return 0
+  echo "⚠ could not publish the serving pid" >&2
+}
 # suite_owner_alive <pid> — true while the suite shell exists and is not a zombie.
 suite_owner_alive(){
   local stat
@@ -645,7 +651,7 @@ suite_start_serving_pid_watcher(){
     while suite_owner_alive "$$"; do
       local pid=""
       pid=$(suite_serving_pid 2>/dev/null || true)
-      suite_publish_serving_pid "$pid"
+      suite_publish_serving_pid "$pid" || suite_warn_publish
       sleep 0.5
     done
   ) 7>&- 9>&- &
@@ -653,8 +659,15 @@ suite_start_serving_pid_watcher(){
 }
 if [ "$DRYRUN" != 1 ]; then
   mkdir -p "$A770B_DATA/logs" "$A770B_DATA/results"
-  : > "$HOST_PID_FILE"
-  if pid=$(suite_serving_pid); then printf '%s\n' "$pid" > "$HOST_PID_FILE"; fi
+  rm -f -- "$HOST_PID_WARNED"
+  # A pid left by an earlier run would be sampled as this one's, so no stage starts.
+  if ! suite_publish_serving_pid ""; then
+    echo "⛔ cannot clear the serving pid file" >&2
+    rm -f -- "$RESULTS_NDJSON"
+    [ "$SUITE_OWNED_CIDS_REMOVE" != 1 ] || rm -f -- "$SUITE_OWNED_CIDS_FILE"
+    exit 2
+  fi
+  if pid=$(suite_serving_pid); then suite_publish_serving_pid "$pid" || suite_warn_publish; fi
 fi
 SUITE_STATUS=running
 SUITE_SIGNAL=""
@@ -695,7 +708,11 @@ _suite_cleanup(){
     wait "$HOST_PID_WATCH_PID" 2>/dev/null || true
     HOST_PID_WATCH_PID=""
   fi
-  if [ -n "$SUITE_OWNED_CIDS_FILE" ] && [ -f "$SUITE_OWNED_CIDS_FILE" ]; then
+  if [ -n "$SUITE_OWNED_CIDS_FILE" ] && [ -L "$SUITE_OWNED_CIDS_FILE" ]; then
+    # A link names someone else's list: read nothing from it and leave it in place.
+    echo "⚠ the owned-container list is a symlink; nothing was stopped from it" >&2
+    stop_rc=1
+  elif [ -n "$SUITE_OWNED_CIDS_FILE" ] && [ -f "$SUITE_OWNED_CIDS_FILE" ]; then
     serve_script="${A770B_SERVE_SCRIPT:-$here/serve_compose.sh}"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -716,7 +733,7 @@ _suite_cleanup(){
         stop_rc=1
       fi
     done
-  elif [ -n "$SUITE_OWNED_CIDS_FILE" ]; then
+  elif [ -n "$SUITE_OWNED_CIDS_FILE" ] && [ "$SUITE_OWNED_CIDS_REMOVE" = 1 ]; then
     rm -f "$SUITE_OWNED_CIDS_FILE"
   fi
   if [ "$stop_rc" -ne 0 ]; then
@@ -732,7 +749,7 @@ _suite_cleanup(){
   SUITE_EXIT_CODE="$rc"
   write_results || { echo "⚠ could not write final suite execution record: $OUTFILE" >&2; [ "$rc" -ne 0 ] || rc=1; }
   rm -f "$RESULTS_NDJSON"
-  rm -f "$HOST_PID_FILE" "$HOST_SELECTION_FILE"
+  rm -f "$HOST_PID_FILE" "$HOST_SELECTION_FILE" "$HOST_PID_WARNED"
   # Phase 5 publishes here. Leaving the qualify path set keeps a dead pid.
   if [ -n "${A770B_QUALIFY_SERVING_PID_FILE:-}" ]; then
     rm -f -- "$A770B_QUALIFY_SERVING_PID_FILE"
@@ -1360,14 +1377,15 @@ process_task(){
   SECONDS=0
   local run_out rrc
   rm -f -- "$A770B_DATA/logs/run.interrupted" "$HOST_SELECTION_FILE"
-  suite_publish_serving_pid ""
+  rm -f -- "$HOST_PID_WARNED"
+  suite_publish_serving_pid "" || suite_warn_publish
   suite_start_serving_pid_watcher
   run_out=$(bash "$LOCAL_BUILD" run "$WT" "$briefpath" --spec "$specpath" --profile "$PROFILE" "${RUN_ATTACH[@]}" 2>&1); rrc=$?
   kill -TERM "$HOST_PID_WATCH_PID" 2>/dev/null || true
   wait "$HOST_PID_WATCH_PID" 2>/dev/null || true
   HOST_PID_WATCH_PID=""
-  if pid=$(suite_serving_pid); then suite_publish_serving_pid "$pid"
-  else suite_publish_serving_pid ""
+  if pid=$(suite_serving_pid); then suite_publish_serving_pid "$pid" || suite_warn_publish
+  else suite_publish_serving_pid "" || suite_warn_publish
   fi
   local wall_s=$SECONDS
   case "$rrc" in

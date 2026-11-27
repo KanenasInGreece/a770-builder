@@ -497,3 +497,60 @@ def test_a_finished_suite_clears_its_recorded_pid(box):
     job = _one(box)
     assert (job / "suite.pid").read_text() == ""
     assert (job / "suite.start").read_text() == ""
+
+
+# --- 2.8 and 2.9b run_suite.sh
+
+
+def _suite_run(tmp_path, lb_body, **extra):
+    env = _base_env(tmp_path, XDG_CONFIG_HOME=str(tmp_path / "xdg"), **extra)
+    suite = _one_stage_suite(tmp_path, ("s1-frontend",))
+    ran = tmp_path / "ran"
+    env["A770B_LOCAL_BUILD"] = str(_make_exec(
+        tmp_path / "fake-lb.sh",
+        f'if [ "$1" = run ]; then : > "{ran}"; {lb_body}\nexit 1; fi; exit 0'))
+    got = subprocess.run(
+        ["bash", str(RUN_SUITE_SH), PROFILE, str(tmp_path / "exported-seat"),
+         "--suite", str(suite)],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+    return got, ran
+
+
+def test_t14_an_uncleared_pid_file_stops_the_suite_before_any_stage(tmp_path):
+    blocked = tmp_path / "serving.pid"
+    blocked.mkdir()
+    got, ran = _suite_run(tmp_path, "true",
+                          A770B_QUALIFY_SERVING_PID_FILE=str(blocked))
+    assert got.returncode == 2, got.stdout + got.stderr
+    assert "cannot clear the serving pid file" in got.stderr
+    assert not ran.exists()
+
+
+def test_a_later_failed_publish_warns_once_and_does_not_end_the_stage(tmp_path):
+    path = tmp_path / "serving.pid"
+    got, ran = _suite_run(tmp_path, f'rm -f "{path}"; mkdir "{path}"; sleep 2',
+                          A770B_QUALIFY_SERVING_PID_FILE=str(path))
+    assert ran.exists()
+    assert got.stderr.count("could not publish the serving pid") == 1, got.stderr
+    assert "recording as run_error" in got.stderr
+
+
+@pytest.mark.parametrize("target", ["listing", "broken"])
+def test_t16_a_symlinked_owned_list_stops_and_removes_nothing(tmp_path, target):
+    listing = tmp_path / "listing"
+    if target == "listing":
+        listing.write_text(f"{ID_A} one\n")
+    owned = tmp_path / "caller.cids"
+    owned.write_text("")
+    calls = tmp_path / "stops.log"
+    serve = _make_exec(tmp_path / "fake-serve.sh", f'echo "$*" >> "{calls}"')
+    got, ran = _suite_run(
+        tmp_path, f'rm -f "{owned}"; ln -s "{listing}" "{owned}"',
+        A770B_LADDER_RUN="1", A770B_OWNED_CIDS_FILE=str(owned),
+        A770B_SERVE_SCRIPT=str(serve))
+    assert ran.exists(), got.stdout + got.stderr
+    assert not calls.exists() or "stop-id" not in calls.read_text()
+    assert owned.is_symlink()
+    assert listing.exists() == (target == "listing")
+    assert "owned-container list is a symlink" in got.stderr
+    assert "could not stop a server" in got.stderr
