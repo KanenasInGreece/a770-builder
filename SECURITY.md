@@ -35,9 +35,9 @@ external diff and textconv programs. The capture executes nothing the model wrot
 the names of any ignored files the run left, the pytest line the model reported, and writes the complete change as a
 patch. The reset that follows removes everything the run produced, ignored files included, keeping only the briefs
 directory the harness itself writes, so nothing a run planted waits for the next one. When a reviewer wants proof rather than a claim, `verify` re-applies that patch to a clean seat
-and runs the tests inside a fresh sandbox with no model, no bridge and no key; its verdict is the exit code of the test
-command, never a line the tests printed, and file names taken from the patch are passed as arguments, never through a
-shell. What `verify` proves is that the model's own tests pass inside the boundary; whether those tests are the right
+and runs the tests inside a fresh sandbox with no model, no bridge and no key; its verdict never comes from a line the
+tests printed (see [`docs/OPERATING.md`](docs/OPERATING.md) for the verdict rules), and file names taken from the patch
+are passed as arguments, never through a shell. What `verify` proves is that the model's own tests pass inside the boundary; whether those tests are the right
 ones is still the reviewer's reading of the capture. The model server requires an API key, kept in a file only the
 operator can read, so a process outside the harness cannot use the card unnoticed. The guard refuses every live
 checkout you list, every linked worktree, symlink, subdirectory and agent home, a seat whose `.git` is a link to
@@ -92,7 +92,12 @@ recorded beside the score, so a reader can tell which model graded a row and aga
 The harness runs as you, outside the sandbox, and this is the complete list of what it touches. It reads the model files,
 starts one `llama-server` process on the port you configure, writes under the data directory (the seat, the results, the
 logs, the rendered profile and the uv cache), creates the API key file under your config directory with mode 600, and
-reads the seat's git metadata through `safe_git`. It makes no network call of its own except to that server on loopback;
+reads the seat's git metadata through `safe_git`. For each sandboxed run or `verify` phase, it attempts to set the
+sandbox's `/proc/self/oom_score_adj` to `800`; when its user-scope probe succeeds, it starts transient probe and
+sandbox scopes (`a770b-sbx-probe-<pid>-<random>.scope` and `a770b-sbx-<pid>-<random>.scope`) under
+`a770b-sandbox.slice` via `systemd-run --user --scope` (the harness sets no memory, CPU or task limit on the scope or
+slice), reads the scope's state with `systemctl --user` and, when needed, the unit's user journal entries with
+`journalctl --user`, and stops or `reset-failed`s only its own scope when needed. It makes no network call of its own except to that server on loopback;
 the model files
 and the skill are fetched by you, with the commands in the install section. When a run names hidden tests, it reads
 them from `A770B_HIDDEN_ROOT` and nowhere else. It needs no database, no
