@@ -2226,6 +2226,51 @@ def test_direct_sandbox_ignores_a_live_inherited_spawner_pid(tmp_path):
         stranger.wait(timeout=5)
 
 
+def test_spawner_gone_between_the_check_and_the_read_is_armed(tmp_path):
+    """The directory check passed. The process is gone before its stat is read."""
+    spawned = subprocess.run(
+        ["bash", "-c", "sleep 60 >/dev/null 2>&1 & printf '%s\\n' $!"],
+        capture_output=True, text=True, check=True,
+    )
+    pid = int(spawned.stdout.strip())
+    assert _alive(pid)
+    marker = tmp_path / "gone"
+    bin_ = _sandbox_tool_bins(tmp_path)
+    _exe(bin_ / "cat", f"""
+if [ "${{1:-}}" = "/proc/{pid}/stat" ]; then
+  kill {pid} 2>/dev/null || true
+  n=0
+  while [ "$n" -lt 50 ]; do
+    if [ ! -d "/proc/{pid}" ]; then
+      printf gone > "{marker}"
+      break
+    fi
+    n=$((n + 1))
+    /usr/bin/sleep 0.02
+  done
+fi
+exec /usr/bin/cat "$@"
+""")
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
+    try:
+        env = _confine_harness_outputs(
+            _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1"),
+            tmp_path,
+        )
+        env["A770B_SPAWNER_PID"] = str(pid)
+        proc = subprocess.run(
+            ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
+            env=env, capture_output=True, text=True, check=False, timeout=30,
+        )
+    finally:
+        if _alive(pid):
+            os.kill(pid, signal.SIGKILL)
+    assert marker.is_file() and marker.read_text(encoding="ascii").strip() == "gone"
+    assert proc.returncode == 137, proc.stderr
+    assert "parent changed during arming" in proc.stderr, proc.stderr
+
+
 def test_sandbox_unsets_spawner_pid_before_it_starts_a_child(tmp_path):
     """The probe is a real child of sandbox_run.sh. It must not inherit the pid."""
     seen = tmp_path / "probe-spawner"
@@ -2704,6 +2749,49 @@ printf 'OUT MV_FAILED=%s\\n' "$([ -f "{flag}" ] && echo 1 || echo 0)"
     assert fields.get("PID") == "5151", fields
 
 
+def test_serving_pid_is_not_published_into_a_directory(tmp_path):
+    """A directory at serving.pid is a failed rename. The same pid is published once it is a file again."""
+    docker_pid = tmp_path / "docker.pid"
+    docker_pid.write_text("5151\n", encoding="ascii")
+    job = tmp_path / "job"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    bin_ = _observer_bin(tmp_path, docker_pid)
+    cid = "ab" * 32
+    pidfile = job / "evidence" / "serving.pid"
+    fields = _run_observer(tmp_path, f"""
+export A770B_DOCKER="{bin_ / "docker"}"
+export STUB=0
+engine=llama
+job="{job}"
+start_observers
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ -f "$job/evidence/serving.pid" ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+rm -f -- "$job/evidence/serving.pid"
+mkdir -- "$job/evidence/serving.pid"
+printf '%s\\n' '{cid}' > "$job/cid"
+/usr/bin/sleep 1.5
+if [ -d "$job/evidence/serving.pid" ]; then printf 'OUT DIR=1\\n'; else printf 'OUT DIR=0\\n'; fi
+inside=$(find "$job/evidence/serving.pid" -mindepth 1 -print 2>/dev/null | wc -l | tr -d '[:space:]')
+printf 'OUT INSIDE=%s\\n' "$inside"
+rmdir -- "$job/evidence/serving.pid" 2>/dev/null || true
+deadline=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ -f "$job/evidence/serving.pid" ] && [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 5151 ]; then break; fi
+  /usr/bin/sleep 0.05
+done
+printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid" 2>/dev/null)"
+""", bin_)
+    assert fields.get("DIR") == "1", fields
+    assert fields.get("INSIDE") == "0", fields
+    assert fields.get("PID") == "5151", fields
+    assert pidfile.is_file()
+    assert not pidfile.is_dir()
+
+
 def test_serving_pid_is_empty_when_the_server_is_gone(tmp_path):
     docker_pid = tmp_path / "docker.pid"
     docker_pid.write_text("5151\n", encoding="ascii")
@@ -2742,7 +2830,7 @@ printf 'OUT LEFT=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
 
 
 def test_reused_server_is_observed_and_not_recorded_as_owned(tmp_path):
-    """No $job/cid means the server is not owned. An already-up server is still sampled."""
+    """cmd_run's empty cid file is not ownership. An already-up server is still sampled."""
     docker_pid = tmp_path / "docker.pid"
     docker_pid.write_text("4242\n", encoding="ascii")
     live = "12" * 32
@@ -2750,11 +2838,6 @@ def test_reused_server_is_observed_and_not_recorded_as_owned(tmp_path):
     (job / "evidence").mkdir(parents=True)
     (job / "phases").mkdir()
     bin_ = _observer_bin(tmp_path, docker_pid)
-    strata = tmp_path / "strata-here"
-    strata.mkdir()
-    (strata / "host_memory.py").symlink_to(HOST_MEMORY)
-    strata_log = tmp_path / "strata-calls.log"
-    _exe(strata / "serve_strata.sh", f"printf '%s\\n' \"$*\" >> \"{strata_log}\"\nif [ \"$1\" = pid ]; then printf '%s\\n' 4343; fi\nexit 0\n")
     fields = _run_observer(tmp_path, f"""
 export A770B_DOCKER="{bin_ / "docker"}"
 export STUB=0
@@ -2762,6 +2845,8 @@ engine=llama
 job="{job}"
 mkdir -p "$A770B_DATA/logs" "$job/phases"
 printf '%s\\n' '{live}' > "$A770B_DATA/logs/llamacpp-a770.cid"
+# cmd_run truncates this file before the serve phase. An empty file is not an id.
+plain_trunc "$job/cid"
 start_observers
 deadline=$((SECONDS + 2))
 while [ "$SECONDS" -lt "$deadline" ]; do /usr/bin/sleep 0.05; done
@@ -2773,32 +2858,16 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   /usr/bin/sleep 0.05
 done
 printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
-printf 'OUT OWNED=%s\\n' "$([ -e "$job/cid" ] && echo 1 || echo 0)"
+printf 'OUT CID=%s\\n' "$(tr -d '[:space:]' < "$job/cid")"
 stop_server
 printf 'OUT STOP=%s\\n' "$(cat "{tmp_path}/qualify-stop.log" 2>/dev/null || true)"
-stop_helpers
-unset TRACKER VRAM_PID MEM SERVER_STOPPED
-engine=strata
-here="{strata}"
-job="{tmp_path}/job-strata"
-mkdir -p "$job/evidence" "$job/phases"
-printf '✓ strata already up (same argv)\\n' > "$job/phases/serve.log"
-start_observers
-deadline=$((SECONDS + 5))
-while [ "$SECONDS" -lt "$deadline" ]; do
-  if [ "$(tr -d '[:space:]' < "$job/evidence/serving.pid")" = 4343 ]; then break; fi
-  /usr/bin/sleep 0.05
-done
-printf 'OUT STRATA=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
-printf 'OUT STRATA_OWNED=%s\\n' "$([ -e "$job/cid" ] && echo 1 || echo 0)"
 """, bin_)
     assert fields.get("QUIET") == "", fields
     assert fields.get("PID") == "4242", fields
-    assert fields.get("OWNED") == "0", fields
+    assert fields.get("CID", "x") == "", fields
     assert fields.get("STOP", "") == "", fields
-    assert fields.get("STRATA") == "4343", fields
-    assert fields.get("STRATA_OWNED") == "0", fields
-    assert "stop" not in strata_log.read_text(encoding="utf-8")
+    assert (job / "cid").is_file()
+    assert not (job / "cid").is_symlink()
 
 
 def _end_named(pid: int) -> None:
@@ -3707,3 +3776,240 @@ printf 'OUT SECRET=%s\\n' "$(cat "{secret}")"
     assert fields.get("FLAG") == "1", fields
     assert fields.get("RC2") == "0", fields
     assert fields.get("SECRET") == "sentinel", fields
+
+
+def test_stop_server_tears_down_when_the_first_clear_fails(tmp_path):
+    """A refused SERVING_CLEARED still stops the owned server and returns failure."""
+    bin_ = _tools(tmp_path)
+    job = tmp_path / "job-clear-first"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    secret = tmp_path / "secret"
+    secret.write_text("sentinel\n", encoding="utf-8")
+    (job / "cid").write_text("abc123\n", encoding="ascii")
+    (job / "evidence" / "serving.pid").write_text("999\n", encoding="ascii")
+    os.symlink(secret, job / "SERVING_CLEARED")
+    during = tmp_path / "during"
+    got = tmp_path / "stopped"
+    funcs = _qualify_funcs(tmp_path)
+    script = f"""
+set +e
+. "{funcs}"
+a770b-qualify-stop() {{
+  if [ ! -f "{during}" ]; then
+    printf '%s\\n' "${{SERVER_STOPPED:-unset}}" > "{during}"
+  fi
+  printf '%s\\n' "$1" >> "{got}"
+}}
+export PATH="{bin_}:{os.environ['PATH']}"
+job="{job}"
+unset TRACKER SERVER_STOPPED
+stop_server
+printf 'OUT RC=%s\\n' "$?"
+printf 'OUT FLAG=%s\\n' "${{SERVER_STOPPED:-unset}}"
+printf 'OUT PID=%s\\n' "$(tr -d '[:space:]' < "$job/evidence/serving.pid")"
+stop_server
+printf 'OUT RC2=%s\\n' "$?"
+printf 'OUT SECRET=%s\\n' "$(cat "{secret}")"
+"""
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}")
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fields = {}
+    for line in proc.stdout.splitlines():
+        if line.startswith("OUT ") and "=" in line:
+            key, value = line[4:].split("=", 1)
+            fields[key] = value
+    assert got.is_file(), proc.stdout + proc.stderr
+    stopped = [line for line in got.read_text(encoding="ascii").splitlines() if line]
+    assert stopped == ["abc123"], proc.stdout + proc.stderr
+    assert during.read_text(encoding="ascii").strip() != "1", during.read_text(encoding="ascii")
+    assert fields.get("RC") == "1", fields
+    assert fields.get("FLAG") == "1", fields
+    assert fields.get("PID") == "", fields
+    assert fields.get("RC2") == "0", fields
+    assert fields.get("SECRET") == "sentinel", fields
+
+
+def test_stop_server_stops_when_the_log_is_a_symlink(tmp_path):
+    """A refused stop log does not skip the owned server, and the stop returns failure."""
+    bin_ = _tools(tmp_path)
+    job = tmp_path / "job-log"
+    (job / "evidence").mkdir(parents=True)
+    (job / "phases").mkdir()
+    secret = tmp_path / "secret"
+    secret.write_text("sentinel\n", encoding="utf-8")
+    (job / "cid").write_text("abc123\n", encoding="ascii")
+    os.symlink(secret, job / "phases" / "stop-server.log")
+    os.symlink(secret, job / "evidence" / "argv.log")
+    got = tmp_path / "stopped"
+    funcs = _qualify_funcs(tmp_path)
+    script = f"""
+set +e
+. "{funcs}"
+a770b-qualify-stop() {{ printf '%s\\n' "$1" >> "{got}"; }}
+export PATH="{bin_}:{os.environ['PATH']}"
+job="{job}"
+unset TRACKER SERVER_STOPPED
+stop_server
+printf 'OUT RC=%s\\n' "$?"
+printf 'OUT FLAG=%s\\n' "${{SERVER_STOPPED:-unset}}"
+stop_server
+printf 'OUT RC2=%s\\n' "$?"
+printf 'OUT SECRET=%s\\n' "$(cat "{secret}")"
+"""
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}")
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fields = {}
+    for line in proc.stdout.splitlines():
+        if line.startswith("OUT ") and "=" in line:
+            key, value = line[4:].split("=", 1)
+            fields[key] = value
+    assert got.is_file(), proc.stdout + proc.stderr
+    stopped = [line for line in got.read_text(encoding="ascii").splitlines() if line]
+    assert stopped == ["abc123"], proc.stdout + proc.stderr
+    assert fields.get("RC") == "1", fields
+    assert fields.get("FLAG") == "1", fields
+    assert fields.get("RC2") == "0", fields
+    assert fields.get("SECRET") == "sentinel", fields
+
+
+def test_plain_trunc_returns_failure_when_the_write_fails(tmp_path):
+    """The truncation's own status is the function status. chmod does not hide a failed write."""
+    job = tmp_path / "job-trunc"
+    (job / "evidence").mkdir(parents=True)
+    target = job / "evidence" / "serving.pid"
+    target.mkdir()
+    good = job / "evidence" / "argv.log"
+    good.write_text("keep\n", encoding="utf-8")
+    funcs = _qualify_funcs(tmp_path)
+    script = f"""
+set +e
+. "{funcs}"
+plain_trunc "{target}"
+printf 'OUT DIR=%s\\n' "$?"
+plain_trunc "{good}"
+printf 'OUT FILE=%s\\n' "$?"
+"""
+    env = _env(tmp_path)
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    fields = {}
+    for line in proc.stdout.splitlines():
+        if line.startswith("OUT ") and "=" in line:
+            key, value = line[4:].split("=", 1)
+            fields[key] = value
+    assert fields.get("DIR") == "1", fields
+    assert fields.get("FILE") == "0", fields
+    assert target.is_dir()
+    assert good.read_text(encoding="utf-8") == ""
+
+
+def _suite_publish_text() -> str:
+    source = RUN_SUITE.read_text(encoding="utf-8")
+    start = source.index("suite_publish_serving_pid(){")
+    end = source.index("\n}\n", start)
+    return source[start:end + 2]
+
+
+def test_suite_publish_does_not_write_through_a_predictable_temp(tmp_path):
+    """Both published paths use an exclusive temp. A planted <path>.tmp.$$ symlink is not the write."""
+    host = tmp_path / "host" / "serving.pid"
+    qual = tmp_path / "qual" / "serving.pid"
+    host.parent.mkdir()
+    qual.parent.mkdir()
+    secret = tmp_path / "secret"
+    secret.write_text("sentinel\n", encoding="utf-8")
+    fn = _suite_publish_text()
+    script = f"""
+set +e
+{fn}
+HOST_PID_FILE="{host}"
+export A770B_QUALIFY_SERVING_PID_FILE="{qual}"
+ln -s "{secret}" "${{HOST_PID_FILE}}.tmp.$$"
+ln -s "{secret}" "${{A770B_QUALIFY_SERVING_PID_FILE}}.tmp.$$"
+suite_publish_serving_pid 4242
+printf 'OUT RC=%s\\n' "$?"
+"""
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OUT RC=0" in proc.stdout, proc.stdout + proc.stderr
+    assert secret.read_text(encoding="utf-8") == "sentinel\n"
+    assert host.read_text(encoding="ascii") == "4242\n"
+    assert qual.read_text(encoding="ascii") == "4242\n"
+    assert host.is_file() and not host.is_symlink()
+    assert qual.is_file() and not qual.is_symlink()
+
+
+def test_suite_publish_returns_failure_when_the_write_fails(tmp_path):
+    """A temp that cannot be written is not renamed over either published path."""
+    host_dir = tmp_path / "host"
+    qual_dir = tmp_path / "qual"
+    host_dir.mkdir()
+    qual_dir.mkdir()
+    host = host_dir / "serving.pid"
+    qual = qual_dir / "serving.pid"
+    host.write_text("old\n", encoding="ascii")
+    qual.write_text("oldq\n", encoding="ascii")
+    bin_ = tmp_path / "bin"
+    _exe(bin_ / "mktemp", f"""
+out=$(/usr/bin/mktemp "$@") || exit $?
+case "$out" in
+  {qual_dir}/*) chmod 000 "$out" || exit 1 ;;
+esac
+printf '%s\\n' "$out"
+""")
+    fn = _suite_publish_text()
+    script = f"""
+set +e
+{fn}
+HOST_PID_FILE="{host}"
+export A770B_QUALIFY_SERVING_PID_FILE="{qual}"
+suite_publish_serving_pid 4242
+printf 'OUT RC=%s\\n' "$?"
+"""
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_}:{env.get('PATH', '/usr/bin:/bin')}"
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OUT RC=1" in proc.stdout, proc.stdout + proc.stderr
+    assert host.read_text(encoding="ascii") == "4242\n"
+    assert qual.read_text(encoding="ascii") == "oldq\n"
+
+
+def test_suite_publish_refuses_a_directory_target(tmp_path):
+    """mv -T leaves a directory at either published path in place and returns failure."""
+    host = tmp_path / "host.pid"
+    qual = tmp_path / "qual.pid"
+    host.mkdir()
+    fn = _suite_publish_text()
+    first = f"""
+set +e
+{fn}
+HOST_PID_FILE="{host}"
+unset A770B_QUALIFY_SERVING_PID_FILE
+suite_publish_serving_pid 4242
+printf 'OUT RC=%s\\n' "$?"
+"""
+    proc = subprocess.run(["bash", "-c", first], capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OUT RC=1" in proc.stdout, proc.stdout + proc.stderr
+    assert host.is_dir()
+    assert list(host.iterdir()) == []
+    host_file = tmp_path / "host-file.pid"
+    qual.mkdir()
+    second = f"""
+set +e
+{fn}
+HOST_PID_FILE="{host_file}"
+export A770B_QUALIFY_SERVING_PID_FILE="{qual}"
+suite_publish_serving_pid 4242
+printf 'OUT RC=%s\\n' "$?"
+"""
+    proc = subprocess.run(["bash", "-c", second], capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OUT RC=1" in proc.stdout, proc.stdout + proc.stderr
+    assert host_file.read_text(encoding="ascii") == "4242\n"
+    assert qual.is_dir()
+    assert list(qual.iterdir()) == []

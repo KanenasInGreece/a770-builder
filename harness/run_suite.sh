@@ -599,16 +599,30 @@ raise SystemExit(1)
 PY
 }
 suite_publish_serving_pid(){
-  local pid="${1:-}" tmp="${HOST_PID_FILE}.tmp.$$"
-  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$pid" > "$tmp"
-  else : > "$tmp"; fi
-  mv -f -- "$tmp" "$HOST_PID_FILE"
+  local pid="${1:-}" value=""
+  # Nested so the function the suite stub extracts stays one body. The temp
+  # is exclusive in the destination directory. -T refuses a directory target.
+  publish_one() {
+    local dest="$1" value="$2" tmp=""
+    tmp=$(mktemp "$(dirname -- "$dest")/.serving.pid.XXXXXX" 2>/dev/null) || return 1
+    if [ -n "$value" ]; then
+      printf '%s\n' "$value" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+    else
+      : > "$tmp" || { rm -f -- "$tmp"; return 1; }
+    fi
+    if mv -fT -- "$tmp" "$dest"; then
+      return 0
+    fi
+    rm -f -- "$tmp"
+    return 1
+  }
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    value=$pid
+  fi
+  publish_one "$HOST_PID_FILE" "$value" || return 1
   # qualify's monitor reads this path during the suite. Phase 3 does not.
   if [ -n "${A770B_QUALIFY_SERVING_PID_FILE:-}" ]; then
-    local qtmp="${A770B_QUALIFY_SERVING_PID_FILE}.tmp.$$"
-    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$pid" > "$qtmp"
-    else : > "$qtmp"; fi
-    mv -f -- "$qtmp" "$A770B_QUALIFY_SERVING_PID_FILE"
+    publish_one "$A770B_QUALIFY_SERVING_PID_FILE" "$value" || return 1
   fi
 }
 # suite_owner_alive <pid> — true while the suite shell exists and is not a zombie.

@@ -49,8 +49,9 @@ refuse_link() {
 plain_trunc() {
   local path=$1
   refuse_link "$path" || return 1
-  : > "$path"
+  : > "$path" || return 1
   chmod 600 "$path" 2>/dev/null || true
+  return 0
 }
 
 usage() {
@@ -153,7 +154,7 @@ release_suite_server() {
 
 stop_server() {
   [ "${SERVER_STOPPED:-0}" = 1 ] && return 0
-  local rc=0 cid="" engine
+  local rc=0 cid="" engine log_ok=0 argv_ok=0
   # Phase 3's target ends with the server. Stop the tracker before truncating
   # so it cannot write the old pid back over the clear. Phase 5 publishes
   # through run_suite.sh after this returns.
@@ -169,16 +170,40 @@ stop_server() {
   plain_trunc "$job/evidence/serving.pid" || rc=1
   [ -f "$job/cid" ] && [ ! -L "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
   if [ -n "$cid" ]; then
-    if refuse_link "$job/phases/stop-server.log" && refuse_link "$job/evidence/argv.log"; then
-      if command -v a770b-qualify-stop >/dev/null 2>&1; then
+    # A refused log is not a reason to leave the owned server up. Skip only
+    # the write to that path, and still return failure.
+    if refuse_link "$job/phases/stop-server.log"; then
+      log_ok=1
+    else
+      rc=1
+    fi
+    if refuse_link "$job/evidence/argv.log"; then
+      argv_ok=1
+    else
+      rc=1
+    fi
+    if command -v a770b-qualify-stop >/dev/null 2>&1; then
+      if [ "$argv_ok" = 1 ]; then
         printf '%s\n' "stop: a770b-qualify-stop $cid" >> "$job/evidence/argv.log"
+      fi
+      if [ "$log_ok" = 1 ]; then
         a770b-qualify-stop "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
-      elif [ "${STUB:-0}" != 1 ]; then
-        engine=$(pget engine 2>/dev/null || true)
-        if [ "$engine" = strata ]; then
+      else
+        a770b-qualify-stop "$cid" >/dev/null 2>&1 || true
+      fi
+    elif [ "${STUB:-0}" != 1 ]; then
+      engine=$(pget engine 2>/dev/null || true)
+      if [ "$engine" = strata ]; then
+        if [ "$log_ok" = 1 ]; then
           bash "$here/serve_strata.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
         else
+          bash "$here/serve_strata.sh" stop-id "$cid" >/dev/null 2>&1 || true
+        fi
+      else
+        if [ "$log_ok" = 1 ]; then
           bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+        else
+          bash "$here/serve_compose.sh" stop-id "$cid" >/dev/null 2>&1 || true
         fi
       fi
     fi
@@ -799,17 +824,18 @@ start_observers() {
   # Copy the phase's engine before the subshell. A local in the caller is
   # visible here; the tracker must not depend on that local still being set.
   track_engine=${engine:-}
-  # Owned identity is $job/cid. A reused server is only sampled, from the
-  # live id, and that id is not written into $job/cid. The loop ends when
-  # stop_server signals it. It does not hold the lock fds.
+  # Owned identity is a non-empty $job/cid. cmd_run creates that file
+  # empty. A reused server leaves it empty and is only sampled, from the
+  # live id, which is not written back. The loop ends when stop_server
+  # signals it. It does not hold the lock fds.
   (
     trap - TERM INT EXIT
     exec 7>&- 9>&-
     last=""
     # Exclusive temp, then rename. last moves only after that rename, so a
     # failed write is retried for the same pid. An empty file means the
-    # server we were sampling is gone. A reused server has no $job/cid;
-    # that id stays unwritten so stop_server does not own it.
+    # server we were sampling is gone. A reused server leaves $job/cid
+    # empty, so stop_server does not own it.
     publish_pid() {
       local value="$1" tmp=""
       tmp=$(mktemp "$job/evidence/.serving.pid.XXXXXX" 2>/dev/null) || return 1
@@ -818,7 +844,8 @@ start_observers() {
       else
         : > "$tmp" || { rm -f -- "$tmp"; return 1; }
       fi
-      if mv -f -- "$tmp" "$job/evidence/serving.pid"; then
+      # -T: a directory at the target is an error, not a place to drop the temp.
+      if mv -fT -- "$tmp" "$job/evidence/serving.pid"; then
         return 0
       fi
       rm -f -- "$tmp"
@@ -829,15 +856,15 @@ start_observers() {
       cid=""
       if [ -f "$job/cid" ] && [ ! -L "$job/cid" ]; then
         cid=$(tr -d '[:space:]' < "$job/cid" || true)
-      elif [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] \
+      fi
+      # Strata never prints this reuse line. Only the llama.cpp and compose
+      # paths do, and they record the live id in the shared cid file.
+      if [ -z "$cid" ] && [ "$track_engine" != strata ] \
+          && [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] \
           && grep -q "already up (" "$job/phases/serve.log"; then
-        if [ "$track_engine" = strata ]; then
-          cid="observed"
-        else
-          cidfile=${A770B_DATA:-}/logs/llamacpp-a770.cid
-          if [ -n "${A770B_DATA:-}" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
-            cid=$(tr -d '[:space:]' < "$cidfile" || true)
-          fi
+        cidfile=${A770B_DATA:-}/logs/llamacpp-a770.cid
+        if [ -n "${A770B_DATA:-}" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
+          cid=$(tr -d '[:space:]' < "$cidfile" || true)
         fi
       fi
       if [ -n "$cid" ] && [ ! -f "$job/SERVING_CLEARED" ]; then

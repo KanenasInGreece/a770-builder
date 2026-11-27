@@ -49,7 +49,14 @@ _arm_against_spawner() {
   if [ ! -d "/proc/$pid" ]; then
     return 0
   fi
-  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  # The process can exit after the directory check. A gone spawner is the
+  # parent to arm against. A live one whose stat cannot be read is not.
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || {
+    if [ ! -d "/proc/$pid" ]; then
+      return 0
+    fi
+    return 1
+  }
   state=${stat##*)}
   state=${state# }
   state=${state%% *}
