@@ -222,13 +222,14 @@ def _cleanup_scope(unit, shown):
 
 
 def update(path, exit_code):
-    """Set oom to yes, no, or unknown, and reset an owned scope afterwards."""
-    try:
-        body = _read_record(path)
-    except (OSError, ValueError):
-        return "unknown"
+    """Set oom to yes, no, or unknown, and reset an owned scope afterwards.
+
+    An unreadable record, or one that is not a JSON object, is not a result.
+    The caller must fail instead of publishing unknown.
+    """
+    body = _read_record(path)
     if not isinstance(body, dict):
-        return "unknown"
+        raise ValueError("sandbox oom record is not a JSON object")
     try:
         code = int(exit_code)
     except (TypeError, ValueError):
@@ -267,7 +268,7 @@ def main(argv):
         return 2
     try:
         update(argv[1], argv[2])
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"sandbox oom: could not publish the record: {exc}", file=sys.stderr)
         return 1
     return 0

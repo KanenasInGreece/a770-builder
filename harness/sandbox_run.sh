@@ -60,7 +60,11 @@ fi
 if [ -n "$_expected" ]; then
   shift 2
 fi
-if [ -z "${A770B_PDEATH_PARENT:-}" ]; then
+# A wrapper can export A770B_PDEATH_ARMED_PID=$$ and exec this script. That
+# skips the copy above, so the supplied parent is applied whenever it was given.
+if [ -n "$_expected" ]; then
+  export A770B_PDEATH_PARENT="$_expected"
+elif [ -z "${A770B_PDEATH_PARENT:-}" ]; then
   export A770B_PDEATH_PARENT="${PPID}"
 fi
 if [ "$PPID" != "$A770B_PDEATH_PARENT" ]; then

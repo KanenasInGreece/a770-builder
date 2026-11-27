@@ -623,12 +623,11 @@ def test_launch_leaves_an_inherited_worker_receipt(tmp_path, monkeypatch):
         assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
         monkeypatch.delenv("A770B_WORKER_PGID_FILE", raising=False)
         data_receipt.write_text("keep-data\n", encoding="ascii")
-        proc = subprocess.Popen(
-            [sys.executable, str(RUN_LEAD), "--", str(worker)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            start_new_session=True, env=_lead_env(tmp_path),
-        )
-        rc, out = _finish(proc)
+        rc, out = _finish(_launch(
+            tmp_path,
+            "import runpy, sys\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')\n",
+            "--", str(worker),
+        ))
         assert rc == 0, out
         assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
     finally:

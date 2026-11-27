@@ -2328,6 +2328,55 @@ exit 0
         stranger.wait(timeout=5)
 
 
+def test_supplied_parent_is_checked_when_arming_is_already_marked(tmp_path):
+    """Exporting this pid as already armed must not discard a supplied --parent."""
+    marker = tmp_path / "ran"
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
+    bin_ = _tools(tmp_path)
+    _exe(bin_ / "bwrap", """
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -- ]; then shift; exec "$@"; fi
+  shift
+done
+exit 0
+""")
+    _scope_exec_stub(bin_ / "systemd-run")
+    _exe(bin_ / "systemctl", "exit 0\n")
+    env = _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1")
+    env.pop("A770B_PDEATH_PARENT", None)
+    env.pop("A770B_PDEATH_ARMED_PID", None)
+    command = f'printf ran > "{marker}"'
+    wrapper = (
+        "unset A770B_PDEATH_PARENT\n"
+        "export A770B_PDEATH_ARMED_PID=$$\n"
+        f'exec /usr/bin/bash "{SANDBOX}" --parent "$1" "{seat}" "{cfg}" -- '
+        f"bash -c {json.dumps(command)}\n"
+    )
+    stranger = subprocess.Popen(
+        ["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        refused = subprocess.run(
+            ["/usr/bin/bash", "-c", wrapper, "wrapper", str(stranger.pid)],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert refused.returncode == 137, refused.stderr
+        assert "parent changed during arming" in refused.stderr, refused.stderr
+        assert not marker.exists()
+        marker.write_text("stale\n", encoding="utf-8")
+        accepted = subprocess.run(
+            ["/usr/bin/bash", "-c", wrapper, "wrapper", str(os.getpid())],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert accepted.returncode == 0, accepted.stderr
+        assert marker.read_text(encoding="utf-8") == "ran"
+    finally:
+        if stranger.poll() is None:
+            stranger.kill()
+        stranger.wait(timeout=5)
+
+
 def test_inherited_spawner_pid_has_no_effect(tmp_path):
     """A dead inherited pid used to abort a direct sandbox. The variable is ignored."""
     dead = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -3721,7 +3770,107 @@ exit 0
         assert doc["status"] == "infra_error", doc
         assert doc["public"] != "pass", doc
         assert doc.get("reason") != "oom", doc
+        assert proc.returncode == 2, proc.returncode
+        assert doc["exit_code"] == 2, doc
         assert "could not publish the record" in proc.stderr, proc.stderr
+        report = (results / "publish.verify.md").read_text(encoding="utf-8")
+        assert "the oom record was not published" in report, report
+        assert "the exit code of the command is the verdict" not in report
+    finally:
+        _stop_log_scopes(logs)
+
+
+def test_unusable_oom_record_exits_nonzero(tmp_path, monkeypatch):
+    """A missing, malformed, or non-object record is not unknown with exit 0.
+
+    A record the helper itself writes as unknown (isolation=none) still is.
+    """
+    oom = _oom_mod(monkeypatch)
+    missing = tmp_path / "missing.json"
+    assert oom.main(["sandbox_oom.py", str(missing), "0"]) == 1
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{", encoding="utf-8")
+    assert oom.main(["sandbox_oom.py", str(malformed), "0"]) == 1
+    listed = tmp_path / "list.json"
+    listed.write_text("[]\n", encoding="utf-8")
+    assert oom.main(["sandbox_oom.py", str(listed), "0"]) == 1
+    none = tmp_path / "none.json"
+    none.write_text(json.dumps({
+        "isolation": "none", "unit": None, "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.main(["sandbox_oom.py", str(none), "0"]) == 0
+    assert json.loads(none.read_text(encoding="utf-8"))["oom"] == "unknown"
+
+
+def test_stale_oom_yes_is_not_reported_when_publication_fails(tmp_path):
+    """A helper that cannot rewrite the record must not leave its old yes."""
+    env, patch, seat, results = _verify_fixture(tmp_path, "stale", "true")
+    _confine_harness_outputs(env, tmp_path)
+    logs = Path(env["A770B_DATA"]) / "logs"
+    bin_ = tmp_path / "bin"
+    _scope_exec_stub(bin_ / "systemd-run")
+    _exe(bin_ / "systemctl", f"""
+case " $* " in
+  *" show "*)
+    for f in "{logs}"/verify-oom-*.json; do
+      [ -f "$f" ] || continue
+      printf '%s\\n' '{{"oom":"yes"}}' > "$f"
+      chmod 444 "$f"
+    done
+    exit 1
+    ;;
+esac
+exit 0
+""")
+    _exe(bin_ / "journalctl", "exit 1\n")
+    proc = subprocess.run(
+        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    try:
+        doc = json.loads((results / "stale.verify.json").read_text(encoding="utf-8"))
+        assert doc["status"] == "infra_error", doc
+        assert doc["public"] != "pass", doc
+        assert doc["oom"]["public"] == "unknown", doc
+        assert doc.get("reason") != "oom", doc
+        assert proc.returncode == 2, proc.returncode
+    finally:
+        _stop_log_scopes(logs)
+
+
+def test_read_back_of_a_non_object_record_is_not_a_pass(tmp_path):
+    """A helper that exits 0 still fails verify when the record is no longer an object."""
+    env, patch, seat, results = _verify_fixture(tmp_path, "reread", "true")
+    _confine_harness_outputs(env, tmp_path)
+    logs = Path(env["A770B_DATA"]) / "logs"
+    bin_ = tmp_path / "bin"
+    _scope_exec_stub(bin_ / "systemd-run")
+    _exe(bin_ / "systemctl", f"""
+case " $* " in
+  *" show "*) exit 1 ;;
+  *" stop "*|*" reset-failed "*)
+    for f in "{logs}"/verify-oom-*.json; do
+      [ -e "$f" ] || continue
+      printf '%s\\n' '[]' > "$f"
+    done
+    exit 0
+    ;;
+esac
+exit 0
+""")
+    _exe(bin_ / "journalctl", "exit 1\n")
+    proc = subprocess.run(
+        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    try:
+        doc = json.loads((results / "reread.verify.json").read_text(encoding="utf-8"))
+        assert doc["status"] == "infra_error", (doc, proc.stderr)
+        assert doc["public"] != "pass", doc
+        assert doc["oom"]["public"] == "unknown", doc
+        assert proc.returncode == 2, proc.returncode
+        report = (results / "reread.verify.md").read_text(encoding="utf-8")
+        assert "the oom record was not published" in report, report
     finally:
         _stop_log_scopes(logs)
 

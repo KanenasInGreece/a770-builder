@@ -1344,8 +1344,8 @@ def _entered(path):
 def _record_oom(record_path, rc):
     # After proc.wait has returned. This call is not inside the timed wait.
     # Its wall time is added back so a hidden phase is not charged for it.
-    # A non-zero helper means the decided value was not published. The caller
-    # must not grade from the previous or truncated record.
+    # A failed helper, an unreadable record, or an oom value other than yes,
+    # no, or unknown was not published. The caller must not keep a stale oom.
     global deadline
     started = time.monotonic()
     try:
@@ -1354,16 +1354,19 @@ def _record_oom(record_path, rc):
             check=False,
             stdout=subprocess.DEVNULL,
         )
+        if proc.returncode != 0:
+            return "unknown", False
         try:
             with open(record_path, encoding="utf-8") as fh:
                 body = json.load(fh)
-            if not isinstance(body, dict):
-                oom = "unknown"
-            else:
-                oom = body.get("oom", "unknown")
         except (OSError, ValueError):
-            oom = "unknown"
-        return oom, proc.returncode == 0
+            return "unknown", False
+        if not isinstance(body, dict):
+            return "unknown", False
+        oom = body.get("oom")
+        if oom not in ("yes", "no", "unknown"):
+            return "unknown", False
+        return oom, True
     finally:
         if deadline is not None:
             deadline += time.monotonic() - started
@@ -1431,7 +1434,7 @@ def run_phase(cmd_args, raw_fh):
         # and not an OOM grade taken from whatever bytes were left behind.
         if not published:
             code = norm if isinstance(norm, int) and not isinstance(norm, bool) and norm != 0 else 2
-            return "not_run", code, "infra_error", oom, None
+            return "not_run", code, "infra_error", oom, "unpublished"
         status, code, reason = sandbox_oom.grade(norm, oom)
         return status, code, None, oom, reason
     finally:
@@ -1479,6 +1482,10 @@ timed_out = (status == "timeout")
 reason = None
 if status == "fail" and (pub_reason == "oom" or hid_reason == "oom"):
     reason = "oom"
+elif status == "infra_error" and (
+    pub_reason == "unpublished" or hid_reason == "unpublished"
+):
+    reason = "unpublished"
 
 doc = {
     "label": label,
@@ -1611,7 +1618,9 @@ elif isinstance(reason, str):
 else:
     raise SystemExit(1)
 ' "$VJSON" 2>/dev/null) || v_reason=""
-    if [ -n "$v_reason" ]; then
+    if [ "$v_reason" = "unpublished" ]; then
+      v_note="the oom record was not published"
+    elif [ -n "$v_reason" ]; then
       v_note="recorded reason: $v_reason"
     else
       v_note="the exit code of the command is the verdict"
