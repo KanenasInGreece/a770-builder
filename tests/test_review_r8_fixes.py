@@ -19,6 +19,7 @@ registry or a live checkout.
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -66,11 +67,36 @@ def _finish(proc: subprocess.Popen, timeout=20):
     return proc.returncode, out
 
 
+def _lead_env(tmp_path: Path) -> dict:
+    """A leader must not inherit the operator's worker receipt or data directory."""
+    scratch = tmp_path / "lead-tmp"
+    data = tmp_path / "lead-data"
+    scratch.mkdir(exist_ok=True)
+    (data / "logs").mkdir(parents=True, exist_ok=True)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("A770B_")}
+    env["TMPDIR"] = str(scratch)
+    env["A770B_DATA"] = str(data)
+    return env
+
+
+def _outside_worker_receipts(tmp_path: Path):
+    outside = tmp_path.parent / f"{tmp_path.name}-operator-receipt"
+    outside.mkdir()
+    receipt = outside / "run.worker-pgid"
+    receipt.write_text("keep\n", encoding="ascii")
+    data = outside / "data"
+    (data / "logs").mkdir(parents=True)
+    data_receipt = data / "logs" / "run.worker-pgid"
+    data_receipt.write_text("keep-data\n", encoding="ascii")
+    return outside, receipt, data, data_receipt
+
+
 def _launch(tmp_path: Path, launcher_src: str, *lead_args: str) -> subprocess.Popen:
     launcher = tmp_path / "launcher.py"
     launcher.write_text(launcher_src, encoding="utf-8")
     return subprocess.Popen([sys.executable, str(launcher), str(RUN_LEAD), *lead_args],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            start_new_session=True, env=_lead_env(tmp_path))
 
 
 # ── finding 1: a stop that lands together with the fence's broadcast is still a stop ────────────────────────────
@@ -132,8 +158,11 @@ runpy.run_path(lead, run_name="__main__")
 
 
 # The integration: the REAL build_local.sh and the REAL stop-run, with neither the receipt nor the owner channel
-# available. A sitecustomize on PYTHONPATH (active only inside run_lead.py) starts stop-run at the very moment the
-# fence forwards its TERM and holds that forward until stop-run's TERM is pending, so both arrive together.
+# available. The leader is python3 -I -B, which ignores PYTHONPATH and still imports a virtual environment's
+# site-packages. A throwaway environment under tmp_path holds the hook, and its bin is first on PATH only for
+# this run, so the real argv stays the isolated form stop-run recognises. The hook starts stop-run at the very
+# moment the fence forwards its TERM and holds that forward until stop-run's TERM is pending, so both arrive
+# together.
 STOP_AT_FENCE_SITE = r'''
 import os, signal, subprocess, sys, time
 if sys.argv and os.path.basename(sys.argv[0]) == "run_lead.py" and os.environ.get("R8_STOP_AT_FENCE"):
@@ -168,12 +197,35 @@ if sys.argv and os.path.basename(sys.argv[0]) == "run_lead.py" and os.environ.ge
 '''
 
 
+def _fence_race_venv_bin(tmp_path: Path) -> Path:
+    """Bin of a venv whose site-packages holds the fence-race hook.
+
+    The caller puts this directory first on PATH for the one build_local.sh run
+    under test. python3 -I still imports that environment's site-packages.
+    """
+    venv = tmp_path / "race-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+        check=True, timeout=60,
+    )
+    py = venv / "bin" / "python3"
+    listed = subprocess.check_output(
+        [str(py), "-c", "import site; print('\\n'.join(site.getsitepackages()))"],
+        text=True, timeout=30,
+    ).splitlines()
+    root = venv.resolve()
+    site_packages = next(
+        path for path in (Path(line) for line in listed)
+        if path.resolve().is_relative_to(root)
+    )
+    (site_packages / "sitecustomize.py").write_text(STOP_AT_FENCE_SITE, encoding="utf-8")
+    return py.parent
+
+
 def test_stop_racing_the_fence_without_receipt_or_owner_is_not_graded_by_the_suite(tmp_path):
     env = _base_env(tmp_path)
     suite = _one_stage_suite(tmp_path)
-    site = tmp_path / "site"
-    site.mkdir()
-    (site / "sitecustomize.py").write_text(STOP_AT_FENCE_SITE, encoding="utf-8")
+    venv_bin = _fence_race_venv_bin(tmp_path)
     failbin = r7._failbin(tmp_path, "ps_fails")
     stop_out = tmp_path / "stop-run.out"
     stub = tmp_path / "stubbin"
@@ -182,8 +234,9 @@ def test_stop_racing_the_fence_without_receipt_or_owner_is_not_graded_by_the_sui
     _make_exec(stub / "opencode", _with_opencode_v1(
         f"trap 'kill $! 2>/dev/null; echo 0 > \"{marker}\"; exit 0' TERM; sleep 60 & wait $!; exit 0"))
     fake_lb = _make_exec(tmp_path / "fake-lb.sh", f'''if [ "$1" = run ]; then
-  env -u LOCAL_TIMEOUT LOCAL_TIMEOUT=1 SANDBOX=0 PROFILE={PROFILE} PATH="{stub}:$PATH" \\
-    PYTHONPATH="{site}" R8_STOP_AT_FENCE="{LOCAL_BUILD}:{failbin}:{stop_out}" \\
+  env -u LOCAL_TIMEOUT LOCAL_TIMEOUT=1 SANDBOX=0 PROFILE={PROFILE} \\
+    PATH="{venv_bin}:{stub}:$PATH" \\
+    R8_STOP_AT_FENCE="{LOCAL_BUILD}:{failbin}:{stop_out}" \\
     bash "{BUILD_LOCAL}" "$2" "brief" > "{tmp_path}/build.out" 2>&1
   brc=$?
   mkdir -p "$A770B_DATA/results"
@@ -552,6 +605,35 @@ def test_a_stop_during_the_workers_start_ends_the_worker_promptly(tmp_path):
     assert time.monotonic() - t0 < 10, "the leader waited out a worker its stop never reached"
 
 
+def test_launch_leaves_an_inherited_worker_receipt(tmp_path, monkeypatch):
+    """The real leader, started through _launch, must not replace an outside receipt."""
+    outside, receipt, data, data_receipt = _outside_worker_receipts(tmp_path)
+    monkeypatch.setenv("A770B_WORKER_PGID_FILE", str(receipt))
+    monkeypatch.setenv("A770B_DATA", str(data))
+    monkeypatch.setenv("TMPDIR", str(outside))
+    try:
+        worker = _make_exec(tmp_path / "worker.sh", "exit 0")
+        rc, out = _finish(_launch(
+            tmp_path,
+            "import runpy, sys\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')\n",
+            "--", str(worker),
+        ))
+        assert rc == 0, out
+        assert receipt.read_text(encoding="ascii") == "keep\n"
+        assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
+        monkeypatch.delenv("A770B_WORKER_PGID_FILE", raising=False)
+        data_receipt.write_text("keep-data\n", encoding="ascii")
+        rc, out = _finish(_launch(
+            tmp_path,
+            "import runpy, sys\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')\n",
+            "--", str(worker),
+        ))
+        assert rc == 0, out
+        assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)
+
+
 def test_the_worker_starts_with_default_stop_dispositions_and_an_open_mask(tmp_path):
     worker = _make_exec(tmp_path / "worker.sh", f'grep -E "^(SigBlk|SigIgn|SigCgt):" /proc/$$/status > "{tmp_path}/status"')
     rc, out = _finish(_launch(tmp_path, "import runpy, sys\nsys.argv = sys.argv[1:]\n"
@@ -567,15 +649,37 @@ def test_the_worker_starts_with_default_stop_dispositions_and_an_open_mask(tmp_p
 
 
 @pytest.mark.parametrize("zero", ["0", "0s", "0.0", "0m"])
-def test_run_lead_zero_timeout_means_no_fence(tmp_path, zero):
-    marker = tmp_path / "done"
-    worker = _make_exec(tmp_path / "worker.sh", f'sleep 1.2; touch "{marker}"; exit 0')
-    proc = subprocess.Popen([sys.executable, str(RUN_LEAD), "--timeout", zero, "--", str(worker)],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
-    rc, out = _finish(proc)
-    assert rc == 0, out
-    assert marker.exists(), out
-    assert "fence expired" not in out
+def test_run_lead_zero_timeout_means_no_fence(tmp_path, zero, monkeypatch):
+    outside, receipt, data, data_receipt = _outside_worker_receipts(tmp_path)
+    monkeypatch.setenv("A770B_WORKER_PGID_FILE", str(receipt))
+    monkeypatch.setenv("A770B_DATA", str(data))
+    monkeypatch.setenv("TMPDIR", str(outside))
+    try:
+        marker = tmp_path / "done"
+        worker = _make_exec(tmp_path / "worker.sh", f'sleep 1.2; touch "{marker}"; exit 0')
+        proc = subprocess.Popen(
+            [sys.executable, str(RUN_LEAD), "--timeout", zero, "--", str(worker)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+            env=_lead_env(tmp_path),
+        )
+        rc, out = _finish(proc)
+        assert rc == 0, out
+        assert marker.exists(), out
+        assert "fence expired" not in out
+        assert receipt.read_text(encoding="ascii") == "keep\n"
+        assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
+        monkeypatch.delenv("A770B_WORKER_PGID_FILE", raising=False)
+        data_receipt.write_text("keep-data\n", encoding="ascii")
+        proc = subprocess.Popen(
+            [sys.executable, str(RUN_LEAD), "--timeout", zero, "--", "true"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            start_new_session=True, env=_lead_env(tmp_path),
+        )
+        rc, out = _finish(proc)
+        assert rc == 0, out
+        assert data_receipt.read_text(encoding="ascii") == "keep-data\n"
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)
 
 
 def test_run_cli_timeout_zero_is_forwarded_as_unlimited(tmp_path):

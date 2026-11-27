@@ -141,7 +141,14 @@ def _env(tmp, bindir):
     key.chmod(0o600)
     argv = tmp / "argv.log"
     argv.write_text("")
-    env = {key: value for key, value in os.environ.items() if not _secret_name(key)}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not _secret_name(key) and not key.startswith("A770B_")
+    }
+    scratch = tmp / "tmp"
+    scratch.mkdir()
+    env["TMPDIR"] = str(scratch)
     env.update(
         {
             "HOME": env.get("HOME", str(tmp)),
@@ -175,6 +182,35 @@ def _env(tmp, bindir):
     ):
         env.pop(name, None)
     return env
+
+
+def test_env_drops_inherited_harness_paths(tmp_path, monkeypatch):
+    """qualify's fixture must not keep an operator verify handoff or worker receipt."""
+    outside = tmp_path.parent / f"{tmp_path.name}-operator"
+    outside.mkdir()
+    try:
+        verify_out = outside / "verify.json"
+        worker = outside / "worker-pgid"
+        verify_out.write_text('{"status":"keep"}\n', encoding="utf-8")
+        worker.write_text("1 2\n", encoding="utf-8")
+        monkeypatch.setenv("A770B_VERIFY_OUT", str(verify_out))
+        monkeypatch.setenv("A770B_WORKER_PGID_FILE", str(worker))
+        monkeypatch.setenv("TMPDIR", str(outside))
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        env = _env(tmp_path, bindir)
+        for name in ("A770B_VERIFY_OUT", "A770B_WORKER_PGID_FILE"):
+            if name in env:
+                raise AssertionError(f"{name} survived")
+        assert env["TMPDIR"] == str(tmp_path / "tmp")
+        assert env["A770B_DATA"] == str(tmp_path / "data")
+        assert env["A770B_QUALIFY_STUB"] == "1"
+        assert verify_out.read_text(encoding="utf-8") == '{"status":"keep"}\n'
+        assert worker.read_text(encoding="utf-8") == "1 2\n"
+    finally:
+        for path in (verify_out, worker):
+            path.unlink(missing_ok=True)
+        outside.rmdir()
 
 
 def _scripts():
@@ -851,6 +887,7 @@ def test_i27_systemd_or_setsid(box, tmp_path):
     assert "--collect" in text
     assert "KillMode=mixed" in text
     assert "TimeoutStopSec=120" in text
+    assert "OOMPolicy=continue" in text
     assert "--working-directory=" in text
     assert "qualify-" in text
     assert "qualify.sh" in text

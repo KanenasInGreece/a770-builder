@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sandbox_run.sh — run a command inside a bubblewrap boundary that sees ONLY the seat worktree, with NO network
 # except a loopback route to the model server.
-#   sandbox_run.sh <worktree> <profile-config.jsonc> -- <command…>
+#   sandbox_run.sh [--parent <pid>] <worktree> <profile-config.jsonc> -- <command…>
 # Inside: /usr,/etc read-only; a private empty $HOME on tmpfs with exactly these mounts:
 #   <worktree>                          read-write   (the only writable tree) — EXCEPT its whole .git directory,
 #                                                    mounted read-only: the model reads history and status but can plant
@@ -22,28 +22,82 @@
 # that count stays in the container log. Bridge errors go to $A770B_DATA/logs/llama-bridge.log, so a closed
 # connection never lands in the transcript. A770B_NO_BRIDGE=1 runs without any bridge (verify: tests only, no model, no key).
 # The worktree is judged by guard_path_policy before any existence check and before it is bind-mounted.
+# This script stays in the caller's cgroup. Only bwrap and its descendants move into a
+# scope under a770b-sandbox.slice. The scope has no memory, CPU, or task limit. Parent
+# death is armed on each process because the scope is outside the caller's cgroup.
 set -euo pipefail
+# Caller lock fds. Close one only when it is open: closing an absent fd prints
+# an error and would hide a later path refusal.
+if ( : >&7 ) 2>/dev/null; then exec 7>&-; fi
+if ( : >&9 ) 2>/dev/null; then exec 9>&-; fi
+# The death signal is not inherited across fork. Re-exec once under setpriv.
+# The guard is this pid and is unset after the check, so a nested call arms too.
+# --parent is the leader's pid, on the command line so it is not inherited.
+# After arming, $PPID is compared with that pid and with nothing else. A direct
+# or nested call passes no --parent and arms against its own parent, captured
+# before the re-exec. The arguments, including --parent, are the re-exec's.
+_expected=""
+if [ "${1:-}" = "--parent" ]; then
+  case "${2:-}" in
+    ''|*[!0-9]*|0*)
+      echo "⛔ sandbox: --parent needs a positive decimal integer" >&2
+      exit 2
+      ;;
+  esac
+  _expected=$2
+fi
+if [ "${A770B_PDEATH_ARMED_PID:-}" != "$$" ]; then
+  if [ -n "$_expected" ]; then
+    export A770B_PDEATH_PARENT="$_expected"
+  else
+    export A770B_PDEATH_PARENT="${PPID}"
+  fi
+  if command -v setpriv >/dev/null 2>&1; then
+    export A770B_PDEATH_ARMED_PID="$$"
+    exec setpriv --pdeathsig KILL -- /usr/bin/bash "$0" "$@"
+  fi
+fi
+if [ -n "$_expected" ]; then
+  shift 2
+fi
+# A wrapper can export A770B_PDEATH_ARMED_PID=$$ and exec this script. That
+# skips the copy above, so the supplied parent is applied whenever it was given.
+if [ -n "$_expected" ]; then
+  export A770B_PDEATH_PARENT="$_expected"
+elif [ -z "${A770B_PDEATH_PARENT:-}" ]; then
+  export A770B_PDEATH_PARENT="${PPID}"
+fi
+if [ "$PPID" != "$A770B_PDEATH_PARENT" ]; then
+  echo "⛔ sandbox: parent changed during arming" >&2
+  exit 137
+fi
+unset A770B_PDEATH_PARENT A770B_PDEATH_ARMED_PID || true
 . "$(dirname "$0")/env.sh"
 . "$(dirname "$0")/guard.sh"
 WT="${1:?worktree}"; CFG="${2:?profile config}"; shift 2; [ "${1:-}" = "--" ] && shift
 WT=$(guard_path_policy "$WT")
 [ -d "$WT" ] || { echo "⛔ sandbox: worktree missing $WT" >&2; exit 2; }
 [ -f "$CFG" ] || { echo "⛔ sandbox: config missing $CFG" >&2; exit 2; }
-for t in bwrap socat uv; do command -v "$t" >/dev/null || { echo "⛔ sandbox: $t not installed" >&2; exit 2; }; done
+for t in bwrap socat uv setpriv; do command -v "$t" >/dev/null || { echo "⛔ sandbox: $t not installed" >&2; exit 2; }; done
 A770B_OPENCODE_FETCH=1 a770b_require_opencode_v1 || exit 2
 OC_BIN=$(a770b_opencode_bin)
 UV=$(readlink -f "$(command -v uv)")
 [ -d "$A770B_UV_CACHE" ] || { echo "⛔ sandbox: uv cache $A770B_UV_CACHE missing — run harness/warm_cache.sh once (the sandbox has no network)" >&2; exit 2; }
 SOCK="$A770B_DATA/logs/llama-bridge.sock"; BRIDGE=""
 if [ "${A770B_NO_BRIDGE:-0}" != 1 ]; then
-  # host side of the bridge: unix socket → the model server; lives only for this run
+  # Host side of the bridge. setpriv execs in place, so the bridge's parent is
+  # this shell. SIGKILL skips the EXIT trap; the death signal does not.
   rm -f "$SOCK"
   case "${A770B_SERVED_ENGINE:-}" in
     sglang|vllm|strata)
-      python3 "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" 7>&- 9>&- >>"$A770B_DATA/logs/llama-bridge.log" 2>&1 & BRIDGE=$!
+      setpriv --pdeathsig KILL -- bash -c 'if [ "$PPID" != "$1" ]; then echo "⛔ sandbox: parent changed during arming" >&2; exit 137; fi; shift; exec "$@"' _ "$$" \
+        python3 -I -B "$A770B_PROJECT/harness/usage_tap.py" --listen "$SOCK" --upstream "$A770B_HOST:$A770B_PORT" --out "$A770B_DATA/logs/usage.json" \
+        7>&- 9>&- >>"$A770B_DATA/logs/llama-bridge.log" 2>&1 & BRIDGE=$!
       ;;
     *)
-      socat "UNIX-LISTEN:$SOCK,fork,unlink-early" "TCP:$A770B_HOST:$A770B_PORT" 7>&- 9>&- 2>>"$A770B_DATA/logs/llama-bridge.log" & BRIDGE=$!
+      setpriv --pdeathsig KILL -- bash -c 'if [ "$PPID" != "$1" ]; then echo "⛔ sandbox: parent changed during arming" >&2; exit 137; fi; shift; exec "$@"' _ "$$" \
+        socat "UNIX-LISTEN:$SOCK,fork,unlink-early" "TCP:$A770B_HOST:$A770B_PORT" \
+        7>&- 9>&- 2>>"$A770B_DATA/logs/llama-bridge.log" & BRIDGE=$!
       ;;
   esac
   trap 'kill $BRIDGE 2>/dev/null; rm -f "$SOCK"' EXIT
@@ -74,17 +128,86 @@ ARGS=(
 [ -n "$BRIDGE" ] && ARGS+=(--bind "$SOCK" /run/llama.sock)
 [ -f "$A770B_OPENCODE_MODELS" ] && ARGS+=(--ro-bind "$A770B_OPENCODE_MODELS" "$A770B_OPENCODE_MODELS")
 [ -d "$HOME/.local/share/uv/python" ] && ARGS+=(--ro-bind "$HOME/.local/share/uv/python" "$HOME/.local/share/uv/python")
-# inside: a private per-run copy of the warm uv cache (uv must write ephemeral environments into its cache; the warm
-# source stays read-only so no run can poison a later one), the loopback bridge, then the command
-# 7>&- 9>&-: caller lock descriptors (seat lock & card lock) must not cross into the sandbox;
-# every other inherited descriptor is closed by --new-session/--clearenv semantics only for the env, so close it explicitly.
+# verify (no bridge) kills the whole scope. build continues so the offending
+# process is the one that dies and the command can still report the failure.
+policy=continue
+[ "${A770B_NO_BRIDGE:-0}" = 1 ] && policy=kill
+unit="a770b-sbx-$$-$RANDOM.scope"
+probe="a770b-sbx-probe-$$-$RANDOM.scope"
+isolation=scope
+# --collect is only on the probe. The real unit stays readable after oom-kill.
+# No bus, or a refusal: still arm bwrap and still raise oom_score_adj.
+# The bound covers this probe and its reset only. The model command is not wrapped.
+if ! /usr/bin/timeout -k 1 5 systemd-run --user --scope --quiet --collect \
+     --expand-environment=no --unit="$probe" --slice=a770b-sandbox.slice \
+     -p OOMPolicy=continue -- /bin/true 7>&- 9>&-
+then
+  echo "⚠ sandbox: systemd-run refused; isolation=none" >&2
+  isolation=none
+  unit=""
+else
+  /usr/bin/timeout -k 1 5 systemctl --user reset-failed "$probe" 2>/dev/null || true
+fi
+if [ -n "${A770B_SANDBOX_RECORD_FILE:-}" ]; then
+  python3 -I -B - "$A770B_SANDBOX_RECORD_FILE" "$isolation" "$unit" "$policy" <<'PY'
+import json, os, sys
+path, isolation, unit, policy = sys.argv[1:5]
+body = {"isolation": isolation, "unit": unit or None, "policy": policy, "oom": "unknown"}
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+fd = os.open(path, flags, 0o644)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    json.dump(body, fh)
+    fh.write("\n")
+PY
+fi
+export A770B_SANDBOX_ISOLATION="$isolation" A770B_SANDBOX_UNIT="$unit" A770B_SANDBOX_POLICY="$policy"
+# $1 is the parent pid captured before this bash replaced setpriv. oom_score_adj
+# is victim preference, not a limit. A failed write warns and the command runs.
+SCOPE_WRAP='if [ "$PPID" != "$1" ]; then echo "⛔ sandbox: parent changed during arming" >&2; exit 137; fi; shift; if ! printf 800 >/proc/self/oom_score_adj; then echo "⚠ sandbox: could not raise oom_score_adj" >&2; fi; exec "$@"'
+# bash -c cannot re-exec $0 (it is "_"). This interpreter arms, checks the
+# parent, then execs the inner script. The signal is kept across that exec.
+ARM_PY='import ctypes, os, sys
+parent = os.getppid()
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(1, 9, 0, 0, 0) != 0:
+    sys.stderr.write("sandbox: prctl failed\n")
+    sys.exit(137)
+if os.getppid() != parent:
+    sys.stderr.write("sandbox: parent changed during arming\n")
+    sys.exit(137)
+script = sys.argv[1]
+os.execvp("bash", ["bash", "-c", script, *sys.argv[2:]])
+'
+INNER='mkdir -p "$HOME/.cache/uv" && cp -a "$HOME/.cache/uv-warm/." "$HOME/.cache/uv/" 2>/dev/null; [ -S /run/llama.sock ] && { setpriv --pdeathsig KILL -- socat "TCP-LISTEN:$A770B_PORT,bind=127.0.0.1,fork,reuseaddr" UNIX-CONNECT:/run/llama.sock 2>/dev/null & }; exec "$@"'
+# 7>&- 9>&-: caller lock descriptors must not cross into the sandbox.
+# rc is captured so a killed scope still returns the command status under set -e.
+_run_scoped() {
+  local rc=0
+  if [ "$isolation" = scope ]; then
+    setpriv --pdeathsig KILL -- systemd-run --user --scope --quiet --expand-environment=no \
+      --unit="$unit" --slice=a770b-sandbox.slice -p "OOMPolicy=$policy" -- \
+      bash -c "$SCOPE_WRAP" _ "$$" bwrap "$@" 7>&- 9>&- || rc=$?
+  else
+    setpriv --pdeathsig KILL -- bash -c "$SCOPE_WRAP" _ "$$" bwrap "$@" 7>&- 9>&- || rc=$?
+  fi
+  return "$rc"
+}
 if [ -n "${A770B_SANDBOX_ENTERED_FILE:-}" ]; then
-  python3 - "$A770B_SANDBOX_ENTERED_FILE" "$HOME" "$A770B_PORT" "${ARGS[@]}" -- "$@" 7>&- 9>&- <<'PY'
-import os, subprocess, sys
-entered_file = sys.argv[1]
-sb_home = sys.argv[2]
-sb_port = sys.argv[3]
-rest = sys.argv[4:]
+  # $$ is this shell, captured before Python starts. getppid() after startup
+  # can already be the user manager if this process was killed in between.
+  python3 -I -B - "$$" "$A770B_SANDBOX_ENTERED_FILE" "$HOME" "$A770B_PORT" "${ARGS[@]}" -- "$@" 7>&- 9>&- <<'PY'
+import ctypes, os, subprocess, sys
+expected_parent = int(sys.argv[1])
+libc = ctypes.CDLL(None, use_errno=True)
+# PR_SET_PDEATHSIG is 1 and SIGKILL is 9. The user manager is a subreaper
+# here, so a later getppid() of pid 1 is the wrong check.
+if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != expected_parent:
+    sys.stderr.write("sandbox: parent changed during arming\n")
+    sys.exit(137)
+entered_file = sys.argv[2]
+sb_home = sys.argv[3]
+sb_port = sys.argv[4]
+rest = sys.argv[5:]
 sep = rest.index("--")
 bwrap_args = rest[:sep]
 cmd = rest[sep + 1:]
@@ -92,28 +215,61 @@ r_fd, w_fd = os.pipe()
 os.set_inheritable(w_fd, True)
 inner = (
     'mkdir -p "$HOME/.cache/uv" && cp -a "$HOME/.cache/uv-warm/." "$HOME/.cache/uv/" 2>/dev/null; '
-    '[ -S /run/llama.sock ] && { socat "TCP-LISTEN:' + sb_port + ',bind=127.0.0.1,fork,reuseaddr" UNIX-CONNECT:/run/llama.sock 2>/dev/null & }; '
+    '[ -S /run/llama.sock ] && { setpriv --pdeathsig KILL -- socat "TCP-LISTEN:' + sb_port + ',bind=127.0.0.1,fork,reuseaddr" UNIX-CONNECT:/run/llama.sock 2>/dev/null & }; '
     f'printf "entered\\n" >&{w_fd} 2>/dev/null || true; exec {w_fd}>&-; '
     'exec "$@"'
 )
-proc = subprocess.Popen(
-    ["bwrap", *bwrap_args, "--", "bash", "-c", inner, "_", *cmd],
-    pass_fds=(w_fd,),
-    close_fds=True,
+arm = (
+    "import ctypes, os, sys\n"
+    "parent = os.getppid()\n"
+    "libc = ctypes.CDLL(None, use_errno=True)\n"
+    "if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != parent:\n"
+    "    sys.stderr.write('sandbox: parent changed during arming\\n')\n"
+    "    sys.exit(137)\n"
+    "script = sys.argv[1]\n"
+    "os.execvp('bash', ['bash', '-c', script, *sys.argv[2:]])\n"
 )
+scope = (
+    'if [ "$PPID" != "$1" ]; then echo "sandbox: parent changed during arming" >&2; exit 137; fi; '
+    'shift; if ! printf 800 >/proc/self/oom_score_adj; then '
+    'echo "sandbox: could not raise oom_score_adj" >&2; fi; exec "$@"'
+)
+argv = ["bwrap", *bwrap_args, "--", "python3", "-I", "-B", "-c", arm, inner, "_", *cmd]
+me = str(os.getpid())
+if os.environ.get("A770B_SANDBOX_ISOLATION") == "scope":
+    argv = [
+        "setpriv", "--pdeathsig", "KILL", "--",
+        "systemd-run", "--user", "--scope", "--quiet", "--expand-environment=no",
+        "--unit=" + os.environ.get("A770B_SANDBOX_UNIT", ""),
+        "--slice=a770b-sandbox.slice", "-p", "OOMPolicy=" + os.environ.get("A770B_SANDBOX_POLICY", "kill"),
+        "--", "bash", "-c", scope, "_", me, *argv,
+    ]
+else:
+    argv = ["setpriv", "--pdeathsig", "KILL", "--", "bash", "-c", scope, "_", me, *argv]
+proc = subprocess.Popen(argv, pass_fds=(w_fd,), close_fds=True)
 os.close(w_fd)
+# The marker is published on the first read. The supervisor can hold the
+# write end until it exits, so waiting for EOF would hide a live entry.
 chunks = []
+seen = False
 while True:
     data = os.read(r_fd, 64)
     if not data:
         break
     chunks.append(data)
+    if not seen and b"entered" in b"".join(chunks):
+        seen = True
+        with open(entered_file, "w", encoding="utf-8") as fh:
+            fh.write("entered\n")
 os.close(r_fd)
-if b"entered" in b"".join(chunks):
-    with open(entered_file, "w", encoding="utf-8") as fh:
-        fh.write("entered\n")
-sys.exit(proc.wait())
+rc = proc.wait()
+# sys.exit of a negative wait status is the 8-bit trap (247 for -9). Publish 128+N.
+if isinstance(rc, int) and rc < 0:
+    rc = 128 + (-rc)
+sys.exit(rc)
 PY
 else
-  bwrap "${ARGS[@]}" -- bash -c 'mkdir -p "$HOME/.cache/uv" && cp -a "$HOME/.cache/uv-warm/." "$HOME/.cache/uv/" 2>/dev/null; [ -S /run/llama.sock ] && { socat "TCP-LISTEN:$A770B_PORT,bind=127.0.0.1,fork,reuseaddr" UNIX-CONNECT:/run/llama.sock 2>/dev/null & }; exec "$@"' _ "$@" 7>&- 9>&-
+  rc=0
+  _run_scoped "${ARGS[@]}" -- python3 -I -B -c "$ARM_PY" "$INNER" _ "$@" || rc=$?
+  exit "$rc"
 fi

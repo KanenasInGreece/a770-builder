@@ -146,20 +146,27 @@ run_pid_alive(){
   printf '%s\n' "$pid"
 }
 
-# run_lead_pid <pid> — true only when <pid> is THIS project's harness/run_lead.py (the leader build_local.sh starts):
-# a python3 interpreter whose script argument is that exact file by absolute path, followed by --timeout or --.
-# That leader records a stop itself (it exits 128+signal whatever the worker does), so stop-run may rely on it.
+# run_lead_pid <pid> — true only when <pid> is THIS project's harness/run_lead.py (the leader build_local.sh starts).
+# Two forms, and no other: python3 <abs-script> <--|--timeout>, and python3 -I -B <abs-script> <--|--timeout>.
+# The script argument is that exact file by absolute path. That leader records a stop itself (it exits
+# 128+signal whatever the worker does), so stop-run may rely on either form.
 run_lead_pid(){
-  local pid="$1" comm want got
+  local pid="$1" comm want got script delim
   local -a argv=()
   comm=$(cat "/proc/$pid/comm" 2>/dev/null) || return 1
   case "$comm" in python3|python3.[0-9]*) : ;; *) return 1;; esac
   mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || return 1
-  [ "${#argv[@]}" -ge 3 ] || return 1
-  case "${argv[1]}" in /*) : ;; *) return 1;; esac
-  case "${argv[2]}" in --|--timeout) : ;; *) return 1;; esac
+  if [ "${argv[1]:-}" = -I ] && [ "${argv[2]:-}" = -B ]; then
+    script="${argv[3]:-}"
+    delim="${argv[4]:-}"
+  else
+    script="${argv[1]:-}"
+    delim="${argv[2]:-}"
+  fi
+  case "$script" in /*) : ;; *) return 1;; esac
+  case "$delim" in --|--timeout) : ;; *) return 1;; esac
   want=$(realpath -e -- "$A770B_PROJECT/harness/run_lead.py" 2>/dev/null) || return 1
-  got=$(realpath -e -- "${argv[1]}" 2>/dev/null) || return 1
+  got=$(realpath -e -- "$script" 2>/dev/null) || return 1
   [ "$got" = "$want" ]
 }
 

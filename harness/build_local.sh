@@ -9,18 +9,19 @@
 # Exit codes: 2 refused (worktree), 3 no model server; the opencode exit code is informational only.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"; . "$(dirname "$0")/guard.sh"
+_SANDBOX_OOM="$A770B_DATA/logs/sandbox-oom.json"
 _clear_stale_capture_markers_if_unlocked(){
   local lock
   mkdir -p "$A770B_DATA/logs"
   lock=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$A770B_DATA/logs/local-build.lock")
   if _inherited_lock_valid 9 "$lock" "${A770B_CARD_LOCK_PATH:-}"; then
-    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since" "$_SANDBOX_OOM"
     return 0
   fi
   (
     exec 8>>"$lock"
     flock -n 8 || exit 1
-    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+    rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since" "$_SANDBOX_OOM"
   ) 2>/dev/null || true
 }
 _clear_stale_capture_markers_if_unlocked
@@ -31,7 +32,7 @@ card_lock; seat_lock "$WT"
 # A previous run's usage file and log stamp are not this run's count.
 # Removed only after locks are held so a refused concurrent caller cannot clear an active run's capture.
 # The tap writes a new usage file when it starts. The stamp is written when this run starts.
-rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since"
+rm -f -- "$A770B_DATA/logs/usage.json" "$A770B_DATA/logs/run-since" "$_SANDBOX_OOM"
 CTX=$(a770b_profile_var "$PROFILE" CTX)
 ENDPOINT="http://$A770B_HOST:$A770B_PORT"
 if [ "${A770B_SERVED_ENGINE:-}" = strata ] && [ "${A770B_ATTACHED:-}" != 1 ]; then
@@ -127,7 +128,10 @@ exec_lead(){
   local fence=()
   [ -z "${LOCAL_TIMEOUT:-}" ] || fence=(--timeout "$LOCAL_TIMEOUT")   # 0 is no clock, as for timeout(1)
   export A770B_RUN_OWNER_PID="$$"                                # this shell, the leader's parent: the owner stop-run may tell
-  exec python3 "$(realpath -e -- "$A770B_PROJECT/harness/run_lead.py")" "${fence[@]}" -- "$@"   # absolute: run_pid_alive matches it exactly
+  # -I -B: ignore PYTHONPATH and the user site, write no bytecode. The absolute
+  # script and the -- / --timeout delimiter are what run_lead_pid matches,
+  # on this form and on the legacy form without these two flags.
+  exec python3 -I -B "$(realpath -e -- "$A770B_PROJECT/harness/run_lead.py")" "${fence[@]}" -- "$@"
 }
 # A previous leader killed before it could reap leaves the worker file beside a dead run.pid. End that group
 # before this run's leader replaces the file. A live leader is left to forward its own signals.
@@ -142,7 +146,11 @@ _orphan_watch_pid=$!
 # tee is still running after a SIGKILL of this shell, for as long as the worker holds the pipe.
 # It must not keep FD 7 or FD 9, or the card lock outlives this shell with the worker.
 if [ "${SANDBOX:-1}" = 1 ]; then
-  ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead bash "$(dirname "$0")/sandbox_run.sh" "$WT" "$CFG" -- \
+  # The helper reads this after the pipeline returns, outside the leader's fence.
+  export A770B_SANDBOX_RECORD_FILE="$_SANDBOX_OOM"
+  # $BASHPID is this subshell. exec replaces it with the leader, so the same
+  # pid is what sandbox_run.sh must arm against. $$ would be the outer shell.
+  ( printf '%s\n' "$BASHPID" > "$RUNPID" && exec_lead bash "$(dirname "$0")/sandbox_run.sh" --parent "$BASHPID" "$WT" "$CFG" -- \
       opencode run --dir "$WT" -m "$MODEL" "${AGENT_ARGS[@]}" "$PROMPT" < /dev/null 7>&- 9>&- ) 2>&1 | tee "$LOG" 7>&- 9>&-
 else
   echo "⚠ SANDBOX=0: running opencode UNCONFINED (testing only)" | tee -a "$LOG" 7>&- 9>&-
@@ -150,10 +158,15 @@ else
 fi
 rc=${PIPESTATUS[0]}
 # 137: the leader was SIGKILL'd and could not forward. The other arm: it is already dead and the worker file
-# is still there (the leader removes the file only after its own reap). Either way, unblock the pipe, then
-# keep the capture path below. The helper no-ops when the recorded identity does not match.
+# is still there (the leader removes the file only after its own reap). Signal that group before the OOM
+# helper, which can wait on the scope. The helper no-ops when the recorded identity does not match.
 if [ "$rc" -eq 137 ] || { _leader_proc_gone && [ -f "$A770B_WORKER_PGID_FILE" ]; }; then
   signal_recorded_worker_group "$A770B_WORKER_PGID_FILE" || true
+fi
+# Continue policy is graded from the journal, so the leader's code is enough.
+# A helper failure must not replace the builder's own exit status. Lock fds stay here.
+if [ "${SANDBOX:-1}" = 1 ] && [ -f "$_SANDBOX_OOM" ]; then
+  python3 -I -B "$A770B_PROJECT/harness/sandbox_oom.py" "$_SANDBOX_OOM" "$rc" 7>&- 9>&- || true
 fi
 _stop_orphan_watch
 rm -f "$RUNPID"

@@ -49,8 +49,9 @@ refuse_link() {
 plain_trunc() {
   local path=$1
   refuse_link "$path" || return 1
-  : > "$path"
+  : > "$path" || return 1
   chmod 600 "$path" 2>/dev/null || true
+  return 0
 }
 
 usage() {
@@ -116,6 +117,12 @@ stop_helpers() {
   if [ -n "${MEM:-}" ]; then
     kill -TERM "$MEM" 2>/dev/null || true
   fi
+  # The tracker is not the monitor. Reap it so a finished job leaves no writer.
+  if [ -n "${TRACKER:-}" ]; then
+    kill_helper "$TRACKER"
+    wait "$TRACKER" 2>/dev/null || true
+    TRACKER=""
+  fi
 }
 
 release_suite_server() {
@@ -147,23 +154,62 @@ release_suite_server() {
 
 stop_server() {
   [ "${SERVER_STOPPED:-0}" = 1 ] && return 0
-  SERVER_STOPPED=1
-  local cid="" engine
+  local rc=0 cid="" engine log_ok=0 argv_ok=0
+  # Phase 3's target ends with the server. Stop the tracker before truncating
+  # so it cannot write the old pid back over the clear. Phase 5 publishes
+  # through run_suite.sh after this returns.
+  if [ -n "${TRACKER:-}" ]; then
+    kill_helper "$TRACKER"
+    wait "$TRACKER" 2>/dev/null || true
+    TRACKER=""
+  fi
+  # A failed clear is kept. It must not skip the owned-server stop. The flag
+  # is set only after that teardown, so a later call cannot skip a server
+  # this attempt has not stopped yet.
+  plain_trunc "$job/SERVING_CLEARED" || rc=1
+  plain_trunc "$job/evidence/serving.pid" || rc=1
   [ -f "$job/cid" ] && [ ! -L "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
-  [ -n "$cid" ] || return 0
-  refuse_link "$job/phases/stop-server.log" || return 0
-  refuse_link "$job/evidence/argv.log" || return 0
-  if command -v a770b-qualify-stop >/dev/null 2>&1; then
-    printf '%s\n' "stop: a770b-qualify-stop $cid" >> "$job/evidence/argv.log"
-    a770b-qualify-stop "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
-  elif [ "${STUB:-0}" != 1 ]; then
-    engine=$(pget engine 2>/dev/null || true)
-    if [ "$engine" = strata ]; then
-      bash "$here/serve_strata.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+  if [ -n "$cid" ]; then
+    # A refused log is not a reason to leave the owned server up. Skip only
+    # the write to that path, and still return failure.
+    if refuse_link "$job/phases/stop-server.log"; then
+      log_ok=1
     else
-      bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+      rc=1
+    fi
+    if refuse_link "$job/evidence/argv.log"; then
+      argv_ok=1
+    else
+      rc=1
+    fi
+    if command -v a770b-qualify-stop >/dev/null 2>&1; then
+      if [ "$argv_ok" = 1 ]; then
+        printf '%s\n' "stop: a770b-qualify-stop $cid" >> "$job/evidence/argv.log"
+      fi
+      if [ "$log_ok" = 1 ]; then
+        a770b-qualify-stop "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+      else
+        a770b-qualify-stop "$cid" >/dev/null 2>&1 || true
+      fi
+    elif [ "${STUB:-0}" != 1 ]; then
+      engine=$(pget engine 2>/dev/null || true)
+      if [ "$engine" = strata ]; then
+        if [ "$log_ok" = 1 ]; then
+          bash "$here/serve_strata.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+        else
+          bash "$here/serve_strata.sh" stop-id "$cid" >/dev/null 2>&1 || true
+        fi
+      else
+        if [ "$log_ok" = 1 ]; then
+          bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
+        else
+          bash "$here/serve_compose.sh" stop-id "$cid" >/dev/null 2>&1 || true
+        fi
+      fi
     fi
   fi
+  SERVER_STOPPED=1
+  return "$rc"
 }
 
 record_hooks() {
@@ -562,6 +608,8 @@ run_suite_once() {
   printf '%s\n' "suite: ${cmd[*]}" >> "$job/evidence/argv.log"
   printf '%s\n' "profiles-file: ${A770B_PROFILES_FILE:-}" >> "$job/evidence/argv.log"
   # The suite's cleanup stops only the containers this suite recorded.
+  # Phase 5 uses the same serving-pid file the monitor already follows.
+  export A770B_QUALIFY_SERVING_PID_FILE="$job/evidence/serving.pid"
   A770B_LADDER_RUN=1 A770B_PROFILES_FILE=${A770B_PROFILES_FILE:-} A770B_SEAT="$job/scratch/seat" "${cmd[@]}" >"$log" 2>&1 &
   CHILD=$!
   plain_trunc "$job/suite.pid" || return 2
@@ -761,6 +809,8 @@ start_observers() {
   plain_trunc "$job/VRAM_SAMPLE" || return 0
   refuse_link "$job/evidence/vram-samples.txt" || return 0
   refuse_link "$job/evidence/host-memory.jsonl" || return 0
+  # Refuse a symlink before any sampler starts, or a bad pid file leaves VRAM running.
+  plain_trunc "$job/evidence/serving.pid" || return 0
   (
     trap - TERM INT EXIT
     exec 7>&- 9>&-
@@ -771,7 +821,75 @@ start_observers() {
     done
   ) &
   VRAM_PID=$!
-  ( trap - TERM INT EXIT; exec 7>&- 9>&-; exec python3 "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" ) &
+  # Copy the phase's engine before the subshell. A local in the caller is
+  # visible here; the tracker must not depend on that local still being set.
+  track_engine=${engine:-}
+  # Owned identity is a non-empty $job/cid. cmd_run creates that file
+  # empty. A reused server leaves it empty and is only sampled, from the
+  # live id, which is not written back. The loop ends when stop_server
+  # signals it. It does not hold the lock fds.
+  (
+    trap - TERM INT EXIT
+    exec 7>&- 9>&-
+    last=""
+    # Exclusive temp, then rename. last moves only after that rename, so a
+    # failed write is retried for the same pid. An empty file means the
+    # server we were sampling is gone. A reused server leaves $job/cid
+    # empty, so stop_server does not own it.
+    publish_pid() {
+      local value="$1" tmp=""
+      tmp=$(mktemp "$job/evidence/.serving.pid.XXXXXX" 2>/dev/null) || return 1
+      if [ -n "$value" ]; then
+        printf '%s\n' "$value" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+      else
+        : > "$tmp" || { rm -f -- "$tmp"; return 1; }
+      fi
+      # -T: a directory at the target is an error, not a place to drop the temp.
+      if mv -fT -- "$tmp" "$job/evidence/serving.pid"; then
+        return 0
+      fi
+      rm -f -- "$tmp"
+      return 1
+    }
+    while [ ! -f "$job/SERVING_CLEARED" ]; do
+      pid=""
+      cid=""
+      if [ -f "$job/cid" ] && [ ! -L "$job/cid" ]; then
+        cid=$(tr -d '[:space:]' < "$job/cid" || true)
+      fi
+      # Strata never prints this reuse line. Only the llama.cpp and compose
+      # paths do, and they record the live id in the shared cid file.
+      if [ -z "$cid" ] && [ "$track_engine" != strata ] \
+          && [ -f "$job/phases/serve.log" ] && [ ! -L "$job/phases/serve.log" ] \
+          && grep -q "already up (" "$job/phases/serve.log"; then
+        cidfile=${A770B_DATA:-}/logs/llamacpp-a770.cid
+        if [ -n "${A770B_DATA:-}" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
+          cid=$(tr -d '[:space:]' < "$cidfile" || true)
+        fi
+      fi
+      if [ -n "$cid" ] && [ ! -f "$job/SERVING_CLEARED" ]; then
+        if [ "$track_engine" = strata ]; then
+          pid=$(bash "$here/serve_strata.sh" pid 2>/dev/null || true)
+        elif printf '%s\n' "$cid" | grep -Eq '^[0-9a-f]{64}$'; then
+          pid=$("$A770B_DOCKER" inspect --format '{{.State.Pid}}' "$cid" 2>/dev/null || true)
+        fi
+      fi
+      # Digits only, and not zero. A trailing * would also accept 12abc.
+      case "$pid" in
+        *[!0-9]*|'') pid="" ;;
+        0*) pid="" ;;
+      esac
+      # Rename onto the pid file. A truncate in place is empty for a reader.
+      if [ ! -f "$job/SERVING_CLEARED" ] && [ "$pid" != "$last" ]; then
+        if publish_pid "$pid"; then
+          last=$pid
+        fi
+      fi
+      sleep 0.5 || exit 0
+    done
+  ) &
+  TRACKER=$!
+  ( trap - TERM INT EXIT; exec 7>&- 9>&-; exec python3 -I -B "$here/host_memory.py" monitor --out "$job/evidence/host-memory.jsonl" --interval 5 --owner-pid "$$" --pid-file "$job/evidence/serving.pid" ) &
   MEM=$!
 }
 
@@ -1219,7 +1337,7 @@ cmd_start() {
   if [ "$launch" = systemd ]; then
     local -a args=() item
     forwarded_env
-    args=(systemd-run --user --collect --unit="qualify-$id" -p KillMode=mixed -p TimeoutStopSec=120 --working-directory="$A770B_PROJECT")
+    args=(systemd-run --user --collect --unit="qualify-$id" -p KillMode=mixed -p TimeoutStopSec=120 -p OOMPolicy=continue --working-directory="$A770B_PROJECT")
     for item in "${FORWARDED[@]}"; do
       [ -n "$item" ] || continue
       args+=(--setenv="$item")

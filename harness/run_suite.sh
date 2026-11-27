@@ -599,10 +599,33 @@ raise SystemExit(1)
 PY
 }
 suite_publish_serving_pid(){
-  local pid="${1:-}" tmp="${HOST_PID_FILE}.tmp.$$"
-  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then printf '%s\n' "$pid" > "$tmp"
-  else : > "$tmp"; fi
-  mv -f -- "$tmp" "$HOST_PID_FILE"
+  local pid="${1:-}" value="" rc=0
+  # Nested so the function the suite stub extracts stays one body. The temp
+  # is exclusive in the destination directory. -T refuses a directory target.
+  publish_one() {
+    local dest="$1" value="$2" tmp=""
+    tmp=$(mktemp "$(dirname -- "$dest")/.serving.pid.XXXXXX" 2>/dev/null) || return 1
+    if [ -n "$value" ]; then
+      printf '%s\n' "$value" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+    else
+      : > "$tmp" || { rm -f -- "$tmp"; return 1; }
+    fi
+    if mv -fT -- "$tmp" "$dest"; then
+      return 0
+    fi
+    rm -f -- "$tmp"
+    return 1
+  }
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    value=$pid
+  fi
+  # A failed first path must not skip the second. The call fails if either write failed.
+  publish_one "$HOST_PID_FILE" "$value" || rc=1
+  # qualify's monitor reads this path during the suite. Phase 3 does not.
+  if [ -n "${A770B_QUALIFY_SERVING_PID_FILE:-}" ]; then
+    publish_one "$A770B_QUALIFY_SERVING_PID_FILE" "$value" || rc=1
+  fi
+  return "$rc"
 }
 # suite_owner_alive <pid> — true while the suite shell exists and is not a zombie.
 suite_owner_alive(){
@@ -707,6 +730,10 @@ _suite_cleanup(){
   write_results || { echo "⚠ could not write final suite execution record: $OUTFILE" >&2; [ "$rc" -ne 0 ] || rc=1; }
   rm -f "$RESULTS_NDJSON"
   rm -f "$HOST_PID_FILE" "$HOST_SELECTION_FILE"
+  # Phase 5 publishes here. Leaving the qualify path set keeps a dead pid.
+  if [ -n "${A770B_QUALIFY_SERVING_PID_FILE:-}" ]; then
+    rm -f -- "$A770B_QUALIFY_SERVING_PID_FILE"
+  fi
   exit "$rc"
 }
 
@@ -1475,6 +1502,8 @@ if isinstance(data, dict) and data.get("status"):
         "exit_code": data.get("exit_code", vrc),
         "infra_error": bool(data.get("infra_error")) or (outcome == "verify_error"),
         "timed_out": bool(data.get("timed_out")),
+        "oom": data.get("oom"),
+        "reason": data.get("reason"),
     }
     print(working, outcome, json.dumps(meta))
     raise SystemExit(0)
@@ -1490,6 +1519,8 @@ if is_real_local_build:
         "exit_code": vrc,
         "infra_error": True,
         "timed_out": False,
+        "oom": None,
+        "reason": None,
     }
     print("-", "verify_error", json.dumps(meta))
     raise SystemExit(0)
@@ -1539,6 +1570,8 @@ meta = {
     "exit_code": vrc,
     "infra_error": outcome == "verify_error",
     "timed_out": outcome == "verify_timeout",
+    "oom": None,
+    "reason": None,
 }
 print(working, outcome, json.dumps(meta))
 PY

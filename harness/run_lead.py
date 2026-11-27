@@ -27,11 +27,30 @@ fence. DURATION is seconds, with an optional s/m/h/d suffix; a zero DURATION dis
 timeout(1).
 """
 
+import ctypes
 import math
 import os
 import signal
 import sys
 import tempfile
+
+
+def _arm_parent_death():
+    """Die with the parent named before this interpreter started.
+
+    build_local.sh exports A770B_RUN_OWNER_PID. Reading getppid() as that
+    parent arms against the user manager if the parent was already killed.
+    """
+    raw = os.environ.get("A770B_RUN_OWNER_PID", "")
+    if raw.isdigit() and int(raw) > 1:
+        parent = int(raw)
+    else:
+        parent = os.getppid()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != parent:
+        print("run_lead.py: parent changed during arming", file=sys.stderr)
+        return 137
+    return 0
 
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 _UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -129,6 +148,9 @@ def _clear_worker_group():
 
 
 def main(argv):
+    armed = _arm_parent_death()
+    if armed:
+        return armed
     args = list(argv)
     fence = None
     if args[:1] == ["--timeout"]:

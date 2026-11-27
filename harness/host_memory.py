@@ -6,7 +6,8 @@
 
 `sample` writes one JSON document and `monitor` writes one per line until its owner stops it: kernel `/proc/meminfo`
 totals (KiB), the collector cgroup clearly labelled as such, the serving process's cgroup v2 memory limits and
-current charge (bytes) when its PID is known, and the configured limits. The ladder runs the monitor before load
+current charge (bytes) when its PID is known, the sandbox slice when that directory exists, and the configured
+limits. The ladder runs the monitor before load
 through the task rung. `ladder_row.py` folds the summary and receipt path into run JSON with
 `conditions_from_samples()` and into `measured_on` with `clause()`.
 
@@ -68,6 +69,32 @@ def _cgroup_value(path: Path):
     return int(text) if text.isdigit() else None
 
 
+def sandbox_slice_dir(cgroup_root="/sys/fs/cgroup", uid=None) -> Path:
+    """Directory of a770b-sandbox.slice under this uid's user manager.
+
+    systemd nests a slice name, so the unit lives under a770b.slice and not
+    directly under user@uid.service. The caller treats a missing directory as
+    null; this function only builds the path.
+    """
+    uid = os.getuid() if uid is None else int(uid)
+    return (Path(cgroup_root) / "user.slice" / f"user-{uid}.slice"
+            / f"user@{uid}.service" / "a770b.slice" / "a770b-sandbox.slice")
+
+
+def read_sandbox_slice(cgroup_root="/sys/fs/cgroup", uid=None):
+    """Memory files of the sandbox slice, or None when the directory is absent.
+
+    A missing directory is not a measured 0. A present memory.current of 0 is.
+    """
+    directory = sandbox_slice_dir(cgroup_root, uid)
+    if not directory.is_dir():
+        return None
+    out = {"source": str(directory), "unit": "bytes"}
+    for name, key in CGROUP_FILES.items():
+        out[key] = _cgroup_value(directory / name)
+    return out
+
+
 def read_cgroup(proc_cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
     """The cgroup v2 memory limits of this process, or None when there is no v2 entry to read."""
     try:
@@ -124,6 +151,8 @@ def sample(meminfo="/proc/meminfo", proc_cgroup="/proc/self/cgroup", cgroup_root
         "meminfo": read_meminfo(meminfo),
         # Only target.cgroup describes the process serving the model. Keep collector scope explicit.
         "collector_cgroup": read_cgroup(proc_cgroup, cgroup_root),
+        # Sandbox memory leaves the caller's cgroup. Absent is null, never 0.
+        "sandbox_slice": read_sandbox_slice(cgroup_root),
         "target": target,
         "configured": configured(env, min_floor_mib, min_floor_enforcement),
     }

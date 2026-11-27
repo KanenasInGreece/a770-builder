@@ -1292,31 +1292,108 @@ PY
     PUB_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PUB_CMD[@]}")
     HID_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${HID_CMD[@]}")
     v_py_rc=0
-    v_py_out=$(python3 - "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" "$VRAW" "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "${timeout:-}" "$PUB_JSON" "$HID_JSON" "$A770B_DATA/logs" <<'PY'
-import json, os, signal, subprocess, sys, tempfile, time
+    # exec replaces the substitution shell, so the grader's parent is this
+    # verify process. A SIGKILL of verify then kills the grader. FDs 7 and 9
+    # are the seat and card locks; the grader must not keep them.
+    v_py_out=$(
+      if ( : >&7 ) 2>/dev/null; then exec 7>&-; fi
+      if ( : >&9 ) 2>/dev/null; then exec 9>&-; fi
+      exec python3 -I -B - "$$" "$A770B_PROJECT/harness/sandbox_run.sh" "$WT" "$CFG" "$VRAW" "$VJSON" "${A770B_VERIFY_OUT:-}" "$label" "${timeout:-}" "$PUB_JSON" "$HID_JSON" "$A770B_DATA/logs" <<'PY'
+import ctypes, json, os, signal, subprocess, sys, tempfile, time
 
-sandbox_sh, wt, cfg, raw_path, json_path, handoff_path, label, timeout_s, pub_json, hid_json, log_dir = sys.argv[1:12]
+# The shell passes its pid. getppid() after startup can already be the
+# user manager if that shell was killed while Python was starting.
+expected_parent = int(sys.argv[1])
+sandbox_sh, wt, cfg, raw_path, json_path, handoff_path, label, timeout_s, pub_json, hid_json, log_dir = sys.argv[2:13]
+sys.path.insert(0, os.path.dirname(os.path.abspath(sandbox_sh)))
+import sandbox_oom
+
+_libc = ctypes.CDLL(None, use_errno=True)
+if _libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != expected_parent:
+    sys.stderr.write("verify: parent changed during arming\n")
+    sys.exit(137)
+
 pub_cmd = json.loads(pub_json)
 hid_cmd = json.loads(hid_json)
 has_public = len(pub_cmd) > 0
 has_hidden = len(hid_cmd) > 0
 timeout_val = int(timeout_s) if timeout_s.isdigit() else None
 deadline = (time.monotonic() + timeout_val) if timeout_val is not None else None
+oom_py = os.path.join(os.path.dirname(os.path.abspath(sandbox_sh)), "sandbox_oom.py")
+
+
+# Captured before Popen forks. The child compares against this, not a
+# getppid() it would treat as the original parent after a reparent.
+_owner_pid = os.getpid()
+
+
+def _arm_child():
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, 9, 0, 0, 0) != 0 or os.getppid() != _owner_pid:
+        os._exit(137)
+
+
+def _entered(path):
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as ef:
+            return "entered" in ef.read()
+    except OSError:
+        return False
+
+
+def _record_oom(record_path, rc):
+    # After proc.wait has returned. This call is not inside the timed wait.
+    # Its wall time is added back so a hidden phase is not charged for it.
+    # A failed helper, an unreadable record, or an oom value other than yes,
+    # no, or unknown was not published. The caller must not keep a stale oom.
+    global deadline
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-I", "-B", oom_py, record_path, str(rc)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        if proc.returncode != 0:
+            return "unknown", False
+        try:
+            with open(record_path, encoding="utf-8") as fh:
+                body = json.load(fh)
+        except (OSError, ValueError):
+            return "unknown", False
+        if not isinstance(body, dict):
+            return "unknown", False
+        oom = body.get("oom")
+        if oom not in ("yes", "no", "unknown"):
+            return "unknown", False
+        return oom, True
+    finally:
+        if deadline is not None:
+            deadline += time.monotonic() - started
 
 
 def run_phase(cmd_args, raw_fh):
     if deadline is not None:
         rem = deadline - time.monotonic()
         if rem <= 0:
-            return "not_run", 124, "timeout"
+            return "not_run", 124, "timeout", None, None
     else:
         rem = None
     fd, entered_file = tempfile.mkstemp(prefix="verify-entered-", dir=log_dir)
     os.close(fd)
     os.unlink(entered_file)
+    rec_fd, record_path = tempfile.mkstemp(prefix="verify-oom-", suffix=".json", dir=log_dir)
+    os.close(rec_fd)
+    try:
+        os.unlink(record_path)
+    except OSError:
+        pass
     env = dict(os.environ)
+    # The grader's own preexec arms this child. The sandbox takes no parent
+    # argument here: its parent is this process.
     env["A770B_NO_BRIDGE"] = "1"
     env["A770B_SANDBOX_ENTERED_FILE"] = entered_file
+    env["A770B_SANDBOX_RECORD_FILE"] = record_path
     proc = subprocess.Popen(
         ["bash", sandbox_sh, wt, cfg, "--", *cmd_args],
         stdin=subprocess.DEVNULL,
@@ -1325,60 +1402,67 @@ def run_phase(cmd_args, raw_fh):
         env=env,
         start_new_session=True,
         close_fds=True,
+        preexec_fn=_arm_child,
     )
     try:
-        rc = proc.wait(timeout=rem)
-        entered = False
         try:
-            with open(entered_file, encoding="utf-8", errors="ignore") as ef:
-                entered = "entered" in ef.read()
-        except OSError:
-            entered = False
-        if not entered:
-            return "not_run", (rc if rc != 0 else 2), "infra_error"
-        return ("pass" if rc == 0 else "fail"), rc, None
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
+            rc = proc.wait(timeout=rem)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            timed_out = True
             try:
-                proc.kill()
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            proc.wait()
+            rc = 124
+        # The deadline was only the wait above. Do not consult it again.
+        entered = _entered(entered_file)
+        norm, signaled = sandbox_oom.normalize_status(rc if not timed_out else 124)
+        oom, published = _record_oom(record_path, norm)
+        if timed_out:
+            return ("timeout" if entered else "not_run"), 124, "timeout", oom, None
+        if signaled:
+            return "not_run", norm, "infra_error", oom, None
+        # Setup that dies before "entered" is the harness, not the model.
+        if not entered:
+            return "not_run", (norm if norm != 0 else 2), "infra_error", oom, None
+        # The command did run. A record that was not published is not a pass
+        # and not an OOM grade taken from whatever bytes were left behind.
+        if not published:
+            code = norm if isinstance(norm, int) and not isinstance(norm, bool) and norm != 0 else 2
+            return "not_run", code, "infra_error", oom, "unpublished"
+        status, code, reason = sandbox_oom.grade(norm, oom)
+        return status, code, None, oom, reason
+    finally:
+        for path in (entered_file, record_path):
+            try:
+                os.unlink(path)
             except OSError:
                 pass
-        proc.wait()
-        entered = False
-        try:
-            with open(entered_file, encoding="utf-8", errors="ignore") as ef:
-                entered = "entered" in ef.read()
-        except OSError:
-            entered = False
-        return ("timeout" if entered else "not_run"), 124, "timeout"
-    finally:
-        try:
-            os.unlink(entered_file)
-        except OSError:
-            pass
 
 
 inv_override = None
-hid_inv = None
 with open(raw_path, "w", encoding="utf-8", errors="replace") as raw_fh:
     if has_public:
-        pub_state, pub_rc, pub_inv = run_phase(pub_cmd, raw_fh)
+        pub_state, pub_rc, pub_inv, pub_oom, pub_reason = run_phase(pub_cmd, raw_fh)
         if pub_inv is not None:
             inv_override = pub_inv
     else:
-        pub_state, pub_rc, pub_inv = "none", 0, None
+        pub_state, pub_rc, pub_inv, pub_oom, pub_reason = "none", 0, None, None, None
 
     if has_hidden:
         if (not has_public or pub_state == "pass") and inv_override is None:
-            hid_state, hid_rc, hid_inv = run_phase(hid_cmd, raw_fh)
+            hid_state, hid_rc, hid_inv, hid_oom, hid_reason = run_phase(hid_cmd, raw_fh)
             if hid_inv is not None:
                 inv_override = hid_inv
         else:
-            hid_state, hid_rc = "not_run", pub_rc
+            hid_state, hid_rc, hid_inv, hid_oom, hid_reason = "not_run", pub_rc, None, None, None
     else:
-        hid_state, hid_rc = "none", 0
+        hid_state, hid_rc, hid_inv, hid_oom, hid_reason = "none", 0, None, None, None
 
 if inv_override is not None:
     status = inv_override
@@ -1395,6 +1479,13 @@ else:
 
 infra_error = (status == "infra_error")
 timed_out = (status == "timeout")
+reason = None
+if status == "fail" and (pub_reason == "oom" or hid_reason == "oom"):
+    reason = "oom"
+elif status == "infra_error" and (
+    pub_reason == "unpublished" or hid_reason == "unpublished"
+):
+    reason = "unpublished"
 
 doc = {
     "label": label,
@@ -1407,6 +1498,8 @@ doc = {
     "timeout_s": timeout_val,
     "has_public": has_public,
     "has_hidden": has_hidden,
+    "oom": {"public": pub_oom, "hidden": hid_oom},
+    "reason": reason,
 }
 payload = json.dumps(doc, indent=2) + "\n"
 staged = []
@@ -1508,7 +1601,31 @@ PY
         if [ "$vrc" = 124 ]; then verdict="FAIL (exit 124)"
         else verdict="FAIL (exit $vrc)"; fi;;
     esac
-    if ! { echo '```'; echo; echo "public: $pub_state"; echo "hidden: $hid_state"; echo "status: $v_status"; echo "verdict: $verdict — the exit code of the command is the verdict"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"; then
+    # The JSON reason is the record. An entered command can exit 0 and still
+    # be fail/oom/137; the sentence has to say that reason, not the raw exit.
+    v_reason=$(python3 -I -B -c 'import json,sys
+try:
+    body = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+if not isinstance(body, dict):
+    raise SystemExit(1)
+reason = body.get("reason")
+if reason is None:
+    print("")
+elif isinstance(reason, str):
+    print(reason)
+else:
+    raise SystemExit(1)
+' "$VJSON" 2>/dev/null) || v_reason=""
+    if [ "$v_reason" = "unpublished" ]; then
+      v_note="the oom record was not published"
+    elif [ -n "$v_reason" ]; then
+      v_note="recorded reason: $v_reason"
+    else
+      v_note="the exit code of the command is the verdict"
+    fi
+    if ! { echo '```'; echo; echo "public: $pub_state"; echo "hidden: $hid_state"; echo "status: $v_status"; echo "verdict: $verdict — $v_note"; echo "reported: ${summary:-no pytest summary line} (quoted from output the tests control; informational)"; } >> "$OUT"; then
       _verify_published=0
       rm -f -- "$VJSON" 2>/dev/null || true
       if [ -n "${A770B_VERIFY_OUT:-}" ]; then

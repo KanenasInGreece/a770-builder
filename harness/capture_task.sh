@@ -111,6 +111,22 @@ fi
 echo; echo "## opencode transcript tail"; echo '```'; { grep -vE '^\s*$' "$BLOG" || true; } | tail -30 | cut -c1-300; echo '```'
 echo; echo "## server-side timings during the run"
 capture_timings
+echo; echo "## sandbox oom"
+# Only an early stop, before sandbox_run.sh writes this record, leaves no file.
+# A stop after that write leaves the record. Capture still succeeds.
+if [ -f "$A770B_DATA/logs/sandbox-oom.json" ] && [ ! -L "$A770B_DATA/logs/sandbox-oom.json" ]; then
+  python3 -I -B -c 'import json,sys
+try:
+    body = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+if not isinstance(body, dict):
+    raise SystemExit(1)
+print(body.get("oom", "unknown"))' \
+    "$A770B_DATA/logs/sandbox-oom.json" 2>/dev/null || echo "not recorded"
+else
+  echo "not recorded"
+fi
 } > "$OUT" 2>&1
 rm -f -- "$TMPLOG"
 rm -f -- "$DIFF"
