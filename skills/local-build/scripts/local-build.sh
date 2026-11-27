@@ -1351,7 +1351,6 @@ def _record_oom(record_path, rc):
             [sys.executable, "-I", "-B", oom_py, record_path, str(rc)],
             check=False,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
         try:
             with open(record_path, encoding="utf-8") as fh:
@@ -1383,6 +1382,9 @@ def run_phase(cmd_args, raw_fh):
     except OSError:
         pass
     env = dict(os.environ)
+    # The grader's own preexec arms this child. An inherited leader pid is not
+    # that parent, and sandbox_run.sh would exit 137 before the command.
+    env.pop("A770B_SPAWNER_PID", None)
     env["A770B_NO_BRIDGE"] = "1"
     env["A770B_SANDBOX_ENTERED_FILE"] = entered_file
     env["A770B_SANDBOX_RECORD_FILE"] = record_path

@@ -108,17 +108,24 @@ def _systemctl_show(unit):
 
 
 def _wait_settled(unit):
-    """Poll until the scope is not active. The cap is not a model timeout."""
+    """Poll until the scope is not active. The cap is not a model timeout.
+
+    Returns (shown, kill_seen). shown is None when the show that ended the
+    wait failed. kill_seen stays set once Result=oom-kill was readable, so a
+    later failure or a different result cannot drop that observation.
+    """
     deadline = time.monotonic() + _SETTLE_S
-    shown = None
+    kill_seen = False
     while True:
         shown = _systemctl_show(unit)
+        if shown is not None and shown.get("Result") == "oom-kill":
+            kill_seen = True
         if shown is None:
-            return None
+            return None, kill_seen
         if shown.get("ActiveState") not in _UNSETTLED:
-            return shown
+            return shown, kill_seen
         if time.monotonic() >= deadline:
-            return shown
+            return shown, kill_seen
         time.sleep(0.1)
 
 
@@ -176,12 +183,17 @@ def _decide(policy, shown, exit_code, unit):
     return _journal_oom(unit)
 
 
+def _unit_not_loaded(proc):
+    detail = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+    return "not loaded" in detail.lower()
+
+
 def _report_cleanup(action, unit, proc):
-    """A stall or a non-zero status is printed. It is not ignored."""
+    """A stall or a real refusal is printed. An already-unloaded unit is not."""
     if proc is None:
         print(f"sandbox oom: {action} of {unit} timed out", file=sys.stderr)
         return
-    if proc.returncode != 0:
+    if proc.returncode != 0 and not _unit_not_loaded(proc):
         detail = (proc.stderr or proc.stdout or "").strip()
         print(
             f"sandbox oom: {action} of {unit} failed: {detail or proc.returncode}",
@@ -192,15 +204,18 @@ def _report_cleanup(action, unit, proc):
 def _cleanup_scope(unit, shown):
     """Stop an owned scope that has not been shown to have exited, then reset it.
 
-    A failed show is not evidence the scope is gone, so the stop is still
-    attempted. reset-failed does not stop an active unit. A name this sandbox
-    did not generate is left untouched.
+    A settled inactive scope is already unloaded; resetting it reports that
+    the unit is not loaded. A failed show is not evidence the scope is gone,
+    so the stop is still attempted. reset-failed does not stop an active unit.
+    A name this sandbox did not generate is left untouched.
     """
     if not _owned_scope(unit):
         print(f"sandbox oom: refusing to stop or reset {unit}", file=sys.stderr)
         return
     if shown is None or shown.get("ActiveState") in _UNSETTLED:
         _report_cleanup("stop", unit, _run(["systemctl", "--user", "stop", "--", unit]))
+    if shown is not None and shown.get("ActiveState") == "inactive":
+        return
     _report_cleanup(
         "reset-failed", unit, _run(["systemctl", "--user", "reset-failed", "--", unit]),
     )
@@ -224,9 +239,26 @@ def update(path, exit_code):
         oom = "unknown"
     else:
         named = _unit_name(str(unit))
-        shown = _wait_settled(named)
-        _cleanup_scope(named, shown)
-        oom = _decide(body.get("policy") or "", shown, code, named)
+        shown, kill_seen = _wait_settled(named)
+        policy = body.get("policy") or ""
+        decision = shown
+        # A kill-policy oom-kill seen while settling is the result, even when
+        # the last show failed or came back as something else.
+        if policy == "kill" and kill_seen:
+            decision = dict(shown or {})
+            decision["Result"] = "oom-kill"
+        try:
+            oom = _decide(policy, decision, code, named)
+            body["oom"] = oom
+            try:
+                _write_record(path, body)
+            except OSError:
+                return oom
+            return oom
+        finally:
+            # Stop and reset after the record is written, and still after a
+            # decision or write that raises.
+            _cleanup_scope(named, shown)
     body["oom"] = oom
     try:
         _write_record(path, body)

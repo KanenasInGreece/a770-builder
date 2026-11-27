@@ -147,6 +147,29 @@ def _clear_worker_group():
         print(f"run_lead.py: worker group record remains: {exc}", file=sys.stderr)
 
 
+def _spawns_harness_sandbox(argv):
+    """This tree's sandbox_run.sh, run directly or as bash's script argument.
+
+    `bash -c` is not that form. An inherited spawner pid must not reach any
+    other worker: with SANDBOX=0 the agent would hand it to a later sandbox.
+    """
+    script = os.path.realpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_run.sh")
+    )
+
+    def same(path):
+        if not path or path.startswith("-"):
+            return False
+        try:
+            return os.path.realpath(path) == script
+        except OSError:
+            return False
+
+    if same(argv[0]):
+        return True
+    return os.path.basename(argv[0]) == "bash" and len(argv) > 1 and same(argv[1])
+
+
 def main(argv):
     armed = _arm_parent_death()
     if armed:
@@ -202,10 +225,13 @@ def main(argv):
         signal.signal(sig, on_stop)
     signal.signal(signal.SIGALRM, on_fence)
     try:
-        # The worker arms against this pid. Its own PPID, read after it has
-        # started, is the adopter when this leader has already died.
+        # The sandbox arms against this pid. Its own PPID, read after it has
+        # started, is the adopter when this leader has already died. Any other
+        # command loses an inherited value so it cannot arm a later sandbox.
         child_env = os.environ.copy()
-        child_env["A770B_SPAWNER_PID"] = str(os.getpid())
+        child_env.pop("A770B_SPAWNER_PID", None)
+        if _spawns_harness_sandbox(cmd):
+            child_env["A770B_SPAWNER_PID"] = str(os.getpid())
         # Atomic in the child: its own group, default dispositions for every held signal, and a mask without them.
         child = os.posix_spawnp(cmd[0], cmd, child_env, setpgroup=0, setsigdef=held,
                                 setsigmask=set(inherited) - set(held))

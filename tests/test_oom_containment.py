@@ -2131,6 +2131,154 @@ def test_b3_worker_checks_the_pid_its_leader_passed(tmp_path):
         _stop_records([direct_record, nested_record])
 
 
+def _confine_harness_outputs(env, tmp_path):
+    """Keep this test off an inherited verify handoff or worker receipt."""
+    env.pop("A770B_VERIFY_OUT", None)
+    env["A770B_WORKER_PGID_FILE"] = str(tmp_path / "worker-pgid")
+    return env
+
+
+def _sandbox_tool_bins(tmp_path, seen: Path | None = None) -> Path:
+    """Stubs the scope tools. The probe records a spawner pid when asked."""
+    bin_ = _tools(tmp_path)
+    _exe(bin_ / "bwrap", """
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -- ]; then shift; exec "$@"; fi
+  shift
+done
+exit 0
+""")
+    record = ""
+    if seen is not None:
+        record = f'printf \'%s\' "${{A770B_SPAWNER_PID-}}" > "{seen}"\n'
+    _exe(bin_ / "systemd-run", f"""
+case " $* " in
+  *" --collect "*)
+    {record}exit 0
+    ;;
+esac
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -- ]; then shift; exec "$@"; fi
+  shift
+done
+exit 1
+""")
+    _exe(bin_ / "systemctl", "exit 0\n")
+    return bin_
+
+
+def test_run_lead_keeps_spawner_pid_off_a_non_sandbox_worker(tmp_path):
+    """A worker that is not this harness's sandbox_run.sh does not see the pid."""
+    env = _confine_harness_outputs(os.environ.copy(), tmp_path)
+    env["A770B_SPAWNER_PID"] = "1"
+    env["A770B_DATA"] = str(tmp_path)
+    (tmp_path / "logs").mkdir()
+    script = 'import os; print(os.environ.get("A770B_SPAWNER_PID", "unset"))'
+    proc = subprocess.run(
+        [sys.executable, str(RUN_LEAD), "--", sys.executable, "-c", script],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "unset"
+
+    proc = subprocess.run(
+        [sys.executable, str(RUN_LEAD), "--", "bash", "-c",
+         'printf %s "${A770B_SPAWNER_PID-unset}"'],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "unset"
+
+    impostor = tmp_path / "sandbox_run.sh"
+    impostor.write_text('#!/bin/bash\nprintf %s "${A770B_SPAWNER_PID-unset}"\n', encoding="utf-8")
+    impostor.chmod(0o755)
+    proc = subprocess.run(
+        [sys.executable, str(RUN_LEAD), "--", "bash", str(impostor)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "unset"
+
+
+def test_direct_sandbox_ignores_a_live_inherited_spawner_pid(tmp_path):
+    """A live pid that is not the parent must not abort a direct sandbox_run.sh."""
+    seen = tmp_path / "probe-spawner"
+    bin_ = _sandbox_tool_bins(tmp_path, seen)
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
+    stranger = subprocess.Popen(["sleep", "60"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        env = _confine_harness_outputs(
+            _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1"),
+            tmp_path,
+        )
+        env["A770B_SPAWNER_PID"] = str(stranger.pid)
+        proc = subprocess.run(
+            ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "parent changed during arming" not in proc.stderr
+        assert seen.read_text(encoding="utf-8") == ""
+    finally:
+        if stranger.poll() is None:
+            stranger.kill()
+        stranger.wait(timeout=5)
+
+
+def test_sandbox_unsets_spawner_pid_before_it_starts_a_child(tmp_path):
+    """The probe is a real child of sandbox_run.sh. It must not inherit the pid."""
+    seen = tmp_path / "probe-spawner"
+    bin_ = _sandbox_tool_bins(tmp_path, seen)
+    seat = _seat(tmp_path)
+    cfg = _cfg(tmp_path)
+    env = _confine_harness_outputs(
+        _env(tmp_path, PATH=f"{bin_}:{os.environ['PATH']}", A770B_NO_BRIDGE="1"),
+        tmp_path,
+    )
+    # This pid is the shell's parent, so arming accepts it. The leak is inheritance.
+    env["A770B_SPAWNER_PID"] = str(os.getpid())
+    proc = subprocess.run(
+        ["/usr/bin/bash", str(SANDBOX), str(seat), str(cfg), "--", "true"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert seen.read_text(encoding="utf-8") == ""
+
+
+def test_verify_drops_an_inherited_spawner_pid(tmp_path):
+    """A dead inherited pid must not make verify exit 137. The grader still arms."""
+    env, patch, seat, results = _verify_fixture(tmp_path, "stale-pid", "true")
+    _confine_harness_outputs(env, tmp_path)
+    bin_ = tmp_path / "bin"
+    _scope_exec_stub(bin_ / "systemd-run")
+    _exe(bin_ / "systemctl", """
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=inactive' 'Result=success' ;;
+esac
+exit 0
+""")
+    _exe(bin_ / "journalctl", "exit 1\n")
+    dead = subprocess.Popen(["sleep", "60"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    dead_pid = dead.pid
+    dead.kill()
+    dead.wait(timeout=5)
+    assert not _alive(dead_pid)
+    env["A770B_SPAWNER_PID"] = str(dead_pid)
+    logs = Path(env["A770B_DATA"]) / "logs"
+    proc = subprocess.run(
+        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    try:
+        assert proc.returncode == 0, proc.stderr
+        assert "parent changed during arming" not in proc.stderr
+        doc = json.loads((results / "stale-pid.verify.json").read_text(encoding="utf-8"))
+        assert doc["status"] == "pass", doc
+    finally:
+        _stop_log_scopes(logs)
+
+
 def test_b2_abandoned_scope_is_stopped_and_tools_are_bounded(tmp_path, monkeypatch):
     sys.path.insert(0, str(ROOT / "harness"))
     import sandbox_oom
@@ -3161,6 +3309,236 @@ exit 0
     assert time.monotonic() - started < 2.0
     err = capsys.readouterr().err
     assert "stop of a770b-sbx-42-9.scope timed out" in err
+
+
+def test_settled_inactive_scope_is_not_reset(tmp_path, monkeypatch, capsys):
+    """A clean inactive scope is already unloaded. reset-failed is not run."""
+    oom = _oom_mod(monkeypatch)
+    log = tmp_path / "ctl.log"
+    bin_ = _grade_bin(tmp_path, "inactive-bin", f"""
+printf '%s\\n' "$*" >> "{log}"
+printf '%s\\n' 'ActiveState=inactive' 'Result=success'
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 0) == "no"
+    text = log.read_text(encoding="utf-8")
+    assert " show " in f" {text} ", text
+    assert "reset-failed" not in text
+    assert "reset-failed" not in capsys.readouterr().err
+
+
+def test_not_loaded_reply_is_not_a_cleanup_failure(tmp_path, monkeypatch, capsys):
+    """systemctl saying the unit is not loaded is an unloaded scope, not a refusal."""
+    oom = _oom_mod(monkeypatch)
+    bin_ = _grade_bin(tmp_path, "gone-bin", """
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=failed' 'Result=success' ;;
+  *" reset-failed "*) printf '%s\\n' 'Unit a770b-sbx-42-7.scope not loaded.' >&2; exit 1 ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 0) == "no"
+    err = capsys.readouterr().err
+    assert "reset-failed of" not in err
+    assert "not loaded" not in err
+
+    bin_stop = _grade_bin(tmp_path, "gone-stop", """
+case " $* " in
+  *" show "*) exit 1 ;;
+  *" stop "*) printf '%s\\n' 'Unit a770b-sbx-42-8.scope not loaded.' >&2; exit 1 ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_stop}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-8.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    oom.update(str(record), 1)
+    err = capsys.readouterr().err
+    assert "stop of" not in err
+    assert "not loaded" not in err
+
+
+def test_observed_oom_kill_is_written_before_cleanup(tmp_path, monkeypatch):
+    """A later show must not drop Result=oom-kill, and the record is written first."""
+    oom = _oom_mod(monkeypatch)
+    journal = tmp_path / "journal-called"
+    order = tmp_path / "order"
+    record = tmp_path / "rec.json"
+    count = tmp_path / "shows"
+    bin_ = _grade_bin(tmp_path, "flip-bin", f"""
+case " $* " in
+  *" show "*)
+    n=0
+    [ -f "{count}" ] && n=$(cat "{count}")
+    n=$((n + 1))
+    printf '%s' "$n" > "{count}"
+    if [ "$n" -eq 1 ]; then
+      printf '%s\\n' 'ActiveState=deactivating' 'Result=oom-kill'
+    else
+      exit 1
+    fi
+    ;;
+  *" stop "*|*" reset-failed "*)
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("oom",""))' "{record}" > "{order}"
+    ;;
+esac
+exit 0
+""")
+    _exe(bin_ / "journalctl", f"printf 1 > '{journal}'\nexit 0\n")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 0) == "yes"
+    assert json.loads(record.read_text(encoding="utf-8"))["oom"] == "yes"
+    assert not journal.exists()
+    assert order.read_text(encoding="utf-8").strip() == "yes"
+
+    count.unlink()
+    order.unlink()
+    changed = tmp_path / "changed"
+    bin_other = _grade_bin(tmp_path, "other-result", f"""
+case " $* " in
+  *" show "*)
+    n=0
+    [ -f "{count}" ] && n=$(cat "{count}")
+    n=$((n + 1))
+    printf '%s' "$n" > "{count}"
+    if [ "$n" -eq 1 ]; then
+      printf '%s\\n' 'ActiveState=deactivating' 'Result=oom-kill'
+    else
+      printf '%s\\n' 'ActiveState=inactive' 'Result=success'
+    fi
+    ;;
+  *" reset-failed "*) printf 1 > "{changed}" ;;
+esac
+exit 0
+""")
+    _exe(bin_other / "journalctl", f"printf 1 > '{journal}'\nexit 0\n")
+    monkeypatch.setenv("PATH", f"{bin_other}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-8.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 0) == "yes"
+    assert json.loads(record.read_text(encoding="utf-8"))["oom"] == "yes"
+    assert not journal.exists()
+    assert not changed.exists()
+
+
+def test_cleanup_still_runs_when_decide_or_write_raises(tmp_path, monkeypatch):
+    """Stop runs after a decision that raises, and after a write that raises."""
+    oom = _oom_mod(monkeypatch)
+    decided = tmp_path / "decided"
+    log = tmp_path / "ctl.log"
+    early = tmp_path / "early"
+
+    def explode(*_args):
+        decided.write_text("yes", encoding="ascii")
+        raise RuntimeError("decide failed")
+
+    monkeypatch.setattr(oom, "_decide", explode)
+    bin_ = _grade_bin(tmp_path, "raise-bin", f"""
+printf '%s\\n' "$*" >> "{log}"
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=active' 'Result=success' ;;
+  *" stop "*)
+    if [ ! -f "{decided}" ]; then printf '%s\\n' early > "{early}"; fi
+    ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    record = tmp_path / "rec.json"
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-7.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="decide failed"):
+        oom.update(str(record), 0)
+    assert " stop " in f" {log.read_text(encoding='utf-8')} "
+    assert not early.exists()
+
+    wrote = tmp_path / "wrote"
+    log.write_text("", encoding="utf-8")
+    early.unlink(missing_ok=True)
+    monkeypatch.undo()
+    oom = _oom_mod(monkeypatch)
+
+    def fail_write(_path, _body):
+        wrote.write_text("yes", encoding="ascii")
+        raise OSError("disk")
+
+    monkeypatch.setattr(oom, "_write_record", fail_write)
+    bin_write = _grade_bin(tmp_path, "write-bin", f"""
+printf '%s\\n' "$*" >> "{log}"
+case " $* " in
+  *" show "*) printf '%s\\n' 'ActiveState=active' 'Result=success' ;;
+  *" stop "*)
+    if [ ! -f "{wrote}" ]; then printf '%s\\n' early > "{early}"; fi
+    ;;
+esac
+exit 0
+""")
+    monkeypatch.setenv("PATH", f"{bin_write}:{os.environ['PATH']}")
+    record.write_text(json.dumps({
+        "isolation": "scope", "unit": "a770b-sbx-42-8.scope",
+        "policy": "kill", "oom": "unknown",
+    }), encoding="utf-8")
+    assert oom.update(str(record), 1) == "unknown"
+    assert " stop " in f" {log.read_text(encoding='utf-8')} "
+    assert not early.exists()
+
+
+def test_verify_shows_a_failed_stop_on_its_stderr(tmp_path):
+    """The helper's stop refusal reaches verify. Its stdout stays discarded."""
+    env, patch, seat, results = _verify_fixture(tmp_path, "stop-err", "true")
+    _confine_harness_outputs(env, tmp_path)
+    bin_ = tmp_path / "bin"
+    _scope_exec_stub(bin_ / "systemd-run")
+    fd2 = tmp_path / "helper-fd2"
+    _exe(bin_ / "systemctl", f"""
+case " $* " in
+  *" show "*) exit 1 ;;
+  *" stop "*)
+    readlink /proc/$PPID/fd/2 > "{fd2}" || true
+    printf '%s\\n' 'stop refused' >&2
+    exit 1
+    ;;
+esac
+exit 0
+""")
+    _exe(bin_ / "journalctl", "exit 1\n")
+    logs = Path(env["A770B_DATA"]) / "logs"
+    proc = subprocess.run(
+        ["bash", str(LOCAL_BUILD), "verify", str(patch), str(seat)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    try:
+        assert "sandbox oom: stop of a770b-sbx-" in proc.stderr
+        assert "failed: stop refused" in proc.stderr
+        assert "stop refused" not in proc.stdout
+        helper_err = fd2.read_text(encoding="utf-8").strip()
+        assert helper_err != "/dev/null", helper_err
+        doc = json.loads((results / "stop-err.verify.json").read_text(encoding="utf-8"))
+        assert doc["status"] == "pass", (doc, proc.stderr)
+    finally:
+        _stop_log_scopes(logs)
 
 
 def _end_session(proc: subprocess.Popen, pids: list[int]) -> None:

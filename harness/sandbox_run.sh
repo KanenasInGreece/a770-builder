@@ -33,18 +33,43 @@ if ( : >&9 ) 2>/dev/null; then exec 9>&-; fi
 # The death signal is not inherited across fork. Re-exec once under setpriv.
 # The guard is this pid and is unset after the check, so a nested call arms too.
 # A770B_SPAWNER_PID is the leader's pid, passed before this process started.
-# PPID read here can already be the adopter when that leader died first.
-# A direct or nested call passes nothing and still uses PPID.
+# PPID read after that leader died is the adopter, so a gone spawner is still
+# the parent to arm against. A live spawner that is not our parent was inherited
+# from an ancestor; arming against it aborts a healthy run. A direct call passes
+# nothing and uses PPID. The pid is unset on every path below, including when
+# setpriv is not re-executed, so a later command cannot inherit it.
+_arm_against_spawner() {
+  local pid="${1:-}" stat state
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if [ "$pid" = "$PPID" ]; then
+    return 0
+  fi
+  if [ ! -d "/proc/$pid" ]; then
+    return 0
+  fi
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  state=${stat##*)}
+  state=${state# }
+  state=${state%% *}
+  [ "$state" = "Z" ] || [ "$state" = "X" ]
+}
 if [ "${A770B_PDEATH_ARMED_PID:-}" != "$$" ] && command -v setpriv >/dev/null 2>&1; then
-  if [ -n "${A770B_SPAWNER_PID:-}" ]; then
+  if _arm_against_spawner "${A770B_SPAWNER_PID:-}"; then
     export A770B_PDEATH_PARENT="${A770B_SPAWNER_PID}"
-    unset A770B_SPAWNER_PID
   else
     export A770B_PDEATH_PARENT="${PPID}"
   fi
   export A770B_PDEATH_ARMED_PID="$$"
   exec setpriv --pdeathsig KILL -- /usr/bin/bash "$0" "$@"
 fi
+# This process was not re-executed under setpriv. Consume a spawner pid the
+# branch above did not already copy, then drop the variable.
+if [ -z "${A770B_PDEATH_PARENT:-}" ] && _arm_against_spawner "${A770B_SPAWNER_PID:-}"; then
+  export A770B_PDEATH_PARENT="${A770B_SPAWNER_PID}"
+fi
+unset A770B_SPAWNER_PID || true
 if [ -n "${A770B_PDEATH_PARENT:-}" ] && [ "$PPID" != "$A770B_PDEATH_PARENT" ]; then
   echo "⛔ sandbox: parent changed during arming" >&2
   exit 137
