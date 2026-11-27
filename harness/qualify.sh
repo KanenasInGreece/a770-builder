@@ -125,20 +125,37 @@ stop_helpers() {
   fi
 }
 
-release_suite_server() {
-  # Stop only pairs this job appended to owned.cids. A container that is not
-  # in that file was not started by this job, so it is left running.
-  # The latest line for an id wins: a later start of the same id has a new
-  # invocation, and stop-id refuses a mismatched one.
-  local file=$job/owned.cids line cid inv seen=" " idx
+# Runs one stop command with its output appended to a log. The command runs even when
+# the log is unusable, so a bad path never leaves a server up. Returns 1 when the
+# command failed, else 2 when the log was unusable.
+stop_logged() {
+  local log=$1 out=$1 bad=0
+  shift
+  if [ -L "$log" ] || [ -L "$(dirname "$log")" ] || { [ -e "$log" ] && [ ! -f "$log" ]; } \
+      || ! { printf 'stop: %s\n' "$*" >> "$log"; } 2>/dev/null; then
+    printf '⛔ unusable stop log: %s\n' "$log" >&2
+    out=/dev/null
+    bad=2
+  fi
+  "$@" >>"$out" 2>&1 || return 1
+  return "$bad"
+}
+
+# Stops only the pairs in owned.cids, newest first. The latest line for an id wins: a
+# later start of the same id has a new invocation, and stop-id refuses a mismatched one.
+# Returns 1 when a stop failed or the list cannot be read, else 2 for an unusable log.
+stop_owned_cids() {
+  local log=$1 file=$job/owned.cids line cid inv seen=" " idx one rc=0
   local -a entries=()
-  [ "${STUB:-0}" = 1 ] && return 0
-  [ -f "$file" ] && [ ! -L "$file" ] || return 0
-  refuse_link "$job/phases/stop-owned.log" || return 0
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+  if [ -L "$file" ] || [ ! -f "$file" ]; then
+    printf '⛔ unreadable owned-container list: %s\n' "$file" >&2
+    return 1
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     entries+=("$line")
-  done < "$file"
+  done < "$file" || return 1
   for (( idx=${#entries[@]}-1; idx>=0; idx-- )); do
     cid=""
     inv=""
@@ -148,13 +165,25 @@ release_suite_server() {
       *" $cid "*) continue ;;
     esac
     seen="$seen$cid "
-    bash "$here/serve_compose.sh" stop-id "$cid" "$inv" >>"$job/phases/stop-owned.log" 2>&1 || true
+    one=0
+    stop_logged "$log" bash "$here/serve_compose.sh" stop-id "$cid" "$inv" || one=$?
+    if [ "$one" = 1 ]; then
+      rc=1
+    elif [ "$one" = 2 ] && [ "$rc" = 0 ]; then
+      rc=2
+    fi
   done
+  return "$rc"
+}
+
+release_suite_server() {
+  [ "${STUB:-0}" = 1 ] && return 0
+  stop_owned_cids "$job/phases/stop-owned.log"
 }
 
 stop_server() {
   [ "${SERVER_STOPPED:-0}" = 1 ] && return 0
-  local rc=0 cid="" engine log_ok=0 argv_ok=0
+  local rc=0 stop_rc=0 cid="" engine
   # Phase 3's target ends with the server. Stop the tracker before truncating
   # so it cannot write the old pid back over the clear. Phase 5 publishes
   # through run_suite.sh after this returns.
@@ -163,52 +192,33 @@ stop_server() {
     wait "$TRACKER" 2>/dev/null || true
     TRACKER=""
   fi
-  # A failed clear is kept. It must not skip the owned-server stop. The flag
-  # is set only after that teardown, so a later call cannot skip a server
-  # this attempt has not stopped yet.
+  # A failed clear is kept. It must not skip the owned-server stop.
   plain_trunc "$job/SERVING_CLEARED" || rc=1
   plain_trunc "$job/evidence/serving.pid" || rc=1
   [ -f "$job/cid" ] && [ ! -L "$job/cid" ] && cid=$(tr -d '[:space:]' < "$job/cid" || true)
-  if [ -n "$cid" ]; then
-    # A refused log is not a reason to leave the owned server up. Skip only
-    # the write to that path, and still return failure.
-    if refuse_link "$job/phases/stop-server.log"; then
-      log_ok=1
-    else
-      rc=1
-    fi
-    if refuse_link "$job/evidence/argv.log"; then
-      argv_ok=1
-    else
-      rc=1
-    fi
-    if command -v a770b-qualify-stop >/dev/null 2>&1; then
-      if [ "$argv_ok" = 1 ]; then
+  if command -v a770b-qualify-stop >/dev/null 2>&1; then
+    if [ -n "$cid" ]; then
+      if refuse_link "$job/evidence/argv.log"; then
         printf '%s\n' "stop: a770b-qualify-stop $cid" >> "$job/evidence/argv.log"
-      fi
-      if [ "$log_ok" = 1 ]; then
-        a770b-qualify-stop "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
       else
-        a770b-qualify-stop "$cid" >/dev/null 2>&1 || true
+        rc=1
       fi
-    elif [ "${STUB:-0}" != 1 ]; then
-      engine=$(pget engine 2>/dev/null || true)
-      if [ "$engine" = strata ]; then
-        if [ "$log_ok" = 1 ]; then
-          bash "$here/serve_strata.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
-        else
-          bash "$here/serve_strata.sh" stop-id "$cid" >/dev/null 2>&1 || true
-        fi
-      else
-        if [ "$log_ok" = 1 ]; then
-          bash "$here/serve_compose.sh" stop-id "$cid" >> "$job/phases/stop-server.log" 2>&1 || true
-        else
-          bash "$here/serve_compose.sh" stop-id "$cid" >/dev/null 2>&1 || true
-        fi
+      stop_logged "$job/phases/stop-server.log" a770b-qualify-stop "$cid" || stop_rc=$?
+    fi
+  elif [ "${STUB:-0}" != 1 ]; then
+    engine=$(pget engine 2>/dev/null || true)
+    if [ "$engine" = strata ]; then
+      if [ -n "$cid" ]; then
+        stop_logged "$job/phases/stop-server.log" bash "$here/serve_strata.sh" stop-id "$cid" || stop_rc=$?
       fi
+    else
+      # On a Compose engine $job/cid is only observed: it may name a reused container.
+      stop_owned_cids "$job/phases/stop-server.log" || stop_rc=$?
     fi
   fi
-  SERVER_STOPPED=1
+  # The flag records a stop that ran and succeeded, so a failed one can be retried.
+  [ "$stop_rc" = 1 ] || SERVER_STOPPED=1
+  [ "$stop_rc" = 0 ] || rc=1
   return "$rc"
 }
 
@@ -277,26 +287,52 @@ run_post() {
   fi
 }
 
+# TERM, up to 5 s, then KILL, then reap the foreground child.
+end_child() {
+  local n=0
+  kill_helper "$CHILD"
+  while kill -0 "$CHILD" 2>/dev/null && [ "$n" -lt 50 ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
+  kill_helper "$CHILD" KILL
+  wait "$CHILD" 2>/dev/null || true
+  CHILD=
+}
+
 finish() {
   [ "${IN_FINISH:-0}" = 1 ] && return 0
   IN_FINISH=1
   # A second TERM must not run the trap again: that exit would skip the marker.
   trap '' TERM INT
+  # A stop requested before this point ends STOPPED, even if its signal has not arrived
+  # yet because stop-run ended the suite first.
+  if [ -f "$job/STOP_REQUESTED" ]; then
+    FINISH_STATE=stopped
+    MARKER_NAME=STOPPED
+    FAIL_REASON=${FAIL_REASON:-stopped}
+  fi
   if [ -n "${CHILD:-}" ]; then
-    kill_helper "$CHILD"
-    local n=0
-    while kill -0 "$CHILD" 2>/dev/null && [ "$n" -lt 50 ]; do
-      sleep 0.1
-      n=$((n + 1))
-    done
-    kill_helper "$CHILD" KILL
-    wait "$CHILD" 2>/dev/null || true
-    CHILD=
+    end_child
   fi
   rm -f "$job/VRAM_SAMPLE" 2>/dev/null || true
   stop_helpers
-  stop_server
-  release_suite_server
+  # A failed stop command is run once more. An unusable log alone is not retried.
+  local stop_bad=0 released=0
+  stop_server || { [ "${SERVER_STOPPED:-0}" != 1 ] && stop_server; } || stop_bad=1
+  release_suite_server || released=$?
+  if [ "$released" = 1 ]; then
+    released=0
+    release_suite_server || released=$?
+  fi
+  [ "$released" = 0 ] || stop_bad=1
+  if [ "$stop_bad" = 1 ]; then
+    FAIL_REASON=stop-server
+    if [ "${FINISH_STATE:-finished}" != stopped ]; then
+      FINISH_STATE=failed
+      MARKER_NAME=FAILED
+    fi
+  fi
   record_card || true
   run_post
   record_hooks || true
@@ -1109,14 +1145,14 @@ run_phases() {
       fail_job load
       return
     fi
-    capture_cid
+    capture_cid || { fail_job load; return; }
   else
     copy_profiles || { fail_job load; return; }
     if ! run_tool_locked serve bash "$A770B_PROJECT/skills/local-build/scripts/local-build.sh" serve "$PROFILE_NAME"; then
       fail_job load
       return
     fi
-    capture_cid
+    capture_cid || { fail_job load; return; }
     resolve_alias
   fi
   if [ "$STUB" != 1 ]; then
@@ -1153,7 +1189,10 @@ run_phases() {
     run_tool memory a770b-qualify-memory --interval 5 --owner-pid "$$" || true
   fi
   phase stop-server
-  stop_server
+  if ! stop_server; then
+    fail_job stop-server
+    return
+  fi
   if [ "$(pget fit_only)" = 1 ] || [ "$(pget no_suite)" = 1 ]; then
     :
   elif pause_for suite; then

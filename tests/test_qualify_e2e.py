@@ -690,11 +690,11 @@ def test_stop_during_suite_calls_real_stop_run(tmp_path):
         )
         assert stopped.returncode == 0, stopped.stderr
         job = Path(found["directory"])
-        assert (job / "STOPPED").is_file() or (job / "DONE").is_file()
+        assert (job / "STOPPED").is_file() and not (job / "DONE").exists()
         stop_log = (job / "phases" / "stop-run.log").read_text(encoding="utf-8", errors="replace")
         assert "ending run pid" in stop_log
         status = json.loads((job / "status.json").read_text(encoding="utf-8"))
-        assert status.get("state") in {"stopped", "finished"}
+        assert status.get("state") == "stopped", status
     finally:
         hold.unlink(missing_ok=True)
         if proc is not None and proc.poll() is None:
