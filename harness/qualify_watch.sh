@@ -132,6 +132,12 @@ warned2=""
 warned4=""
 tripped_log=""
 prev_cid=""
+# A Strata job has no container: no cid file is read and no docker logs are run.
+job_engine=""
+if [ -f "$job/plan.json" ] && [ ! -L "$job/plan.json" ]; then
+  job_engine=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("engine") or "")' "$job/plan.json" 2>/dev/null || true)
+fi
+[ "$job_engine" != strata ] || say "Strata engine logs are not scanned"
 
 while [ -e "$job/WATCH" ]; do
   if [ -n "${QUALIFY_WATCH_PARENT:-}" ]; then
@@ -203,14 +209,13 @@ while [ -e "$job/WATCH" ]; do
       phase=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("phase") or "")' "$job/status.json" 2>/dev/null || true)
     fi
     # Phase 5 starts a new container. The phase 3 id in $cidfile is already dead.
-    if [ "$phase" = suite ] && [ "${A770B_QUALIFY_STUB:-}" != 1 ] && ! command -v a770b-qualify-serve >/dev/null 2>&1; then
+    if [ "$job_engine" != strata ] && [ "$phase" = suite ] && [ "${A770B_QUALIFY_STUB:-}" != 1 ] && ! command -v a770b-qualify-serve >/dev/null 2>&1; then
       live="$A770B_DATA/logs/llamacpp-a770.cid"
       if [ -f "$live" ] && [ ! -L "$live" ]; then
         cid=$(tr -d '[:space:]' < "$live" 2>/dev/null || true)
       fi
-      # A Strata instance id is not a container. docker logs would fail every poll.
     fi
-    if [ -z "$cid" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
+    if [ "$job_engine" != strata ] && [ -z "$cid" ] && [ -f "$cidfile" ] && [ ! -L "$cidfile" ]; then
       cid=$(tr -d '[:space:]' < "$cidfile" 2>/dev/null || true)
     fi
     if [ -n "$cid" ]; then

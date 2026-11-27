@@ -53,7 +53,7 @@ def cum(builder, count):
     return logs
 
 
-def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn=None, running="true", run_pid=None, suite_pid=None, stage_start=None, stage_file=None, suite_start=None, live_cid=None, docker_log=None):
+def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn=None, running="true", run_pid=None, suite_pid=None, stage_start=None, stage_file=None, suite_start=None, live_cid=None, docker_log=None, engine=None):
     arm = tmp / name
     fake = arm / "fake"
     logs_dir = arm / "logs"
@@ -62,6 +62,8 @@ def run_case(tmp, name, logs, build=None, build_age_s=0, expect=0, step=60, warn
     logs_dir.mkdir()
     (arm / "WATCH").write_text("")
     (arm / "cid").write_text("deadbeef\n")
+    if engine is not None:
+        (arm / "plan.json").write_text('{"engine": "%s"}\n' % engine)
     now = int(time.time())
     (fake / "clock0").write_text(str(now))
     (fake / "now").write_text(str(now))
@@ -288,6 +290,25 @@ def test_phase5_reads_the_live_container_id(tmp_path):
     text = recorded.read_text()
     assert "phase5cid" in text
     assert "deadbeef" not in text
+
+
+@pytest.mark.parametrize("phase_file", [True, False])
+def test_t21_a_strata_job_runs_no_docker_logs(tmp_path, phase_file):
+    arm_clock()
+    recorded = tmp_path / "docker-args.txt"
+    # phase_file plants a live cid file in phase suite; the job cid file is always there.
+    arm = run_case(
+        tmp_path,
+        "strata",
+        [[vl(1, 19.7, 1)]] * 3,
+        expect=0,
+        live_cid="phase5cid" if phase_file else None,
+        docker_log=recorded,
+        engine="strata",
+    )
+    assert not recorded.exists()
+    log = (arm / "watchdog.log").read_text()
+    assert log.count("Strata engine logs are not scanned") == 1
 
 
 def test_driver_does_not_signal_a_reused_pid(tmp_path):
