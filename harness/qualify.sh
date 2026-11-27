@@ -1288,7 +1288,7 @@ run_phases() {
   fi
   # stop writes the pinned-RAM observation too. Copy it before the suite,
   # and only after this stop succeeded. A stub has no engine evidence.
-  if [ "$STUB" != 1 ]; then
+  if [ "$STUB" != 1 ] && [ "$engine" = strata ]; then
     write_engine_evidence || true
   fi
   if [ "$(pget fit_only)" = 1 ] || [ "$(pget no_suite)" = 1 ]; then

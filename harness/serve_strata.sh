@@ -40,16 +40,21 @@ case "${1:-}" in
       [ "$rc" = 1 ] || exit "$rc"
       existing=""
     }
+    export A770B_MIN_AVAIL_MB A770B_VRAM_CAP_GIB
     if [ -z "$existing" ]; then
       # No Compose project or server is stopped here. A failed lookup is an ambiguous state.
       containers=$("$A770B_DOCKER" ps -q \
         --filter "label=com.docker.compose.project=$A770B_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=llama') || exit 2
       [ -z "$containers" ] || { echo "stop the running builder container before starting Strata" >&2; exit 2; }
-      budget_gate >&2 || exit $?
+      if ! budget_gate >&2; then
+        # $? is the negated if-test. PIPESTATUS keeps the gate's own status.
+        rc=${PIPESTATUS[0]}
+        "${managed[@]}" check-floor >/dev/null 2>&1 || true
+        exit "$rc"
+      fi
     fi
     "${managed[@]}" tokenizer "$config" >/dev/null || exit $?
     a770b_api_key >/dev/null || exit 2
-    export A770B_MIN_AVAIL_MB A770B_VRAM_CAP_GIB
     # A failed cap or admission must not leave the previous start's receipt behind.
     if [ -f "$A770B_DATA/logs/profiling.json" ] && [ ! -L "$A770B_DATA/logs/profiling.json" ]; then
       rm -f -- "$A770B_DATA/logs/profiling.json"

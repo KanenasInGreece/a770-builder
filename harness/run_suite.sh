@@ -694,6 +694,7 @@ if [ "$DRYRUN" != 1 ]; then
     rm -f -- "$RESULTS_NDJSON"
     [ "$SUITE_OWNED_CIDS_REMOVE" != 1 ] || rm -f -- "$SUITE_OWNED_CIDS_FILE"
     [ "$SUITE_OWNED_STRATA_REMOVE" != 1 ] || rm -f -- "$SUITE_OWNED_STRATA_FILE"
+    [ "$SUITE_FLOOR_REMOVE" != 1 ] || rm -f -- "$SUITE_FLOOR_FILE"
     exit 2
   fi
   if pid=$(suite_serving_pid); then suite_publish_serving_pid "$pid" || suite_warn_publish; fi

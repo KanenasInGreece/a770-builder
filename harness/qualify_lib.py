@@ -1670,7 +1670,8 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
     stages = suite.get("stages") if isinstance(suite.get("stages"), list) else []
     bar = counted_pass_bar()
     counted = [s for s in stages if isinstance(s, dict) and s.get("counts_toward_pass", True) is not False]
-    if _floor_stop(job, abort_reason, stages):
+    floor_stopped = _floor_stop(job, abort_reason, stages)
+    if floor_stopped:
         # working null would otherwise count as a failed stage. The floor is
         # not a quality result, so the ratio is left unknown.
         passed = sum(1 for s in counted if s.get("working") is True) if counted else None
@@ -1964,9 +1965,9 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
     for item in unmeasured:
         if isinstance(item, dict) and item.get("phase"):
             by_phase[item["phase"]] = item
-    annotated = set()
+    annotated = {"counted-stages-pass"} if floor_stopped else set()
     for check in checks:
-        if check.get("result") != "unknown":
+        if check.get("result") != "unknown" or check.get("name") in annotated:
             continue
         why = by_phase.get(_CHECK_PHASE.get(check.get("name") or ""))
         if not isinstance(why, dict) or not why.get("reason"):
@@ -1978,7 +1979,7 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
         annotated.add(check.get("name"))
     _note_skipped(job, result, checks, by_phase, annotated, abort_reason)
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
-    _write_private(os.path.join(job, "report.md"), render_report(job, result))
+    _write_private(os.path.join(job, "report.md"), render_report(job, result, floor_stop=floor_stopped))
     return result
 
 
@@ -2090,10 +2091,10 @@ def _report_floor_stop(job: str, result: dict) -> bool:
     return _read_status(os.path.join(job, "status.json")).get("reason") == "strata_floor_stop"
 
 
-def render_report(job: str, result: dict) -> str:
+def render_report(job: str, result: dict, floor_stop: bool = False) -> str:
     """The same facts as result.json, each rate or memory figure naming its depth."""
     lines = []
-    if _report_floor_stop(job, result):
+    if floor_stop or _report_floor_stop(job, result):
         lines.append("STRATA_FLOOR_STOP")
     if result.get("fit_result"):
         lines.append("FIT RESULT. This is a fit measurement, never a quality pass.")
@@ -3416,7 +3417,7 @@ def _plan_engine(job: str) -> str:
         return ""
     try:
         engine = _load_json(path).get("engine")
-    except QualifyError:
+    except (QualifyError, OSError, ValueError):
         return ""
     return engine if isinstance(engine, str) else ""
 
@@ -3427,7 +3428,7 @@ def _strata_pinned_gib(path: str):
         return None
     try:
         doc = _load_json(path)
-    except QualifyError:
+    except (QualifyError, OSError, ValueError):
         return None
     observed = doc.get("observed_pinned_host_memory")
     if not isinstance(observed, dict):

@@ -6,6 +6,7 @@ holds this process's pid.
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -163,6 +164,17 @@ def test_t22_strata_export_uses_pinned_ram_and_omits_flash_attention(tmp_path, m
     assert "flash_attention" not in ql.required_statistic_fields("strata")
     assert "flash_attention" in ql.required_statistic_fields("llama.cpp")
     assert "flash_attention" in ql.required_statistic_fields(None)
+    buffers_only = job / "evidence" / "engine-evidence.json"
+    buffers_only.write_text(json.dumps({
+        "engine": "strata",
+        "host_buffers_mib": 2048,
+    }), encoding="utf-8")
+    assert ql._strata_pinned_gib(str(buffers_only)) is None
+    assert ql._ram_from_evidence(str(job), True) is None
+    ql.assemble(str(job))
+    bare = ql.summarise(str(job))
+    assert bare["ram_gb_extra"] in (None, "unknown")
+    assert bare["statistics"]["ram_gb_extra"] == "unknown"
 
 
 def test_observe_copies_pinned_ram_and_ignores_host_buffers(tmp_path, monkeypatch):
@@ -204,6 +216,13 @@ def test_observe_copies_pinned_ram_and_ignores_host_buffers(tmp_path, monkeypatc
     copied = json.loads((job / "evidence" / "engine-evidence.json").read_text(encoding="utf-8"))
     assert copied["observed_pinned_host_memory"]["value_bytes"] == round(1.5 * 1024 ** 3)
     assert ql._ram_from_evidence(str(job), True) == pytest.approx(1.5)
+    buffers_only = job / "evidence" / "buffers-only.json"
+    buffers_only.write_text(json.dumps({"host_buffers_mib": 4096}), encoding="utf-8")
+    assert ql._strata_pinned_gib(str(buffers_only)) is None
+    (job / "evidence" / "engine-evidence.json").write_text(
+        json.dumps({"engine": "strata", "host_buffers_mib": 4096}), encoding="utf-8",
+    )
+    assert ql._ram_from_evidence(str(job), True) is None
     text = Path(PROJECT, "harness", "qualify.sh").read_text(encoding="utf-8")
     stop = text.index("if ! stop_server; then")
     second = text.index("write_engine_evidence", stop)
@@ -263,6 +282,28 @@ def test_t23_launch_floor_ends_before_smoke(tmp_path):
     assert not (job / "phases" / "smoke.log").exists()
     assert not (job / "evidence" / "smoke.json").exists()
     assert (job / "status.json").read_text(encoding="utf-8").find(str(os.getpid())) == -1
+    result = json.loads((job / "result.json").read_text(encoding="utf-8"))
+    counted = next(item for item in result["checks"] if item["name"] == "counted-stages-pass")
+    assert counted["result"] == "unknown"
+    assert counted["reason"] == "strata floor stop"
+    assert "STRATA_FLOOR_STOP" in (job / "report.md").read_text(encoding="utf-8")
+
+
+def test_phase5_floor_stop_keeps_counted_reason_before_terminal_status(tmp_path, monkeypatch):
+    """Summarise runs before qualify publishes the terminal reason."""
+    monkeypatch.setenv("A770B_DATA", str(tmp_path / "data"))
+    (tmp_path / "data").mkdir()
+    plan = _plan(tmp_path, monkeypatch)
+    job = _job(tmp_path, plan)
+    status = json.loads((job / "status.json").read_text(encoding="utf-8"))
+    status["phase"] = "suite"
+    status["reason"] = None
+    (job / "status.json").write_text(json.dumps(status) + "\n", encoding="utf-8")
+    result = ql.summarise(str(job), abort_reason="strata_floor_stop")
+    counted = next(item for item in result["checks"] if item["name"] == "counted-stages-pass")
+    assert counted["result"] == "unknown"
+    assert counted["reason"] == "strata floor stop"
+    assert "STRATA_FLOOR_STOP" in (job / "report.md").read_text(encoding="utf-8")
 
 
 def test_start_and_admit_write_the_floor_file(tmp_path, monkeypatch):
@@ -338,13 +379,75 @@ def test_supervisor_writes_the_plan_floor_file(tmp_path, monkeypatch):
     read_fd, write_fd = os.pipe()
     os.write(write_fd, b"1")
     os.close(write_fd)
-    managed.supervise(plan_path, read_fd)
-    written = json.loads(plan_floor.read_text(encoding="utf-8"))
-    assert written["phase"] == "running"
-    assert written["instance"] == "owned-instance"
-    assert written["available_mib"] == 10
-    assert written["floor_mib"] == 999999
-    assert other.read_text(encoding="utf-8") == ""
+    saved_term = signal.getsignal(signal.SIGTERM)
+    saved_int = signal.getsignal(signal.SIGINT)
+    try:
+        managed.supervise(plan_path, read_fd)
+        written = json.loads(plan_floor.read_text(encoding="utf-8"))
+        assert written["phase"] == "running"
+        assert written["instance"] == "owned-instance"
+        assert written["available_mib"] == 10
+        assert written["floor_mib"] == 999999
+        assert other.read_text(encoding="utf-8") == ""
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL if saved_term is None else saved_term)
+        signal.signal(signal.SIGINT, signal.SIG_DFL if saved_int is None else saved_int)
+
+
+def test_builtin_budget_gate_records_a_launch_floor(tmp_path):
+    """A cold start refused for low MemAvailable leaves a launch floor file."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    nvtop = bin_dir / "nvtop"
+    nvtop.write_text(
+        "#!/bin/bash\n"
+        "printf '%s\\n' '[{\"device_name\":\"Fake Arc\",\"mem_used\":0,"
+        "\"mem_total\":17179869184,\"mem_free\":17179869184}]'\n",
+        encoding="utf-8",
+    )
+    nvtop.chmod(0o755)
+    docker = bin_dir / "docker"
+    docker.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    docker.chmod(0o755)
+    data = tmp_path / "data"
+    (data / "logs").mkdir(parents=True)
+    floor = tmp_path / "floor.json"
+    key = tmp_path / "api.key"
+    key.write_text("a770b-test\n", encoding="utf-8")
+    env = dict(os.environ)
+    env.update({
+        "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+        "A770B_PROJECT": PROJECT,
+        "A770B_DATA": str(data),
+        "A770B_HOST": "127.0.0.1",
+        "A770B_PORT": "9",
+        "A770B_VRAM_CAP_GIB": "16",
+        "A770B_CARD_VRAM_TOTAL": "16",
+        "A770B_GPU_MATCH": "Fake",
+        "A770B_MIN_AVAIL_MB": "999999999",
+        "A770B_BUDGET_GATE": "",
+        "A770B_HEALTH_URL": "",
+        "A770B_API_KEY_FILE": str(key),
+        "A770B_DOCKER": "docker",
+        "A770B_FRAMEWORK_PORTS": "",
+        "A770B_SERVE": "compose",
+        "A770B_COMPOSE_PROJECT": "a770-builder",
+        "A770B_CARD": "",
+        "A770B_STRATA_FLOOR_FILE": str(floor),
+        "A770B_PROFILES_FILE": "",
+        "A770B_DEFER_DATA_DIRS": "1",
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+    })
+    (tmp_path / "xdg").mkdir()
+    got = subprocess.run(
+        ["bash", os.path.join(PROJECT, "harness", "serve_strata.sh"), "start", str(tmp_path / "prepared.json"), "8192"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert got.returncode != 0, got.stdout + got.stderr
+    written = json.loads(floor.read_text(encoding="utf-8"))
+    assert written["phase"] == "launch"
+    assert isinstance(written["available_mib"], int)
+    assert written["available_mib"] < written["floor_mib"]
 
 
 def _suite(tmp_path, stages, reference=False):

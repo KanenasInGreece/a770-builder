@@ -482,14 +482,20 @@ def memavailable_mib():
     return None
 
 
-def ram_ok(minimum):
+_UNSET = object()
+
+
+def ram_check(minimum):
+    """(ok, available MiB). ok is false when the reading is missing or short."""
     available = memavailable_mib()
-    if available is None:
-        return False
-    return available >= minimum
+    return (available is not None and available >= minimum, available)
 
 
-def write_floor_stop(phase, floor_mib, instance, path=None):
+def ram_ok(minimum):
+    return ram_check(minimum)[0]
+
+
+def write_floor_stop(phase, floor_mib, instance, path=None, available_mib=_UNSET):
     """Replace the caller's floor file. A non-empty file is the runner's own outcome."""
     target = path if path else os.environ.get("A770B_STRATA_FLOOR_FILE")
     if not target:
@@ -499,9 +505,11 @@ def write_floor_stop(phase, floor_mib, instance, path=None):
         raise ValueError("refusing a symlink floor file")
     if not dest.parent.is_dir():
         return
+    if available_mib is _UNSET:
+        available_mib = memavailable_mib()
     write_state(dest, {
         "phase": phase,
-        "available_mib": memavailable_mib(),
+        "available_mib": available_mib,
         "floor_mib": int(floor_mib),
         "instance": instance,
     })
@@ -615,10 +623,13 @@ def supervise(plan_path, gate_fd):
         os.close(gate_write)
         gate_write = None
         while server.poll() is None and not stopping:
-            if not ram_ok(plan["min_ram_mib"]):
-                write_floor_stop(
-                    "running", plan["min_ram_mib"], plan.get("id"), plan.get("floor_file"),
-                )
+            ok, avail = ram_check(plan["min_ram_mib"])
+            if not ok:
+                if plan.get("floor_file"):
+                    write_floor_stop(
+                        "running", plan["min_ram_mib"], plan.get("id"), plan.get("floor_file"),
+                        available_mib=avail,
+                    )
                 print("Strata stopped: host MemAvailable fell below the configured floor", file=sys.stderr, flush=True)
                 break
             time.sleep(0.25)
@@ -642,8 +653,9 @@ def start(path, config, ctx, timeout):
     if not 1 <= port <= 65535 or minimum < 1 or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("invalid port, host memory floor or ready timeout")
     floor_path = os.environ.get("A770B_STRATA_FLOOR_FILE") or None
-    if not ram_ok(minimum):
-        write_floor_stop("launch", minimum, None, floor_path)
+    ok, avail = ram_check(minimum)
+    if not ok:
+        write_floor_stop("launch", minimum, None, floor_path, available_mib=avail)
         raise ValueError("host MemAvailable is below the configured floor")
     write_enforcement_receipt("launch")
     key = read_key()
@@ -744,24 +756,43 @@ def admit(path):
     key = read_key()
     if not state or not process_alive(state) or not health_matches(state, key):
         raise ValueError("managed Strata instance is not verified healthy")
-    if not ram_ok(state["min_ram_mib"]):
-        write_floor_stop("admit", state["min_ram_mib"], state.get("id"))
+    ok, avail = ram_check(state["min_ram_mib"])
+    if not ok:
+        write_floor_stop("admit", state["min_ram_mib"], state.get("id"), available_mib=avail)
         return False
     write_enforcement_receipt("continuous")
     return True
+
+
+def check_floor():
+    """Record a launch floor when MemAvailable is under A770B_MIN_AVAIL_MB. Internal."""
+    minimum = int(os.environ["A770B_MIN_AVAIL_MB"])
+    if minimum < 1:
+        raise ValueError("invalid host memory floor")
+    ok, avail = ram_check(minimum)
+    if ok:
+        return 0
+    write_floor_stop(
+        "launch", minimum, None,
+        os.environ.get("A770B_STRATA_FLOOR_FILE") or None,
+        available_mib=avail,
+    )
+    return 1
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("start", "status", "stop", "id", "pid", "model", "tokenizer",
                                              "config-model", "verify", "observe", "admit", "supervise",
-                                             "stop-owned", "gate"))
+                                             "stop-owned", "gate", "check-floor"))
     parser.add_argument("value", nargs="?")
     parser.add_argument("--gate-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--ctx", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=300)
     args = parser.parse_args()
     try:
+        if args.command == "check-floor":
+            return check_floor()
         if args.command == "supervise":
             if args.gate_fd is None:
                 raise ValueError("supervisor requires foreground launch authorization")

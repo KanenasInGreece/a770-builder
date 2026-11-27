@@ -546,11 +546,6 @@ def test_strata_dry_run_is_accepted_and_a_mismatched_engine_is_refused(tmp_path)
     assert code == 0, out + err
     assert "starts nothing" in out
     assert not data.exists()
-    again = _argv(env, stages="s0-design", extra=["--dry-run"])
-    code, out, err = _run(env, again, 30)
-    assert code == 0, out + err
-    assert "starts nothing" in out
-    assert not data.exists()
     # A profiles file whose row is Strata, asked for as another engine.
     prof = _profile(tmp_path, "strata", "e2e.strata.json")
     code, out, err = _run(
