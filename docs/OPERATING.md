@@ -55,11 +55,11 @@ its own scope when needed. The verdict does not come from the test command's exi
 gives `TIMEOUT` (124), including before phase entry. Otherwise, a signal that kills the sandbox wrapper, missing entry,
 or an unpublished OOM result gives `INFRA_ERROR`. For an entered phase with a published result, `oom=yes` gives `FAIL`
 with reason `oom`, preserving a nonzero exit and mapping zero to 137. With `oom=no` or `unknown`, zero passes and
-nonzero fails (a command that returns 124 on its own therefore fails). Unless `--test` or `verify.test` supplies the
-public command, `verify` selects added or changed Python test paths under `test/` or `tests/`, passing the names as
-arguments and refusing any name that is not plain; `--test "<command>"` runs something else instead, inside the same
-boundary, so give it the test runner alone, never followed by an `echo` or anything else that would end a failing
-command with zero.
+nonzero fails (a command that returns 124 on its own therefore fails). By default `verify` runs pytest on the added or
+changed `.py` paths it selects under `test/` or `tests/`, passing validated paths as separate arguments. Use `--test`
+or `verify.test` when the default selection does not cover the intended tests. `--test "<command>"` runs something else
+instead, inside the same boundary, so give it the test runner alone, never followed by an `echo` or anything else that
+would end a failing command with zero.
 
 **The run specification.** A brief is prose the harness cannot enforce. Beside it the caller may pass a small JSON
 file, `--spec <spec.json>`, that sets for that one run what the calling agent has decided: `card`, a file inside the seat
@@ -807,7 +807,7 @@ bash harness/run_suite.sh --base-url http://127.0.0.1:PORT/v1 --served-model-nam
 | `compose/vllm.yaml` | the container ENVELOPE for vLLM backend serving (`A770B_SERVED_BACKEND=vllm`): `intel/llm-scaler-vllm:0.26.0-b2` pinned by digest, binds internal port 8000 to `A770B_PORT`, engine memory fraction 0.9 of the card; sibling `compose/vllm.env.example` |
 | `harness/build_local.sh` | dispatch a brief through opencode in the seat (never a live checkout), `< /dev/null`, inside the sandbox |
 | `harness/run_lead.py` | the process-group leader of a build run: runs the worker in its own process group, keeps an optional `--timeout` fence, and forwards stop signals |
-| `harness/sandbox_run.sh` | the bubblewrap boundary: path policy before the bind, then only the seat read-write (`.git` read-only), no credentials, no other checkout, no harness source, no network except the model server |
+| `harness/sandbox_run.sh` | the bubblewrap boundary: path policy before the bind, then the seat as the only writable host tree (`.git` read-only), no other checkout, no harness source, no network except the model server |
 | `harness/sandbox_oom.py` | reads the sandbox OOM result, cleans up the transient scope, and grades `verify` phases |
 | `config/` | the project's configuration: the registries listing every qualified model and its measured numbers, the example environment file a new install copies, and the template opencode reads inside the sandbox |
 | `config/cards.json` | physical capability registry for workstation cards (`b70`, `a770`, `b580`): PCI IDs, total VRAM, GPU match strings, generation, XMX native precision formats, and device selectors |
