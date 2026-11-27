@@ -599,7 +599,7 @@ raise SystemExit(1)
 PY
 }
 suite_publish_serving_pid(){
-  local pid="${1:-}" value=""
+  local pid="${1:-}" value="" rc=0
   # Nested so the function the suite stub extracts stays one body. The temp
   # is exclusive in the destination directory. -T refuses a directory target.
   publish_one() {
@@ -619,11 +619,13 @@ suite_publish_serving_pid(){
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
     value=$pid
   fi
-  publish_one "$HOST_PID_FILE" "$value" || return 1
+  # A failed first path must not skip the second. The call fails if either write failed.
+  publish_one "$HOST_PID_FILE" "$value" || rc=1
   # qualify's monitor reads this path during the suite. Phase 3 does not.
   if [ -n "${A770B_QUALIFY_SERVING_PID_FILE:-}" ]; then
-    publish_one "$A770B_QUALIFY_SERVING_PID_FILE" "$value" || return 1
+    publish_one "$A770B_QUALIFY_SERVING_PID_FILE" "$value" || rc=1
   fi
+  return "$rc"
 }
 # suite_owner_alive <pid> — true while the suite shell exists and is not a zombie.
 suite_owner_alive(){

@@ -4130,6 +4130,48 @@ printf 'OUT RC=%s\\n' "$?"
     assert qual.read_text(encoding="ascii") == "oldq\n"
 
 
+def test_suite_publish_updates_the_second_path_when_the_first_write_fails(tmp_path):
+    """A failed host publish still updates or clears the qualify path, and the call fails."""
+    host_dir = tmp_path / "host"
+    qual_dir = tmp_path / "qual"
+    host_dir.mkdir()
+    qual_dir.mkdir()
+    host = host_dir / "serving.pid"
+    qual = qual_dir / "serving.pid"
+    host.write_text("old\n", encoding="ascii")
+    qual.write_text("oldq\n", encoding="ascii")
+    bin_ = tmp_path / "bin"
+    _exe(bin_ / "mktemp", f"""
+out=$(/usr/bin/mktemp "$@") || exit $?
+case "$out" in
+  {host_dir}/*) chmod 000 "$out" || exit 1 ;;
+esac
+printf '%s\\n' "$out"
+""")
+    fn = _suite_publish_text()
+    script = f"""
+set +e
+{fn}
+HOST_PID_FILE="{host}"
+export A770B_QUALIFY_SERVING_PID_FILE="{qual}"
+suite_publish_serving_pid 4242
+printf 'OUT RC=%s\\n' "$?"
+printf 'OUT QUAL=%s\\n' "$(cat -- "{qual}")"
+suite_publish_serving_pid ""
+printf 'OUT CLEAR=%s\\n' "$?"
+"""
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_}:{env.get('PATH', '/usr/bin:/bin')}"
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OUT RC=1" in proc.stdout, proc.stdout + proc.stderr
+    assert "OUT QUAL=4242" in proc.stdout, proc.stdout + proc.stderr
+    assert host.read_text(encoding="ascii") == "old\n"
+    assert "OUT CLEAR=1" in proc.stdout, proc.stdout + proc.stderr
+    assert qual.read_text(encoding="ascii") == ""
+    assert host.read_text(encoding="ascii") == "old\n"
+
+
 def test_suite_publish_refuses_a_directory_target(tmp_path):
     """mv -T leaves a directory at either published path in place and returns failure."""
     host = tmp_path / "host.pid"
