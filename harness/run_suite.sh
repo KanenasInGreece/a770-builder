@@ -466,6 +466,13 @@ SUITE_OWNED_STRATA_FILE=""
 SUITE_OWNED_STRATA_REMOVE=0
 _caller_strata=${A770B_STRATA_OWNED_FILE:-}
 unset A770B_STRATA_OWNED_FILE
+# The floor file is the caller's when that path is a regular file, otherwise a
+# private temp. This is every real run, because a suite can stop on the floor
+# without being a ladder run, and an empty file is not a hit.
+SUITE_FLOOR_FILE=""
+SUITE_FLOOR_REMOVE=0
+_caller_floor=${A770B_STRATA_FLOOR_FILE:-}
+unset A770B_STRATA_FLOOR_FILE
 if [ "$DRYRUN" = 1 ]; then
   echo "[dry-run] export kit seat per stage: $KIT_SEAT_SRC -> $SEAT (fresh=$FRESH)"
   WT="$SEAT"
@@ -493,6 +500,14 @@ else
     fi
     export A770B_STRATA_OWNED_FILE="$SUITE_OWNED_STRATA_FILE"
   fi
+  if [ -n "$_caller_floor" ] && [ -f "$_caller_floor" ] && [ ! -L "$_caller_floor" ]; then
+    SUITE_FLOOR_FILE=$_caller_floor
+  else
+    mkdir -p "$A770B_DATA/logs"
+    SUITE_FLOOR_FILE=$(mktemp "$A770B_DATA/logs/suite-floor-XXXXXX.json")
+    SUITE_FLOOR_REMOVE=1
+  fi
+  export A770B_STRATA_FLOOR_FILE="$SUITE_FLOOR_FILE"
 fi
 
 # -$$: the date alone is second-resolution — two runs of the same profile inside one second (harness scripted
@@ -774,6 +789,9 @@ _suite_cleanup(){
   elif [ -n "$SUITE_OWNED_STRATA_FILE" ] && [ "$SUITE_OWNED_STRATA_REMOVE" = 1 ]; then
     rm -f "$SUITE_OWNED_STRATA_FILE"
   fi
+  if [ "$SUITE_FLOOR_REMOVE" = 1 ] && [ -n "$SUITE_FLOOR_FILE" ] && [ ! -L "$SUITE_FLOOR_FILE" ]; then
+    rm -f -- "$SUITE_FLOOR_FILE"
+  fi
   if [ "$stop_rc" -ne 0 ]; then
     echo "⚠ could not stop a server started by this suite run" >&2
     [ "$rc" -eq 0 ] && rc=1
@@ -821,7 +839,7 @@ try:
 except OSError:
     pass
 planned_ids = planned.split() if planned else []
-incomplete_outcomes = {"run_error", "run_interrupted", "verify_error", "verify_timeout", "timeout"}
+incomplete_outcomes = {"run_error", "run_interrupted", "verify_error", "verify_timeout", "timeout", "strata_floor_stop"}
 completed = [s for s in stages if s.get("id") and s.get("outcome") not in incomplete_outcomes]
 completed_ids = [s.get("id") for s in completed]
 doc = {
@@ -1426,6 +1444,13 @@ process_task(){
   else suite_publish_serving_pid "" || suite_warn_publish
   fi
   local wall_s=$SECONDS
+  if floor_stopped; then
+    emit_stage "$id" "$S_LANGUAGE" "" "" "" "" "$S_BUDGET" "" "null" "$wall_s" "" "" "" "$S_AXES" "$S_COUNTS" "$SEAT_STATE_JSON" "strata_floor_stop" "null" ""
+    write_results
+    SUITE_HAD_INCOMPLETE_STAGE=1
+    echo "stage $id: working=null outcome=strata_floor_stop"
+    return 5
+  fi
   case "$rrc" in
     2|3)
       echo "⛔ stage $id: run refused (exit $rrc) — stopping the suite" >&2
@@ -1665,15 +1690,24 @@ PY
   echo "stage $id: working=${working:-null} outcome=${outcome:-n/a} quality=$quality conformance=${conf_exit:-n/a} lines=$lines/${S_BUDGET:-none} wall=${wall_s}s requests=${requests:-n/a} tokens=${prompt_tokens:-n/a}+${gen_tokens:-n/a}"
 }
 
+floor_stopped() {
+  [ -n "${A770B_STRATA_FLOOR_FILE:-}" ] || return 1
+  [ -f "$A770B_STRATA_FLOOR_FILE" ] && [ ! -L "$A770B_STRATA_FLOOR_FILE" ] && [ -s "$A770B_STRATA_FLOOR_FILE" ]
+}
+
 rc=0
+if floor_stopped; then
+  echo "a floor stop already ended this run" >&2
+  exit 4
+fi
 for id in "${MAIN_IDS[@]}"; do
   process_task "$SUITE" stages "$id" || rc=$?
-  [ "$rc" = 2 ] || [ "$rc" = 3 ] && break
+  [ "$rc" = 2 ] || [ "$rc" = 3 ] || [ "$rc" = 5 ] && break
 done
-if { [ "$rc" != 2 ] && [ "$rc" != 3 ]; } && [ ${#REF_IDS[@]} -gt 0 ]; then
+if { [ "$rc" != 2 ] && [ "$rc" != 3 ] && [ "$rc" != 5 ]; } && [ ${#REF_IDS[@]} -gt 0 ]; then
   for id in "${REF_IDS[@]}"; do
     process_task "$REFFILE" entries "$id" || rc=$?
-    [ "$rc" = 2 ] || [ "$rc" = 3 ] && break
+    [ "$rc" = 2 ] || [ "$rc" = 3 ] || [ "$rc" = 5 ] && break
   done
 fi
 

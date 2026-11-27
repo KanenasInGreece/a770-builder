@@ -136,13 +136,20 @@ class QualifyError(Exception):
         self.code = code
 
 
-def required_statistic_fields():
-    """Ladder fields a complete export must have. Conditional ones may be absent."""
-    return [
+def required_statistic_fields(engine=None):
+    """Ladder fields a complete export must have. Conditional ones may be absent.
+
+    Strata has no flash-attention switch, and profiles.py rejects a null for
+    that key, so a Strata export leaves the key out instead of writing null.
+    """
+    fields = [
         row["field"]
         for row in REQUIRED_STATISTICS
         if row["who"] == "ladder" and not row["conditional"]
     ]
+    if engine == "strata":
+        return [field for field in fields if field != "flash_attention"]
+    return fields
 
 
 def counted_pass_bar() -> float:
@@ -156,12 +163,6 @@ def counted_pass_bar() -> float:
     if not match:
         raise QualifyError("counted-stage pass bar is not in profiles.py")
     return float(match.group(1))
-
-
-# qualify does not start Strata. The manual ladder measures it until a later cycle.
-STRATA_QUALIFY_REFUSAL = (
-    "Strata is not yet supported by qualify; the manual ladder is the way to measure it."
-)
 
 
 def canonical_engine(name: str) -> str:
@@ -658,8 +659,6 @@ def build_plan(argv: list[str]) -> dict:
     if unknown:
         raise QualifyError(f"unknown qualify option {unknown[0]}")
     engine = canonical_engine(args.engine)
-    if engine == "strata":
-        raise QualifyError(STRATA_QUALIFY_REFUSAL)
     refs = _positive_int(args.refs_repeat, "--refs-repeat")
     if args.absorb_max_s is None:
         absorb = None
@@ -680,8 +679,6 @@ def build_plan(argv: list[str]) -> dict:
             if engine != "llama.cpp":
                 raise QualifyError(NO_ROW)
             raise QualifyError(f"no registry row named {args.model!r}")
-    if row and row.get("engine") == "strata":
-        raise QualifyError(STRATA_QUALIFY_REFUSAL)
     if row and isinstance(row.get("engine"), str) and row["engine"] != engine:
         raise QualifyError(
             f"--engine {engine} is not the profile engine {row['engine']}"
@@ -1505,6 +1502,18 @@ _CHECK_PHASE = {
 }
 
 
+def _floor_stop(job: str, abort_reason: str | None, stages) -> bool:
+    """A host-memory floor stop is its own outcome, on the job or on one stage."""
+    if abort_reason == "strata_floor_stop":
+        return True
+    if _read_status(os.path.join(job, "status.json")).get("reason") == "strata_floor_stop":
+        return True
+    return any(
+        isinstance(stage, dict) and stage.get("outcome") == "strata_floor_stop"
+        for stage in stages or []
+    )
+
+
 def _abort_phase(job: str, abort_reason: str | None = None) -> str | None:
     if abort_reason:
         reason = abort_reason
@@ -1515,6 +1524,13 @@ def _abort_phase(job: str, abort_reason: str | None = None) -> str | None:
         reason = status.get("reason")
     if reason == "load":
         return "serve"
+    if reason == "strata_floor_stop":
+        # The runner publishes the terminal reason after summarise. The phase
+        # already on the status is the one that wrote the floor file.
+        phase = _read_status(os.path.join(job, "status.json")).get("phase")
+        if isinstance(phase, str) and phase:
+            return phase
+        return None
     if reason in _PHASE_ORDER:
         return reason
     return None
@@ -1654,7 +1670,14 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
     stages = suite.get("stages") if isinstance(suite.get("stages"), list) else []
     bar = counted_pass_bar()
     counted = [s for s in stages if isinstance(s, dict) and s.get("counts_toward_pass", True) is not False]
-    if counted:
+    if _floor_stop(job, abort_reason, stages):
+        # working null would otherwise count as a failed stage. The floor is
+        # not a quality result, so the ratio is left unknown.
+        passed = sum(1 for s in counted if s.get("working") is True) if counted else None
+        ratio = None
+        counted_result = "unknown"
+        counted_reason = "strata floor stop"
+    elif counted:
         passed = sum(1 for s in counted if s.get("working") is True)
         ratio = passed / len(counted)
         counted_result = "pass" if ratio >= bar else "fail"
@@ -1868,7 +1891,7 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
     ]
     missing = [
         field
-        for field in required_statistic_fields()
+        for field in required_statistic_fields(engine)
         if statistics.get(field) in (None, "unknown") or field not in statistics
     ]
     result = {
@@ -2051,9 +2074,27 @@ def _statistics_from(collected, plan, dotted, useful) -> dict:
     return stats
 
 
+def _report_floor_stop(job: str, result: dict) -> bool:
+    """True when the job or a stage stopped because host RAM crossed the floor."""
+    if any(
+        isinstance(item, dict) and item.get("reason") == "strata floor stop"
+        for item in result.get("checks") or []
+    ):
+        return True
+    suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    if any(
+        isinstance(stage, dict) and stage.get("outcome") == "strata_floor_stop"
+        for stage in suite.get("stages") or []
+    ):
+        return True
+    return _read_status(os.path.join(job, "status.json")).get("reason") == "strata_floor_stop"
+
+
 def render_report(job: str, result: dict) -> str:
     """The same facts as result.json, each rate or memory figure naming its depth."""
     lines = []
+    if _report_floor_stop(job, result):
+        lines.append("STRATA_FLOOR_STOP")
     if result.get("fit_result"):
         lines.append("FIT RESULT. This is a fit measurement, never a quality pass.")
         lines.append("")
@@ -2493,7 +2534,7 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
     stats = result.get("statistics") if isinstance(result.get("statistics"), dict) else {}
     missing = [
         field
-        for field in required_statistic_fields()
+        for field in required_statistic_fields(plan.get("engine"))
         if field not in stats or stats.get(field) in (None, "unknown")
     ]
     if missing and not allow_incomplete:
@@ -2523,6 +2564,8 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
                 speed.setdefault("prefill_tps", {"8k": None, "32k": None, "64k": None, "100k": None})
             elif field in row and not isinstance(row.get(field), dict):
                 row[field] = None
+    if plan.get("engine") == "strata":
+        row.pop("flash_attention", None)
     names = list(LADDER_HUMAN_NAMES)
     if isinstance(row.get("timeout_s"), str):
         names.append("timeout_s")
@@ -3367,9 +3410,41 @@ def _vram_peak(job: str):
     return peak
 
 
+def _plan_engine(job: str) -> str:
+    path = os.path.join(job, "plan.json")
+    if not os.path.isfile(path) or os.path.islink(path):
+        return ""
+    try:
+        engine = _load_json(path).get("engine")
+    except QualifyError:
+        return ""
+    return engine if isinstance(engine, str) else ""
+
+
+def _strata_pinned_gib(path: str):
+    """GiB from Strata's own pinned-RAM observation. host_buffers_mib is ignored."""
+    if not path or os.path.islink(path) or not os.path.isfile(path):
+        return None
+    try:
+        doc = _load_json(path)
+    except QualifyError:
+        return None
+    observed = doc.get("observed_pinned_host_memory")
+    if not isinstance(observed, dict):
+        return None
+    value = observed.get("value_bytes")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return value / float(1024 ** 3)
+
+
 def _ram_from_evidence(job: str, load_ok: bool = False):
-    candidates = [os.path.join(job, "evidence", "engine-evidence.json")]
-    # A global pointer from another run is not this job's measurement.
+    job_copy = os.path.join(job, "evidence", "engine-evidence.json")
+    # Phase 5 can rewrite the global pointer before assemble. Strata's row
+    # uses only this job's copy of the pinned-RAM observation.
+    if _plan_engine(job) == "strata":
+        return _strata_pinned_gib(job_copy)
+    candidates = [job_copy]
     if load_ok is True:
         data = os.environ.get("A770B_DATA") or ""
         pointer = os.path.join(data, "logs", "serve-evidence.path") if data else ""

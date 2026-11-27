@@ -15,7 +15,7 @@ refuse_instance() {
   exit 3
 }
 case "${1:-}" in
-  status|id|pid|model|tokenizer|config-model|verify|observe) exec "${managed[@]}" "$@" ;;
+  status|id|pid|model|tokenizer|config-model|verify|observe|gate) exec "${managed[@]}" "$@" ;;
   stop-owned)
     card_lock
     "${managed[@]}" "$@"
@@ -80,5 +80,5 @@ profiling_contract.merge_receipt_file(evidence, receipt_path)
 PY
     printf '%s\n' "$evidence"
     ;;
-  *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | stop-owned <id> | status | id | pid | model | tokenizer <config> | config-model <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
+  *) echo "usage: serve_strata.sh start <config> <ctx> | stop | stop-id <id> | stop-owned <id> | status | id | pid | model | tokenizer <config> | config-model <config> | gate <config> | verify <model> --ctx <n>" >&2; exit 2 ;;
 esac

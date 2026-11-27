@@ -470,9 +470,41 @@ def health_matches(state, key):
             and hmac.compare_digest(mac, state["attestation"]))
 
 
+def memavailable_mib():
+    """Whole MiB of MemAvailable. None when the file has no reading, so the floor still refuses."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as stream:
+            for line in stream:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def ram_ok(minimum):
-    with open("/proc/meminfo", encoding="ascii") as stream:
-        return any(line.startswith("MemAvailable:") and int(line.split()[1]) >= minimum * 1024 for line in stream)
+    available = memavailable_mib()
+    if available is None:
+        return False
+    return available >= minimum
+
+
+def write_floor_stop(phase, floor_mib, instance, path=None):
+    """Replace the caller's floor file. A non-empty file is the runner's own outcome."""
+    target = path if path else os.environ.get("A770B_STRATA_FLOOR_FILE")
+    if not target:
+        return
+    dest = Path(target)
+    if dest.is_symlink():
+        raise ValueError("refusing a symlink floor file")
+    if not dest.parent.is_dir():
+        return
+    write_state(dest, {
+        "phase": phase,
+        "available_mib": memavailable_mib(),
+        "floor_mib": int(floor_mib),
+        "instance": instance,
+    })
 
 
 def write_enforcement_receipt(enforcement):
@@ -584,6 +616,9 @@ def supervise(plan_path, gate_fd):
         gate_write = None
         while server.poll() is None and not stopping:
             if not ram_ok(plan["min_ram_mib"]):
+                write_floor_stop(
+                    "running", plan["min_ram_mib"], plan.get("id"), plan.get("floor_file"),
+                )
                 print("Strata stopped: host MemAvailable fell below the configured floor", file=sys.stderr, flush=True)
                 break
             time.sleep(0.25)
@@ -606,7 +641,9 @@ def start(path, config, ctx, timeout):
     minimum = int(os.environ["A770B_MIN_AVAIL_MB"])
     if not 1 <= port <= 65535 or minimum < 1 or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("invalid port, host memory floor or ready timeout")
+    floor_path = os.environ.get("A770B_STRATA_FLOOR_FILE") or None
     if not ram_ok(minimum):
+        write_floor_stop("launch", minimum, None, floor_path)
         raise ValueError("host MemAvailable is below the configured floor")
     write_enforcement_receipt("launch")
     key = read_key()
@@ -631,6 +668,8 @@ def start(path, config, ctx, timeout):
     snapshot.write_text(json.dumps(doc))
     plan = {**evidence, "id": instance, "state": str(path), "snapshot": str(snapshot), "ctx": ctx, "port": port,
             "python": str(python), "terminal": str(terminal), "min_ram_mib": minimum, "run": str(run)}
+    if floor_path:
+        plan["floor_file"] = floor_path
     plan_path = run / "launch.json"
     write_state(plan_path, plan)
     gate_read = gate_write = proc = None
@@ -691,6 +730,14 @@ def start(path, config, ctx, timeout):
             signal.signal(signum, signal.SIG_DFL if handler is None else handler)
 
 
+def gate(config):
+    """Check the checkout, the interpreter and the card, then name the engine digest."""
+    _doc, evidence = prepare_config(Path(config))
+    source_inputs()
+    require_selected_card(evidence["selector"])
+    print(f"strata@sha256:{evidence['engine_sha256']}")
+
+
 def admit(path):
     """Record continuous floor enforcement only after the supervised server is verified ready."""
     state = read_state(path)
@@ -698,6 +745,7 @@ def admit(path):
     if not state or not process_alive(state) or not health_matches(state, key):
         raise ValueError("managed Strata instance is not verified healthy")
     if not ram_ok(state["min_ram_mib"]):
+        write_floor_stop("admit", state["min_ram_mib"], state.get("id"))
         return False
     write_enforcement_receipt("continuous")
     return True
@@ -707,7 +755,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("start", "status", "stop", "id", "pid", "model", "tokenizer",
                                              "config-model", "verify", "observe", "admit", "supervise",
-                                             "stop-owned"))
+                                             "stop-owned", "gate"))
     parser.add_argument("value", nargs="?")
     parser.add_argument("--gate-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--ctx", type=int, default=0)
@@ -725,6 +773,11 @@ def main():
             return 0
         if args.command == "observe":
             print(observe_host_memory(Path(args.value).resolve()))
+            return 0
+        if args.command == "gate":
+            if not args.value:
+                raise ValueError("gate needs a prepared Strata config")
+            gate(Path(args.value))
             return 0
         path = Path(os.environ["A770B_DATA"]).resolve() / "logs/strata-instance.json"
         if args.command == "admit":

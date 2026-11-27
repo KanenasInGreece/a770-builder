@@ -55,7 +55,7 @@ plain_trunc() {
 }
 
 usage() {
-  printf '%s\n' "usage: qualify.sh start --engine <llama|llama.cpp|vllm|sglang> --model <name> [--profiles-file <file>] [--ctx N] [--backend vulkan|sycl] [--tokenizer <dir>] [--kv T] [--kv-v T] [--extra <flags>] [--reasoning on|off] [--reasoning-budget N] [--stages a,b] [--refs-repeat N] [--absorb-max-s N] [--skip-window] [--no-suite] [--fit-only] [--dry-run] [--foreground] | status [job] | wait <job> [--timeout S] | result <job> [--json] | export <job> [--out <file>] [--allow-incomplete] | stop <job> | list" >&2
+  printf '%s\n' "usage: qualify.sh start --engine <llama|llama.cpp|vllm|sglang|strata> --model <name> [--profiles-file <file>] [--ctx N] [--backend vulkan|sycl] [--tokenizer <dir>] [--kv T] [--kv-v T] [--extra <flags>] [--reasoning on|off] [--reasoning-budget N] [--stages a,b] [--refs-repeat N] [--absorb-max-s N] [--skip-window] [--no-suite] [--fit-only] [--dry-run] [--foreground] | status [job] | wait <job> [--timeout S] | result <job> [--json] | export <job> [--out <file>] [--allow-incomplete] | stop <job> | list" >&2
   exit 2
 }
 
@@ -710,6 +710,19 @@ fail_job() {
   MARKER_NAME=FAILED
 }
 
+# A non-empty regular file is a floor stop. The truncated file at run start
+# is empty, so it is not a hit, and a symlink is never followed.
+floor_hit() {
+  local path=${A770B_STRATA_FLOOR_FILE:-$job/strata-floor.json}
+  [ -n "$path" ] && [ -f "$path" ] && [ ! -L "$path" ] && [ -s "$path" ]
+}
+
+floor_stop_phase() {
+  floor_hit || return 1
+  fail_job strata_floor_stop
+  return 0
+}
+
 # Each non-null field of the plan's thinking object becomes THINKING_<FIELD>.
 # A null one is unset, so a value inherited from the caller never reaches a serve.
 export_thinking() {
@@ -798,6 +811,11 @@ write_engine_evidence() {
     target=$(head -n 1 "$pointer" | tr -d '[:space:]' || true)
     if [ -n "$target" ] && [ -f "$target" ] && [ ! -L "$target" ]; then
       refuse_link "$dest" || return 0
+      # observe writes pinned RAM into the evidence file. The copy then
+      # belongs to this job, so a later pointer rewrite cannot change it.
+      if [ "$engine" = strata ]; then
+        bash "$here/serve_strata.sh" observe "$target" >/dev/null 2>&1 || true
+      fi
       cp -- "$target" "$dest" || true
       return 0
     fi
@@ -1149,7 +1167,7 @@ run_phases() {
   elif [ "$engine" = strata ]; then
     local cfg
     cfg=$(model_path "$(pget artifact)")
-    run_tool gate bash "$here/serve_strata.sh" config-model "$cfg" || { fail_job preflight; return; }
+    run_tool gate bash "$here/serve_strata.sh" gate "$cfg" || { fail_job preflight; return; }
     refuse_link "$job/phases/gate.log" || { fail_job preflight; return; }
     bash "$here/serve_strata.sh" tokenizer "$cfg" >>"$job/phases/gate.log" 2>&1 || { fail_job preflight; return; }
     resolve_alias
@@ -1176,10 +1194,11 @@ run_phases() {
   phase serve
   sample_idle
   start_observers
+  local serve_rc=0
   if [ "$STUB" = 1 ]; then
     local -a serve_argv=()
     mapfile -t serve_argv < <(pget serve_argv)
-    run_tool serve a770b-qualify-serve "${serve_argv[@]}" || { fail_job load; return; }
+    run_tool serve a770b-qualify-serve "${serve_argv[@]}" || serve_rc=$?
   elif [ "$engine" = "llama.cpp" ]; then
     local -a extra_argv=() clean=()
     local item
@@ -1188,18 +1207,31 @@ run_phases() {
       [ -n "$item" ] && clean+=("$item")
     done
     if ! run_tool_locked serve bash "$here/serve_compose.sh" start "$(pget artifact)" "$CTX" "${clean[@]}"; then
-      fail_job load
-      return
+      serve_rc=$?
     fi
-    capture_cid || { fail_job load; return; }
+    if [ "$serve_rc" = 0 ]; then
+      capture_cid || serve_rc=$?
+    fi
   else
-    copy_profiles || { fail_job load; return; }
-    if ! run_tool_locked serve bash "$A770B_PROJECT/skills/local-build/scripts/local-build.sh" serve "$PROFILE_NAME"; then
-      fail_job load
-      return
+    copy_profiles || serve_rc=$?
+    if [ "$serve_rc" = 0 ]; then
+      if ! run_tool_locked serve bash "$A770B_PROJECT/skills/local-build/scripts/local-build.sh" serve "$PROFILE_NAME"; then
+        serve_rc=$?
+      fi
     fi
-    capture_cid || { fail_job load; return; }
-    resolve_alias
+    if [ "$serve_rc" = 0 ]; then
+      capture_cid || serve_rc=$?
+      resolve_alias
+    fi
+  fi
+  # A floor written during a failed serve is the outcome. load is only the
+  # reason when the floor file is still empty.
+  if floor_stop_phase; then
+    return
+  fi
+  if [ "$serve_rc" != 0 ]; then
+    fail_job load
+    return
   fi
   if [ "$STUB" != 1 ]; then
     note_serve_vram || true
@@ -1209,11 +1241,17 @@ run_phases() {
   fi
   phase smoke
   run_tool smoke bash "$here/qualify_smoke.sh" "$job" || true
+  if floor_stop_phase; then
+    return
+  fi
   phase speed
   if [ "$STUB" = 1 ]; then
     run_tool speed a770b-qualify-speed --ctx "$CTX" || true
   else
     measure_speed || true
+  fi
+  if floor_stop_phase; then
+    return
   fi
   if [ "$(pget skip_window)" != 1 ]; then
     phase window
@@ -1223,21 +1261,35 @@ run_phases() {
       measure_window || true
     fi
   fi
+  if floor_stop_phase; then
+    return
+  fi
   phase depth
   if [ "$STUB" = 1 ]; then
     run_tool depth a770b-qualify-depth --gen "$(pget gen)" || true
   else
     measure_depth || true
   fi
+  if floor_stop_phase; then
+    return
+  fi
   snap_metrics after-depth || true
   phase memory
   if [ "$STUB" = 1 ]; then
     run_tool memory a770b-qualify-memory --interval 5 --owner-pid "$$" || true
   fi
+  if floor_stop_phase; then
+    return
+  fi
   phase stop-server
   if ! stop_server; then
     fail_job stop-server
     return
+  fi
+  # stop writes the pinned-RAM observation too. Copy it before the suite,
+  # and only after this stop succeeded. A stub has no engine evidence.
+  if [ "$STUB" != 1 ]; then
+    write_engine_evidence || true
   fi
   if [ "$(pget fit_only)" = 1 ] || [ "$(pget no_suite)" = 1 ]; then
     :
@@ -1252,6 +1304,9 @@ run_phases() {
     local stages pass refs left suite_rc=0
     stages=$(pget stages | paste -sd, -)
     run_suite_once "$stages" 1 || suite_rc=$?
+    if floor_stop_phase; then
+      return
+    fi
     if [ "$suite_rc" = 125 ]; then
       fail_job suite
       return
@@ -1265,6 +1320,9 @@ run_phases() {
         [ -f "$job/DRIVER_ERROR" ] && break
         suite_rc=0
         run_suite_once "$refs" "$pass" || suite_rc=$?
+        if floor_stop_phase; then
+          return
+        fi
         if [ "$suite_rc" = 125 ]; then
           fail_job suite
           return
@@ -1301,6 +1359,8 @@ cmd_run() {
   export A770B_OWNED_CIDS_FILE=$job/owned.cids
   plain_trunc "$job/strata-owned.ids" || die "refusing a symlink owned-instance list"
   export A770B_STRATA_OWNED_FILE=$job/strata-owned.ids
+  plain_trunc "$job/strata-floor.json" || die "refusing a symlink floor file"
+  export A770B_STRATA_FLOOR_FILE=$job/strata-floor.json
   if ! take_card; then
     merge '{"state":"failed","reason":"lock","event":"lock refused"}'
     plain_trunc "$job/FAILED" || die "refusing a symlink marker"
@@ -1404,9 +1464,8 @@ cmd_start() {
     "${py[@]}" plan "$@"
     return $?
   fi
-  # plan creates nothing. A refusal, including Strata, returns before any
-  # temp file or job directory exists. The payload stays in the shell until
-  # the plan is accepted.
+  # plan creates nothing. A refusal returns before any job directory exists.
+  # The payload stays in the shell until the plan is accepted.
   local payload tmp
   if ! payload=$("${py[@]}" plan "$@"); then
     return 2

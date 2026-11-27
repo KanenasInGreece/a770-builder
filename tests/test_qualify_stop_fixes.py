@@ -152,10 +152,14 @@ def _fit_only(env):
     return job, code, out + err[-3000:]
 
 
-# A vLLM or SGLang load takes the second call site.
+# A vLLM or SGLang load takes the second call site. A floor file written
+# during that serve is judged before either failure becomes load.
 def test_both_capture_call_sites_fail_the_load():
     text = Path(QUALIFY).read_text(encoding="utf-8")
-    assert text.count("capture_cid || { fail_job load; return; }") == 2
+    start = text.index("local serve_rc=0")
+    block = text[start:text.index("phase smoke", start)]
+    assert block.count("capture_cid || serve_rc=$?") == 2
+    assert block.index("floor_stop_phase") < block.index("fail_job load")
 
 
 # --- 2.2 a failed stop is reported

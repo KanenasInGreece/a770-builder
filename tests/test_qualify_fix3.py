@@ -98,17 +98,17 @@ def test_build_plan_resolves_a_profile_tokenizer_without_a_flag(tmp_path, monkey
     cfg.write_text(json.dumps({"tokenizer": str(tok)}) + "\n", encoding="utf-8")
     row = _min_row("strata")
     row["model"] = "e2e.strata.json"
-    # qualify start refuses Strata. The resolver stays for the later cycle.
     assert ql._resolve_plan_tokenizer(None, "strata", row) == str(tok)
-    with pytest.raises(ql.QualifyError, match="not yet supported by qualify"):
-        ql.build_plan(
-            [
-                "--engine", "strata",
-                "--model", "e2e-row",
-                "--profiles-file", str(_profile(tmp_path, "strata", "e2e-row", row)),
-                "--stages", "s0-design",
-            ]
-        )
+    plan = ql.build_plan(
+        [
+            "--engine", "strata",
+            "--model", "e2e-row",
+            "--profiles-file", str(_profile(tmp_path, "strata", "e2e-row", row)),
+            "--stages", "s0-design",
+        ]
+    )
+    assert plan["engine"] == "strata"
+    assert plan["tokenizer"] == str(tok)
 
 
 def test_statistics_follow_an_exportable_suite():
