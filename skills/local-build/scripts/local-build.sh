@@ -57,6 +57,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in version|--version|-V) version; exit 0;; check-update) check_update; exit $?;; esac
 fi
 [ -r "$A770B_PROJECT/harness/env.sh" ] || die "project not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)"
+# qualify refuses a symlinked data directory; env.sh must not create through it first.
+[ "${1:-}" != qualify ] || export A770B_DEFER_DATA_DIRS=1
 . "$A770B_PROJECT/harness/env.sh" || { [ "${1:-}" = "doctor" ] || exit 2; }; . "$A770B_PROJECT/harness/guard.sh"
 # shellcheck disable=SC1091
 . "$A770B_PROJECT/harness/serve_envelope.sh"

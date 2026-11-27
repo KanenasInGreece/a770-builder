@@ -1071,8 +1071,13 @@ fi
 mkdir -p "$A770B_DATA/logs"
 printf '%s\n' "$CREATED_CID" > "$CIDFILE"
 printf '%s\n' "$_inv_id" > "$INVFILE"
-if [ -n "${A770B_OWNED_CIDS_FILE:-}" ] && [ -f "$A770B_OWNED_CIDS_FILE" ] && [ ! -L "$A770B_OWNED_CIDS_FILE" ]; then
-  printf '%s %s\n' "$CREATED_CID" "$_inv_id" >> "$A770B_OWNED_CIDS_FILE"
+# The caller stops only what its list names, so a container that cannot be listed is
+# stopped here.
+if [ -n "${A770B_OWNED_CIDS_FILE:-}" ]; then
+  if [ ! -f "$A770B_OWNED_CIDS_FILE" ] || [ -L "$A770B_OWNED_CIDS_FILE" ] \
+      || ! { printf '%s %s\n' "$CREATED_CID" "$_inv_id" >> "$A770B_OWNED_CIDS_FILE"; } 2>/dev/null; then
+    _fail_started 3 "⛔ cannot record container $CREATED_CID in $A770B_OWNED_CIDS_FILE"
+  fi
 fi
 # 150 tries, 2s apart, is the wait a load is given. A test may shorten it; an unset value does not.
 # The cap is the try count, not timeout_s. A class is printed only when it changes.
