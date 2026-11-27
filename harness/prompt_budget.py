@@ -97,6 +97,9 @@ def _load_tokenizer(tokenizer_json):
     except ImportError:
         _reexec_with_tokenizers()
     loaded = Tokenizer.from_file(tokenizer_json)
+    # A saved truncation or padding would make the count a setting, not the text.
+    loaded.no_truncation()
+    loaded.no_padding()
     _TOKENIZER_CACHE[tokenizer_json] = loaded
     return loaded
 

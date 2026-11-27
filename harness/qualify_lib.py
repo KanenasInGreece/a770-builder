@@ -253,6 +253,9 @@ def _token_counts(tokenizer_json: str, texts: list[str]) -> list[int] | None:
         from tokenizers import Tokenizer
 
         loaded = Tokenizer.from_file(tokenizer_json)
+        # A saved truncation or padding would make the count a setting, not the text.
+        loaded.no_truncation()
+        loaded.no_padding()
         return [len(loaded.encode(text, add_special_tokens=False).ids) for text in texts]
     except ImportError:
         pass
@@ -265,6 +268,8 @@ def _token_counts(tokenizer_json: str, texts: list[str]) -> list[int] | None:
         "from tokenizers import Tokenizer\n"
         "raw=json.load(sys.stdin)\n"
         "loaded=Tokenizer.from_file(raw['tokenizer'])\n"
+        "loaded.no_truncation()\n"
+        "loaded.no_padding()\n"
         "json.dump([len(loaded.encode(text, add_special_tokens=False).ids) for text in raw['texts']], sys.stdout)\n"
     )
     try:
@@ -628,6 +633,24 @@ def _resolve_plan_tokenizer(explicit: str | None, engine: str, row: dict | None)
     return _directory_tokenizer(host)
 
 
+THINKING_FIELDS = ("mode", "effort", "budget", "budget_message", "preserve")
+
+
+def _refuse_row_thinking(args, row: dict, thinking: dict) -> None:
+    """Suite launches use the row's values, so a different flag would split the run."""
+    mode = thinking.get("mode")
+    if mode is None:
+        mode = row.get("reasoning")
+    for flag, asked, have in (
+        ("--reasoning", args.reasoning, mode),
+        ("--reasoning-budget", args.reasoning_budget, thinking.get("budget")),
+    ):
+        if asked is None or (have is not None and str(asked) == str(have)):
+            continue
+        shown = "none" if have is None else have
+        raise QualifyError(f"{flag} {asked} is not the profile value {shown}")
+
+
 def build_plan(argv: list[str]) -> dict:
     """Validate a start line. Creates nothing. Unmapped engines never hit the contract."""
     parser = _parser()
@@ -726,6 +749,8 @@ def build_plan(argv: list[str]) -> dict:
         )
 
     thinking = row.get("thinking") if row and isinstance(row.get("thinking"), dict) else {}
+    if row is not None:
+        _refuse_row_thinking(args, row, thinking)
     reasoning = args.reasoning
     if reasoning is None and thinking.get("mode") in ("on", "off"):
         reasoning = thinking["mode"]
@@ -736,6 +761,12 @@ def build_plan(argv: list[str]) -> dict:
     budget = args.reasoning_budget
     if budget is None and "budget" in thinking:
         budget = thinking.get("budget")
+    # A named row is served with its own settings; a bare GGUF with the plan's.
+    if row is not None:
+        served_thinking = {key: thinking.get(key) for key in THINKING_FIELDS}
+    else:
+        served_thinking = dict.fromkeys(THINKING_FIELDS)
+        served_thinking.update(mode=reasoning, budget=args.reasoning_budget)
     end, gen = far_end_and_gen(ctx, reasoning, budget)
     if end <= 8000:
         raise QualifyError(
@@ -791,6 +822,7 @@ def build_plan(argv: list[str]) -> dict:
         "extra": extra_tokens,
         "reasoning": reasoning,
         "reasoning_budget": budget,
+        "thinking": served_thinking,
         "stages": stages,
         "refs_repeat": refs,
         "refs_apply": refs_apply,
@@ -1873,6 +1905,7 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
         "opencode": job_doc.get("opencode", "unknown"),
         "artifact": plan.get("artifact") or os.path.basename(str(plan.get("model") or "")),
         "ram_gb_extra": collected.get("ram_gb_extra", "unknown"),
+        "thinking": plan.get("thinking"),
         "timeout_s": _timeout_seconds(stages),
         "profile_speed": collected.get("profile_speed") if isinstance(collected.get("profile_speed"), dict) else {},
         "depth_not_measured": collected.get("depth_not_measured"),
@@ -1912,8 +1945,6 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
         )
         annotated.add(check.get("name"))
     _note_skipped(job, result, checks, by_phase, annotated, abort_reason)
-    if empties:
-        result["checks"] = checks
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
     _write_private(os.path.join(job, "report.md"), render_report(job, result))
     return result
@@ -3479,8 +3510,6 @@ def assemble(job: str) -> None:
     tasks = _tasks_from_stages(suite.get("stages") if isinstance(suite.get("stages"), list) else [])
     if tasks:
         collected["measured_tasks"] = tasks
-    if isinstance(collected.get("delivered"), dict):
-        pass
     write_note(job, "collected.json", collected)
 
 

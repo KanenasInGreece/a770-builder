@@ -256,12 +256,25 @@ def owner_alive(pid):
     return not fields or fields[0] not in {"Z", "X"}
 
 
+def pid_starttime(pid, proc_root="/proc"):
+    """Field 22 of /proc/<pid>/stat, or None. It tells a reused pid from the first one."""
+    try:
+        stat = (Path(proc_root) / str(int(pid)) / "stat").read_text(
+            encoding="ascii", errors="replace")
+    except (OSError, ValueError):
+        return None
+    # The command name may hold spaces; the numbered fields resume after its ")".
+    fields = stat.rsplit(")", 1)[-1].split()
+    return fields[19] if len(fields) > 19 else None
+
+
 def monitor(out_path, interval=1.0, pid_file=None, meminfo="/proc/meminfo", cgroup_root="/sys/fs/cgroup",
             min_floor_mib=None, min_floor_enforcement="none", enforcement_file=None, owner_pid=None):
     """Append timestamped host and serving-process samples until the caller stops this monitor PID.
 
     With `owner_pid`, the monitor also ends on its own once that process is gone.
     """
+    seen_pid = seen_start = None
     with open(out_path, "a", encoding="utf-8", buffering=1) as stream:
         while True:
             if owner_pid is not None and not owner_alive(owner_pid):
@@ -282,6 +295,13 @@ def monitor(out_path, interval=1.0, pid_file=None, meminfo="/proc/meminfo", cgro
                     target_pid = int(raw) if raw.isdigit() else None
                 except OSError:
                     pass
+            if target_pid is not None:
+                started = pid_starttime(target_pid)
+                if target_pid != seen_pid:
+                    seen_pid, seen_start = target_pid, started
+                elif started != seen_start:
+                    # Another process now holds the number the pid file names.
+                    target_pid = None
             stream.write(json.dumps(sample(meminfo, "/proc/self/cgroup", cgroup_root,
                                            target_pid=target_pid, min_floor_mib=min_floor_mib,
                                            min_floor_enforcement=enforcement),
