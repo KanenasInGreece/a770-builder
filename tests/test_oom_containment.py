@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Round A containment. Each test fails when its invariant is broken.
-
-OOM runs use a test-only MemoryMax on an a770b-test-* unit. They skip when
-the user systemd bus is absent. Nothing here writes the workstation log tree.
+"""Sandbox and OOM containment tests keep A770B_DATA under tmp_path; when the user
+systemd manager is available, some default tests also create transient user scopes
+under a770b-sandbox.slice and write unit events to the user journal. Real kernel OOM
+tests use a test-only MemoryMax on an a770b-test-* scope and require A770B_OOM_TESTS=1
+because they write kernel OOM log entries and raise desktop notifications.
 """
 
 import fcntl

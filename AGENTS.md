@@ -14,7 +14,7 @@ supports llama.cpp (Vulkan and SYCL), vLLM, SGLang and Strata. OpenCode calls th
 | Pick a card | `bash skills/local-build/scripts/local-build.sh profiles` / `menu` |
 | Profile a model | `bash skills/local-build/scripts/local-build.sh qualify start --engine <llama or llama.cpp, vllm, or sglang> --model <name>`, then `qualify result <job>` and `qualify export <job>` |
 | Validate the registry | `python3 harness/profiles.py check` |
-| Test | `uv run --with pytest python -m pytest -q tests/` |
+| Test | `uv run --with pytest python -m pytest -q tests/` (real kernel OOM tests require `A770B_OOM_TESTS=1` and raise desktop notifications; some default tests also create transient user scopes) |
 | Self-test | `env -u A770B_CARD_MODE -u A770B_PROFILES_FILE -u A770B_CORPUS_FILE A770B_PROJECT=$PWD bash tests/selftest.sh` |
 
 ## A profile

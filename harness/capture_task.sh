@@ -112,8 +112,8 @@ echo; echo "## opencode transcript tail"; echo '```'; { grep -vE '^\s*$' "$BLOG"
 echo; echo "## server-side timings during the run"
 capture_timings
 echo; echo "## sandbox oom"
-# Only an early stop, before sandbox_run.sh writes this record, leaves no file.
-# A stop after that write leaves the record. Capture still succeeds.
+# An early stop can leave this run without an OOM record.
+# Capture reports not recorded when the record is absent or unreadable.
 if [ -f "$A770B_DATA/logs/sandbox-oom.json" ] && [ ! -L "$A770B_DATA/logs/sandbox-oom.json" ]; then
   python3 -I -B -c 'import json,sys
 try:

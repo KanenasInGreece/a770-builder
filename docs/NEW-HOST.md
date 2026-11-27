@@ -7,10 +7,11 @@ machine-specific values (PCI BDF, group ids, image digest, keys) are gitignored 
 
 - **Linux** with a kernel new enough for the Intel Xe/i915 driver (6.8+). The A770 is a DG2 / Xe1 card.
 - **A container runtime**: `docker` (with the compose plugin) or `podman`. The SYCL image is linux/amd64.
-- **Host tools**: `git`, `curl`, `python3`, `bubblewrap` (`bwrap`), `socat`, `uv` 0.13.4 or newer, and **OpenCode 1**
-  (qualified at 1.19.6). A profile run installs that release when `A770B_OPENCODE_BIN` is empty and `PATH` is
-  not OpenCode 1, and it does not grade the profile for the mismatch. An explicit directory is used as given.
-  `doctor` is the check. The seat runs offline in a bubblewrap sandbox and needs these on `PATH`.
+- **Host tools**: `git`, `curl`, `python3`, `bubblewrap` (`bwrap`), `socat`, `setpriv`, `uv` 0.13.4 or newer, and
+  **OpenCode 1** (qualified at 1.19.6), plus optional `systemd-run`, `systemctl` and `journalctl` for transient
+  user-scope OOM tracking. A profile run installs that release when `A770B_OPENCODE_BIN` is empty and
+  `PATH` is not OpenCode 1, and it does not grade the profile for the mismatch. An explicit directory is used as given.
+  `doctor` checks the required tools except `setpriv`; `sandbox_run.sh` requires `setpriv` at startup.
   Package installs need that uv. [`SECURITY.md`](../SECURITY.md) names the pip and certifi versions that belong with it.
 - **One operator.** The account that runs the skill must be in `docker` (or the equivalent for Podman) and `render`
   (usually `video` as well), and must open `/dev/dri/renderD*`. Do not install this skill for a second OS account
