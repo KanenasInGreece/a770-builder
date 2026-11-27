@@ -639,8 +639,12 @@ run_suite_once() {
     cmd=(bash "$here/run_suite.sh" "${args[@]}")
   fi
   local log="$job/phases/suite-pass-${pass}.log"
-  refuse_link "$job/evidence/argv.log" || return 2
-  refuse_link "$log" || return 2
+  # 125 means this harness could not run or record the suite. Every refusal is checked
+  # before the child starts, and 2 stays a run_suite.sh exit.
+  refuse_link "$job/evidence/argv.log" || return 125
+  refuse_link "$log" || return 125
+  plain_trunc "$job/suite.pid" || return 125
+  refuse_link "$job/suite.start" || return 125
   printf '%s\n' "suite: ${cmd[*]}" >> "$job/evidence/argv.log"
   printf '%s\n' "profiles-file: ${A770B_PROFILES_FILE:-}" >> "$job/evidence/argv.log"
   # The suite's cleanup stops only the containers this suite recorded.
@@ -648,14 +652,19 @@ run_suite_once() {
   export A770B_QUALIFY_SERVING_PID_FILE="$job/evidence/serving.pid"
   A770B_LADDER_RUN=1 A770B_PROFILES_FILE=${A770B_PROFILES_FILE:-} A770B_SEAT="$job/scratch/seat" "${cmd[@]}" >"$log" 2>&1 &
   CHILD=$!
-  plain_trunc "$job/suite.pid" || return 2
-  printf '%s\n' "$CHILD" > "$job/suite.pid"
-  refuse_link "$job/suite.start" || return 2
-  "${py[@]}" starttime "$CHILD" > "$job/suite.start" 2>/dev/null || true
+  local started
+  started=$("${py[@]}" starttime "$CHILD" 2>/dev/null || true)
+  # An unrecorded suite cannot be stopped from outside, so it does not run.
+  if ! printf '%s\n' "$CHILD" > "$job/suite.pid" || ! printf '%s\n' "$started" > "$job/suite.start"; then
+    end_child
+    return 125
+  fi
   chmod 600 "$job/suite.start" 2>/dev/null || true
   local rc=0
   wait "$CHILD" || rc=$?
   CHILD=
+  plain_trunc "$job/suite.pid" || true
+  plain_trunc "$job/suite.start" || true
   "${py[@]}" apply-phase --job "$job" --phase suite --rc "$rc" --log "phases/suite-pass-${pass}.log" < "$log" >/dev/null || true
   return "$rc"
 }
@@ -1203,9 +1212,13 @@ run_phases() {
     take_seat "$job/scratch/seat" || { fail_job lock; return; }
     plain_trunc "$job/stage-start" || { fail_job preflight; return; }
     date +%s > "$job/stage-start"
-    local stages pass refs left
+    local stages pass refs left suite_rc=0
     stages=$(pget stages | paste -sd, -)
-    run_suite_once "$stages" 1 || true
+    run_suite_once "$stages" 1 || suite_rc=$?
+    if [ "$suite_rc" = 125 ]; then
+      fail_job suite
+      return
+    fi
     if [ "$(pget refs_apply)" = 1 ] && [ "$(pget refs_repeat)" -gt 1 ] && [ ! -f "$job/DRIVER_ERROR" ]; then
       left=$(( $(pget refs_repeat) - 1 ))
       refs=$(pget reference_stages | paste -sd, -)
@@ -1213,7 +1226,12 @@ run_phases() {
       while [ "$left" -gt 0 ] && [ -n "$refs" ]; do
         [ -f "$job/SUITE_SKIP" ] && break
         [ -f "$job/DRIVER_ERROR" ] && break
-        run_suite_once "$refs" "$pass" || true
+        suite_rc=0
+        run_suite_once "$refs" "$pass" || suite_rc=$?
+        if [ "$suite_rc" = 125 ]; then
+          fail_job suite
+          return
+        fi
         pass=$((pass + 1))
         left=$((left - 1))
       done

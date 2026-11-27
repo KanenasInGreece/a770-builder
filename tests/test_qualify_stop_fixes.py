@@ -331,3 +331,43 @@ def test_t9_a_request_that_precedes_finish_ends_stopped(box, tmp_path):
     assert (job / "STOPPED").is_file() and not (job / "DONE").exists()
     status = _state(job)
     assert (status["state"], status["reason"]) == ("stopped", "stopped"), status
+
+
+# --- 2.7 one suite at a time
+
+
+def _suite_script(box, body):
+    script = Path(box["PATH"]) / "a770b-qualify-suite"
+    script.unlink()
+    script.write_text('#!/bin/sh\nprintf \'%s\\n\' "$0 $*" >> "$A770B_QUALIFY_ARGV"\n'
+                      + body + "\n")
+    script.chmod(0o755)
+
+
+@pytest.mark.parametrize("blocked", ["suite.pid", "suite.start"])
+def test_t13_an_unrecordable_suite_fails_the_job_and_leaves_no_child(
+        box, tmp_path, blocked):
+    survived = tmp_path / "survived"
+    _suite_script(box, f'sleep 4; : > "{survived}"')
+    _pre_hook(box, tmp_path, f'mkdir "$1/{blocked}"')
+    got = _run(box, ["start", "--foreground", "--refs-repeat", "2", *_gguf(box)])
+    assert got.returncode == 4, got.stdout + got.stderr
+    job = _one(box)
+    status = _state(job)
+    assert (status["state"], status["reason"]) == ("failed", "suite"), status
+    time.sleep(5)
+    assert not survived.exists()
+    argv = (job / "evidence" / "argv.log").read_text()
+    started = sum(line.startswith("suite: ") for line in argv.splitlines())
+    # A refused clear is seen before the start. A failed write is seen after it.
+    assert started == (0 if blocked == "suite.pid" else 1)
+    if blocked == "suite.pid":
+        assert "a770b-qualify-suite" not in Path(box["A770B_QUALIFY_ARGV"]).read_text()
+
+
+def test_a_finished_suite_clears_its_recorded_pid(box):
+    got = _run(box, ["start", "--foreground", *_gguf(box)])
+    assert got.returncode == 0, got.stdout + got.stderr
+    job = _one(box)
+    assert (job / "suite.pid").read_text() == ""
+    assert (job / "suite.start").read_text() == ""
