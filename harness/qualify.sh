@@ -1271,6 +1271,10 @@ cmd_run() {
   RUN_PID=$$
   RUN_START=$("${py[@]}" starttime "$$" || true)
   merge "{\"state\":\"running\",\"phase\":\"preflight\",\"pid\":$RUN_PID,\"pid_starttime\":\"${RUN_START}\",\"reason\":null,\"event\":\"running\"}"
+  # Read only after the pid is published: a stop writes its request before it reads the
+  # pid, so at least one side sees the other.
+  local stop_early=0
+  [ -f "$job/STOP_REQUESTED" ] && stop_early=1
   plain_trunc "$job/HEARTBEAT" || die "refusing a symlink heartbeat"
   plain_trunc "$job/WATCH" || die "refusing a symlink watch flag"
   plain_trunc "$job/cid" || die "refusing a symlink container id"
@@ -1291,13 +1295,13 @@ cmd_run() {
   HB=$!
   ( trap - TERM INT EXIT; exec 7>&- 9>&-; QUALIFY_WATCH_PARENT=$$ exec bash "$here/qualify_watch.sh" "$job" "$job/cid" ) &
   WD=$!
-  if [ -n "${A770B_QUALIFY_HOLD_S:-}" ]; then
+  if [ -n "${A770B_QUALIFY_HOLD_S:-}" ] && [ "$stop_early" = 0 ]; then
     sleep "$A770B_QUALIFY_HOLD_S" &
     CHILD=$!
     wait "$CHILD" || true
     CHILD=
   fi
-  run_phases
+  [ "$stop_early" = 1 ] || run_phases
   finish
   if [ "$FINISH_STATE" = finished ]; then
     exit 0
@@ -1537,6 +1541,38 @@ cmd_export() {
   "${py[@]}" export --job "$job" "$@"
 }
 
+# True only for a job that is readably queued and has recorded no runner yet.
+queued_without_pid() {
+  python3 - "$job/status.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+if os.path.islink(path) or not os.path.isfile(path):
+    sys.exit(1)
+try:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+queued = isinstance(data, dict) and data.get("state") == "queued"
+sys.exit(0 if queued and data.get("pid") is None and data.get("pid_starttime") is None else 1)
+PY
+}
+
+# Sets the caller's pid and start from status.json.
+read_runner() {
+  pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("pid") or "")' "$job/status.json" 2>/dev/null || true)
+  start=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("pid_starttime") or "")' "$job/status.json" 2>/dev/null || true)
+}
+
+runner_matches() {
+  "${py[@]}" identity --pid "$pid" --starttime "$start" --job "$job"
+}
+
+kill_unit() {
+  refuse_link "$job/phases/stop-run.log" || die "refusing a symlink stop log"
+  systemctl --user kill -s TERM --kill-who=main "qualify-$1" >>"$job/phases/stop-run.log" 2>&1 || true
+}
+
 cmd_stop() {
   [ $# -ge 1 ] || die "stop needs a job"
   local id=$1
@@ -1544,24 +1580,42 @@ cmd_stop() {
   [ $# -eq 0 ] || die "unknown qualify option $1"
   job=$(job_path "$id") || exit 2
   [ -d "$job" ] && [ ! -L "$job" ] || die "no such job"
-  local pid start launch
-  pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("pid") or "")' "$job/status.json" 2>/dev/null || true)
-  start=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("pid_starttime") or "")' "$job/status.json" 2>/dev/null || true)
-  if ! "${py[@]}" identity --pid "$pid" --starttime "$start" --job "$job"; then
-    die "runner identity does not match"
+  local pid="" start="" launch queued=0
+  queued_without_pid && queued=1
+  if [ "$queued" = 0 ]; then
+    read_runner
+    runner_matches || die "runner identity does not match"
   fi
   plain_trunc "$job/STOP_REQUESTED" || die "refusing a symlink stop request"
   chmod 600 "$job/STOP_REQUESTED" || true
-  if run_pid_alive "$A770B_DATA/logs/run.pid" >/dev/null 2>&1; then
+  launch=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("launch") or "")' "$job/job.json" 2>/dev/null || true)
+  # A queued job has no suite of its own, so stop-run would end another caller's run.
+  if [ "$queued" = 0 ] && run_pid_alive "$A770B_DATA/logs/run.pid" >/dev/null 2>&1; then
     refuse_link "$job/phases/stop-run.log" || die "refusing a symlink stop log"
     bash "$A770B_PROJECT/skills/local-build/scripts/local-build.sh" stop-run >>"$job/phases/stop-run.log" 2>&1 || true
   fi
-  launch=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("launch") or "")' "$job/job.json" 2>/dev/null || true)
   if [ "$launch" = systemd ]; then
-    refuse_link "$job/phases/stop-run.log" || die "refusing a symlink stop log"
-    systemctl --user kill -s TERM --kill-who=main "qualify-$id" >>"$job/phases/stop-run.log" 2>&1 || true
-  else
+    kill_unit "$id"
+  elif [ "$queued" = 0 ]; then
     kill -TERM "$pid" 2>/dev/null || true
+  fi
+  if [ "$queued" = 1 ]; then
+    # A runner that published its pid meanwhile may have read no request yet.
+    read_runner
+    if [ -n "$pid" ]; then
+      if runner_matches; then
+        if [ "$launch" = systemd ]; then
+          kill_unit "$id"
+        else
+          kill -TERM "$pid" 2>/dev/null || true
+        fi
+      else
+        case $("${py[@]}" status-show --job "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))') in
+          finished|failed|lost|stopped) ;;
+          *) die "runner identity does not match" ;;
+        esac
+      fi
+    fi
   fi
   local start_s now state
   start_s=$(date +%s)
@@ -1585,8 +1639,8 @@ cmd_list() {
     [ -d "$name" ] || continue
     id=$(basename "$name")
     job=$(job_path "$id" 2>/dev/null) || continue
-    state=$(python3 -c 'import json,sys,os; p=os.path.join(sys.argv[1],"status.json"); print(json.load(open(p)).get("state","") if os.path.isfile(p) else "")' "$job" 2>/dev/null || true)
-    printf '%s %s\n' "$id" "$state"
+    state=$("${py[@]}" status-show --job "$job" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state") or "")' 2>/dev/null) || state=""
+    printf '%s %s\n' "$id" "${state:-unknown}"
   done
 }
 

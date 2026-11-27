@@ -333,6 +333,132 @@ def test_t9_a_request_that_precedes_finish_ends_stopped(box, tmp_path):
     assert (status["state"], status["reason"]) == ("stopped", "stopped"), status
 
 
+@pytest.fixture
+def planted(box, tmp_path):
+    """box with its own data directory, for hand-written pids.
+
+    box's teardown signals every pid recorded under its own data directory, and these
+    tests record pids it must not signal.
+    """
+    return dict(box, A770B_DATA=str(tmp_path / "planted"))
+
+
+def _queued_job(box, tmp_path) -> Path:
+    plan = subprocess.run(
+        [sys.executable, str(ROOT / "harness" / "qualify_lib.py"), "plan", *_gguf(box)],
+        env=box, capture_output=True, text=True, timeout=30)
+    assert plan.returncode == 0, plan.stderr
+    path = tmp_path / "plan.json"
+    path.write_text(plan.stdout)
+    root = Path(box["A770B_DATA"]) / "qualify"
+    root.mkdir(parents=True)
+    job = root / json.loads(plan.stdout)["job_id"]
+    job.mkdir(mode=0o700)
+    made = subprocess.run(
+        [sys.executable, str(ROOT / "harness" / "qualify_lib.py"), "init-job",
+         "--job", str(job), "--plan", str(path), "--launch", "setsid"],
+        env=box, capture_output=True, text=True, timeout=30)
+    assert made.returncode == 0, made.stderr
+    assert _state(job)["state"] == "queued" and _state(job)["pid"] is None
+    return job
+
+
+def test_t10_a_queued_job_is_stopped_and_its_late_runner_runs_nothing(planted, tmp_path):
+    job = _queued_job(planted, tmp_path)
+    stopper = subprocess.Popen(["bash", QUALIFY, "stop", job.name], env=planted,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True)
+    try:
+        assert _wait_file(job / "STOP_REQUESTED"), stopper.poll()
+        # cmd_stop publishes no terminal state of its own.
+        assert not (job / "STOPPED").exists()
+        runner = _run(planted, ["run", "--job", str(job)])
+        _out, err = stopper.communicate(timeout=30)
+    finally:
+        if stopper.poll() is None:
+            stopper.kill()
+            stopper.communicate()
+    assert stopper.returncode == 0, err
+    assert runner.returncode == 4, runner.stdout + runner.stderr
+    assert (job / "STOPPED").is_file()
+    assert _state(job)["state"] == "stopped"
+    assert "phase preflight" not in (job / "events.log").read_text()
+    assert "a770b-qualify-gate" not in Path(planted["A770B_QUALIFY_ARGV"]).read_text()
+
+
+def test_t10_a_queued_job_with_a_pid_keeps_the_identity_check(planted, tmp_path):
+    job = _queued_job(planted, tmp_path)
+    ql.status_merge(str(job), {"pid": os.getpid(),
+                               "pid_starttime": ql.proc_starttime(os.getpid())})
+    got = _run(planted, ["stop", job.name])
+    assert got.returncode == 2 and "identity does not match" in got.stderr
+    assert not (job / "STOP_REQUESTED").exists()
+
+
+def test_t10_an_unreadable_status_keeps_the_identity_check(planted, tmp_path):
+    job = _queued_job(planted, tmp_path)
+    (job / "status.json").write_text("{not json")
+    got = _run(planted, ["stop", job.name])
+    assert got.returncode == 2 and "identity does not match" in got.stderr
+    assert not (job / "STOP_REQUESTED").exists()
+
+
+# --- 2.5 and 2.6 dead runners
+
+
+def _dead_pid():
+    child = subprocess.Popen(["sleep", "30"])
+    start = ql.proc_starttime(child.pid)
+    child.kill()
+    child.wait()
+    return child.pid, start
+
+
+def _planted(box, name, state, pid, start, marker=None) -> Path:
+    job = Path(box["A770B_DATA"]) / "qualify" / name
+    job.mkdir(parents=True)
+    (job / "status.json").write_text(json.dumps(
+        {"state": state, "pid": pid, "pid_starttime": start,
+         "started": "2020-01-01T00:00:00Z", "trips": []}))
+    if marker:
+        (job / marker).write_text("")
+    return job
+
+
+def test_t11_a_marker_with_a_dead_runner_is_lost(planted):
+    job = _planted(planted, "job-dead", "running", *_dead_pid(), marker="DONE")
+    got = _run(planted, ["wait", job.name, "--timeout", "10"])
+    assert got.returncode == 4, got.stdout + got.stderr
+    status = _state(job)
+    assert status["state"] == "lost"
+    assert status["reason"] == "runner exited after its terminal marker"
+
+
+@pytest.mark.parametrize("state,live", [("running", True), ("finished", False)])
+def test_t11_a_live_runner_and_a_finished_job_are_unchanged(planted, state, live):
+    pid, start = ((os.getpid(), ql.proc_starttime(os.getpid())) if live
+                  else _dead_pid())
+    job = _planted(planted, "job-kept", state, pid, start, marker="DONE")
+    before = (job / "status.json").read_bytes()
+    assert _run(planted, ["status", job.name]).returncode == 0
+    assert (job / "status.json").read_bytes() == before
+
+
+def test_t12_list_shows_what_status_shows(planted, tmp_path):
+    dead = _planted(planted, "a-dead", "running", *_dead_pid())
+    broken = _planted(planted, "b-broken", "running", *_dead_pid())
+    real = tmp_path / "real-status.json"
+    (broken / "status.json").rename(real)
+    (broken / "status.json").symlink_to(real)
+    _planted(planted, "c-done", "finished", *_dead_pid(), marker="DONE")
+    listed = _run(planted, ["list"])
+    assert listed.returncode == 0, listed.stderr
+    assert listed.stdout.splitlines() == [
+        "a-dead lost", "b-broken unknown", "c-done finished"]
+    shown = _run(planted, ["status", dead.name])
+    assert json.loads(shown.stdout)["state"] == "lost"
+
+
 # --- 2.7 one suite at a time
 
 

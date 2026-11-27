@@ -1119,13 +1119,22 @@ def status_show(job: str) -> dict:
     """Read status. A dead running pid is lost. A queued pid-less job has a handshake grace."""
     path = os.path.join(job, "status.json")
     current = _read_status(path)
-    if _terminal(job):
-        return current
     state = current.get("state")
     if state not in ("queued", "running"):
         return current
     if pid_matches(current.get("pid"), current.get("pid_starttime")):
         return current
+    if _terminal(job):
+        # The runner writes its marker before its last status. It is dead now, so a
+        # second read is final.
+        current = _read_status(path)
+        if current.get("state") not in ("queued", "running"):
+            return current
+        return status_merge(job, {
+            "state": "lost",
+            "reason": "runner exited after its terminal marker",
+            "_allow_terminal": True,
+        })
     # init_job writes queued with no pid. status during the 10s handshake must not call it lost.
     if state == "queued" and not current.get("pid"):
         age = _age_seconds(current.get("started"))
