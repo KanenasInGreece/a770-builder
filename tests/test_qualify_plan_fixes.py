@@ -6,12 +6,14 @@ Docker and the engine API are stand-ins; nothing here starts a server or a card 
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 # test_qualify_lib puts harness/ on sys.path, so it is imported before qualify_lib.
 from test_qualify_lib import _min_row, _wrap
+import prompt_budget
 import qualify_lib as ql
 from test_qualify_e2e import QUALIFY, _run as _run_e2e, _serve_engine, _world
 from test_qualify_run import _jobs, _run, box  # noqa: F401  (box is a fixture)
@@ -214,3 +216,77 @@ def test_t3_flags_equal_to_the_row_are_accepted(box, tmp_path, budget):
     got = _named(box, profiles, "--reasoning", "on", "--reasoning-budget", str(budget))
     assert got.returncode == 0, got.stdout + got.stderr
     assert not _jobs(box)
+
+
+LIMIT = 8
+LONG_TEXT = "word " * 400
+
+
+def _tokenizer_dir(tmp_path: Path, name: str, *, truncation=None, padding=None) -> str:
+    """A word-level tokenizer.json written by hand, one id per word."""
+    directory = tmp_path / name
+    directory.mkdir()
+    document = {
+        "version": "1.0",
+        "truncation": truncation,
+        "padding": padding,
+        "added_tokens": [],
+        "normalizer": None,
+        "pre_tokenizer": {"type": "Whitespace"},
+        "post_processor": None,
+        "decoder": None,
+        "model": {"type": "WordLevel", "vocab": {"[UNK]": 0}, "unk_token": "[UNK]"},
+    }
+    (directory / "tokenizer.json").write_text(json.dumps(document), encoding="utf-8")
+    return str(directory)
+
+
+def _truncating(tmp_path: Path) -> str:
+    return _tokenizer_dir(tmp_path, "cut", truncation={
+        "direction": "Right", "max_length": LIMIT, "strategy": "LongestFirst",
+        "stride": 0,
+    })
+
+
+def _padding(tmp_path: Path) -> str:
+    return _tokenizer_dir(tmp_path, "pad", padding={
+        "strategy": {"Fixed": 1000}, "direction": "Right", "pad_to_multiple_of": None,
+        "pad_id": 0, "pad_type_id": 0, "pad_token": "[UNK]",
+    })
+
+
+@pytest.mark.parametrize("child", [False, True], ids=["in-process", "uv-child"])
+def test_t4_saved_truncation_and_padding_do_not_change_a_count(
+        tmp_path, monkeypatch, child):
+    pytest.importorskip("tokenizers")
+    paths = [_truncating(tmp_path), _padding(tmp_path),
+             _tokenizer_dir(tmp_path, "plain")]
+    if child:
+        # A None entry makes the in-process import fail, as on a bare system python.
+        monkeypatch.setitem(sys.modules, "tokenizers", None)
+        monkeypatch.delenv("A770B_QUALIFY_TOKENIZERS_CHILD", raising=False)
+    cut, pad, plain = (
+        ql._token_counts(os.path.join(p, "tokenizer.json"), [LONG_TEXT, "two words"])
+        for p in paths
+    )
+    assert plain == [400, 2] and plain[0] > LIMIT
+    assert cut == plain and pad == plain
+
+
+def test_t4_window_plan_action_ignores_saved_truncation(tmp_path, monkeypatch):
+    pytest.importorskip("tokenizers")
+    monkeypatch.delenv("A770B_QUALIFY_KIT_PROMPT_TOKENS", raising=False)
+    monkeypatch.delenv("A770B_OUTPUT_TOKENS", raising=False)
+    plain = ql.window_plan(2048, None, [], None, _tokenizer_dir(tmp_path, "plain"))
+    cut = ql.window_plan(2048, None, [], None, _truncating(tmp_path))
+    assert plain["action"] == "refuse" and plain["kit_tokens"] > LIMIT
+    assert cut["action"] == plain["action"]
+    assert cut["kit_tokens"] == plain["kit_tokens"]
+
+
+@pytest.mark.parametrize("make", [_truncating, _padding])
+def test_t4_prompt_budget_counts_the_whole_text(tmp_path, make):
+    pytest.importorskip("tokenizers")
+    got = prompt_budget.count_tokens(
+        "", "", LONG_TEXT, tokenize="openai", tokenizer=make(tmp_path))
+    assert got == 400

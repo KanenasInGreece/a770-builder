@@ -253,6 +253,9 @@ def _token_counts(tokenizer_json: str, texts: list[str]) -> list[int] | None:
         from tokenizers import Tokenizer
 
         loaded = Tokenizer.from_file(tokenizer_json)
+        # A saved truncation or padding would make the count a setting, not the text.
+        loaded.no_truncation()
+        loaded.no_padding()
         return [len(loaded.encode(text, add_special_tokens=False).ids) for text in texts]
     except ImportError:
         pass
@@ -265,6 +268,8 @@ def _token_counts(tokenizer_json: str, texts: list[str]) -> list[int] | None:
         "from tokenizers import Tokenizer\n"
         "raw=json.load(sys.stdin)\n"
         "loaded=Tokenizer.from_file(raw['tokenizer'])\n"
+        "loaded.no_truncation()\n"
+        "loaded.no_padding()\n"
         "json.dump([len(loaded.encode(text, add_special_tokens=False).ids) for text in raw['texts']], sys.stdout)\n"
     )
     try:
