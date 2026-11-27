@@ -1945,8 +1945,6 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
         )
         annotated.add(check.get("name"))
     _note_skipped(job, result, checks, by_phase, annotated, abort_reason)
-    if empties:
-        result["checks"] = checks
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
     _write_private(os.path.join(job, "report.md"), render_report(job, result))
     return result
@@ -3512,8 +3510,6 @@ def assemble(job: str) -> None:
     tasks = _tasks_from_stages(suite.get("stages") if isinstance(suite.get("stages"), list) else [])
     if tasks:
         collected["measured_tasks"] = tasks
-    if isinstance(collected.get("delivered"), dict):
-        pass
     write_note(job, "collected.json", collected)
 
 
