@@ -48,7 +48,7 @@ def test_flash_next_args_and_a_non_strata_executable_are_accepted(config, tmp_pa
     doc["args"] = ["--pack", "/models/pack",
                    "--native", "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
                    "--ple-gguf", "/models/ple.gguf", "--expert-profile", "/models/expert-profile-sycl.bin",
-                   "--spec", "2"]
+                   "--spec", "2", "--vram-reserve-mib", "5120"]
     config.write_text(json.dumps(doc))
     prepared, _evidence = managed.prepare_config(config)
     assert prepared["args"][1] == "/models/pack"
@@ -57,7 +57,7 @@ def test_flash_next_args_and_a_non_strata_executable_are_accepted(config, tmp_pa
     other.chmod(0o755)
     monkeypatch.setenv("A770B_STRATA_ENGINE_SHA256", managed.file_digest(other))
     doc["exe"] = str(other)
-    doc["args"] = ["--native", "/models/hy4-flash-iq3.strata", "--spec", "2"]
+    doc["args"] = ["--native", "/models/hy4-flash-iq3.strata", "--spec", "2", "--vram-reserve-mib", "5120"]
     config.write_text(json.dumps(doc))
     prepared, _evidence = managed.prepare_config(config)
     assert Path(prepared["exe"]).name == "not-strata"
@@ -69,6 +69,7 @@ def test_flash_next_args_and_a_non_strata_executable_are_accepted(config, tmp_pa
 ])
 def test_a_shape_token_in_a_flag_value_is_not_an_engine_swap(config, extra):
     doc = json.loads(config.read_text())
+    extra = extra + ["--vram-reserve-mib", "5120"]
     doc["args"] = extra
     config.write_text(json.dumps(doc))
     prepared, _evidence = managed.prepare_config(config)
@@ -92,30 +93,31 @@ def test_space_joined_unsupported_flag_is_refused_like_two_elements(config, join
 def test_space_joined_spec_is_preserved_and_the_stored_args_stay_joined(config):
     """user_args holds the split flags and values. The args array passed through stays as written."""
     doc = json.loads(config.read_text())
-    doc["args"] = ["--spec 2", "--reserve-mib", "2048"]
+    doc["args"] = ["--spec 2", "--vram-reserve-mib", "2048"]
     config.write_text(json.dumps(doc))
     prepared, _evidence = managed.prepare_config(config)
-    assert prepared["args"] == ["--spec 2", "--reserve-mib", "2048"]
-    assert prepared["user_args"] == ["--spec", "2", "--reserve-mib", "2048"]
+    assert prepared["args"] == ["--spec 2", "--vram-reserve-mib", "2048"]
+    assert prepared["user_args"] == ["--spec", "2", "--vram-reserve-mib", "2048"]
 
 
 def test_equals_joined_spec_stays_in_args_and_is_still_rewritten_into_user_args(config):
     doc = json.loads(config.read_text())
-    doc["args"] = ["--spec=2", "--reserve-mib", "2048"]
+    doc["args"] = ["--spec=2", "--vram-reserve-mib", "2048"]
     config.write_text(json.dumps(doc))
     prepared, _evidence = managed.prepare_config(config)
-    assert prepared["args"] == ["--spec=2", "--reserve-mib", "2048"]
-    assert prepared["user_args"] == ["--spec", "2", "--reserve-mib", "2048"]
+    assert prepared["args"] == ["--spec=2", "--vram-reserve-mib", "2048"]
+    assert prepared["user_args"] == ["--spec", "2", "--vram-reserve-mib", "2048"]
 
 
 def test_space_joined_expert_cache_is_recorded_like_two_elements(config):
     doc = json.loads(config.read_text())
     # "--ple-io mmap" follows a value, not a bare flag, so the terminal splits it. A bare flag's value place would not.
-    doc["args"] = ["--expert-cache auto", "--ple-io mmap", "--stream-experts"]
+    doc["args"] = ["--vram-reserve-mib 5120", "--expert-cache auto", "--ple-io mmap", "--stream-experts"]
     config.write_text(json.dumps(doc))
     prepared, evidence = managed.prepare_config(config)
     assert prepared["args"] == doc["args"]
-    assert prepared["user_args"] == ["--expert-cache", "auto", "--ple-io", "mmap", "--stream-experts"]
+    assert prepared["user_args"] == ["--vram-reserve-mib", "5120", "--expert-cache", "auto", "--ple-io", "mmap",
+                                     "--stream-experts"]
     assert evidence["host_memory_settings"]["args"] == {
         "--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap",
     }
@@ -174,7 +176,7 @@ def config(tmp_path, monkeypatch):
     model.write_text(json.dumps({"exe": str(exe), "cwd": str(tmp_path), "tokenizer": str(tmp_path),
                                  "backend": "intel", "model_name": "flash-next", "drafting": "auto",
                                  "env": {"STRATA_MIRROR_MIB": "0"},
-                                 "args": ["--spec", "2", "--reserve-mib", "2048"]}))
+                                 "args": ["--spec", "2", "--vram-reserve-mib", "2048"]}))
     monkeypatch.setenv("A770B_ONEAPI_DEVICE_SELECTOR", "level_zero:1")
     monkeypatch.setenv("A770B_STRATA_ENGINE_SHA256", managed.file_digest(exe))
     return model
@@ -433,6 +435,7 @@ def test_strata_shell_dispatches_the_supported_pid_command(tmp_path):
     ("telemetry_read_key", "foreign-telemetry-key"),
     ("env", {"STRATA_PROFILE_DIR": "/other/location"}),
     ("env", {"STRATA_NO_AUTO_CONVERSATION_CACHE": "0"}),
+    ("vram_elastic", True),
 ])
 def test_prepared_config_refuses_unsafe_overrides(config, key, value):
     doc = json.loads(config.read_text())
@@ -507,8 +510,9 @@ ENGINE_CODE = 'import sys; sys.stdin.read()'
 REWRITE = None
 if REWRITE:
     engine_args = REWRITE(engine_args)
-engine = subprocess.Popen([sys.executable, '-c', ENGINE_CODE, '--serve', *engine_args],
-                          stdin=subprocess.PIPE, start_new_session=True)
+ENGINE_NAME = doc['exe']
+engine = subprocess.Popen([ENGINE_NAME, '-c', ENGINE_CODE, '--serve', *engine_args],
+                          executable=sys._base_executable, stdin=subprocess.PIPE, start_new_session=True)
 
 def start_of(pid):
     return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
@@ -609,12 +613,55 @@ def test_a_configured_reserve_reaches_the_engine_and_is_recorded(config, launch,
     assert evidence["engine_args_added"] == []
 
 
-def test_an_added_flag_is_recorded_and_not_refused(config, launch):
-    _, state_path = launch
+def _rewriting(terminal, rewrite):
+    (terminal / "serve/server.py").write_text(SERVER.replace("REWRITE = None", f"REWRITE = {rewrite}"))
+
+
+def test_another_added_flag_is_recorded_and_not_refused(config, launch):
+    terminal, state_path = launch
+    _rewriting(terminal, "lambda a: a + ['--conversation-cache-min-tokens', '1024']")
     state = managed.start(state_path, config, 32768, 5)
     evidence = json.loads((Path(state["run"]) / "evidence.json").read_text())
-    assert _engine_args(evidence)[-2:] == ["--vram-reserve-mib", "100"]
-    assert evidence["engine_args_added"] == ["--vram-reserve-mib"]
+    assert _engine_args(evidence)[-2:] == ["--conversation-cache-min-tokens", "1024"]
+    assert evidence["engine_args_added"] == ["--conversation-cache-min-tokens"]
+
+
+@pytest.mark.parametrize("added", [["--kv-resident", "8192"], ["--kv-resident=8192"]], ids=["pair", "equals"])
+def test_an_unstated_card_flag_the_terminal_adds_fails_the_start(config, launch, added):
+    terminal, state_path = launch
+    _rewriting(terminal, f"lambda a: a + {added}")
+    with pytest.raises(ValueError, match="--kv-resident: config does not state it"):
+        managed.start(state_path, config, 32768, 5)
+    assert not state_path.exists()
+
+
+@pytest.mark.parametrize("flag", ["--vram-reserve-mib", "--kv-resident"])
+def test_the_check_refuses_either_unstated_card_flag(tmp_path, monkeypatch, flag):
+    snapshot = tmp_path / "config.json"
+    snapshot.write_text(json.dumps({"exe": "/engine/strata", "args": ["--kv", "int8"]}))
+    monkeypatch.setattr(managed, "engine_argv",
+                        lambda state: ["/engine/strata", "--serve", "--kv", "int8", flag, "100"])
+    with pytest.raises(ValueError, match=f"{flag}: config does not state it"):
+        managed.check_engine_args({"snapshot": str(snapshot)})
+
+
+def test_an_engine_other_than_the_hashed_executable_fails_the_start(config, launch):
+    terminal, state_path = launch
+    other = str(config.parent / "other-strata")
+    (terminal / "serve/server.py").write_text(
+        SERVER.replace("ENGINE_NAME = doc['exe']", f"ENGINE_NAME = {other!r}"))
+    with pytest.raises(ValueError, match="executable: config states .*engine runs .*other-strata"):
+        managed.start(state_path, config, 32768, 5)
+    assert not state_path.exists()
+
+
+@pytest.mark.parametrize("reserve", [
+    [], ["--vram-reserve-mib"], ["--vram-reserve-mib", "auto"], ["--stream-experts", "--vram-reserve-mib=5120"],
+], ids=["absent", "no-value", "not-a-number", "joined-where-the-terminal-does-not-split"])
+def test_a_config_without_a_stated_reserve_is_refused(config, reserve):
+    _state_args(config, ["--spec", "2", *reserve])
+    with pytest.raises(ValueError, match="state the VRAM reserve"):
+        managed.prepare_config(config)
 
 
 @pytest.mark.parametrize("rewrite,message", [
@@ -659,9 +706,9 @@ def test_an_engine_that_cannot_be_identified_fails_the_check(tmp_path):
 
 
 def test_reasoning_effort_stays_the_terminal_s_setting(config):
-    _state_args(config, ["--reasoning-effort", "high", "--kv", "int8", "--reasoning-effort=low"])
+    _state_args(config, ["--reasoning-effort", "high", "--vram-reserve-mib", "5120", "--reasoning-effort=low"])
     prepared, _ = managed.prepare_config(config)
-    assert prepared["user_args"] == ["--kv", "int8"]
+    assert prepared["user_args"] == ["--vram-reserve-mib", "5120"]
 
 
 def test_start_reuse_and_exact_stop_with_owned_fixture(config, launch, monkeypatch):
@@ -726,15 +773,15 @@ def test_space_joined_draft_model_is_pinned_like_two_elements(config, tmp_path):
     joined = f"--draft-model {draft}"
     doc = json.loads(config.read_text())
     doc["drafting"] = "dflash2"
-    doc["args"] = ["--spec", "2", joined]
+    doc["args"] = ["--spec", "2", "--vram-reserve-mib", "2048", joined]
     config.write_text(json.dumps(doc))
     with pytest.raises(ValueError, match="matching draft_asset_sha256"):
         managed.prepare_config(config)
     doc["draft_asset_sha256"] = {str(draft): managed.file_digest(draft)}
     config.write_text(json.dumps(doc))
     prepared, evidence = managed.prepare_config(config)
-    assert prepared["args"] == ["--spec", "2", joined]
-    assert prepared["user_args"] == ["--spec", "2", "--draft-model", str(draft)]
+    assert prepared["args"] == ["--spec", "2", "--vram-reserve-mib", "2048", joined]
+    assert prepared["user_args"] == ["--spec", "2", "--vram-reserve-mib", "2048", "--draft-model", str(draft)]
     assert evidence["draft_sha256"] == {str(draft): managed.file_digest(draft)}
 
 

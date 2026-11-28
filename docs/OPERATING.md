@@ -676,9 +676,12 @@ measurement notes.
 The run config supplies `backend` (`intel` or `sycl`), `exe`, `cwd`, `tokenizer`, `model_name` and
 an engine `args` array. Use absolute paths for the executable, working directory, and tokenizer. The
 tokenizer directory needs both `vocab.json` for Strata and `tokenizer.json` for harness probes. Place
-context, KV, reserve and host-memory parameters in the config. The harness holds the configured engine values and
-checks them against the engine's own command line at start and reuse: a missing or changed flag fails the start.
-Flags the terminal adds are listed in the launch evidence as `engine_args_added`. Keep replicas, layer splitting, vision,
+context, KV, reserve and host-memory parameters in the config. The reserve must be stated as `--vram-reserve-mib`, and
+`vram_elastic` must be off. The harness holds the configured engine values and checks the engine's own command line at
+start and reuse: the configured executable, every configured flag and value, and no `--vram-reserve-mib` or
+`--kv-resident` the config does not state. A mismatch stops a fresh start; on a reused instance the start is refused and
+the instance is left running. Other flags the terminal adds are not refused; the launch evidence lists them as
+`engine_args_added`. Keep replicas, layer splitting, vision,
 MCP, and before-load commands disabled. The pinned Intel guide calls for `--spec 2` or higher with native
 IQ packs. The managed path preserves that setting. Pin each separate draft asset by absolute path and SHA-256 in `draft_asset_sha256`.
 This covers `--draft-model`, `--mtp-draft-vocab` and `--mtp`. For an MTP directory, pin its

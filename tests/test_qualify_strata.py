@@ -641,7 +641,7 @@ def _gate_config(tmp_path, monkeypatch):
         "tokenizer": str(tok),
         "model_name": "sample-served",
         "parallel": 1,
-        "args": [],
+        "args": ["--vram-reserve-mib", "2048"],
         "env": {},
     }), encoding="utf-8")
     monkeypatch.setenv("A770B_STRATA_ENGINE_SHA256", managed.file_digest(exe))
@@ -710,7 +710,7 @@ def test_t24_gate_preflight_names_gate_and_alias_stays_the_model(tmp_path):
         "tokenizer": str(tok),
         "model_name": "alias-model",
         "parallel": 1,
-        "args": [],
+        "args": ["--vram-reserve-mib", "2048"],
         "env": {},
     }), encoding="utf-8")
     digest = managed.file_digest(exe)

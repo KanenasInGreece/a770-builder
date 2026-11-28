@@ -30,6 +30,9 @@ SERVER_EOF_S = 10
 SERVER_SIGNAL_S = 5
 ENGINE_SIGNAL_S = 3
 INTERRUPTS = (signal.SIGTERM, signal.SIGINT)
+# The terminal's card fit adds these on a short card (strata_control/vram_fit.py fit_start). Both decide how much of
+# the card the engine takes, so the engine may carry one only when the config states it.
+UNSTATED_REFUSED = ("--vram-reserve-mib", "--kv-resident")
 SERVER_GATE = """
 import os
 import sys
@@ -182,7 +185,7 @@ def prepare_config(path):
         raise ValueError("prepared model_name is not a plain model identifier")
     for field in ("gpu", "replicas", "layer_split", "split_serve", "fallback", "vision", "image", "images",
                   "mcp", "mcp_servers", "mcp_config", "before_load", "api_key", "api_keys", "telemetry_key",
-                  "telemetry_read_key", "lazy_load", "user_args", "idle_unload_s"):
+                  "telemetry_read_key", "lazy_load", "user_args", "idle_unload_s", "vram_elastic"):
         if doc.get(field) not in (None, "", [], {}, False):
             raise ValueError(f"prepared config must leave {field} disabled")
     if type(doc.get("parallel", 1)) is not int or doc.get("parallel", 1) != 1:
@@ -227,6 +230,10 @@ def prepare_config(path):
     # rewrites that honour the contract leave them alone. Every stated option goes there; check_engine_args
     # catches the rewrites that do not honour it.
     stated = stated_engine_args(args)
+    value = stated.index("--vram-reserve-mib") + 1 if "--vram-reserve-mib" in stated else len(stated)
+    if value >= len(stated) or not stated[value].isdigit():
+        raise ValueError('prepared config must state the VRAM reserve: add "--vram-reserve-mib", "<MiB>" to args '
+                         "(without it the terminal chooses the reserve)")
     first = next((i for i, item in enumerate(stated) if item.startswith("--")), None)
     if first is not None:
         doc["user_args"] = stated[first:]
@@ -412,9 +419,9 @@ def engine_argv(state):
 
 
 def check_engine_args(state):
-    """Refuse an engine that lacks or changes a flag the prepared config states; return what to record.
+    """Refuse an engine that is not the config's executable or does not carry its flags; return what to record.
 
-    Flags the terminal adds are not refused. They are listed in ``engine_args_added``.
+    A flag the terminal adds is listed in ``engine_args_added``; one of ``UNSTATED_REFUSED`` is refused.
     """
     argv = engine_argv(state)
     config = json.loads(Path(state["snapshot"]).read_text())
@@ -427,8 +434,13 @@ def check_engine_args(state):
     wrong = [f"{flag or 'positional arguments'}: config states '{shown(flag, wanted)}', "
              + (f"engine has '{shown(flag, actual[flag])}'" if flag in actual else "engine does not have it")
              for flag, wanted in stated.items() if actual.get(flag) != wanted]
+    wrong += [f"{flag}: config does not state it, engine has '{shown(flag, actual[flag])}'"
+              for flag in UNSTATED_REFUSED if flag in actual and flag not in stated]
+    # prepare_config hashed this path, and the terminal starts an absolute "exe" as written.
+    if argv[0] != config["exe"]:
+        wrong.insert(0, f"executable: config states '{config['exe']}', engine runs '{argv[0]}'")
     if wrong:
-        raise ValueError("Strata engine arguments differ from the prepared config: " + "; ".join(wrong))
+        raise ValueError("Strata engine command line differs from the prepared config: " + "; ".join(wrong))
     return {"engine_argv": argv, "engine_args_added": sorted(actual.keys() - stated.keys())}
 
 
