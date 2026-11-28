@@ -183,7 +183,8 @@ def test_observe_copies_pinned_ram_and_ignores_host_buffers(tmp_path, monkeypatc
     log_dir = tmp_path / "run"
     log_dir.mkdir()
     (log_dir / "engine.log").write_text(
-        "strata generate: experts missing from VRAM mirrored in pinned host memory "
+        "strata generate: 14489 of 14489 experts missing from VRAM "
+        "(+ 0 in the prompt loan's slots) mirrored in pinned host memory "
         "(1.50 GiB, 50.4 s); the GPU reads them over PCIe\n",
         encoding="utf-8",
     )
