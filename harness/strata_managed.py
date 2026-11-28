@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch and identify one Linux-owned Strata v0.2.17 text server."""
+"""Launch and identify one Linux-owned Strata v0.2.23 text server."""
 import argparse
 import ctypes as c
 import hashlib
@@ -22,7 +22,7 @@ import time
 from strata_attach import Endpoint, attach_check, read_key
 
 
-PIN = "12d491da4a6904eb49aaa6f2f63ec4b1a17582e3"
+PIN = "4560d03793482ef367294cfbd86a4df8d5679e72"
 STOP_TIMEOUT = 48
 # The supervisor's waits for its server: after owner EOF, then after SIGTERM and SIGKILL.
 # With the engine waits they total under 30 s, inside STOP_TIMEOUT.
@@ -78,6 +78,31 @@ def device_override(name):
     return name.startswith(("ZE_", "UR_")) or name in {
         "SYCL_DEVICE_FILTER", "SYCL_DEVICE_ALLOWLIST", "SYCL_DEVICE_WHITELIST",
     }
+
+
+def terminal_replaces_generic_engine(exe, args):
+    """v0.2.23 rewrites a generic `strata` executable to another engine for a Hy4-Flash or Inkling model, or when that model is paired with --engram or --dspark."""
+    if Path(str(exe)).name.lower() not in {"strata", "strata.exe"}:
+        return False
+    model = ""
+    engram = dspark = False
+    for i, item in enumerate(args):
+        flag, equal, inline = item.partition("=")
+        if flag == "--engram":
+            engram = True
+        elif flag == "--dspark":
+            dspark = True
+        if flag in {"--native", "--model"}:
+            value = inline if equal else args[i + 1] if i + 1 < len(args) else ""
+            if value and not value.startswith("--"):
+                model = value
+    if not model:
+        return False
+    name = Path(model).name.lower()
+    if (name.startswith("hy4-flash") and name.endswith(".strata")) or (
+            "inkling" in name and name.endswith((".strata", ".gguf"))):
+        return True
+    return engram or dspark
 
 
 def prepare_config(path):
@@ -137,6 +162,8 @@ def prepare_config(path):
             drafts[str(asset)] = sha
     if doc.get("drafting") == "dflash2" and not any(a.partition("=")[0] == "--draft-model" for a in args):
         raise ValueError("explicit DFlash2 needs a pinned --draft-model")
+    if terminal_replaces_generic_engine(doc["exe"], args):
+        raise ValueError("prepared config names a shape model the terminal would start with another engine")
     if pinned_args:
         doc["user_args"] = pinned_args
     selector = os.environ.get("A770B_ONEAPI_DEVICE_SELECTOR", "")
@@ -146,7 +173,7 @@ def prepare_config(path):
     if not isinstance(env, dict) or env.get("ONEAPI_DEVICE_SELECTOR", selector) != selector:
         raise ValueError("prepared config changes the selected card")
     guarded = {"LD_PRELOAD", "STRATA_PRIMARY_DEVICE", "STRATA_NO_ACQUIRE", "STRATA_NO_PRESET",
-               "STRATA_KEEP_LEFTOVERS", "HOME"}
+               "STRATA_NO_AUTO_CONVERSATION_CACHE", "STRATA_KEEP_LEFTOVERS", "HOME"}
     if env.keys() & guarded or any(device_override(k) or k.startswith((
             "STRATA_HOME", "STRATA_SETTINGS_", "STRATA_PROFILE_", "STRATA_CONNECTION_",
             "STRATA_RUNTIME_", "XDG_")) for k in env):
@@ -254,7 +281,7 @@ def source_inputs():
     changed = subprocess.check_output([*git, "status", "--porcelain", "--untracked-files=normal", "--", "terminal"],
                                       text=True).strip()
     if commit != PIN or changed or not (root / "terminal/serve/server.py").is_file():
-        raise ValueError("Strata terminal source must be a clean v0.2.17 checkout")
+        raise ValueError("Strata terminal source must be a clean v0.2.23 checkout")
     return root / "terminal", python
 
 
@@ -594,6 +621,7 @@ def supervise(plan_path, gate_fd):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STRATA_", "PYTHON"))
            and not device_override(k)}
     env.update(STRATA_KEEP_LEFTOVERS="1", STRATA_NO_PRESET="1", STRATA_NO_ACQUIRE="1",
+               STRATA_NO_AUTO_CONVERSATION_CACHE="1",
                STRATA_API_KEY=key, STRATA_OWNER_ATTEST_KEY=attestation_key.hex(),
                PYTHONDONTWRITEBYTECODE="1", ONEAPI_DEVICE_SELECTOR=plan["selector"], STRATA_HOME=str(run),
                STRATA_SETTINGS_FILE=str(run / "settings.json"), STRATA_PROFILE_DIR=str(run / "profiles"),

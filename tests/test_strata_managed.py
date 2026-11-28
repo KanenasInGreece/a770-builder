@@ -12,6 +12,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 import strata_managed as managed
 
 
+def test_managed_pin_is_only_the_v0223_terminal():
+    source = (ROOT / "harness" / "strata_managed.py").read_text(encoding="utf-8")
+    assert managed.PIN == "4560d03793482ef367294cfbd86a4df8d5679e72"
+    assert "v0.2.23" in source
+    assert "v0.2.17" not in source
+
+
+@pytest.mark.parametrize("extra", [
+    ["--native", "/models/hy4-flash-iq3.strata"],
+    ["--model", "/models/Inkling-2-Mini.gguf"],
+    ["--native=hy4-flash-iq3.strata"],
+    ["--native", "/models/qwen.gguf", "--dspark", "/models/draft.gguf"],
+    ["--model", "/models/qwen.gguf", "--engram"],
+])
+def test_shape_model_is_refused_on_the_generic_engine(config, extra):
+    doc = json.loads(config.read_text())
+    doc["args"] = extra
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="another engine"):
+        managed.prepare_config(config)
+
+
 def test_process_identity_rejects_stale_start_time():
     identity = managed.process_identity(os.getpid())
     assert identity
@@ -263,6 +285,7 @@ def test_strata_shell_dispatches_the_supported_pid_command(tmp_path):
     ("gpu", [0, 1]), ("parallel", 2), ("replicas", 2), ("before_load", "some-script"),
     ("env", {"ONEAPI_DEVICE_SELECTOR": "level_zero:*"}), ("api_key", "foreign-key"),
     ("env", {"STRATA_PROFILE_DIR": "/other/location"}),
+    ("env", {"STRATA_NO_AUTO_CONVERSATION_CACHE": "0"}),
 ])
 def test_prepared_config_refuses_unsafe_overrides(config, key, value):
     doc = json.loads(config.read_text())
@@ -293,6 +316,7 @@ args = parser.parse_args()
 assert args.host == '127.0.0.1' and args.offline and args.parallel == '1'
 assert os.environ['STRATA_KEEP_LEFTOVERS'] == '1' and os.environ['STRATA_NO_PRESET'] == '1'
 assert os.environ['STRATA_NO_ACQUIRE'] == '1'
+assert os.environ['STRATA_NO_AUTO_CONVERSATION_CACHE'] == '1'
 assert Path(os.environ['STRATA_HOME']) == Path(args.config).parent
 assert Path(os.environ['XDG_CONFIG_HOME']).parent == Path(args.config).parent
 config = Path(args.config).read_bytes()
