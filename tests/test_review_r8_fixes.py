@@ -707,13 +707,17 @@ def test_run_cli_timeout_zero_is_forwarded_as_unlimited(tmp_path):
 # ── finding 6: an observed pinned allocation survives evidence without host_memory_settings ──────────────────────
 
 OBSERVED = {"value_bytes": round(27.70 * 1024 ** 3), "source": "engine.log",
-            "reported_text": "mirrored in 27.70 GiB of pinned host RAM"}
+            "reported_text": (
+                "strata generate: 14489 of 14489 experts missing from VRAM "
+                "(+ 0 in the prompt loan's slots) mirrored in pinned host memory "
+                "(27.70 GiB, 50.4 s); the GPU reads them over PCIe"
+            )}
 
 
 def test_observe_records_the_pinned_allocation_on_evidence_that_has_no_settings_block(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
-    (run / "engine.log").write_text("info: mirrored in 27.70 GiB of pinned host RAM\n", encoding="utf-8")
+    (run / "engine.log").write_text(OBSERVED["reported_text"] + "\n", encoding="utf-8")
     evidence = run / "evidence.json"
     managed.write_state(evidence, {"engine": "strata", "config": str(tmp_path / "strata.json"), "log_dir": str(run)})
     managed.observe_host_memory(evidence)
