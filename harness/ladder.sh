@@ -37,7 +37,7 @@
 # MemAvailable drop across the load — recorded in the results JSON's computed block, not printed in the row;
 # ram_gb_extra itself is never computed here, it is transcribed by hand from the server log's *_Host … buffer size
 # lines at -lv 4, and printed null), suite (harness/suite_report.py --json on the task rung's results file) and instrument
-# (SUITE-1@<kit_version>) filled in; use_for, fit.write, capability and measured_on left as clearly marked placeholders
+# (the instrument that results file recorded; empty when it recorded none, never the live kit/suite.json) filled in; use_for, fit.write, capability and measured_on left as clearly marked placeholders
 # IN THE ROW ITSELF (measured_on is a required field of the schema, so it is printed as __TODO__ rather than
 # omitted, unlike the identity fields below) — none of these are ever derived from a measurement, they are written
 # by hand from what the ladder showed (kit/PROFILE.md §2) — and a closing note lists the identity fields (source,
@@ -620,9 +620,26 @@ if [ -n "$SUITE_RESULTS_JSON" ] && [ -f "$SUITE_RESULTS_JSON" ]; then
 fi
 stop_host_monitor
 
-INSTRUMENT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1";
-print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "${SUITE:-$A770B_PROJECT/kit/suite.json}") || { echo "⛔ suite.json is not readable or not valid JSON: ${SUITE:-$A770B_PROJECT/kit/suite.json}" >&2; exit 1; }
-[ -n "$INSTRUMENT" ] || { echo "⛔ kit_version missing from suite.json" >&2; exit 1; }
+# The row is labelled with the instrument the task rung wrote into its results file.
+# A missing file, or a file that recorded none, leaves the label empty. The live
+# kit/suite.json is not a substitute.
+ladder_recorded_instrument() {
+  local path="${1:-}"
+  if [ -z "$path" ] || [ ! -f "$path" ]; then
+    printf '%s' ""
+    return 0
+  fi
+  python3 -c 'import json,sys
+try:
+    doc=json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+value=doc.get("instrument") if isinstance(doc, dict) else None
+if isinstance(value, str) and value.strip() and value.strip() != "unknown":
+    print(value.strip(), end="")
+' "$path"
+}
+INSTRUMENT=$(ladder_recorded_instrument "${SUITE_RESULTS_JSON:-}")
 
 if [ "$ENGINE" = strata ] && [ -n "${EVIDENCE_PATH:-}" ]; then
   if observed=$(bash "$here/serve_strata.sh" observe "$EVIDENCE_PATH"); then

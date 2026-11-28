@@ -81,6 +81,8 @@ When qualifying models on a card that has no rows in the registry, do not measur
    and `python3 harness/profiles.py render --catalogue`.
 4. Open a pull request whose description carries the numbers and the rows compared.
 
+A row carries the instrument it was run on. Worked example: a row measured on `SUITE-1@1` stays `SUITE-1@1` and is not compared with a row measured on `SUITE-1@2`, because `comparable_with` matches the instrument. After a kit change, rerun before submitting a row as the current version (`SUITE-1@2`). Never relabel a finished row. Rows of both versions sit in one registry, and a rerun replaces that profile's row.
+
 ## Boundaries
 
 ### Always

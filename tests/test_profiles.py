@@ -466,10 +466,12 @@ def test_render_catalogue_is_byte_stable_and_lists_every_card(tmp_path):
     triples = [tuple(cell.strip() for cell in ln.strip("|").split("|")[:3]) for ln in data_lines]
     assert triples == sorted(triples)
     assert len(data_lines) == len(_registry_names_by_file())
-    # every row carries its own measured_on in the last cell (a blank cell is a failure)
+    # measured_on and the instrument are the last two cells (a blank cell is a failure)
     for (card, mode, name), ln in zip(triples, data_lines):
-        measured = _registry_names_by_file()[(card, mode, name)]["measured_on"]
-        assert ln.rstrip().rstrip("|").rsplit("|", 1)[-1].strip() == measured, ln
+        prof = _registry_names_by_file()[(card, mode, name)]
+        cells = [cell.strip() for cell in ln.strip().strip("|").split("|")]
+        assert cells[-2] == prof["measured_on"], ln
+        assert cells[-1] == prof["instrument"], ln
 
 
 def _registry_names_by_file() -> dict[tuple, dict]:
@@ -1239,7 +1241,7 @@ def test_comparable_with_excludes_differing_measured_on(tmp_path):
     assert "qwen35-9b-q4km-vulkan" not in data_out["profiles"]["qwen38-27b-iq3xxs-vulkan"]["comparable_with"]["profiles"]
 
 
-# --- registry-wide rules: one best row per (category, weight_class, backend), one instrument per registry ---
+# --- registry-wide rules: one best row per (category, weight_class, backend). Kit versions of one suite share a registry. ---
 
 
 def test_check_fails_duplicate_category_weight_class(tmp_path):
@@ -1354,9 +1356,73 @@ def test_check_fails_differing_instrument_within_registry(tmp_path):
     result = run("check", "--file", str(path))
     assert result.returncode == 2
     assert (
-        "profiles: gemma4-8b-e4b-q4km-vulkan: instrument 'a different rig' differs from qwen35-9b-q4km-vulkan's "
-        "'seat: Shared_Memory@3c8e2bb' -- a registry is one instrument" in result.stderr
+        "profiles: gemma4-8b-e4b-q4km-vulkan: instrument 'a different rig' is not a kit version of the same suite as "
+        "qwen35-9b-q4km-vulkan's 'seat: Shared_Memory@3c8e2bb'" in result.stderr
     )
+
+
+def test_check_passes_two_kit_versions_of_one_suite(tmp_path):
+    """SUITE-1@1 and SUITE-1@2 sit in one registry. comparable_with still matches the exact instrument."""
+    data = load_base()
+    del data["profiles"]["qwen38-27b-iq3xxs-vulkan"]
+    older = data["profiles"]["qwen35-9b-q4km-vulkan"]
+    newer = data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]
+    older["instrument"] = "SUITE-1@1"
+    newer["instrument"] = "SUITE-1@2"
+    older["measured_on"] = newer["measured_on"]
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 0, result.stderr
+    card = run("card", "--file", str(path))
+    assert card.returncode == 0, card.stderr
+    shown = json.loads(card.stdout)
+    assert shown["profiles"]["qwen35-9b-q4km-vulkan"]["comparable_with"]["profiles"] == []
+    assert "qwen35-9b-q4km-vulkan" not in shown["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["comparable_with"]["profiles"]
+
+
+def test_check_fails_two_suite_ids_in_one_registry(tmp_path):
+    data = load_base()
+    for name in data["profiles"]:
+        data["profiles"][name]["instrument"] = "SUITE-1@1"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["instrument"] = "SUITE-2@1"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "is not a kit version of the same suite as" in result.stderr
+    assert "SUITE-2@1" in result.stderr
+    assert "SUITE-1@1" in result.stderr
+
+
+def test_check_fails_a_seat_instrument_beside_a_kit_instrument(tmp_path):
+    data = load_base()
+    data["profiles"]["qwen35-9b-q4km-vulkan"]["instrument"] = "SUITE-1@1"
+    data["profiles"]["qwen38-27b-iq3xxs-vulkan"]["instrument"] = "SUITE-1@1"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["instrument"] = "seat: Shared_Memory@3c8e2bb"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "SUITE-1@1" in result.stderr
+    assert "seat: Shared_Memory@3c8e2bb" in result.stderr
+    assert "is not a kit version of the same suite as" in result.stderr
+
+
+def test_check_still_rejects_two_rows_of_one_class_on_different_kit_versions(tmp_path):
+    """A rerun replaces that profile's row. A second row of the same class is still a duplicate."""
+    data = load_base()
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["category"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["category"]
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["weight_class"] = data["profiles"]["qwen35-9b-q4km-vulkan"]["weight_class"]
+    for name in data["profiles"]:
+        data["profiles"][name]["instrument"] = "SUITE-1@1"
+    data["profiles"]["gemma4-8b-e4b-q4km-vulkan"]["instrument"] = "SUITE-1@2"
+    path = write_json(tmp_path / "p.json", data)
+
+    result = run("check", "--file", str(path))
+    assert result.returncode == 2
+    assert "duplicates qwen35-9b-q4km-vulkan's" in result.stderr
+    assert "is not a kit version of the same suite" not in result.stderr
 
 
 def test_check_fails_missing_task_on_a_kit_instrument(tmp_path):
@@ -3263,7 +3329,7 @@ def _catalogue_label_gaps(mod, rows: list[dict], table: list[str]) -> list[str]:
     for row, line in zip(rows, body):
         name = row.get("name", "?")
         cells = _catalogue_cells(line)
-        if len(cells) != 9:
+        if len(cells) != 10:
             gaps.append(f"{name}: {len(cells)} cells")
             continue
         prof = row["prof"]

@@ -100,6 +100,25 @@ def kit_instrument(suite_path: Optional[Path] = None) -> str:
         raise ValueError("suite.json: kit_version must be a non-empty string")
     return f"{suite_id}@{version}"
 
+
+def _kit_suite_id(instrument: str) -> Optional[str]:
+    """The suite id of a kit instrument (`SUITE-1` from `SUITE-1@2`). A `seat:` value is not one."""
+    if not isinstance(instrument, str) or instrument.startswith("seat:"):
+        return None
+    suite_id, sep, version = instrument.partition("@")
+    if not sep or not suite_id or not version or any(ch in suite_id for ch in ": \t"):
+        return None
+    return suite_id
+
+
+def _registry_instruments_compatible(left: str, right: str) -> bool:
+    """Kit versions of one suite may share a registry. Any other pair must match exactly."""
+    if left == right:
+        return True
+    left_suite = _kit_suite_id(left)
+    right_suite = _kit_suite_id(right)
+    return left_suite is not None and left_suite == right_suite
+
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 SPEED_KEYS = {"8k", "32k", "64k", "100k"}
 # bf16 records a vLLM log that says kv_cache_dtype=auto on dtype bfloat16.
@@ -181,9 +200,9 @@ KERNEL_KEYS = {"path", "xmx", "evidence"}
 
 CATALOGUE_HEADER = (
     "| card | mode | profile | model | window (useful) | VRAM at served context | "
-    "decode / prefill at 8k | decode / prefill at far end | measured_on |"
+    "decode / prefill at 8k | decode / prefill at far end | measured_on | instrument |"
 )
-CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|"
+CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|---|"
 MODE_LABEL = {
     "display": "Display-safe (`A770B_CARD_MODE=display`, the default)",
     "inference": "Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop)",
@@ -949,7 +968,8 @@ def validate(data) -> list[str]:
     # One best row per task, card, class, backend, engine, weight quant, activation quant,
     # and ram_gb_extra. A missing or non-numeric ram_gb_extra is "" (same as a missing
     # engine), so two rows that both omit it still collide. Two Q6_K files of one 27B
-    # are not the same row when the weight encoding differs. A registry is one instrument.
+    # are not the same row when the weight encoding differs. Kit versions of one suite
+    # share a registry. Two suite ids do not, and a seat instrument does not sit with a kit instrument.
     category_class_seen: dict[tuple, str] = {}
     first_instrument = None
     first_instrument_owner = None
@@ -990,10 +1010,10 @@ def validate(data) -> list[str]:
             if first_instrument is None:
                 first_instrument = instrument
                 first_instrument_owner = name
-            elif instrument != first_instrument:
+            elif not _registry_instruments_compatible(first_instrument, instrument):
                 errors.append(
-                    f"{name}: instrument {instrument!r} differs from {first_instrument_owner}'s "
-                    f"{first_instrument!r} -- a registry is one instrument"
+                    f"{name}: instrument {instrument!r} is not a kit version of the same suite as "
+                    f"{first_instrument_owner}'s {first_instrument!r}"
                 )
 
     return errors
@@ -1515,7 +1535,7 @@ def _far_end_cell(speed: dict) -> str:
 
 
 def _catalogue_table(rows: list[dict]) -> list[str]:
-    """The catalogue table: one row per profile, with the window, the served-context VRAM, both speeds, and measured_on.
+    """The catalogue table: one row per profile, with the window, the served-context VRAM, both speeds, measured_on, and the instrument.
 
     The 8k cell names that depth, and is one em dash when both rates are missing. The far-end cell names the
     depth that row measured, or an em dash when that measurement is absent."""
@@ -1527,7 +1547,7 @@ def _catalogue_table(rows: list[dict]) -> list[str]:
         lines.append(
             f"| {r['card']} | {r['mode']} | {r['name']} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
             f"{_vram_cell(prof)} | {_8k_cell(prof['speed'])} | "
-            f"{_far_end_cell(prof['speed'])} | {prof.get('measured_on', '')} |"
+            f"{_far_end_cell(prof['speed'])} | {prof.get('measured_on', '')} | {prof.get('instrument', '')} |"
         )
     return lines
 

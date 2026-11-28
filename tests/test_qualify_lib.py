@@ -421,15 +421,42 @@ def test_i3_status_atomic(tmp_path):
     json.loads(raw)
 
 
+def _counted_stage():
+    """One counted stage from the suite fixture. A label is what makes the stage a run."""
+    doc = json.loads(
+        open(os.path.join(HERE, "fixtures", "qualify", "suite-result.json"), encoding="utf-8").read()
+    )
+    stage = dict(doc["stages"][0])
+    stage["label"] = stage.get("label") or stage["id"]
+    return stage, doc["instrument"]
+
+
+def _assemble_from_suite(job, suite):
+    """The production path: phase notes, then assemble. Tests do not write collected.json.
+
+    The serve and window notes give the row its VRAM, host RAM and useful window.
+    They are not the instrument.
+    """
+    ql.write_note(
+        str(job),
+        "serve.json",
+        {"load_ok": True, "vram_after_load": 21.77301025390625, "vram_cap": 15.3, "ram_gb_extra": 6.25},
+    )
+    ql.write_note(str(job), "window.json", {"ttft_8k": 8.1, "ttft_far": 112.2, "resets": 0})
+    ql.write_note(str(job), "depth.json", {"passed": True, "score": 2, "depth_tokens": 100000})
+    ql.write_note(str(job), "suite.json", suite)
+    ql.assemble(str(job))
+    return json.loads((job / "evidence" / "collected.json").read_text())
+
+
 def _measured_collected(stats):
     """Evidence a test recorded. The VRAM and the stage wall are copied from fixtures.
 
     ram_gb_extra is not in the arm1 capture. 6.25 is a value this test wrote into
     the evidence so the exporter has to copy it. It is not a measurement.
+    The suite instrument is the one the fixture file recorded.
     """
-    stage = json.loads(
-        open(os.path.join(HERE, "fixtures", "qualify", "suite-result.json"), encoding="utf-8").read()
-    )["stages"][0]
+    stage, instrument = _counted_stage()
     return {
         "statistics": stats,
         "profiling_ok": True,
@@ -439,7 +466,12 @@ def _measured_collected(stats):
         "depth_score": 2,
         "vram_after_load": 21.77301025390625,
         "ram_gb_extra": 6.25,
-        "suite": {"completed": True, "stages": [stage], "references": {}},
+        "suite": {
+            "completed": True,
+            "stages": [stage],
+            "references": {},
+            "instrument": instrument,
+        },
     }
 
 
@@ -464,13 +496,13 @@ def test_i18_export_two_files(kit_env, tmp_path, monkeypatch):
     assert _hashes(reg) == hashes
     assert not (job / "scratch" / "registry-root").exists()
     written = json.loads(out.read_text())
-    import profiles
-
     assert written["vram_gib_after_load"] == 21.77301025390625
     assert written["ram_gb_extra"] == 6.25
     assert written["timeout_s"] == 2111
     assert written["useful_ctx"] == plan["ctx"]
-    assert written["instrument"] == profiles.kit_instrument()
+    assert written["instrument"] == "SUITE-1@1"
+    assert written["evidence"].startswith("SUITE-1@1")
+    assert written["suite"]["instrument"] == "SUITE-1@1"
     assert written["model"] == "sample.gguf"
     assert written["depth_probe_100k"] == "pass (2/3)"
     assert written["category"].startswith("__TODO__")
@@ -552,6 +584,322 @@ def _hashes(directory):
 def test_api_key_in_extra_refused(kit_env):
     with pytest.raises(ql.QualifyError, match="api-key"):
         ql.build_plan(_gguf_args(["--extra", "--api-key secret"]))
+
+
+def _ladder_stats_without_instrument():
+    stats = _stats()
+    stats.pop("instrument", None)
+    stats.pop("evidence", None)
+    return stats
+
+
+def test_suite_instrument_wins_over_the_plan_and_the_live_tree(kit_env, tmp_path, monkeypatch):
+    """assemble keeps the instrument the suite recorded. The plan and the live tree do not replace it."""
+    import profiles
+
+    monkeypatch.setattr(profiles, "kit_instrument", lambda *args, **kwargs: "SUITE-NOW@9")
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--ctx", "131072"]))
+    assert plan.get("instrument") == "SUITE-NOW@9"
+    assert "instrument: SUITE-NOW@9" in ql.format_plan(plan)
+    job = _job(tmp_path, plan)
+    stage, _instrument = _counted_stage()
+    collected = _assemble_from_suite(
+        job,
+        {
+            "completed": True,
+            "stages": [stage],
+            "references": {},
+            "instrument": "SUITE-1@1",
+            "statistics": _ladder_stats_without_instrument(),
+        },
+    )
+    assert collected["suite"]["instrument"] == "SUITE-1@1"
+    result = ql.summarise(str(job))
+    assert result["instrument"] == "SUITE-1@1"
+    assert result["statistics"]["instrument"] == "SUITE-1@1"
+    assert result["statistics"]["evidence"] == "recorded"
+    assert result["suite"]["instrument"] == "SUITE-1@1"
+    report = (job / "report.md").read_text()
+    blob = (job / "result.json").read_text() + report
+    assert "SUITE-NOW@9" not in blob
+    assert "instrument: SUITE-1@1" in report
+    assert report.splitlines()[0].startswith("verdict:")
+    out = tmp_path / "outside" / "kept.json"
+    out.parent.mkdir()
+    ql.export_job(str(job), str(out), False)
+    written = json.loads(out.read_text())
+    assert written["instrument"] == "SUITE-1@1"
+    assert written["suite"]["instrument"] == "SUITE-1@1"
+    assert written["evidence"].startswith("SUITE-1@1")
+    assert "SUITE-NOW@9" not in out.read_text()
+
+
+def test_unrecorded_instrument_is_not_taken_from_the_plan_or_the_live_tree(kit_env, tmp_path, monkeypatch):
+    """A suite that ran and recorded no version is not labelled with the plan or the live tree."""
+    import profiles
+
+    monkeypatch.setattr(profiles, "kit_instrument", lambda *args, **kwargs: "SUITE-NOW@9")
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--ctx", "131072"]))
+    assert plan.get("instrument") == "SUITE-NOW@9"
+    assert "instrument: SUITE-NOW@9" in ql.format_plan(plan)
+    job = _job(tmp_path, plan)
+    stage, _instrument = _counted_stage()
+    collected = _assemble_from_suite(
+        job,
+        {
+            "completed": True,
+            "stages": [stage],
+            "references": {},
+            "statistics": _ladder_stats_without_instrument(),
+        },
+    )
+    assert "instrument" not in collected["suite"]
+    result = ql.summarise(str(job))
+    report = (job / "report.md").read_text()
+    blob = (job / "result.json").read_text() + report
+    assert "SUITE-NOW@9" not in blob
+    assert "planned" not in report
+    assert result["instrument"] in (None, "unknown")
+    assert result["statistics"].get("instrument") in (None, "unknown")
+    assert result["statistics"].get("evidence") in (None, "unknown")
+    assert "planned_instrument" not in result
+    assert "instrument: not recorded" in report
+    out = tmp_path / "outside" / "unrecorded.json"
+    out.parent.mkdir()
+    with pytest.raises(ql.QualifyError, match="instrument"):
+        ql.export_job(str(job), str(out), False)
+    assert not out.exists()
+    ql.export_job(str(job), str(out), True)
+    written = json.loads(out.read_text())
+    assert written.get("instrument") in (None,)
+    assert written.get("evidence") in (None,)
+    text = out.read_text()
+    assert "SUITE-NOW@9" not in text
+    assert "qualification result" not in text
+
+
+def test_a_job_whose_suite_never_ran_shows_the_planned_version_as_planned(kit_env, tmp_path, monkeypatch):
+    """No suite note: the plan's version may be shown as planned. It is not a result claim."""
+    import profiles
+
+    monkeypatch.setattr(profiles, "kit_instrument", lambda *args, **kwargs: "SUITE-NOW@9")
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--fit-only", "--ctx", "131072"]))
+    assert plan.get("instrument") == "SUITE-NOW@9"
+    job = _job(tmp_path, plan)
+    ql.assemble(str(job))
+    collected = json.loads((job / "evidence" / "collected.json").read_text())
+    assert collected["suite"].get("completed") is None
+    assert "instrument" not in collected["suite"]
+    result = ql.summarise(str(job))
+    report = (job / "report.md").read_text()
+    assert result["instrument"] in (None, "unknown")
+    assert result.get("planned_instrument") == "SUITE-NOW@9"
+    assert result["statistics"].get("instrument") in (None, "unknown")
+    assert result["statistics"].get("evidence") in (None, "unknown")
+    assert "instrument: SUITE-NOW@9 (planned; the suite did not run)" in report
+    assert "qualification result" not in report
+    out = tmp_path / "outside" / "planned.json"
+    out.parent.mkdir()
+    ql.export_job(str(job), str(out), True)
+    written = json.loads(out.read_text())
+    assert written.get("instrument") in (None,)
+    assert written.get("evidence") in (None,)
+    assert "SUITE-NOW@9" not in out.read_text()
+    assert "qualification result" not in out.read_text()
+
+
+def test_unmerged_job_is_reported_and_export_stamps_no_instrument(kit_env, tmp_path, monkeypatch):
+    """Differing recorded instruments stay apart through assemble, the report, and both export modes."""
+    import profiles
+
+    monkeypatch.setattr(profiles, "kit_instrument", lambda *args, **kwargs: "SUITE-NOW@9")
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--ctx", "131072"]))
+    job = _job(tmp_path, plan)
+    stage, _instrument = _counted_stage()
+    first = {
+        "instrument": "SUITE-1@1",
+        "stages": [dict(stage, id="s1-frontend", label="s1-frontend")],
+        "completed": True,
+        "attempts": 1,
+    }
+    second = {
+        "instrument": "SUITE-1@2",
+        "stages": [dict(stage, id="s2-backend", label="s2-backend")],
+        "completed": True,
+    }
+    merged = ql._merge_suite(first, second)
+    third = {
+        "instrument": "SUITE-1@2",
+        "stages": [dict(stage, id="s3-later", label="s3-later")],
+        "completed": True,
+    }
+    merged = ql._merge_suite(merged, third)
+    merged["statistics"] = _ladder_stats_without_instrument()
+    collected = _assemble_from_suite(job, merged)
+    assert collected["suite"].get("stages") == []
+    assert "instrument" not in collected["suite"]
+    assert collected["suite"]["unmerged"] == "recorded instruments differ"
+    assert len(collected["suite"]["kept_attempts"]) == 3
+    assert collected["suite"]["kept_attempts"][2]["instrument"] == "SUITE-1@2"
+    result = ql.summarise(str(job))
+    report = (job / "report.md").read_text()
+    assert result["instrument"] in (None, "unknown")
+    assert result["suite"]["unmerged"] == "recorded instruments differ"
+    assert len(result["suite"]["kept_attempts"]) == 3
+    assert "unmerged: recorded instruments differ" in report
+    assert "kept attempt 1: instrument SUITE-1@1" in report
+    assert "kept attempt 3: instrument SUITE-1@2" in report
+    assert "SUITE-NOW@9" not in (job / "result.json").read_text() + report
+    out = tmp_path / "outside" / "unmerged.json"
+    out.parent.mkdir()
+    with pytest.raises(ql.QualifyError, match="instrument"):
+        ql.export_job(str(job), str(out), False)
+    assert not out.exists()
+    ql.export_job(str(job), str(out), True)
+    written = json.loads(out.read_text())
+    assert written.get("instrument") in (None,)
+    assert written.get("evidence") in (None,)
+    assert written.get("suite") in (None,)
+    text = out.read_text()
+    assert "SUITE-NOW@9" not in text
+    assert "SUITE-1@1" not in text
+    assert "SUITE-1@2" not in text
+    assert "qualification result" not in text
+
+
+def test_row_evidence_is_set_only_when_the_suite_was_exported(kit_env, tmp_path, monkeypatch):
+    """The evidence sentence exists only when the exported suite carries that instrument."""
+    import profiles
+
+    monkeypatch.setattr(profiles, "kit_instrument", lambda *args, **kwargs: "SUITE-NOW@9")
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--ctx", "131072"]))
+    labelled_root = tmp_path / "labelled"
+    labelled_root.mkdir()
+    labelled = _job(labelled_root, plan)
+    stage, _instrument = _counted_stage()
+    _assemble_from_suite(
+        labelled,
+        {
+            "completed": True,
+            "stages": [stage],
+            "instrument": "SUITE-1@1",
+            "statistics": _ladder_stats_without_instrument(),
+        },
+    )
+    ql.summarise(str(labelled))
+    labelled_out = tmp_path / "outside" / "labelled.json"
+    labelled_out.parent.mkdir()
+    ql.export_job(str(labelled), str(labelled_out), False)
+    labelled_row = json.loads(labelled_out.read_text())
+    assert labelled_row["instrument"] == "SUITE-1@1"
+    assert labelled_row["evidence"] == "SUITE-1@1 qualification result"
+    assert labelled_row["suite"]["instrument"] == "SUITE-1@1"
+
+    bare_root = tmp_path / "bare"
+    bare_root.mkdir()
+    bare = _job(bare_root, plan)
+    unlabelled = dict(stage)
+    unlabelled.pop("label", None)
+    _assemble_from_suite(
+        bare,
+        {
+            "completed": True,
+            "stages": [unlabelled],
+            "instrument": "SUITE-1@1",
+            "statistics": _ladder_stats_without_instrument(),
+        },
+    )
+    bare_result = ql.summarise(str(bare))
+    assert bare_result["instrument"] == "SUITE-1@1"
+    assert bare_result["statistics"].get("evidence") in (None, "unknown")
+    bare_out = tmp_path / "outside" / "bare.json"
+    with pytest.raises(ql.QualifyError, match="evidence"):
+        ql.export_job(str(bare), str(bare_out), False)
+    ql.export_job(str(bare), str(bare_out), True)
+    bare_row = json.loads(bare_out.read_text())
+    assert bare_row.get("evidence") in (None,)
+    assert bare_row.get("instrument") in (None,)
+    assert "qualification result" not in bare_out.read_text()
+    assert "SUITE-NOW@9" not in bare_out.read_text()
+
+
+def test_merge_keeps_a_recorded_instrument_when_a_later_suite_omits_it():
+    merged = ql._merge_suite(
+        {"instrument": "SUITE-1@1", "stages": [], "completed": True, "attempts": 1},
+        {"stages": [], "completed": True},
+    )
+    assert merged["instrument"] == "SUITE-1@1"
+
+
+def test_merge_keeps_differing_recorded_instruments_on_their_own_stages():
+    """Two recorded versions are not one verdict. Each attempt's stages stay with that attempt."""
+    merged = ql._merge_suite(
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s1-frontend"}],
+            "completed": True,
+            "attempts": 1,
+        },
+        {
+            "instrument": "SUITE-1@2",
+            "stages": [{"id": "s2-backend"}],
+            "completed": True,
+        },
+    )
+    assert merged.get("stages") == []
+    assert "instrument" not in merged
+    kept = merged["kept_attempts"]
+    assert kept[0]["instrument"] == "SUITE-1@1"
+    assert [stage["id"] for stage in kept[0]["stages"]] == ["s1-frontend"]
+    assert kept[1]["instrument"] == "SUITE-1@2"
+    assert [stage["id"] for stage in kept[1]["stages"]] == ["s2-backend"]
+
+
+def test_merge_does_not_count_an_unrecorded_attempt_under_a_recorded_instrument():
+    merged = ql._merge_suite(
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s1-frontend"}],
+            "completed": True,
+            "attempts": 1,
+        },
+        {"stages": [{"id": "s2-backend"}], "completed": True},
+    )
+    assert merged.get("stages") == []
+    assert "instrument" not in merged
+    assert [stage["id"] for stage in merged["kept_attempts"][0]["stages"]] == ["s1-frontend"]
+    assert merged["kept_attempts"][0]["instrument"] == "SUITE-1@1"
+    assert [stage["id"] for stage in merged["kept_attempts"][1]["stages"]] == ["s2-backend"]
+    assert "instrument" not in merged["kept_attempts"][1]
+
+
+def test_merge_joins_stages_that_recorded_the_same_instrument():
+    merged = ql._merge_suite(
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s1-frontend"}],
+            "completed": True,
+            "attempts": 1,
+        },
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s2-backend"}],
+            "completed": True,
+        },
+    )
+    assert merged["instrument"] == "SUITE-1@1"
+    assert [stage["id"] for stage in merged["stages"]] == ["s1-frontend", "s2-backend"]
+    assert "kept_attempts" not in merged
 
 
 def test_fit_report_first_line(kit_env, tmp_path):

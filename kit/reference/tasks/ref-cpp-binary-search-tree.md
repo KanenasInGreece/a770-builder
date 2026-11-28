@@ -1,10 +1,10 @@
 # Task: implement the binary search tree in `kit/reference/cpp/binary-search-tree/binary_search_tree.h`
 
-You are in a standalone clone of KanenasInGreece/a770-builder, branch `profiling-kit`. The task is implementing
-one file, `kit/reference/cpp/binary-search-tree/binary_search_tree.h`, and nothing else. Do not create files. Do
-not edit any file not named below. This is Aider's polyglot-benchmark C++ exercise `binary-search-tree`
-(Exercism practice track, MIT licence 2021 — see `kit/reference/SOURCES.md` and the `LICENSE` beside this
-exercise), carried into this kit verbatim.
+You are at the root of the reference seat. That root holds this exercise under `kit/reference/`, and every path
+below is relative to it. The task is implementing one file,
+`kit/reference/cpp/binary-search-tree/binary_search_tree.h`, and nothing else. Do not create files. Do not edit
+any file not named below. This is Aider's polyglot-benchmark C++ exercise `binary-search-tree` (Exercism
+practice track, MIT licence 2021 — see the `LICENSE` beside this exercise), carried into this kit verbatim.
 
 ## The files
 
@@ -96,7 +96,3 @@ switch). No docker, no systemctl, no network. Keep every edit on one physical li
 
 `cmake --build build-bst` ends with `All tests passed` and `Built target test_binary-search-tree`, with no
 non-zero exit. Then print the list of files you changed.
-
-## A run specification beside this brief
-
-`ref-cpp-binary-search-tree.spec.json`, beside this file.

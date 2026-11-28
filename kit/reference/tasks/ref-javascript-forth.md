@@ -1,10 +1,10 @@
 # Task: implement the Forth evaluator in `kit/reference/javascript/forth/forth.js`
 
-You are in a standalone clone of KanenasInGreece/a770-builder, branch `profiling-kit`. The task is implementing
-one file, `kit/reference/javascript/forth/forth.js`, and nothing else. Do not create files. Do not edit any
-file not named below. This is Aider's polyglot-benchmark JavaScript exercise `forth` (Exercism practice track,
-MIT licence 2021 — see `kit/reference/SOURCES.md` and the `LICENSE` beside this exercise), carried into this
-kit verbatim.
+You are at the root of the reference seat. That root holds this exercise under `kit/reference/`, and every path
+below is relative to it. The task is implementing one file, `kit/reference/javascript/forth/forth.js`, and
+nothing else. Do not create files. Do not edit any file not named below. This is Aider's polyglot-benchmark
+JavaScript exercise `forth` (Exercism practice track, MIT licence 2021 — see the `LICENSE` beside this
+exercise), carried into this kit verbatim.
 
 ## The files
 
@@ -57,8 +57,7 @@ node --test kit/reference/javascript/forth/run.test.mjs
 ```
 
 Expected: `ℹ pass 49` and `ℹ fail 0` (every case in `forth.spec.js` runs; the shim maps `xtest` onto `node:test`'s
-own `test`, reproducing Aider's own grading, which flips every `xtest` to `test` before scoring — see the note
-in `kit/reference/SOURCES.md`). `EXIT=0`.
+own `test`, reproducing Aider's own grading, which flips every `xtest` to `test` before scoring). `EXIT=0`.
 
 ## Rules
 
@@ -69,9 +68,3 @@ switch). No docker, no systemctl, no network. Keep every edit on one physical li
 
 `node --test kit/reference/javascript/forth/run.test.mjs` exits 0 with `pass 49` and `fail 0`. Then print the
 list of files you changed.
-
-## A run specification beside this brief
-
-`ref-javascript-forth.spec.json`, beside this file. Its `bash_allow` carries no entry for this grader — see the
-FINDING in `kit/reference/SOURCES.md`: the run specification's rule refuses any `bash_allow` pattern whose
-first word is `node`.

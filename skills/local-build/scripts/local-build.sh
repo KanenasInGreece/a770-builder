@@ -27,7 +27,7 @@ if [ -z "${A770B_PROJECT:-}" ]; then
   fi
 fi
 A770B_PROJECT="${A770B_PROJECT:-$HOME/local-ai/A770_Builder}"; export A770B_PROJECT
-version(){ local pv sha rel n
+version(){ local pv sha rel n kitline
   echo "local-build skill release $SKILL_VERSION · installed at $(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   if [ -r "$A770B_PROJECT/VERSION" ]; then pv=$(head -1 "$A770B_PROJECT/VERSION"); sha=$(git -c core.hooksPath=/dev/null -C "$A770B_PROJECT" rev-parse --short HEAD 2>/dev/null || true)
     # the release this checkout stands on: the nearest tag, and how many commits it has moved since
@@ -36,6 +36,19 @@ version(){ local pv sha rel n
     echo "a770-builder project $pv${sha:+ ($sha)} · $rel · $A770B_PROJECT"
     [ "$pv" = "$SKILL_VERSION" ] || echo "⚠ installed skill $SKILL_VERSION ≠ project $pv — reinstall the skill from the project (npx skills add … --copy, or copy skills/local-build by hand)" >&2
   else echo "a770-builder project: not found at $A770B_PROJECT (set A770B_PROJECT in $_cfg or the environment)" >&2; fi
+  # The kit this checkout would test. Missing or unreadable suite.json is not a version failure.
+  if [ -r "$A770B_PROJECT/kit/suite.json" ]; then
+    kitline=$(python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+s=d.get("suite"); v=d.get("kit_version")
+if isinstance(s,str) and s.strip() and isinstance(v,str) and v.strip():
+    print("%s@%s" % (s.strip(), v.strip()))
+' "$A770B_PROJECT/kit/suite.json" 2>/dev/null || true)
+    [ -n "${kitline:-}" ] && echo "kit $kitline"
+  fi
 }
 # check_update — one conditional request, only when asked. Compares this copy's release number with the VERSION file on the
 # repository's main branch, which release.sh moves only at a release, so it reads as the latest release. Works without the

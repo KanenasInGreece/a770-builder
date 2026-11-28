@@ -71,8 +71,8 @@ physical line; never re-wrap.
 select, the inline module script and `aria-live` on `#stats`, and the three JS files
 together are at or under the 180-line budget. Then print the files you changed.
 
-## A run specification beside this brief
+## Commands you may run
 
-See `s1-frontend.spec.json`. `node --test` and `node --check` are allowed in your own shell
+`node --test` and `node --check` are allowed in your own shell
 tool (the run profile grants both unconditionally): you can and should run the Verify command
 above yourself before you stop, the same way you would run any other command.

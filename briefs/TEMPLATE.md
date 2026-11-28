@@ -47,6 +47,9 @@ files you changed.
 
 ## A run specification beside this brief (optional)
 
+This section is for the coordinator. Do not copy this section into a brief. The builder's seat does
+not hold the specification file, and naming it there can end the stage with an empty patch.
+
 Save as `<brief>.spec.json` and pass `--spec`. Every key optional; paths are relative to the seat.
 
 ```json
