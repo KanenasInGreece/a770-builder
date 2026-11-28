@@ -723,7 +723,11 @@ def test_strata_host_memory_settings_are_carried_as_configured(tmp_path):
                 "args": {"--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap"}}
     evidence = tmp_path / "evidence.json"
     observed = {"value_bytes": round(27.70 * 1024 ** 3), "source": "engine.log",
-                "reported_text": "mirrored in 27.70 GiB of pinned host RAM"}
+                "reported_text": (
+                    "strata generate: 14489 of 14489 experts missing from VRAM "
+                    "(+ 0 in the prompt loan's slots) mirrored in pinned host memory "
+                    "(27.70 GiB, 50.4 s); the GPU reads them over PCIe"
+                )}
     evidence.write_text(json.dumps({"engine": "strata", "config": str(config), "host_memory_settings": settings,
                                     "observed_pinned_host_memory": observed}))
     host_log = tmp_path / "host-memory.jsonl"

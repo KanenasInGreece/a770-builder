@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch and identify one Linux-owned Strata v0.2.17 text server."""
+"""Launch and identify one Linux-owned Strata v0.2.23 text server."""
 import argparse
 import ctypes as c
 import hashlib
@@ -22,7 +22,7 @@ import time
 from strata_attach import Endpoint, attach_check, read_key
 
 
-PIN = "12d491da4a6904eb49aaa6f2f63ec4b1a17582e3"
+PIN = "4560d03793482ef367294cfbd86a4df8d5679e72"
 STOP_TIMEOUT = 48
 # The supervisor's waits for its server: after owner EOF, then after SIGTERM and SIGKILL.
 # With the engine waits they total under 30 s, inside STOP_TIMEOUT.
@@ -80,6 +80,54 @@ def device_override(name):
     }
 
 
+# serve/server_parts/http_api.py split_joined_args: one element "--flag value" or "--flag=value" becomes two,
+# except an element sitting in the value place of a bare flag. The terminal then reads the split list.
+_JOINED_ARG = re.compile(r"^(--[A-Za-z0-9][A-Za-z0-9-]*)(?:\s+|=)(\S.*)$")
+_BARE_FLAG = re.compile(r"^--[A-Za-z0-9][A-Za-z0-9-]*$")
+# Arch values that select a shape engine. hy4flash and inkling2_loop are the ARCH constants
+# (serve/hy4_kind.py, serve/inkling_kind.py, strata_control/inkling_family.py). The other two are the
+# remaining inkling names serve uses for that family (serve/server_parts/engines.py, http_api.py).
+SHAPE_ENGINE_ARCH = frozenset({"hy4flash", "inkling2_loop", "inkling2", "inkling2_loop_text"})
+
+
+def split_joined_args(args):
+    """Split joined engine arguments the way v0.2.23 serve does, without changing the caller's list."""
+    out = []
+    for item in args:
+        match = _JOINED_ARG.match(item) if isinstance(item, str) else None
+        previous = out[-1] if out else None
+        in_value_place = isinstance(previous, str) and _BARE_FLAG.match(previous) is not None
+        if match is None or in_value_place:
+            out.append(item)
+            continue
+        out += [match.group(1), match.group(2).strip()]
+    return out
+
+
+def terminal_replaces_generic_engine(exe, args):
+    """True when v0.2.23 would replace a generic strata executable with a shape engine.
+
+    The decision matches ``_autocorrect_shape_config``: arguments already split as ``split_joined_args``
+    splits them, the first ``--native`` or ``--model`` (a value that starts with ``--`` still counts),
+    the basename after ``\\`` is turned into ``/``, and ``--engram`` / ``--dspark`` only as exact tokens.
+    """
+    exe_base = str(exe).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if exe_base not in {"strata", "strata.exe"}:
+        return False
+    args = split_joined_args(args)
+    model = None
+    for i, tok in enumerate(args):
+        if tok in {"--native", "--model"} and i + 1 < len(args):
+            model = str(args[i + 1])
+            break
+    if not model:
+        return False
+    name = model.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if (name.startswith("hy4-flash") and name.endswith(".strata")) or "--engram" in args:
+        return True
+    return ("inkling" in name and name.endswith((".strata", ".gguf"))) or "--dspark" in args
+
+
 def prepare_config(path):
     raw = path.read_bytes()
     doc = json.loads(raw)
@@ -99,8 +147,8 @@ def prepare_config(path):
     if not re.fullmatch(r"[\w.-][\w./:-]*", doc["model_name"]):
         raise ValueError("prepared model_name is not a plain model identifier")
     for field in ("gpu", "replicas", "layer_split", "split_serve", "fallback", "vision", "image", "images",
-                  "mcp", "mcp_servers", "mcp_config", "before_load", "api_key", "telemetry_key", "lazy_load",
-                  "user_args", "idle_unload_s"):
+                  "mcp", "mcp_servers", "mcp_config", "before_load", "api_key", "api_keys", "telemetry_key",
+                  "telemetry_read_key", "lazy_load", "user_args", "idle_unload_s"):
         if doc.get(field) not in (None, "", [], {}, False):
             raise ValueError(f"prepared config must leave {field} disabled")
     if type(doc.get("parallel", 1)) is not int or doc.get("parallel", 1) != 1:
@@ -110,16 +158,19 @@ def prepare_config(path):
         raise ValueError("prepared config needs an engine args array")
     if doc.get("args_written", args) != args:
         raise ValueError("prepared args differ from args_written")
+    # Same split the terminal applies before it reads flags. doc["args"] stays as written; user_args is the
+    # existing rewrite of a pinned --spec / --draft-model / --draft-conf value into a flag and its value.
+    split = split_joined_args(args)
     draft_pins = doc.pop("draft_asset_sha256", {})
     if not isinstance(draft_pins, dict):
         raise ValueError("draft_asset_sha256 must map absolute draft asset paths to SHA-256")
     drafts = {}
     pinned_args = []
-    for i, item in enumerate(args):
+    for i, item in enumerate(split):
         flag, equal, inline = item.partition("=")
         if flag in {"--batch", "--slots", "--gpu", "--layer-split", "--device", "--devices", "--serve"}:
             raise ValueError(f"prepared config contains unsupported engine flag {flag}")
-        value = inline if equal else args[i + 1] if i + 1 < len(args) else ""
+        value = inline if equal else split[i + 1] if i + 1 < len(split) else ""
         if flag in {"--spec", "--draft-model", "--draft-conf"}:
             if not value or value.startswith("--"):
                 raise ValueError(f"{flag} requires a value")
@@ -135,8 +186,12 @@ def prepare_config(path):
             if not isinstance(pin, str) or not hmac.compare_digest(sha, pin):
                 raise ValueError(f"{flag} needs a matching draft_asset_sha256 pin")
             drafts[str(asset)] = sha
-    if doc.get("drafting") == "dflash2" and not any(a.partition("=")[0] == "--draft-model" for a in args):
+    if doc.get("drafting") == "dflash2" and not any(a.partition("=")[0] == "--draft-model" for a in split):
         raise ValueError("explicit DFlash2 needs a pinned --draft-model")
+    if doc.get("arch") in SHAPE_ENGINE_ARCH:
+        raise ValueError("prepared config arch selects a shape engine")
+    if terminal_replaces_generic_engine(doc["exe"], args):
+        raise ValueError("prepared config names a shape model the terminal would start with another engine")
     if pinned_args:
         doc["user_args"] = pinned_args
     selector = os.environ.get("A770B_ONEAPI_DEVICE_SELECTOR", "")
@@ -146,7 +201,7 @@ def prepare_config(path):
     if not isinstance(env, dict) or env.get("ONEAPI_DEVICE_SELECTOR", selector) != selector:
         raise ValueError("prepared config changes the selected card")
     guarded = {"LD_PRELOAD", "STRATA_PRIMARY_DEVICE", "STRATA_NO_ACQUIRE", "STRATA_NO_PRESET",
-               "STRATA_KEEP_LEFTOVERS", "HOME"}
+               "STRATA_NO_AUTO_CONVERSATION_CACHE", "STRATA_KEEP_LEFTOVERS", "HOME"}
     if env.keys() & guarded or any(device_override(k) or k.startswith((
             "STRATA_HOME", "STRATA_SETTINGS_", "STRATA_PROFILE_", "STRATA_CONNECTION_",
             "STRATA_RUNTIME_", "XDG_")) for k in env):
@@ -165,13 +220,17 @@ HOST_MEMORY_FLAGS = ("--expert-cache", "--stream-experts", "--ple-io")
 
 
 def host_memory_settings(env, args):
-    """The host-memory settings as the config writes them: values verbatim, a bare flag True, an absent one absent."""
+    """The host-memory settings as the config writes them: values verbatim, a bare flag True, an absent one absent.
+
+    Flags are read after ``split_joined_args``, so one joined element matches the two-element form.
+    """
     found = {}
-    for i, item in enumerate(args):
+    split = split_joined_args(args)
+    for i, item in enumerate(split):
         flag, equal, inline = item.partition("=")
         if flag not in HOST_MEMORY_FLAGS:
             continue
-        following = args[i + 1] if i + 1 < len(args) else None
+        following = split[i + 1] if i + 1 < len(split) else None
         if equal:
             found[flag] = inline
         elif following is not None and not following.startswith("--"):
@@ -254,7 +313,7 @@ def source_inputs():
     changed = subprocess.check_output([*git, "status", "--porcelain", "--untracked-files=normal", "--", "terminal"],
                                       text=True).strip()
     if commit != PIN or changed or not (root / "terminal/serve/server.py").is_file():
-        raise ValueError("Strata terminal source must be a clean v0.2.17 checkout")
+        raise ValueError("Strata terminal source must be a clean v0.2.23 checkout")
     return root / "terminal", python
 
 
@@ -336,22 +395,53 @@ def end_engines(state, grace):
             time.sleep(0.1)
 
 
+# Engine 0.1.69 (and 0.1.63) prints the GGUF expert mirror as
+# "mirrored in pinned host memory (%.2f GiB, %.1f s)" — gguf_src.mirrored_bytes(), sycl generate.cpp.
+# Two other lines in that binary report pinned memory this figure does not include, so they are not added:
+# "the K/V in %.2f GiB of pinned RAM" is qsa_kv_host_bytes() when KV streaming is on, and
+# "resident %.2f GiB, pinned %.2f GiB" is FileExpertSource's complement pinned_bytes().
+_MIRROR_LINE = re.compile(
+    r"mirrored in pinned host memory \((?P<amount>\d+(?:\.\d+)?) GiB, \d+(?:\.\d+)? s\)")
+_OTHER_PINNED_LINES = (
+    ("kv_streaming", re.compile(r"the K/V in (?P<amount>\d+(?:\.\d+)?) GiB of pinned RAM")),
+    ("file_expert_complement", re.compile(
+        r"resident \d+(?:\.\d+)? GiB, pinned (?P<amount>\d+(?:\.\d+)?) GiB")),
+)
+_PINNED_MIRROR_NOTE = (
+    "The figure is the GGUF expert mirror only (mirrored_bytes). Those other lines are not added: "
+    "a KV-streaming line reports qsa_kv_host_bytes, and a FileExpertSource complement line reports that complement's pinned_bytes."
+)
+
+
+def _gib_line(amount):
+    return round(float(amount) * 1024 ** 3)
+
+
 def observed_pinned_host_memory(log_path):
-    """Read a Strata-reported pinned host-RAM allocation, keeping its source text and bytes."""
+    """Read the engine's GGUF expert-mirror line. Other pinned-memory lines are kept beside it and not added in."""
     try:
         lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
-    pattern = re.compile(r"(?P<amount>[\d,]+(?:\.\d+)?)\s*(?P<unit>KiB|MiB|GiB)\s+of pinned host RAM", re.I)
-    scale = {"kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3}
+    mirror = None
     for line in reversed(lines):
-        match = pattern.search(line)
+        match = _MIRROR_LINE.search(line)
         if match:
-            amount = float(match.group("amount").replace(",", ""))
-            unit = match.group("unit").lower()
-            return {"value_bytes": round(amount * scale[unit]), "source": str(log_path),
-                    "reported_text": line.strip()[-300:]}
-    return None
+            mirror = (match, line)
+            break
+    if mirror is None:
+        return None
+    match, line = mirror
+    others = []
+    for raw in lines:
+        for kind, pattern in _OTHER_PINNED_LINES:
+            found = pattern.search(raw)
+            if found:
+                others.append({"kind": kind, "value_bytes": _gib_line(found.group("amount")),
+                               "reported_text": raw.strip()[-300:], "included_in_value_bytes": False})
+    return {"value_bytes": _gib_line(match.group("amount")), "source": str(log_path),
+            "reported_text": line.strip()[-300:], "note": _PINNED_MIRROR_NOTE,
+            "other_pinned_lines": others}
 
 
 def observe_host_memory(evidence_path):
@@ -593,7 +683,10 @@ def supervise(plan_path, gate_fd):
     write_state(Path(plan["state"]), plan)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STRATA_", "PYTHON"))
            and not device_override(k)}
+    # STRATA_NO_AUTO_CONVERSATION_CACHE stops the terminal from raising the conversation-cache budget
+    # above the engine's own limit (8 GiB). The engine's automatic cache stays on: 40% of free RAM, capped at 8 GiB.
     env.update(STRATA_KEEP_LEFTOVERS="1", STRATA_NO_PRESET="1", STRATA_NO_ACQUIRE="1",
+               STRATA_NO_AUTO_CONVERSATION_CACHE="1",
                STRATA_API_KEY=key, STRATA_OWNER_ATTEST_KEY=attestation_key.hex(),
                PYTHONDONTWRITEBYTECODE="1", ONEAPI_DEVICE_SELECTOR=plan["selector"], STRATA_HOME=str(run),
                STRATA_SETTINGS_FILE=str(run / "settings.json"), STRATA_PROFILE_DIR=str(run / "profiles"),

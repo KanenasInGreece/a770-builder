@@ -663,14 +663,14 @@ The installed Intel XPU vLLM image tested here did not register that architectur
 
 ## Managed Strata
 
-The native path runs the pinned [Strata v0.2.17 terminal
-source](https://github.com/Niko1221/Strata/tree/12d491da4a6904eb49aaa6f2f63ec4b1a17582e3/terminal)
-with an operator-prepared Python runtime and Intel engine. Prepare the executable, its runtime libraries,
+The native path runs the pinned [Strata v0.2.23 terminal
+source](https://github.com/Niko1221/Strata/tree/4560d03793482ef367294cfbd86a4df8d5679e72/terminal)
+with an operator-prepared Python runtime and SYCL engine 0.1.69. Prepare the executable, its runtime libraries,
 the model pack and shards, the tokenizer, and the JSON run config before using the harness. Start uses
 `python -s -m serve.server --engine strata --offline` from the pinned terminal checkout. The harness
 records the source revision and SHA-256 of the engine, tokenizer and config beside separate server and
 engine logs. It gives the launched terminal its own settings, profiles and state directories and
-disables saved presets and acquisition. Record the model artifacts and checkpoint or revision with the
+disables saved presets and acquisition. It stops the terminal from raising the conversation-cache budget above the engine's own limit; the engine's automatic cache stays on. It refuses a generic `strata` or `strata.exe` executable when the first `--native` or `--model` — after the same split the terminal applies to one argument on a space or `=` — names a Hy4-Flash `.strata` file or an Inkling `.strata` or `.gguf` file, or when that `--native` or `--model` value is present and `--engram` or `--dspark` is its own argument. A value that starts with `--` still counts, and a backslash in that path is a separator. It also refuses a prepared `arch` of `hy4flash`, `inkling2_loop`, `inkling2`, or `inkling2_loop_text`, which selects a shape engine. Record the model artifacts and checkpoint or revision with the
 measurement notes.
 
 The run config supplies `backend` (`intel` or `sycl`), `exe`, `cwd`, `tokenizer`, `model_name` and
@@ -690,7 +690,7 @@ Level Zero reports PCI ID `8086:e223`. The budget gate applies before loading. T
 host memory floor during serving. Use a Linux memory scope when the trial needs a hard per-process limit.
 
 ```bash
-export A770B_STRATA_ROOT=/path/to/clean/Strata-v0.2.17
+export A770B_STRATA_ROOT=/path/to/clean/Strata-v0.2.23
 export A770B_STRATA_PYTHON=/path/to/prepared/venv/bin/python
 export A770B_STRATA_ENGINE_SHA256=ENGINE_SHA256
 export A770B_STRATA_CONFIG=/path/to/prepared/strata.json
@@ -718,11 +718,11 @@ the pinned terminal's owner guard to close its server and engine.
 
 ### Arc Pro B70 and Qwen3.8-Flash-Next IQ3_S
 
-Use the [Intel Arc guide](https://github.com/Niko1221/Strata/blob/v0.2.17/docs/INTEL_ARC.md)
+Use the [Intel Arc guide](https://github.com/Niko1221/Strata/blob/4560d03793482ef367294cfbd86a4df8d5679e72/docs/INTEL_ARC.md)
 and the [ISTA-DASLab IQ3_S checkpoint](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S).
 The two GGUF shards occupy 77.9 GiB on disk. Place them on a local SSD and prepare
 the native pack with the pinned Terminal. The measured run used the signed
-SYCL engine 0.1.63 and the `expert-profile-sycl.bin` from that Terminal revision.
+SYCL engine 0.1.63 and the `expert-profile-sycl.bin` from the Strata v0.2.17 terminal.
 
 The run config uses the transformer GGUF for `--native`, the per-layer embedding GGUF for
 `--ple-gguf`, and the prepared directory for `--pack`. Pass the profile above as `--expert-profile`.

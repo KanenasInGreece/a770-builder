@@ -12,6 +12,150 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 import strata_managed as managed
 
 
+def test_managed_pin_is_only_the_v0223_terminal():
+    source = (ROOT / "harness" / "strata_managed.py").read_text(encoding="utf-8")
+    assert managed.PIN == "4560d03793482ef367294cfbd86a4df8d5679e72"
+    assert "v0.2.23" in source
+    assert "v0.2.17" not in source
+
+
+@pytest.mark.parametrize("extra", [
+    ["--native", "/models/hy4-flash-iq3.strata"],
+    ["--model", "/models/Inkling-2-Mini.gguf"],
+    ["--native=hy4-flash-iq3.strata"],
+    ["--native", "/models/qwen.gguf", "--dspark", "/models/draft.gguf"],
+    ["--model", "/models/qwen.gguf", "--engram"],
+    ["--native /m/hy4-flash-iq3.strata"],
+    ["--model /m/Inkling-2-Mini.gguf"],
+    ["--native", "/m/qwen.gguf", "--engram /m/e.bin"],
+    ["--native", "/m/qwen.gguf", "--dspark /m/d.gguf"],
+    ["--native", "/m/hy4-flash-a.strata", "--native", "/m/qwen.gguf"],
+    ["--native", "--engram"],
+    ["--native", "--x", "--dspark", "/m/d.gguf"],
+    ["--native", "dir\\hy4-flash-a.strata"],
+])
+def test_shape_model_is_refused_on_the_generic_engine(config, extra):
+    doc = json.loads(config.read_text())
+    doc["args"] = extra
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="another engine"):
+        managed.prepare_config(config)
+
+
+def test_flash_next_args_and_a_non_strata_executable_are_accepted(config, tmp_path, monkeypatch):
+    """The terminal leaves a Flash-Next native pack on `strata` alone, and it does not swap a non-generic executable."""
+    doc = json.loads(config.read_text())
+    doc["args"] = ["--pack", "/models/pack",
+                   "--native", "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+                   "--ple-gguf", "/models/ple.gguf", "--expert-profile", "/models/expert-profile-sycl.bin",
+                   "--spec", "2"]
+    config.write_text(json.dumps(doc))
+    prepared, _evidence = managed.prepare_config(config)
+    assert prepared["args"][1] == "/models/pack"
+    other = tmp_path / "not-strata"
+    other.write_bytes(Path(doc["exe"]).read_bytes())
+    other.chmod(0o755)
+    monkeypatch.setenv("A770B_STRATA_ENGINE_SHA256", managed.file_digest(other))
+    doc["exe"] = str(other)
+    doc["args"] = ["--native", "/models/hy4-flash-iq3.strata", "--spec", "2"]
+    config.write_text(json.dumps(doc))
+    prepared, _evidence = managed.prepare_config(config)
+    assert Path(prepared["exe"]).name == "not-strata"
+
+
+@pytest.mark.parametrize("extra", [
+    ["--ple-io", "--native=/models/hy4-flash-iq3.strata"],
+    ["--native", "/models/qwen.gguf", "--kv", "--engram=x"],
+])
+def test_a_shape_token_in_a_flag_value_is_not_an_engine_swap(config, extra):
+    doc = json.loads(config.read_text())
+    doc["args"] = extra
+    config.write_text(json.dumps(doc))
+    prepared, _evidence = managed.prepare_config(config)
+    assert prepared["args"] == extra
+
+
+@pytest.mark.parametrize("joined,flag", [
+    ("--batch 4", "--batch"),
+    ("--gpu 0", "--gpu"),
+    ("--serve x", "--serve"),
+])
+def test_space_joined_unsupported_flag_is_refused_like_two_elements(config, joined, flag):
+    """One element "--flag value" is the same refusal as ["--flag", "value"]. The stored args are not what is checked."""
+    doc = json.loads(config.read_text())
+    doc["args"] = [joined]
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match=f"unsupported engine flag {flag}"):
+        managed.prepare_config(config)
+
+
+def test_space_joined_spec_is_preserved_and_the_stored_args_stay_joined(config):
+    """--spec is rewritten into user_args the way a pinned value already is. The args array passed through stays as written."""
+    doc = json.loads(config.read_text())
+    doc["args"] = ["--spec 2", "--reserve-mib", "2048"]
+    config.write_text(json.dumps(doc))
+    prepared, _evidence = managed.prepare_config(config)
+    assert prepared["args"] == ["--spec 2", "--reserve-mib", "2048"]
+    assert prepared["user_args"] == ["--spec", "2"]
+
+
+def test_equals_joined_spec_stays_in_args_and_is_still_rewritten_into_user_args(config):
+    doc = json.loads(config.read_text())
+    doc["args"] = ["--spec=2", "--reserve-mib", "2048"]
+    config.write_text(json.dumps(doc))
+    prepared, _evidence = managed.prepare_config(config)
+    assert prepared["args"] == ["--spec=2", "--reserve-mib", "2048"]
+    assert prepared["user_args"] == ["--spec", "2"]
+
+
+def test_space_joined_expert_cache_is_recorded_like_two_elements(config):
+    doc = json.loads(config.read_text())
+    # "--ple-io mmap" follows a value, not a bare flag, so the terminal splits it. A bare flag's value place would not.
+    doc["args"] = ["--expert-cache auto", "--ple-io mmap", "--stream-experts"]
+    config.write_text(json.dumps(doc))
+    prepared, evidence = managed.prepare_config(config)
+    assert prepared["args"] == doc["args"]
+    assert "user_args" not in prepared
+    assert evidence["host_memory_settings"]["args"] == {
+        "--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap",
+    }
+
+
+def test_measured_flash_next_args_are_accepted(config):
+    """The measured Flash-Next argv, as separate elements, is not a shape-engine swap and keeps its host-memory settings."""
+    doc = json.loads(config.read_text())
+    doc["args"] = [
+        "--pack", "/models/pack",
+        "--native", "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+        "--ple-gguf", "/models/ple.gguf",
+        "--expert-profile", "/models/expert-profile-sycl.bin",
+        "--expert-cache", "auto",
+        "--stream-experts",
+        "--spec", "2",
+        "--prefill", "4096",
+        "--max-context", "32768",
+        "--kv", "int8",
+        "--ple-io", "mmap",
+        "--vram-reserve-mib", "5120",
+    ]
+    config.write_text(json.dumps(doc))
+    prepared, evidence = managed.prepare_config(config)
+    assert prepared["args"] == doc["args"]
+    assert prepared["user_args"] == ["--spec", "2"]
+    assert evidence["host_memory_settings"]["args"] == {
+        "--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap",
+    }
+
+
+@pytest.mark.parametrize("arch", ["hy4flash", "inkling2_loop", "inkling2", "inkling2_loop_text"])
+def test_shape_engine_arch_is_refused(config, arch):
+    doc = json.loads(config.read_text())
+    doc["arch"] = arch
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="shape engine"):
+        managed.prepare_config(config)
+
+
 def test_process_identity_rejects_stale_start_time():
     identity = managed.process_identity(os.getpid())
     assert identity
@@ -68,20 +212,43 @@ def test_launch_identity_ignores_reporting_only_host_memory_metadata():
     assert not managed.launch_evidence_matches(old, {**new, "config_sha256": "different-config"})
 
 
+_MIRROR_LINE = ("strata generate: 14489 of 14489 experts missing from VRAM "
+                "(+ 0 in the prompt loan's slots) mirrored in pinned host memory "
+                "(27.70 GiB, 50.4 s); the GPU reads them over PCIe")
+_KV_LINE = ("strata generate: KV streaming: 4096 of 32768 cells per QSA layer in VRAM, "
+            "the K/V in 1.80 GiB of pinned RAM")
+_COMPLEMENT_LINE = ("FileExpertSource: mapped pinned cache complement ready: "
+                    "resident 10.00 GiB, pinned 4.50 GiB in 12 s")
+
+
 def test_observed_pinned_host_memory_is_parsed_from_engine_output(tmp_path):
     log = tmp_path / "engine.log"
-    log.write_text("loaded experts; mirrored in 27.70 GiB of pinned host RAM\n", encoding="utf-8")
+    log.write_text(_MIRROR_LINE + "\n", encoding="utf-8")
     observed = managed.observed_pinned_host_memory(log)
-    assert observed == {"value_bytes": round(27.70 * 1024 ** 3), "source": str(log),
-                        "reported_text": "loaded experts; mirrored in 27.70 GiB of pinned host RAM"}
+    assert observed["value_bytes"] == round(27.70 * 1024 ** 3)
+    assert observed["source"] == str(log)
+    assert observed["reported_text"] == _MIRROR_LINE
+    assert observed["other_pinned_lines"] == []
+    assert "not added" in observed["note"]
     log.write_text("no pinned allocation line\n", encoding="utf-8")
     assert managed.observed_pinned_host_memory(log) is None
+
+
+def test_other_pinned_lines_are_recorded_and_not_added_to_the_mirror(tmp_path):
+    log = tmp_path / "engine.log"
+    log.write_text(_KV_LINE + "\n" + _MIRROR_LINE + "\n" + _COMPLEMENT_LINE + "\n", encoding="utf-8")
+    observed = managed.observed_pinned_host_memory(log)
+    assert observed["value_bytes"] == round(27.70 * 1024 ** 3)
+    assert observed["reported_text"] == _MIRROR_LINE
+    assert [row["reported_text"] for row in observed["other_pinned_lines"]] == [_KV_LINE, _COMPLEMENT_LINE]
+    assert all(row["included_in_value_bytes"] is False for row in observed["other_pinned_lines"])
+    assert observed["value_bytes"] != sum(row["value_bytes"] for row in observed["other_pinned_lines"])
 
 
 def test_observe_host_memory_persists_the_measurement_before_profile_rendering(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
-    (run / "engine.log").write_text("mirrored in 27.70 GiB of pinned host RAM\n", encoding="utf-8")
+    (run / "engine.log").write_text(_MIRROR_LINE + "\n", encoding="utf-8")
     evidence = run / "evidence.json"
     evidence.write_text(json.dumps({"engine": "strata", "log_dir": str(run), "host_memory_settings": {"env": {}, "args": {}}}))
     assert managed.observe_host_memory(evidence) == evidence
@@ -262,7 +429,10 @@ def test_strata_shell_dispatches_the_supported_pid_command(tmp_path):
     ("drafting", "dflash2"), ("args", ["--draft-model", "missing.pack"]),
     ("gpu", [0, 1]), ("parallel", 2), ("replicas", 2), ("before_load", "some-script"),
     ("env", {"ONEAPI_DEVICE_SELECTOR": "level_zero:*"}), ("api_key", "foreign-key"),
+    ("api_keys", {"foreign-key": {"max_concurrent": 1}}),
+    ("telemetry_read_key", "foreign-telemetry-key"),
     ("env", {"STRATA_PROFILE_DIR": "/other/location"}),
+    ("env", {"STRATA_NO_AUTO_CONVERSATION_CACHE": "0"}),
 ])
 def test_prepared_config_refuses_unsafe_overrides(config, key, value):
     doc = json.loads(config.read_text())
@@ -293,6 +463,7 @@ args = parser.parse_args()
 assert args.host == '127.0.0.1' and args.offline and args.parallel == '1'
 assert os.environ['STRATA_KEEP_LEFTOVERS'] == '1' and os.environ['STRATA_NO_PRESET'] == '1'
 assert os.environ['STRATA_NO_ACQUIRE'] == '1'
+assert os.environ['STRATA_NO_AUTO_CONVERSATION_CACHE'] == '1'
 assert Path(os.environ['STRATA_HOME']) == Path(args.config).parent
 assert Path(os.environ['XDG_CONFIG_HOME']).parent == Path(args.config).parent
 config = Path(args.config).read_bytes()
@@ -405,6 +576,25 @@ def test_explicit_draft_file_needs_matching_pin(config, tmp_path):
     prepared, evidence = managed.prepare_config(config)
     assert prepared["user_args"][-2:] == ["--draft-model", str(draft)]
     assert evidence["draft_sha256"] == doc["draft_asset_sha256"]
+
+
+def test_space_joined_draft_model_is_pinned_like_two_elements(config, tmp_path):
+    """"--draft-model /path" pins that path. The args array keeps the joined element; user_args gets the rewritten pair."""
+    draft = tmp_path / "draft.pack"
+    draft.write_bytes(b"prepared draft fixture")
+    joined = f"--draft-model {draft}"
+    doc = json.loads(config.read_text())
+    doc["drafting"] = "dflash2"
+    doc["args"] = ["--spec", "2", joined]
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="matching draft_asset_sha256"):
+        managed.prepare_config(config)
+    doc["draft_asset_sha256"] = {str(draft): managed.file_digest(draft)}
+    config.write_text(json.dumps(doc))
+    prepared, evidence = managed.prepare_config(config)
+    assert prepared["args"] == ["--spec", "2", joined]
+    assert prepared["user_args"] == ["--spec", "2", "--draft-model", str(draft)]
+    assert evidence["draft_sha256"] == {str(draft): managed.file_digest(draft)}
 
 
 def test_level_zero_selector_rejects_desktop_card(monkeypatch):

@@ -182,7 +182,12 @@ def test_observe_copies_pinned_ram_and_ignores_host_buffers(tmp_path, monkeypatc
     (data / "logs").mkdir(parents=True)
     log_dir = tmp_path / "run"
     log_dir.mkdir()
-    (log_dir / "engine.log").write_text("using 1.5 GiB of pinned host RAM\n", encoding="utf-8")
+    (log_dir / "engine.log").write_text(
+        "strata generate: 14489 of 14489 experts missing from VRAM "
+        "(+ 0 in the prompt loan's slots) mirrored in pinned host memory "
+        "(1.50 GiB, 50.4 s); the GPU reads them over PCIe\n",
+        encoding="utf-8",
+    )
     target = data / "logs" / "live.json"
     target.write_text(json.dumps({
         "engine": "strata",

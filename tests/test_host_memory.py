@@ -246,7 +246,11 @@ def test_engine_settings_are_labelled_configured_not_observed():
 
 def test_strata_observed_pinned_memory_is_reported_separately_from_configured_settings():
     observed = {"value_bytes": round(27.70 * 1024 ** 3), "source": "engine.log",
-                "reported_text": "mirrored in 27.70 GiB of pinned host RAM"}
+                "reported_text": (
+                    "strata generate: 14489 of 14489 experts missing from VRAM "
+                    "(+ 0 in the prompt loan's slots) mirrored in pinned host memory "
+                    "(27.70 GiB, 50.4 s); the GPU reads them over PCIe"
+                )}
     got = host_memory.conditions(None, None, {"settings": {"env": {"STRATA_MIRROR_MIB": "28672"}, "args": {}},
                                                "observed_pinned_host_memory": observed})
     engine = got["engine_host_memory"]
