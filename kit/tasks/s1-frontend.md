@@ -71,7 +71,7 @@ physical line; never re-wrap.
 select, the inline module script and `aria-live` on `#stats`, and the three JS files
 together are at or under the 180-line budget. Then print the files you changed.
 
-## Run `node --test` and `node --check` before you stop
+## Commands you may run
 
 `node --test` and `node --check` are allowed in your own shell
 tool (the run profile grants both unconditionally): you can and should run the Verify command
