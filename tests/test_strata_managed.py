@@ -75,6 +75,78 @@ def test_a_shape_token_in_a_flag_value_is_not_an_engine_swap(config, extra):
     assert prepared["args"] == extra
 
 
+@pytest.mark.parametrize("joined,flag", [
+    ("--batch 4", "--batch"),
+    ("--gpu 0", "--gpu"),
+    ("--serve x", "--serve"),
+])
+def test_space_joined_unsupported_flag_is_refused_like_two_elements(config, joined, flag):
+    """One element "--flag value" is the same refusal as ["--flag", "value"]. The stored args are not what is checked."""
+    doc = json.loads(config.read_text())
+    doc["args"] = [joined]
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match=f"unsupported engine flag {flag}"):
+        managed.prepare_config(config)
+
+
+def test_space_joined_spec_is_preserved_and_the_stored_args_stay_joined(config):
+    """--spec is rewritten into user_args the way a pinned value already is. The args array passed through stays as written."""
+    doc = json.loads(config.read_text())
+    doc["args"] = ["--spec 2", "--reserve-mib", "2048"]
+    config.write_text(json.dumps(doc))
+    prepared, _evidence = managed.prepare_config(config)
+    assert prepared["args"] == ["--spec 2", "--reserve-mib", "2048"]
+    assert prepared["user_args"] == ["--spec", "2"]
+
+
+def test_equals_joined_spec_stays_in_args_and_is_still_rewritten_into_user_args(config):
+    doc = json.loads(config.read_text())
+    doc["args"] = ["--spec=2", "--reserve-mib", "2048"]
+    config.write_text(json.dumps(doc))
+    prepared, _evidence = managed.prepare_config(config)
+    assert prepared["args"] == ["--spec=2", "--reserve-mib", "2048"]
+    assert prepared["user_args"] == ["--spec", "2"]
+
+
+def test_space_joined_expert_cache_is_recorded_like_two_elements(config):
+    doc = json.loads(config.read_text())
+    # "--ple-io mmap" follows a value, not a bare flag, so the terminal splits it. A bare flag's value place would not.
+    doc["args"] = ["--expert-cache auto", "--ple-io mmap", "--stream-experts"]
+    config.write_text(json.dumps(doc))
+    prepared, evidence = managed.prepare_config(config)
+    assert prepared["args"] == doc["args"]
+    assert "user_args" not in prepared
+    assert evidence["host_memory_settings"]["args"] == {
+        "--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap",
+    }
+
+
+def test_measured_flash_next_args_are_accepted(config):
+    """The measured Flash-Next argv, as separate elements, is not a shape-engine swap and keeps its host-memory settings."""
+    doc = json.loads(config.read_text())
+    doc["args"] = [
+        "--pack", "/models/pack",
+        "--native", "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+        "--ple-gguf", "/models/ple.gguf",
+        "--expert-profile", "/models/expert-profile-sycl.bin",
+        "--expert-cache", "auto",
+        "--stream-experts",
+        "--spec", "2",
+        "--prefill", "4096",
+        "--max-context", "32768",
+        "--kv", "int8",
+        "--ple-io", "mmap",
+        "--vram-reserve-mib", "5120",
+    ]
+    config.write_text(json.dumps(doc))
+    prepared, evidence = managed.prepare_config(config)
+    assert prepared["args"] == doc["args"]
+    assert prepared["user_args"] == ["--spec", "2"]
+    assert evidence["host_memory_settings"]["args"] == {
+        "--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap",
+    }
+
+
 @pytest.mark.parametrize("arch", ["hy4flash", "inkling2_loop", "inkling2", "inkling2_loop_text"])
 def test_shape_engine_arch_is_refused(config, arch):
     doc = json.loads(config.read_text())
@@ -504,6 +576,25 @@ def test_explicit_draft_file_needs_matching_pin(config, tmp_path):
     prepared, evidence = managed.prepare_config(config)
     assert prepared["user_args"][-2:] == ["--draft-model", str(draft)]
     assert evidence["draft_sha256"] == doc["draft_asset_sha256"]
+
+
+def test_space_joined_draft_model_is_pinned_like_two_elements(config, tmp_path):
+    """"--draft-model /path" pins that path. The args array keeps the joined element; user_args gets the rewritten pair."""
+    draft = tmp_path / "draft.pack"
+    draft.write_bytes(b"prepared draft fixture")
+    joined = f"--draft-model {draft}"
+    doc = json.loads(config.read_text())
+    doc["drafting"] = "dflash2"
+    doc["args"] = ["--spec", "2", joined]
+    config.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="matching draft_asset_sha256"):
+        managed.prepare_config(config)
+    doc["draft_asset_sha256"] = {str(draft): managed.file_digest(draft)}
+    config.write_text(json.dumps(doc))
+    prepared, evidence = managed.prepare_config(config)
+    assert prepared["args"] == ["--spec", "2", joined]
+    assert prepared["user_args"] == ["--spec", "2", "--draft-model", str(draft)]
+    assert evidence["draft_sha256"] == {str(draft): managed.file_digest(draft)}
 
 
 def test_level_zero_selector_rejects_desktop_card(monkeypatch):

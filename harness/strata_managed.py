@@ -158,16 +158,19 @@ def prepare_config(path):
         raise ValueError("prepared config needs an engine args array")
     if doc.get("args_written", args) != args:
         raise ValueError("prepared args differ from args_written")
+    # Same split the terminal applies before it reads flags. doc["args"] stays as written; user_args is the
+    # existing rewrite of a pinned --spec / --draft-model / --draft-conf value into a flag and its value.
+    split = split_joined_args(args)
     draft_pins = doc.pop("draft_asset_sha256", {})
     if not isinstance(draft_pins, dict):
         raise ValueError("draft_asset_sha256 must map absolute draft asset paths to SHA-256")
     drafts = {}
     pinned_args = []
-    for i, item in enumerate(args):
+    for i, item in enumerate(split):
         flag, equal, inline = item.partition("=")
         if flag in {"--batch", "--slots", "--gpu", "--layer-split", "--device", "--devices", "--serve"}:
             raise ValueError(f"prepared config contains unsupported engine flag {flag}")
-        value = inline if equal else args[i + 1] if i + 1 < len(args) else ""
+        value = inline if equal else split[i + 1] if i + 1 < len(split) else ""
         if flag in {"--spec", "--draft-model", "--draft-conf"}:
             if not value or value.startswith("--"):
                 raise ValueError(f"{flag} requires a value")
@@ -183,7 +186,7 @@ def prepare_config(path):
             if not isinstance(pin, str) or not hmac.compare_digest(sha, pin):
                 raise ValueError(f"{flag} needs a matching draft_asset_sha256 pin")
             drafts[str(asset)] = sha
-    if doc.get("drafting") == "dflash2" and not any(a.partition("=")[0] == "--draft-model" for a in args):
+    if doc.get("drafting") == "dflash2" and not any(a.partition("=")[0] == "--draft-model" for a in split):
         raise ValueError("explicit DFlash2 needs a pinned --draft-model")
     if doc.get("arch") in SHAPE_ENGINE_ARCH:
         raise ValueError("prepared config arch selects a shape engine")
@@ -217,13 +220,17 @@ HOST_MEMORY_FLAGS = ("--expert-cache", "--stream-experts", "--ple-io")
 
 
 def host_memory_settings(env, args):
-    """The host-memory settings as the config writes them: values verbatim, a bare flag True, an absent one absent."""
+    """The host-memory settings as the config writes them: values verbatim, a bare flag True, an absent one absent.
+
+    Flags are read after ``split_joined_args``, so one joined element matches the two-element form.
+    """
     found = {}
-    for i, item in enumerate(args):
+    split = split_joined_args(args)
+    for i, item in enumerate(split):
         flag, equal, inline = item.partition("=")
         if flag not in HOST_MEMORY_FLAGS:
             continue
-        following = args[i + 1] if i + 1 < len(args) else None
+        following = split[i + 1] if i + 1 < len(split) else None
         if equal:
             found[flag] = inline
         elif following is not None and not following.startswith("--"):
