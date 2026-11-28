@@ -804,7 +804,8 @@ def build_plan(argv: list[str]) -> dict:
     slug = re.sub(r"[^a-z0-9]+", "-", slug_src).strip("-")
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     job_id = f"{stamp}-{slug}"[:64].strip("-")
-    return {
+    instrument = _recorded_instrument(_plan_instrument())
+    plan = {
         "engine": engine,
         "engine_cli": args.engine,
         "model": args.model,
@@ -847,6 +848,37 @@ def build_plan(argv: list[str]) -> dict:
         "reference_ids": sorted(ref_ids),
         "artifact": row.get("model") if row and isinstance(row.get("model"), str) else os.path.basename(args.model),
     }
+    if instrument:
+        plan["instrument"] = instrument
+    return plan
+
+
+def _plan_instrument() -> str | None:
+    """The kit version at the moment a plan is built. Later reads must not call this again."""
+    try:
+        import profiles
+
+        return profiles.kit_instrument()
+    except (OSError, ValueError, ImportError):
+        return None
+
+
+def _recorded_instrument(*values) -> str | None:
+    """A version a run wrote down. Empty and unknown are not a version."""
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if text and text != "unknown":
+            return text
+    return None
+
+
+def _run_instrument(plan, suite) -> str | None:
+    """The version this run recorded. The suite file wins over the plan. The live tree is not consulted."""
+    suite_value = suite.get("instrument") if isinstance(suite, dict) else None
+    plan_value = plan.get("instrument") if isinstance(plan, dict) else None
+    return _recorded_instrument(suite_value, plan_value)
 
 
 def _row_fields(row: dict | None) -> dict:
@@ -878,6 +910,7 @@ def format_plan(plan: dict) -> str:
     lines = [
         "qualify dry-run" if plan.get("dry_run") else "qualify plan",
         f"engine: {plan['engine']}",
+        f"instrument: {_recorded_instrument(plan.get('instrument')) or 'not recorded'}",
         f"model: {plan['model']}",
         "phases: " + ", ".join(plan["phases"]),
         "serve-argv: " + " ".join(shlex.quote(str(part)) for part in plan["serve_argv"]),
@@ -1937,6 +1970,7 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
         "image": collected.get("image") or job_doc.get("image") or "unknown",
         "opencode": job_doc.get("opencode", "unknown"),
         "artifact": plan.get("artifact") or os.path.basename(str(plan.get("model") or "")),
+        "instrument": _run_instrument(plan, suite) or "unknown",
         "ram_gb_extra": collected.get("ram_gb_extra", "unknown"),
         "thinking": plan.get("thinking"),
         "timeout_s": _timeout_seconds(stages),
@@ -2064,12 +2098,7 @@ def _statistics_from(collected, plan, dotted, useful) -> dict:
     absorb = collected.get("absorb")
     if isinstance(absorb, dict) and (absorb.get("8k") is not None or absorb.get("far_end") is not None):
         _fill_stat(stats, "speed.absorb_s", "recorded")
-    try:
-        import profiles
-
-        _fill_stat(stats, "instrument", profiles.kit_instrument())
-    except (OSError, ValueError, ImportError):
-        pass
+    _fill_stat(stats, "instrument", _run_instrument(plan, suite))
     if exported_suite is not None and stats.get("instrument") not in (None, "unknown"):
         _fill_stat(stats, "evidence", "recorded")
     return stats
@@ -2104,6 +2133,7 @@ def render_report(job: str, result: dict, floor_stop: bool = False) -> str:
         f"engine {result.get('engine')} model {result.get('model')} "
         f"at {result.get('ctx')} served tokens"
     )
+    lines.append(f"instrument: {_recorded_instrument(result.get('instrument')) or 'not recorded'}")
     window = result.get("window") or {}
     lines.append(
         f"usable window {window.get('usable')} tokens at served ctx {window.get('served_ctx')} "
@@ -2316,12 +2346,9 @@ def _export_suite(result: dict) -> dict | None:
         body["timeouts"] = totals["timeouts"]
     if isinstance(totals.get("mean_wall_s"), (int, float)) and not isinstance(totals.get("mean_wall_s"), bool):
         body["mean_wall_s"] = totals["mean_wall_s"]
-    try:
-        import profiles
-
-        body["instrument"] = profiles.kit_instrument()
-    except (OSError, ValueError, ImportError):
-        pass
+    recorded = _recorded_instrument(suite.get("instrument"))
+    if recorded:
+        body["instrument"] = recorded
     copied = [item for item in (_registry_stage(stage) for stage in stages) if item]
     if copied:
         body["stages"] = copied
@@ -2357,8 +2384,6 @@ def _export_tasks(result: dict, plan: dict) -> dict | None:
 
 def _base_row(plan: dict, result: dict) -> dict:
     """Copy measured fields. A missing measurement is omitted, never a stand-in number."""
-    import profiles
-
     ctx = int(plan["ctx"])
     rates = {"8k": None, "32k": None, "64k": None, "100k": None}
     fields = plan.get("row_fields") or {}
@@ -2383,10 +2408,8 @@ def _base_row(plan: dict, result: dict) -> dict:
     if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
         timeout = "__TODO__ — longest observed stage wall"
     card = fields.get("card") or os.environ.get("A770B_CARD") or None
-    try:
-        instrument = profiles.kit_instrument()
-    except (OSError, ValueError):
-        instrument = None
+    suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    instrument = _run_instrument(plan, suite)
     row = {
         "model": os.path.basename(str(artifact)),
         "ctx": ctx,
@@ -3266,6 +3289,10 @@ def _merge_suite(previous: dict, body: dict) -> dict:
     ]
     if peaks:
         merged["peak_prompt_tokens"] = max(peaks)
+    if _recorded_instrument(merged.get("instrument")) is None:
+        previous_instrument = _recorded_instrument(previous.get("instrument"))
+        if previous_instrument:
+            merged["instrument"] = previous_instrument
     return merged
 
 

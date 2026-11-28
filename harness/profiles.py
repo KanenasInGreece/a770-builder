@@ -181,9 +181,9 @@ KERNEL_KEYS = {"path", "xmx", "evidence"}
 
 CATALOGUE_HEADER = (
     "| card | mode | profile | model | window (useful) | VRAM at served context | "
-    "decode / prefill at 8k | decode / prefill at far end | measured_on |"
+    "decode / prefill at 8k | decode / prefill at far end | measured_on | instrument |"
 )
-CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|"
+CATALOGUE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|---|"
 MODE_LABEL = {
     "display": "Display-safe (`A770B_CARD_MODE=display`, the default)",
     "inference": "Pure-inference (`A770B_CARD_MODE=inference`, a card that draws no desktop)",
@@ -1515,7 +1515,7 @@ def _far_end_cell(speed: dict) -> str:
 
 
 def _catalogue_table(rows: list[dict]) -> list[str]:
-    """The catalogue table: one row per profile, with the window, the served-context VRAM, both speeds, and measured_on.
+    """The catalogue table: one row per profile, with the window, the served-context VRAM, both speeds, measured_on, and the instrument.
 
     The 8k cell names that depth, and is one em dash when both rates are missing. The far-end cell names the
     depth that row measured, or an em dash when that measurement is absent."""
@@ -1527,7 +1527,7 @@ def _catalogue_table(rows: list[dict]) -> list[str]:
         lines.append(
             f"| {r['card']} | {r['mode']} | {r['name']} | {prof['model']} | {ctx_fmt} (~{useful_k}k) | "
             f"{_vram_cell(prof)} | {_8k_cell(prof['speed'])} | "
-            f"{_far_end_cell(prof['speed'])} | {prof.get('measured_on', '')} |"
+            f"{_far_end_cell(prof['speed'])} | {prof.get('measured_on', '')} | {prof.get('instrument', '')} |"
         )
     return lines
 

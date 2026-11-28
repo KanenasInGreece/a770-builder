@@ -121,6 +121,8 @@ that rung had something to record.
 | `speed.absorb_s` | **ladder** — Rung 4 | `8k` and `far_end`, each the measured time to first token or null. A far-end figure can benefit from a cached prefix, so it is not tokens divided by a rate | none |
 | `profiling` | **ladder** and the suite's row writer — never typed by hand | `contract` (int, starting at 1), `engine`, `flags` (the applied measurement switches), `confirmed` (each switch `true`, `false`, or `pending`). Written into the serve evidence when the server is healthy, then copied onto the row | none |
 
+`kit_version` is the number in `kit/suite.json`. The instrument is `<suite id>@<kit_version>` (now `SUITE-1@2`). It moves when the tests or the task texts change, not when the product version does. Version 2 removes pointers from the reference task texts to a specification file and to `kit/reference/SOURCES.md`, neither of which the exported reference seat holds. A result keeps the instrument recorded when it ran. A run that recorded none is not labelled with the current version. `comparable_with` matches on the instrument, so `SUITE-1@1` and `SUITE-1@2` are not comparable.
+
 ### Statistics read today
 
 Each engine has a fixed list of statistics switches. The code records which of those statistics it reads.

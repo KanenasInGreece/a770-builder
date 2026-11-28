@@ -143,9 +143,9 @@ stage s3-optimise \
   test_s3_optimise_hidden.py
 
 # ── (4) the three reference exercises, each's own public grader, proof solution pasted over its stub ──
-# The reference exercises' own seat is this repository's clone (kit/reference/tasks/*.md: "you are in a
-# standalone clone of KanenasInGreece/a770-builder"), not an export of kit/seat/ — so this export instead
-# recreates just the kit/reference/ paths the graders below name, git-init'ed the same way.
+# The reference seat is a git tree of kit/reference/{cpp,javascript,python,js}, the same set
+# export_reference_seat copies. It is not a clone of this repository and it is not kit/seat/.
+# This export recreates those paths and git-inits them.
 REFSEAT="$t/ref-seat"
 mkdir -p "$REFSEAT/kit/reference"
 for d in cpp javascript python js; do cp -a "$KIT/reference/$d" "$REFSEAT/kit/reference/$d"; done

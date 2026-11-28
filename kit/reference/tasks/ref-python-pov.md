@@ -1,10 +1,10 @@
 # Task: implement `from_pov` and `path_to` in `kit/reference/python/pov/pov.py`
 
-You are in a standalone clone of KanenasInGreece/a770-builder, branch `profiling-kit`. The task is implementing
-two methods in one file, `kit/reference/python/pov/pov.py`, and nothing else. Do not create files. Do not edit
-any file not named below. This is Aider's polyglot-benchmark Python exercise `pov` (Exercism practice track,
-MIT licence 2021 — see `kit/reference/SOURCES.md` and the `LICENSE` beside this exercise), carried into this
-kit verbatim.
+You are at the root of the reference seat. That root holds this exercise under `kit/reference/`, and every path
+below is relative to it. The task is implementing two methods in one file, `kit/reference/python/pov/pov.py`,
+and nothing else. Do not create files. Do not edit any file not named below. This is Aider's polyglot-benchmark
+Python exercise `pov` (Exercism practice track, MIT licence 2021 — see the `LICENSE` beside this exercise),
+carried into this kit verbatim.
 
 ## The files
 
@@ -95,8 +95,8 @@ switch). No docker, no systemctl, no network. Keep every edit on one physical li
 `pytest -q kit/reference/python/pov/pov_test.py` reports `15 passed` with no failures. Then print the list of
 files you changed.
 
-## A run specification beside this brief
+## Commands you may run
 
-`ref-python-pov.spec.json`, beside this file. Its `bash_allow` carries no entry either: the grader is already
-covered by the template's own floor (`uv run *`, `python3 -m pytest *`), and a `bash_allow` addition starting
-with `uv` would in any case be refused (see `kit/reference/SOURCES.md`).
+`uv run` and `pytest` are allowed in your own shell tool (the run profile grants both unconditionally): you
+can and should run the Verify command above yourself before you stop, the same way you would run any other
+command.

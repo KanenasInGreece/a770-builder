@@ -554,6 +554,80 @@ def test_api_key_in_extra_refused(kit_env):
         ql.build_plan(_gguf_args(["--extra", "--api-key secret"]))
 
 
+def test_suite_instrument_wins_over_the_plan_and_the_live_tree(kit_env, tmp_path, monkeypatch):
+    """A suite that recorded SUITE-1@1 stays that, even when the plan and the tree now say another version."""
+    import profiles
+
+    monkeypatch.setattr(profiles, "kit_instrument", lambda *args, **kwargs: "SUITE-NOW@9")
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--ctx", "131072"]))
+    assert plan.get("instrument") == "SUITE-NOW@9"
+    assert "instrument: SUITE-NOW@9" in ql.format_plan(plan)
+    job = _job(tmp_path, plan)
+    stats = _stats()
+    del stats["instrument"]
+    collected = _measured_collected(stats)
+    collected["suite"]["instrument"] = "SUITE-1@1"
+    collected["suite"]["stages"][0]["label"] = "s1-frontend"
+    (job / "evidence" / "collected.json").write_text(json.dumps(collected))
+    result = ql.summarise(str(job))
+    assert result["instrument"] == "SUITE-1@1"
+    assert result["statistics"]["instrument"] == "SUITE-1@1"
+    assert result["suite"]["instrument"] == "SUITE-1@1"
+    report = (job / "report.md").read_text()
+    blob = (job / "result.json").read_text() + report
+    assert "SUITE-NOW@9" not in blob
+    assert "instrument: SUITE-1@1" in report
+    assert report.splitlines()[0].startswith("verdict:")
+    out = tmp_path / "outside" / "kept.json"
+    out.parent.mkdir()
+    ql.export_job(str(job), str(out), False)
+    written = json.loads(out.read_text())
+    assert written["instrument"] == "SUITE-1@1"
+    assert written["suite"]["instrument"] == "SUITE-1@1"
+    assert written["evidence"].startswith("SUITE-1@1")
+    assert "SUITE-NOW@9" not in out.read_text()
+
+
+def test_unrecorded_instrument_is_not_taken_from_the_live_tree(kit_env, tmp_path, monkeypatch):
+    """A run that recorded no kit version is not labelled with whatever suite.json says now."""
+    import profiles
+
+    monkeypatch.setattr(profiles, "kit_instrument", lambda *args, **kwargs: "SUITE-NOW@9")
+    monkeypatch.setenv("A770B_CARD", "a770")
+    monkeypatch.setenv("A770B_CARD_MODE", "inference")
+    plan = ql.build_plan(_gguf_args(["--ctx", "131072"]))
+    plan.pop("instrument", None)
+    assert "instrument: not recorded" in ql.format_plan(plan)
+    assert "SUITE-NOW@9" not in ql.format_plan(plan)
+    job = _job(tmp_path, plan)
+    stats = _stats()
+    del stats["instrument"]
+    collected = _measured_collected(stats)
+    assert "instrument" not in collected["suite"]
+    (job / "evidence" / "collected.json").write_text(json.dumps(collected))
+    result = ql.summarise(str(job))
+    report = (job / "report.md").read_text()
+    blob = (job / "result.json").read_text() + report
+    assert "SUITE-NOW@9" not in blob
+    assert result["statistics"].get("instrument") in (None, "unknown")
+    assert "instrument: not recorded" in report
+    out = tmp_path / "outside" / "unrecorded.json"
+    out.parent.mkdir()
+    with pytest.raises(ql.QualifyError, match="instrument"):
+        ql.export_job(str(job), str(out), False)
+    assert not out.exists()
+
+
+def test_merge_keeps_a_recorded_instrument_when_a_later_suite_omits_it():
+    merged = ql._merge_suite(
+        {"instrument": "SUITE-1@1", "stages": [], "completed": True, "attempts": 1},
+        {"stages": [], "completed": True},
+    )
+    assert merged["instrument"] == "SUITE-1@1"
+
+
 def test_fit_report_first_line(kit_env, tmp_path):
     plan = ql.build_plan(_gguf_args(["--fit-only"]))
     job = _job(tmp_path, plan)

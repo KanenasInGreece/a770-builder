@@ -466,10 +466,12 @@ def test_render_catalogue_is_byte_stable_and_lists_every_card(tmp_path):
     triples = [tuple(cell.strip() for cell in ln.strip("|").split("|")[:3]) for ln in data_lines]
     assert triples == sorted(triples)
     assert len(data_lines) == len(_registry_names_by_file())
-    # every row carries its own measured_on in the last cell (a blank cell is a failure)
+    # measured_on and the instrument are the last two cells (a blank cell is a failure)
     for (card, mode, name), ln in zip(triples, data_lines):
-        measured = _registry_names_by_file()[(card, mode, name)]["measured_on"]
-        assert ln.rstrip().rstrip("|").rsplit("|", 1)[-1].strip() == measured, ln
+        prof = _registry_names_by_file()[(card, mode, name)]
+        cells = [cell.strip() for cell in ln.strip().strip("|").split("|")]
+        assert cells[-2] == prof["measured_on"], ln
+        assert cells[-1] == prof["instrument"], ln
 
 
 def _registry_names_by_file() -> dict[tuple, dict]:
@@ -3263,7 +3265,7 @@ def _catalogue_label_gaps(mod, rows: list[dict], table: list[str]) -> list[str]:
     for row, line in zip(rows, body):
         name = row.get("name", "?")
         cells = _catalogue_cells(line)
-        if len(cells) != 9:
+        if len(cells) != 10:
             gaps.append(f"{name}: {len(cells)} cells")
             continue
         prof = row["prof"]

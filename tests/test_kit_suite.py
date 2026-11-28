@@ -6,14 +6,16 @@ every stage's stub fails its own hidden grader on the clean, shipped seat. The c
 kit/seat/python/data/sample.stats.json is proven against an independent stdlib
 re-computation of sample.log written directly in this file, never trusted as committed.
 
-Does not touch kit/corpus.py, kit/corpus/, harness/run_suite.sh, or any kit/reference/ file
-other than its tasks/*.spec.json `card` field — those are other units' material.
+Does not touch kit/corpus.py, kit/corpus/, or harness/run_suite.sh. It reads the reference
+task texts: those are what the builder reads inside the exported reference seat.
 
-A task text under kit/tasks/ is what the builder reads inside the exported seat. It must
-not name a specification file that seat does not hold.
+A task text under kit/tasks/ is what the builder reads inside the exported mini-project seat.
+A task text under kit/reference/tasks/ is what the builder reads inside the reference seat.
+Neither may name a file that seat does not hold.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -145,8 +147,36 @@ def _seat_holds_named_file(name: str) -> bool:
     return (SEAT / rel).is_file()
 
 
+_SOURCES_FILE_RE = re.compile(r"[\w./-]*SOURCES\.md")
+_REFERENCE_ROOTS = ("cpp", "javascript", "python", "js")
+
+
+def _exported_reference_seat() -> set[str]:
+    """Paths export_reference_seat actually copies: tracked files under the four language trees, .meta removed."""
+    proc = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "--", "kit/reference"],
+        check=True,
+        capture_output=True,
+    )
+    held = set()
+    roots = tuple(f"kit/reference/{name}/" for name in _REFERENCE_ROOTS)
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode()
+        if not rel.startswith(roots) or "/.meta/" in rel:
+            continue
+        held.add(rel)
+        held.add(Path(rel).name)
+    return held
+
+
 def test_task_texts_name_no_specification_file_absent_from_the_seat():
-    """No task text under kit/tasks/ names a specification file the builder's seat does not hold."""
+    """No task text names a specification file, or SOURCES.md, that the builder's seat does not hold.
+
+    kit/tasks/ is checked against kit/seat/. kit/reference/tasks/ is checked against the files
+    export_reference_seat copies. A pointer at a missing file can end a stage with an empty patch.
+    """
     tasks = sorted((KIT / "tasks").glob("*.md"))
     assert tasks, "kit/tasks/ has no task texts"
     missing = []
@@ -155,7 +185,39 @@ def test_task_texts_name_no_specification_file_absent_from_the_seat():
         for name in _SPEC_FILE_RE.findall(text):
             if not _seat_holds_named_file(name):
                 missing.append(f"{task.name} names {name}, which the seat does not hold")
+    reference = sorted((KIT / "reference" / "tasks").glob("*.md"))
+    assert reference, "kit/reference/tasks/ has no task texts"
+    held = _exported_reference_seat()
+    assert held, "the exported reference seat is empty"
+    for task in reference:
+        text = task.read_text(encoding="utf-8")
+        if "A run specification beside this brief" in text:
+            missing.append(f"{task.name} still explains the specification file to the builder")
+        if "profiling-kit" in text or "standalone clone" in text:
+            missing.append(f"{task.name} still says the reference seat is a clone on branch profiling-kit")
+        for name in _SPEC_FILE_RE.findall(text):
+            if name not in held:
+                missing.append(f"{task.name} names {name}, which the reference seat does not hold")
+        for name in _SOURCES_FILE_RE.findall(text):
+            if name not in held:
+                missing.append(f"{task.name} names {name}, which the reference seat does not hold")
     assert not missing, "\n".join(missing)
+
+
+def test_local_build_version_names_the_kit():
+    """version is where the seat shows its identity, including the kit it would test."""
+    script = REPO_ROOT / "skills" / "local-build" / "scripts" / "local-build.sh"
+    env = os.environ.copy()
+    env["A770B_PROJECT"] = str(REPO_ROOT)
+    proc = subprocess.run(
+        ["bash", str(script), "version"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "kit SUITE-1@2" in proc.stdout
 
 
 def test_no_grading_script_lives_under_kit_seat():

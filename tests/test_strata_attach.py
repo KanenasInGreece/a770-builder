@@ -691,6 +691,9 @@ def test_run_suite_without_strata_is_unchanged(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "--engine" not in r.stdout
     assert "--served-model-name m" in r.stdout
+    import profiles
+
+    assert f"instrument: {profiles.kit_instrument()}" in r.stdout
 
 
 @pytest.mark.parametrize("args,word", [
