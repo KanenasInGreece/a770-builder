@@ -8,6 +8,9 @@ re-computation of sample.log written directly in this file, never trusted as com
 
 Does not touch kit/corpus.py, kit/corpus/, harness/run_suite.sh, or any kit/reference/ file
 other than its tasks/*.spec.json `card` field — those are other units' material.
+
+A task text under kit/tasks/ is what the builder reads inside the exported seat. It must
+not name a specification file that seat does not hold.
 """
 
 import json
@@ -37,6 +40,8 @@ CARD_LANGUAGE_SPECS = {
 }
 
 HIDDEN_BASENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# A specification file named in a task text: a path ending in .spec.json, not a prose mention.
+_SPEC_FILE_RE = re.compile(r"(?<![\w./-])([\w./-]+\.spec\.json)")
 
 
 def _suite() -> dict:
@@ -131,6 +136,26 @@ def test_every_spec_card_names_its_language_and_is_at_most_600_chars():
         assert len(text) <= 600, f"{spec_path}: card is {len(text)} chars, over the 600 limit"
         for lang in languages:
             assert lang in text, f"{spec_path}: card does not name '{lang}'"
+
+
+def _seat_holds_named_file(name: str) -> bool:
+    rel = Path(name)
+    if rel.is_absolute() or ".." in rel.parts:
+        return False
+    return (SEAT / rel).is_file()
+
+
+def test_task_texts_name_no_specification_file_absent_from_the_seat():
+    """No task text under kit/tasks/ names a specification file the builder's seat does not hold."""
+    tasks = sorted((KIT / "tasks").glob("*.md"))
+    assert tasks, "kit/tasks/ has no task texts"
+    missing = []
+    for task in tasks:
+        text = task.read_text(encoding="utf-8")
+        for name in _SPEC_FILE_RE.findall(text):
+            if not _seat_holds_named_file(name):
+                missing.append(f"{task.name} names {name}, which the seat does not hold")
+    assert not missing, "\n".join(missing)
 
 
 def test_no_grading_script_lives_under_kit_seat():
