@@ -135,6 +135,13 @@ def test_statistics_follow_an_exportable_suite():
     stats = ql._statistics_from(collected, plan, {}, None)
     assert stats["suite"] == "recorded"
     assert stats["fit.code"] == "recorded"
+    assert stats["instrument"] == "unknown"
+    assert stats["evidence"] == "unknown"
+    recorded = {"suite": {"stages": [counted], "instrument": "SUITE-1@1"}}
+    stats = ql._statistics_from(recorded, plan, {}, None)
+    assert stats["suite"] == "recorded"
+    assert stats["fit.code"] == "recorded"
+    assert stats["instrument"] == "SUITE-1@1"
     assert stats["evidence"] == "recorded"
     collected["statistics"] = {"suite": "kept", "fit.code": "kept", "evidence": "kept"}
     stats = ql._statistics_from(collected, plan, {}, None)
