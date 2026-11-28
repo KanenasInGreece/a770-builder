@@ -39,27 +39,22 @@ ENGINE = (
     "import pathlib, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
     "pathlib.Path(sys.argv[1]).touch(); time.sleep(90)"
 )
+STUBBORN_ENGINE = (
+    "import os, pathlib, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "pathlib.Path(os.environ['STRATA_HOME'], 'engine-ready').touch(); time.sleep(90)"
+)
 STUBBORN = SERVER.replace(
+    "ENGINE_CODE = 'import sys; sys.stdin.read()'\n", f"ENGINE_CODE = {STUBBORN_ENGINE!r}\n",
+).replace(
     """def owner():
         os.read(int(args.owner_fd), 1)
         server.shutdown()
     threading.Thread(target=owner, daemon=True).start()
 """,
-    f"""import signal, subprocess, time
+    """import signal, time
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    home = Path(os.environ['STRATA_HOME'])
-    ready = home / 'engine-ready'
-    engine = subprocess.Popen([sys.executable, '-c', {ENGINE!r}, str(ready)],
-                              start_new_session=True)
-    while not ready.exists():
+    while not Path(os.environ['STRATA_HOME'], 'engine-ready').exists():
         time.sleep(0.01)
-    def start_of(pid):
-        return Path(f'/proc/{{pid}}/stat').read_text().rsplit(')', 1)[1].split()[19]
-    procs = Path(os.environ['XDG_STATE_HOME'], 'strata', 'procs')
-    procs.mkdir(parents=True)
-    (procs / f'{{engine.pid}}.json').write_text(json.dumps(dict(
-        pid=engine.pid, role='engine', token='l:' + start_of(engine.pid),
-        parent=dict(pid=os.getpid(), token='l:' + start_of(os.getpid())))))
 """,
 )
 

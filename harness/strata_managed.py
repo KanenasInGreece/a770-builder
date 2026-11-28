@@ -128,6 +128,40 @@ def terminal_replaces_generic_engine(exe, args):
     return ("inkling" in name and name.endswith((".strata", ".gguf"))) or "--dspark" in args
 
 
+def stated_engine_args(args):
+    """The engine arguments the config states, in the form the terminal reads them.
+
+    The terminal splits joined elements, then moves ``--reasoning-effort`` out of the engine arguments into
+    its own ``reasoning_effort`` key (serve/server_parts/http_api.py lift_reasoning_effort_arg).
+    """
+    split = split_joined_args(args)
+    out, i = [], 0
+    while i < len(split):
+        if split[i] == "--reasoning-effort" and i + 1 < len(split):
+            i += 2
+            continue
+        if not split[i].startswith("--reasoning-effort="):
+            out.append(split[i])
+        i += 1
+    return out
+
+
+def engine_flag_groups(args):
+    """Each flag's values, one list per occurrence in order. ``--flag=value`` and ``--flag value`` read the same."""
+    found, values = {}, None
+    for item in args:
+        if item.startswith("--"):
+            flag, equal, inline = item.partition("=")
+            values = [inline] if equal else []
+            found.setdefault(flag, []).append(values)
+            continue
+        if values is None:
+            values = []
+            found.setdefault("", []).append(values)
+        values.append(item)
+    return found
+
+
 def prepare_config(path):
     raw = path.read_bytes()
     doc = json.loads(raw)
@@ -158,14 +192,12 @@ def prepare_config(path):
         raise ValueError("prepared config needs an engine args array")
     if doc.get("args_written", args) != args:
         raise ValueError("prepared args differ from args_written")
-    # Same split the terminal applies before it reads flags. doc["args"] stays as written; user_args is the
-    # existing rewrite of a pinned --spec / --draft-model / --draft-conf value into a flag and its value.
+    # Same split the terminal applies before it reads flags. doc["args"] stays as written.
     split = split_joined_args(args)
     draft_pins = doc.pop("draft_asset_sha256", {})
     if not isinstance(draft_pins, dict):
         raise ValueError("draft_asset_sha256 must map absolute draft asset paths to SHA-256")
     drafts = {}
-    pinned_args = []
     for i, item in enumerate(split):
         flag, equal, inline = item.partition("=")
         if flag in {"--batch", "--slots", "--gpu", "--layer-split", "--device", "--devices", "--serve"}:
@@ -174,7 +206,6 @@ def prepare_config(path):
         if flag in {"--spec", "--draft-model", "--draft-conf"}:
             if not value or value.startswith("--"):
                 raise ValueError(f"{flag} requires a value")
-            pinned_args.extend((flag, value))
         if flag in {"--draft-model", "--mtp-draft-vocab", "--mtp"}:
             asset = Path(value)
             if flag == "--mtp" and asset.is_dir():
@@ -192,8 +223,13 @@ def prepare_config(path):
         raise ValueError("prepared config arch selects a shape engine")
     if terminal_replaces_generic_engine(doc["exe"], args):
         raise ValueError("prepared config names a shape model the terminal would start with another engine")
-    if pinned_args:
-        doc["user_args"] = pinned_args
+    # user_args is the terminal's contract for options a person set (strata_control/user_args.py): its start-time
+    # rewrites that honour the contract leave them alone. Every stated option goes there; check_engine_args
+    # catches the rewrites that do not honour it.
+    stated = stated_engine_args(args)
+    first = next((i for i, item in enumerate(stated) if item.startswith("--")), None)
+    if first is not None:
+        doc["user_args"] = stated[first:]
     selector = os.environ.get("A770B_ONEAPI_DEVICE_SELECTOR", "")
     env = doc.get("env", {})
     if not re.fullmatch(r"level_zero:[0-9]+", selector):
@@ -360,6 +396,40 @@ def engine_processes(state):
 
 def engine_alive(state):
     return any(True for _ in engine_processes(state))
+
+
+def engine_argv(state):
+    """The argv of this launch's one live engine, from its /proc cmdline."""
+    engines = list(engine_processes(state))
+    if len(engines) != 1:
+        raise ValueError(f"cannot verify Strata engine arguments: found {len(engines)} owned engines, not one")
+    pid, started = engines[0]
+    raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    argv = [os.fsdecode(item) for item in raw.split(b"\0")[:-1]]
+    if process_identity(pid) != started or "--serve" not in argv:
+        raise ValueError("cannot verify Strata engine arguments: the owned engine's command line is not readable")
+    return argv
+
+
+def check_engine_args(state):
+    """Refuse an engine that lacks or changes a flag the prepared config states; return what to record.
+
+    Flags the terminal adds are not refused. They are listed in ``engine_args_added``.
+    """
+    argv = engine_argv(state)
+    config = json.loads(Path(state["snapshot"]).read_text())
+    stated = engine_flag_groups(stated_engine_args(config["args"]))
+    actual = engine_flag_groups(argv[argv.index("--serve") + 1:])
+
+    def shown(flag, occurrences):
+        return ", ".join(" ".join(filter(None, (flag, *values))) for values in occurrences)
+
+    wrong = [f"{flag or 'positional arguments'}: config states '{shown(flag, wanted)}', "
+             + (f"engine has '{shown(flag, actual[flag])}'" if flag in actual else "engine does not have it")
+             for flag, wanted in stated.items() if actual.get(flag) != wanted]
+    if wrong:
+        raise ValueError("Strata engine arguments differ from the prepared config: " + "; ".join(wrong))
+    return {"engine_argv": argv, "engine_args_added": sorted(actual.keys() - stated.keys())}
 
 
 def occupied(state):
@@ -760,6 +830,14 @@ def start(path, config, ctx, timeout):
         requested = (port, ctx, minimum, str(python), str(terminal))
         recorded = (old["port"], old["ctx"], old["min_ram_mib"], old["python"], old["terminal"])
         if same and recorded == requested and process_alive(old) and health_matches(old, key):
+            try:
+                checked = check_engine_args(old)
+            except ValueError as exc:
+                raise ValueError(f"{exc}; the reused Strata instance is left running") from None
+            evidence_path = Path(old["run"]) / "evidence.json"
+            written = read_state(evidence_path)
+            if written is not None:
+                write_state(evidence_path, {**written, **checked})
             return old
         raise ValueError("an owned Strata server is up with a different launch or health; stop it explicitly")
     with socket.socket() as sock:
@@ -804,7 +882,8 @@ def start(path, config, ctx, timeout):
             while time.monotonic() < deadline and proc.poll() is None:
                 state = read_state(path)
                 if state and state["id"] == instance and process_alive(state) and health_matches(state, key):
-                    write_state(run / "evidence.json", {**evidence, "ctx": ctx, "port": port, "log_dir": str(run),
+                    checked = check_engine_args(state)
+                    write_state(run / "evidence.json", {**evidence, **checked, "ctx": ctx, "port": port, "log_dir": str(run),
                                "host_memavailable_floor_mib": minimum, "card_mode": os.environ.get("A770B_CARD_MODE"),
                                "configured_vram_cap_gib": os.environ.get("A770B_VRAM_CAP_GIB"),
                                "gpu_match": os.environ.get("A770B_GPU_MATCH")})
@@ -932,6 +1011,8 @@ def main():
             return 0
         ready = process_alive(state) and health_matches(state, read_key())
         if args.command == "verify":
+            if ready:
+                check_engine_args(state)
             return 0 if ready and state["port"] == int(os.environ["A770B_PORT"]) and \
                 state["model_id"] == args.value and state["ctx"] == args.ctx else 2
         print(f"server: {'UP' if ready else 'STARTING OR UNHEALTHY'} · Strata · {state['model_id']} · 127.0.0.1:{state['port']}")

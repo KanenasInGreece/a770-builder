@@ -90,13 +90,13 @@ def test_space_joined_unsupported_flag_is_refused_like_two_elements(config, join
 
 
 def test_space_joined_spec_is_preserved_and_the_stored_args_stay_joined(config):
-    """--spec is rewritten into user_args the way a pinned value already is. The args array passed through stays as written."""
+    """user_args holds the split flags and values. The args array passed through stays as written."""
     doc = json.loads(config.read_text())
     doc["args"] = ["--spec 2", "--reserve-mib", "2048"]
     config.write_text(json.dumps(doc))
     prepared, _evidence = managed.prepare_config(config)
     assert prepared["args"] == ["--spec 2", "--reserve-mib", "2048"]
-    assert prepared["user_args"] == ["--spec", "2"]
+    assert prepared["user_args"] == ["--spec", "2", "--reserve-mib", "2048"]
 
 
 def test_equals_joined_spec_stays_in_args_and_is_still_rewritten_into_user_args(config):
@@ -105,7 +105,7 @@ def test_equals_joined_spec_stays_in_args_and_is_still_rewritten_into_user_args(
     config.write_text(json.dumps(doc))
     prepared, _evidence = managed.prepare_config(config)
     assert prepared["args"] == ["--spec=2", "--reserve-mib", "2048"]
-    assert prepared["user_args"] == ["--spec", "2"]
+    assert prepared["user_args"] == ["--spec", "2", "--reserve-mib", "2048"]
 
 
 def test_space_joined_expert_cache_is_recorded_like_two_elements(config):
@@ -115,7 +115,7 @@ def test_space_joined_expert_cache_is_recorded_like_two_elements(config):
     config.write_text(json.dumps(doc))
     prepared, evidence = managed.prepare_config(config)
     assert prepared["args"] == doc["args"]
-    assert "user_args" not in prepared
+    assert prepared["user_args"] == ["--expert-cache", "auto", "--ple-io", "mmap", "--stream-experts"]
     assert evidence["host_memory_settings"]["args"] == {
         "--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap",
     }
@@ -141,7 +141,7 @@ def test_measured_flash_next_args_are_accepted(config):
     config.write_text(json.dumps(doc))
     prepared, evidence = managed.prepare_config(config)
     assert prepared["args"] == doc["args"]
-    assert prepared["user_args"] == ["--spec", "2"]
+    assert prepared["user_args"] == doc["args"]
     assert evidence["host_memory_settings"]["args"] == {
         "--expert-cache": "auto", "--stream-experts": True, "--ple-io": "mmap",
     }
@@ -442,8 +442,11 @@ def test_prepared_config_refuses_unsafe_overrides(config, key, value):
         managed.prepare_config(config)
 
 
-# This substitute only implements the terminal launch boundary. It exits when
-# the supervisor closes its write end of the owner pipe.
+# This substitute implements the terminal launch boundary and the v0.2.23 argument path that matters here:
+# strata_control/user_args.py merge (a person's options replace and follow the generated ones) and
+# strata_control/vram_fit.py fit_start on a short Intel card (reserve lowered to 100 unless "--vram-reserve-mib"
+# is in the config's user_args). Its engine is a process whose command line carries the result, recorded the
+# way Strata records it. It exits when the supervisor closes its write end of the owner pipe.
 SERVER = """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
@@ -452,6 +455,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 
@@ -473,6 +477,47 @@ prefix = b'strata-owned-launch-v1' + bytes(1)
 message = prefix + len(config).to_bytes(8, 'big') + config + len(argv).to_bytes(8, 'big') + argv
 proof = hmac.new(bytes.fromhex(os.environ['STRATA_OWNER_ATTEST_KEY']), message, hashlib.sha256).hexdigest()
 key = os.environ['STRATA_API_KEY']
+
+def groups(items):
+    out = []
+    for item in items:
+        if item.startswith('--') or not out:
+            out.append([item])
+        else:
+            out[-1].append(item)
+    return out
+
+doc = json.loads(config)
+engine_args = []
+for item in doc['args']:
+    bare = engine_args and engine_args[-1].startswith('--') and ' ' not in engine_args[-1] and '=' not in engine_args[-1]
+    if item.startswith('--') and not bare:
+        engine_args += item.replace('=', ' ', 1).split(None, 1)
+    else:
+        engine_args.append(item)
+user = doc.get('user_args') or []
+mine = {g[0] for g in groups(user)}
+engine_args = [t for g in groups(engine_args) if g[0] not in mine for t in g] + user
+if '--vram-reserve-mib' not in user:
+    if '--vram-reserve-mib' in engine_args:
+        engine_args[engine_args.index('--vram-reserve-mib') + 1] = '100'
+    else:
+        engine_args += ['--vram-reserve-mib', '100']
+ENGINE_CODE = 'import sys; sys.stdin.read()'
+REWRITE = None
+if REWRITE:
+    engine_args = REWRITE(engine_args)
+engine = subprocess.Popen([sys.executable, '-c', ENGINE_CODE, '--serve', *engine_args],
+                          stdin=subprocess.PIPE, start_new_session=True)
+
+def start_of(pid):
+    return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+
+procs = Path(os.environ['XDG_STATE_HOME'], 'strata', 'procs')
+procs.mkdir(parents=True)
+(procs / f'{engine.pid}.json').write_text(json.dumps(dict(
+    pid=engine.pid, role='engine', token='l:' + start_of(engine.pid),
+    parent=dict(pid=os.getpid(), token='l:' + start_of(os.getpid())))))
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -505,7 +550,9 @@ with ThreadingHTTPServer((args.host, int(args.port)), Handler) as server:
 """
 
 
-def test_start_reuse_and_exact_stop_with_owned_fixture(config, tmp_path, monkeypatch):
+@pytest.fixture
+def launch(config, tmp_path, monkeypatch):
+    """A stand-in terminal and the environment a managed start needs."""
     import socket
 
     terminal = tmp_path / "terminal"
@@ -525,6 +572,100 @@ def test_start_reuse_and_exact_stop_with_owned_fixture(config, tmp_path, monkeyp
         port = sock.getsockname()[1]
     monkeypatch.setenv("A770B_PORT", str(port))
     state_path = tmp_path / "strata-instance.json"
+    yield terminal, state_path
+    managed.stop(state_path)
+
+
+def _state_args(config, args):
+    doc = json.loads(config.read_text())
+    doc["args"] = args
+    config.write_text(json.dumps(doc))
+
+
+MEASURED_ARGS = ["--pack", "/models/pack", "--native", "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+                 "--expert-cache", "auto", "--stream-experts", "--spec", "2", "--prefill", "4096",
+                 "--max-context", "32768", "--kv", "int8", "--ple-io", "mmap", "--vram-reserve-mib", "5120"]
+
+
+def _engine_args(evidence):
+    return evidence["engine_argv"][evidence["engine_argv"].index("--serve") + 1:]
+
+
+@pytest.mark.parametrize("args", [
+    MEASURED_ARGS,
+    MEASURED_ARGS[:-2] + ["--vram-reserve-mib=5120"],
+    MEASURED_ARGS[:-2] + ["--vram-reserve-mib 5120"],
+], ids=["two-elements", "equals", "space"])
+def test_a_configured_reserve_reaches_the_engine_and_is_recorded(config, launch, args):
+    _, state_path = launch
+    _state_args(config, args)
+    state = managed.start(state_path, config, 32768, 5)
+    pid = next(managed.engine_processes(state))[0]
+    argv = Path(f"/proc/{pid}/cmdline").read_text().split("\0")[:-1]
+    assert argv[argv.index("--vram-reserve-mib") + 1] == "5120"
+    assert argv[argv.index("--serve") + 1:] == MEASURED_ARGS
+    evidence = json.loads((Path(state["run"]) / "evidence.json").read_text())
+    assert evidence["engine_argv"] == argv
+    assert evidence["engine_args_added"] == []
+
+
+def test_an_added_flag_is_recorded_and_not_refused(config, launch):
+    _, state_path = launch
+    state = managed.start(state_path, config, 32768, 5)
+    evidence = json.loads((Path(state["run"]) / "evidence.json").read_text())
+    assert _engine_args(evidence)[-2:] == ["--vram-reserve-mib", "100"]
+    assert evidence["engine_args_added"] == ["--vram-reserve-mib"]
+
+
+@pytest.mark.parametrize("rewrite,message", [
+    ("lambda a: [('100' if t == '5120' else t) for t in a]",
+     "--vram-reserve-mib: config states '--vram-reserve-mib 5120', engine has '--vram-reserve-mib 100'"),
+    ("lambda a: [t for t in a if t != '--stream-experts']",
+     "--stream-experts: config states '--stream-experts', engine does not have it"),
+    ("lambda a: a + ['--vram-reserve-mib', '100']",
+     "engine has '--vram-reserve-mib 5120, --vram-reserve-mib 100'"),
+], ids=["changed", "missing", "repeated"])
+def test_a_stated_flag_the_engine_lacks_fails_the_start_and_stops_it(config, launch, rewrite, message):
+    terminal, state_path = launch
+    (terminal / "serve/server.py").write_text(SERVER.replace("REWRITE = None", f"REWRITE = {rewrite}"))
+    _state_args(config, MEASURED_ARGS)
+    with pytest.raises(ValueError, match=message):
+        managed.start(state_path, config, 32768, 5)
+    assert not state_path.exists()
+    assert not list(state_path.parent.glob("strata-*/evidence.json"))
+
+
+def test_reuse_and_verify_refuse_a_changed_engine_and_leave_it_running(config, launch, monkeypatch):
+    _, state_path = launch
+    _state_args(config, MEASURED_ARGS)
+    state = managed.start(state_path, config, 32768, 5)
+    real = managed.engine_argv
+    monkeypatch.setattr(managed, "engine_argv", lambda s: ["100" if t == "5120" else t for t in real(s)])
+    with pytest.raises(ValueError, match="--vram-reserve-mib.*left running"):
+        managed.start(state_path, config, 32768, 5)
+    with pytest.raises(ValueError, match="--vram-reserve-mib"):
+        managed.check_engine_args(state)
+    assert managed.process_alive(state) and managed.engine_alive(state)
+    monkeypatch.setattr(sys, "argv", ["strata_managed.py", "verify", "flash-next", "--ctx", "32768"])
+    monkeypatch.setenv("A770B_DATA", str(state_path.parent / "data"))
+    (state_path.parent / "data" / "logs").mkdir(parents=True)
+    (state_path.parent / "data" / "logs" / "strata-instance.json").write_text(state_path.read_text())
+    assert managed.main() == 2
+
+
+def test_an_engine_that_cannot_be_identified_fails_the_check(tmp_path):
+    with pytest.raises(ValueError, match="found 0 owned engines"):
+        managed.engine_argv({"run": str(tmp_path), "server_start": None})
+
+
+def test_reasoning_effort_stays_the_terminal_s_setting(config):
+    _state_args(config, ["--reasoning-effort", "high", "--kv", "int8", "--reasoning-effort=low"])
+    prepared, _ = managed.prepare_config(config)
+    assert prepared["user_args"] == ["--kv", "int8"]
+
+
+def test_start_reuse_and_exact_stop_with_owned_fixture(config, launch, monkeypatch):
+    _, state_path = launch
     try:
         state = managed.start(state_path, config, 32768, 5)
         assert managed.health_matches(state, "fixture-key")
