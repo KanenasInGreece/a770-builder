@@ -110,6 +110,7 @@ def test_t22_strata_export_uses_pinned_ram_and_omits_flash_attention(tmp_path, m
     )
     suite_path = data / "results" / "suite.json"
     suite_path.write_text(json.dumps({
+        "instrument": "SUITE-1@1",
         "stages": [{
             "id": "s2-backend",
             "working": True,

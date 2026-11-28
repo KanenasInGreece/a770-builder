@@ -874,11 +874,39 @@ def _recorded_instrument(*values) -> str | None:
     return None
 
 
-def _run_instrument(plan, suite) -> str | None:
-    """The version this run recorded. The suite file wins over the plan. The live tree is not consulted."""
-    suite_value = suite.get("instrument") if isinstance(suite, dict) else None
-    plan_value = plan.get("instrument") if isinstance(plan, dict) else None
-    return _recorded_instrument(suite_value, plan_value)
+def _suite_ran(suite) -> bool:
+    """True when a suite note exists. The empty assemble placeholder did not run."""
+    if not isinstance(suite, dict):
+        return False
+    if isinstance(suite.get("unmerged"), str) and suite["unmerged"].strip():
+        return True
+    if isinstance(suite.get("kept_attempts"), list) and suite["kept_attempts"]:
+        return True
+    stages = suite.get("stages")
+    if isinstance(stages, list) and any(isinstance(stage, dict) for stage in stages):
+        return True
+    if suite.get("completed") is True or suite.get("completed") is False:
+        return True
+    source = suite.get("source")
+    return isinstance(source, str) and bool(source.strip())
+
+
+def _run_instrument(_plan, suite) -> str | None:
+    """The version this run recorded.
+
+    The suite note wins. Once a suite ran, a missing recording is not filled
+    from the plan, and an unmerged note has no single version. The live tree
+    is not consulted. The plan's own value is not a recorded result: callers
+    that may show it say that it is planned, and only when the suite never ran.
+    """
+    if not isinstance(suite, dict):
+        return None
+    if isinstance(suite.get("unmerged"), str) and suite["unmerged"].strip():
+        return None
+    recorded = _recorded_instrument(suite.get("instrument"))
+    if _suite_ran(suite):
+        return recorded
+    return None
 
 
 def _row_fields(row: dict | None) -> dict:
@@ -2012,6 +2040,10 @@ def summarise(job: str, abort_reason: str | None = None) -> dict:
         )
         annotated.add(check.get("name"))
     _note_skipped(job, result, checks, by_phase, annotated, abort_reason)
+    if result.get("instrument") in (None, "unknown") and not _suite_ran(suite):
+        planned = _recorded_instrument(plan.get("instrument"))
+        if planned:
+            result["planned_instrument"] = planned
     _write_private(os.path.join(job, "result.json"), json.dumps(result, indent=2) + "\n")
     _write_private(os.path.join(job, "report.md"), render_report(job, result, floor_stop=floor_stopped))
     return result
@@ -2098,8 +2130,9 @@ def _statistics_from(collected, plan, dotted, useful) -> dict:
     absorb = collected.get("absorb")
     if isinstance(absorb, dict) and (absorb.get("8k") is not None or absorb.get("far_end") is not None):
         _fill_stat(stats, "speed.absorb_s", "recorded")
+    claim = _row_instrument({"suite": suite})
     _fill_stat(stats, "instrument", _run_instrument(plan, suite))
-    if exported_suite is not None and stats.get("instrument") not in (None, "unknown"):
+    if claim:
         _fill_stat(stats, "evidence", "recorded")
     return stats
 
@@ -2133,7 +2166,24 @@ def render_report(job: str, result: dict, floor_stop: bool = False) -> str:
         f"engine {result.get('engine')} model {result.get('model')} "
         f"at {result.get('ctx')} served tokens"
     )
-    lines.append(f"instrument: {_recorded_instrument(result.get('instrument')) or 'not recorded'}")
+    lines.append(_instrument_report_line(result))
+    suite_note = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    reason = suite_note.get("unmerged")
+    if isinstance(reason, str) and reason.strip():
+        lines.append(f"unmerged: {reason}")
+        kept = suite_note.get("kept_attempts")
+        if isinstance(kept, list):
+            for index, attempt in enumerate(kept, start=1):
+                if not isinstance(attempt, dict):
+                    continue
+                name = _recorded_instrument(attempt.get("instrument")) or "not recorded"
+                ids = [
+                    stage.get("id")
+                    for stage in attempt.get("stages") or []
+                    if isinstance(stage, dict) and stage.get("id")
+                ]
+                joined = ", ".join(str(item) for item in ids) if ids else "none"
+                lines.append(f"kept attempt {index}: instrument {name}; stages {joined}")
     window = result.get("window") or {}
     lines.append(
         f"usable window {window.get('usable')} tokens at served ctx {window.get('served_ctx')} "
@@ -2355,6 +2405,35 @@ def _export_suite(result: dict) -> dict | None:
     return body
 
 
+def _row_instrument(result: dict) -> str | None:
+    """The instrument a written row may name.
+
+    Set only when the exported suite carries that instrument. An unmerged suite,
+    a suite that recorded none, and the plan's version are not a claim.
+    """
+    suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    if isinstance(suite.get("unmerged"), str) and suite["unmerged"].strip():
+        return None
+    exported = _export_suite(result)
+    if not isinstance(exported, dict):
+        return None
+    return _recorded_instrument(exported.get("instrument"))
+
+
+def _instrument_report_line(result: dict) -> str:
+    """Recorded version, or the plan's version labelled as planned when no suite ran."""
+    recorded = _recorded_instrument(result.get("instrument"))
+    if recorded:
+        return f"instrument: {recorded}"
+    suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
+    if isinstance(suite.get("unmerged"), str) and suite["unmerged"].strip():
+        return "instrument: not recorded"
+    planned = _recorded_instrument(result.get("planned_instrument"))
+    if planned:
+        return f"instrument: {planned} (planned; the suite did not run)"
+    return "instrument: not recorded"
+
+
 def _export_tasks(result: dict, plan: dict) -> dict | None:
     suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
     thinking = "on" if plan.get("reasoning") == "on" else "off"
@@ -2409,7 +2488,7 @@ def _base_row(plan: dict, result: dict) -> dict:
         timeout = "__TODO__ — longest observed stage wall"
     card = fields.get("card") or os.environ.get("A770B_CARD") or None
     suite = result.get("suite") if isinstance(result.get("suite"), dict) else {}
-    instrument = _run_instrument(plan, suite)
+    instrument = _row_instrument(result)
     row = {
         "model": os.path.basename(str(artifact)),
         "ctx": ctx,
@@ -2518,6 +2597,8 @@ def _base_row(plan: dict, result: dict) -> dict:
                 "ttft_s": ttft,
             }
     exported_suite = _export_suite(result)
+    if isinstance(suite.get("unmerged"), str) and suite["unmerged"].strip():
+        exported_suite = None
     if exported_suite:
         row["suite"] = exported_suite
         mean = exported_suite.get("mean_wall_s")
@@ -2577,7 +2658,10 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
             "instrument": "instrument",
             "evidence": "evidence",
         }
+        claim = _row_instrument(result)
         for field in missing:
+            if field in ("instrument", "evidence") and not claim:
+                continue
             if field in top_level:
                 key = top_level[field]
                 if key not in row:
@@ -2629,6 +2713,12 @@ def export_job(job: str, out: str | None, allow_incomplete: bool) -> tuple[str, 
         name = "qualify-row"
     name = name[:48]
     check_row = _sentinel_row(row, allow_incomplete)
+    if not _recorded_instrument(check_row.get("instrument")):
+        # The written row has no measured instrument. The scratch check still
+        # judges the other fields, so the copy carries a non-kit label that is
+        # not written out and is not a qualification claim.
+        check_row["instrument"] = "seat: not-recorded"
+        check_row.pop("evidence", None)
     profiles = dict(existing.get("profiles") or {})
     profiles[name] = check_row
     document = {
@@ -3601,6 +3691,34 @@ def _profiling_recorded(job: str) -> bool:
     return all(value is True for value in confirmed.values())
 
 
+def _collected_suite(suite: dict) -> dict:
+    """What assemble keeps of a suite note.
+
+    instrument, unmerged and kept_attempts are the labelling. source is the
+    results filename and stays on the phase note; requests.source already
+    carries it when requests were recorded. attempts is the merge counter.
+    rc and why are phase status, and why is already listed under unmeasured.
+    peak_prompt_tokens and delivered are lifted to the top of the collected note.
+    """
+    body = {
+        "completed": suite.get("completed"),
+        "stages": suite.get("stages") if isinstance(suite.get("stages"), list) else [],
+        "references": suite.get("references") if isinstance(suite.get("references"), dict) else {},
+        "requests": suite.get("requests") if isinstance(suite.get("requests"), dict) else {},
+    }
+    reason = suite.get("unmerged")
+    if isinstance(reason, str) and reason.strip():
+        body["unmerged"] = reason
+        kept = suite.get("kept_attempts")
+        if isinstance(kept, list):
+            body["kept_attempts"] = kept
+        return body
+    recorded = _recorded_instrument(suite.get("instrument"))
+    if recorded:
+        body["instrument"] = recorded
+    return body
+
+
 def assemble(job: str) -> None:
     """Build evidence/collected.json from the phase notes. Missing stays absent."""
     serve = _evidence(job, "serve.json")
@@ -3633,14 +3751,7 @@ def assemble(job: str) -> None:
         "depth_tokens": depth.get("depth_tokens"),
         "unanswered": bool(depth.get("unanswered")),
         "depth_not_measured": depth.get("not_measured"),
-        "suite": {
-            "completed": suite.get("completed"),
-            "stages": suite.get("stages") if isinstance(suite.get("stages"), list) else [],
-            "references": suite.get("references")
-            if isinstance(suite.get("references"), dict)
-            else {},
-            "requests": suite.get("requests") if isinstance(suite.get("requests"), dict) else {},
-        },
+        "suite": _collected_suite(suite),
         "requests": suite.get("requests") if isinstance(suite.get("requests"), dict) else {},
         "peak_prompt_tokens": suite.get("peak_prompt_tokens", "unknown"),
         "delivered": suite.get("delivered") if isinstance(suite.get("delivered"), dict) else serve.get("delivered"),
