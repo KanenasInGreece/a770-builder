@@ -80,29 +80,52 @@ def device_override(name):
     }
 
 
+# serve/server_parts/http_api.py split_joined_args: one element "--flag value" or "--flag=value" becomes two,
+# except an element sitting in the value place of a bare flag. The terminal then reads the split list.
+_JOINED_ARG = re.compile(r"^(--[A-Za-z0-9][A-Za-z0-9-]*)(?:\s+|=)(\S.*)$")
+_BARE_FLAG = re.compile(r"^--[A-Za-z0-9][A-Za-z0-9-]*$")
+# Arch values that select a shape engine. hy4flash and inkling2_loop are the ARCH constants
+# (serve/hy4_kind.py, serve/inkling_kind.py, strata_control/inkling_family.py). The other two are the
+# remaining inkling names serve uses for that family (serve/server_parts/engines.py, http_api.py).
+SHAPE_ENGINE_ARCH = frozenset({"hy4flash", "inkling2_loop", "inkling2", "inkling2_loop_text"})
+
+
+def split_joined_args(args):
+    """Split joined engine arguments the way v0.2.23 serve does, without changing the caller's list."""
+    out = []
+    for item in args:
+        match = _JOINED_ARG.match(item) if isinstance(item, str) else None
+        previous = out[-1] if out else None
+        in_value_place = isinstance(previous, str) and _BARE_FLAG.match(previous) is not None
+        if match is None or in_value_place:
+            out.append(item)
+            continue
+        out += [match.group(1), match.group(2).strip()]
+    return out
+
+
 def terminal_replaces_generic_engine(exe, args):
-    """v0.2.23 rewrites a generic `strata` executable to another engine for a Hy4-Flash or Inkling model, or when that model is paired with --engram or --dspark."""
-    if Path(str(exe)).name.lower() not in {"strata", "strata.exe"}:
+    """True when v0.2.23 would replace a generic strata executable with a shape engine.
+
+    The decision matches ``_autocorrect_shape_config``: arguments already split as ``split_joined_args``
+    splits them, the first ``--native`` or ``--model`` (a value that starts with ``--`` still counts),
+    the basename after ``\\`` is turned into ``/``, and ``--engram`` / ``--dspark`` only as exact tokens.
+    """
+    exe_base = str(exe).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if exe_base not in {"strata", "strata.exe"}:
         return False
-    model = ""
-    engram = dspark = False
-    for i, item in enumerate(args):
-        flag, equal, inline = item.partition("=")
-        if flag == "--engram":
-            engram = True
-        elif flag == "--dspark":
-            dspark = True
-        if flag in {"--native", "--model"}:
-            value = inline if equal else args[i + 1] if i + 1 < len(args) else ""
-            if value and not value.startswith("--"):
-                model = value
+    args = split_joined_args(args)
+    model = None
+    for i, tok in enumerate(args):
+        if tok in {"--native", "--model"} and i + 1 < len(args):
+            model = str(args[i + 1])
+            break
     if not model:
         return False
-    name = Path(model).name.lower()
-    if (name.startswith("hy4-flash") and name.endswith(".strata")) or (
-            "inkling" in name and name.endswith((".strata", ".gguf"))):
+    name = model.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if (name.startswith("hy4-flash") and name.endswith(".strata")) or "--engram" in args:
         return True
-    return engram or dspark
+    return ("inkling" in name and name.endswith((".strata", ".gguf"))) or "--dspark" in args
 
 
 def prepare_config(path):
@@ -124,8 +147,8 @@ def prepare_config(path):
     if not re.fullmatch(r"[\w.-][\w./:-]*", doc["model_name"]):
         raise ValueError("prepared model_name is not a plain model identifier")
     for field in ("gpu", "replicas", "layer_split", "split_serve", "fallback", "vision", "image", "images",
-                  "mcp", "mcp_servers", "mcp_config", "before_load", "api_key", "telemetry_key", "lazy_load",
-                  "user_args", "idle_unload_s"):
+                  "mcp", "mcp_servers", "mcp_config", "before_load", "api_key", "api_keys", "telemetry_key",
+                  "telemetry_read_key", "lazy_load", "user_args", "idle_unload_s"):
         if doc.get(field) not in (None, "", [], {}, False):
             raise ValueError(f"prepared config must leave {field} disabled")
     if type(doc.get("parallel", 1)) is not int or doc.get("parallel", 1) != 1:
@@ -162,6 +185,8 @@ def prepare_config(path):
             drafts[str(asset)] = sha
     if doc.get("drafting") == "dflash2" and not any(a.partition("=")[0] == "--draft-model" for a in args):
         raise ValueError("explicit DFlash2 needs a pinned --draft-model")
+    if doc.get("arch") in SHAPE_ENGINE_ARCH:
+        raise ValueError("prepared config arch selects a shape engine")
     if terminal_replaces_generic_engine(doc["exe"], args):
         raise ValueError("prepared config names a shape model the terminal would start with another engine")
     if pinned_args:
@@ -363,22 +388,53 @@ def end_engines(state, grace):
             time.sleep(0.1)
 
 
+# Engine 0.1.69 (and 0.1.63) prints the GGUF expert mirror as
+# "mirrored in pinned host memory (%.2f GiB, %.1f s)" — gguf_src.mirrored_bytes(), sycl generate.cpp.
+# Two other lines in that binary report pinned memory this figure does not include, so they are not added:
+# "the K/V in %.2f GiB of pinned RAM" is qsa_kv_host_bytes() when KV streaming is on, and
+# "resident %.2f GiB, pinned %.2f GiB" is FileExpertSource's complement pinned_bytes().
+_MIRROR_LINE = re.compile(
+    r"mirrored in pinned host memory \((?P<amount>\d+(?:\.\d+)?) GiB, \d+(?:\.\d+)? s\)")
+_OTHER_PINNED_LINES = (
+    ("kv_streaming", re.compile(r"the K/V in (?P<amount>\d+(?:\.\d+)?) GiB of pinned RAM")),
+    ("file_expert_complement", re.compile(
+        r"resident \d+(?:\.\d+)? GiB, pinned (?P<amount>\d+(?:\.\d+)?) GiB")),
+)
+_PINNED_MIRROR_NOTE = (
+    "The figure is the GGUF expert mirror only (mirrored_bytes). Those other lines are not added: "
+    "a KV-streaming line reports qsa_kv_host_bytes, and a FileExpertSource complement line reports that complement's pinned_bytes."
+)
+
+
+def _gib_line(amount):
+    return round(float(amount) * 1024 ** 3)
+
+
 def observed_pinned_host_memory(log_path):
-    """Read a Strata-reported pinned host-RAM allocation, keeping its source text and bytes."""
+    """Read the engine's GGUF expert-mirror line. Other pinned-memory lines are kept beside it and not added in."""
     try:
         lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
-    pattern = re.compile(r"(?P<amount>[\d,]+(?:\.\d+)?)\s*(?P<unit>KiB|MiB|GiB)\s+of pinned host RAM", re.I)
-    scale = {"kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3}
+    mirror = None
     for line in reversed(lines):
-        match = pattern.search(line)
+        match = _MIRROR_LINE.search(line)
         if match:
-            amount = float(match.group("amount").replace(",", ""))
-            unit = match.group("unit").lower()
-            return {"value_bytes": round(amount * scale[unit]), "source": str(log_path),
-                    "reported_text": line.strip()[-300:]}
-    return None
+            mirror = (match, line)
+            break
+    if mirror is None:
+        return None
+    match, line = mirror
+    others = []
+    for raw in lines:
+        for kind, pattern in _OTHER_PINNED_LINES:
+            found = pattern.search(raw)
+            if found:
+                others.append({"kind": kind, "value_bytes": _gib_line(found.group("amount")),
+                               "reported_text": raw.strip()[-300:], "included_in_value_bytes": False})
+    return {"value_bytes": _gib_line(match.group("amount")), "source": str(log_path),
+            "reported_text": line.strip()[-300:], "note": _PINNED_MIRROR_NOTE,
+            "other_pinned_lines": others}
 
 
 def observe_host_memory(evidence_path):
@@ -620,6 +676,8 @@ def supervise(plan_path, gate_fd):
     write_state(Path(plan["state"]), plan)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STRATA_", "PYTHON"))
            and not device_override(k)}
+    # STRATA_NO_AUTO_CONVERSATION_CACHE stops the terminal from raising the conversation-cache budget
+    # above the engine's own limit (8 GiB). The engine's automatic cache stays on: 40% of free RAM, capped at 8 GiB.
     env.update(STRATA_KEEP_LEFTOVERS="1", STRATA_NO_PRESET="1", STRATA_NO_ACQUIRE="1",
                STRATA_NO_AUTO_CONVERSATION_CACHE="1",
                STRATA_API_KEY=key, STRATA_OWNER_ATTEST_KEY=attestation_key.hex(),

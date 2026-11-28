@@ -670,7 +670,7 @@ the model pack and shards, the tokenizer, and the JSON run config before using t
 `python -s -m serve.server --engine strata --offline` from the pinned terminal checkout. The harness
 records the source revision and SHA-256 of the engine, tokenizer and config beside separate server and
 engine logs. It gives the launched terminal its own settings, profiles and state directories and
-disables saved presets, acquisition, and the automatic conversation-cache budget. It refuses a generic `strata` executable paired with a Hy4-Flash or Inkling model, or with `--engram` or `--dspark` beside a model, because that terminal would start another engine. Record the model artifacts and checkpoint or revision with the
+disables saved presets and acquisition. It stops the terminal from raising the conversation-cache budget above the engine's own limit; the engine's automatic cache stays on. It refuses a generic `strata` or `strata.exe` executable when the first `--native` or `--model` — after the same split the terminal applies to one argument on a space or `=` — names a Hy4-Flash `.strata` file or an Inkling `.strata` or `.gguf` file, or when `--engram` or `--dspark` is its own argument. A value that starts with `--` still counts, and a backslash in that path is a separator. It also refuses a prepared `arch` of `hy4flash`, `inkling2_loop`, `inkling2`, or `inkling2_loop_text`, which selects a shape engine. Record the model artifacts and checkpoint or revision with the
 measurement notes.
 
 The run config supplies `backend` (`intel` or `sycl`), `exe`, `cwd`, `tokenizer`, `model_name` and
