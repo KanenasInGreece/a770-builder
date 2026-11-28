@@ -2542,7 +2542,7 @@ def _collision(errors: list[str]) -> bool:
     if not errors:
         return False
     for line in errors:
-        if "duplicates" in line or "one instrument" in line:
+        if "duplicates" in line or "not a kit version of the same suite" in line:
             continue
         return False
     return True
@@ -3243,8 +3243,55 @@ def _parse_suite(job: str, text: str) -> dict:
     return body
 
 
+def _suite_stages(item: dict) -> list:
+    stages = item.get("stages")
+    return list(stages) if isinstance(stages, list) else []
+
+
+def _merge_blocked(previous: dict, body: dict) -> str | None:
+    """Why these attempts must not become one stage list. None when they may join."""
+    if isinstance(previous.get("kept_attempts"), list):
+        reason = previous.get("unmerged")
+        return reason if isinstance(reason, str) and reason else "recorded instruments differ"
+    prev = _recorded_instrument(previous.get("instrument"))
+    new = _recorded_instrument(body.get("instrument"))
+    if prev and new and prev != new:
+        return "recorded instruments differ"
+    # Stages with no recorded instrument are not counted under the attempt that has one.
+    if (prev and not new and _suite_stages(body)) or (new and not prev and _suite_stages(previous)):
+        return "an attempt recorded no instrument"
+    return None
+
+
+def _keep_attempts_apart(previous: dict, body: dict, reason: str) -> dict:
+    """Both payloads stay. Neither stage list is counted under the other's instrument."""
+    if isinstance(previous.get("kept_attempts"), list):
+        kept = list(previous["kept_attempts"])
+    else:
+        kept = [previous]
+    kept.append(body)
+    return {
+        "completed": False,
+        "attempts": int(previous.get("attempts") or 0) + 1,
+        "stages": [],
+        "kept_attempts": kept,
+        "unmerged": reason,
+    }
+
+
 def _merge_suite(previous: dict, body: dict) -> dict:
-    """Keep every pass. A later failure does not erase an earlier success, and does not invent one."""
+    """Keep every pass of one recorded instrument.
+
+    Attempts whose recorded instruments differ stay apart: each attempt's stages
+    remain on that attempt, so one version is not counted under the other's label.
+    An attempt that recorded no instrument and has stages of its own is kept the
+    same way. Two attempts that recorded the same instrument, or that both
+    recorded none, still join. A later failure does not erase an earlier success,
+    and does not invent one.
+    """
+    reason = _merge_blocked(previous, body)
+    if reason:
+        return _keep_attempts_apart(previous, body, reason)
     merged = dict(body)
     prev_stages = previous.get("stages") if isinstance(previous.get("stages"), list) else []
     new_stages = body.get("stages") if isinstance(body.get("stages"), list) else []

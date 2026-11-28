@@ -77,6 +77,34 @@ DEPTH_FAILED = f"depth probe at {FAR_END}: 1/3\n"
 GENERATED = "2026-09-09T23:15:00"
 
 
+def test_ladder_instrument_comes_from_the_results_file_not_the_live_tree(tmp_path):
+    """The row's instrument is the one recorded in the results file. None recorded stays unlabelled."""
+    script = (ROOT / "harness" / "ladder.sh").read_text(encoding="utf-8")
+    assert 'INSTRUMENT=$(ladder_recorded_instrument "${SUITE_RESULTS_JSON:-}")' in script
+    assert "kit/suite.json" not in script.split("ladder_recorded_instrument()", 1)[1].split("\n}", 1)[0]
+    assert "kit_version missing from suite.json" not in script
+    start = script.index("ladder_recorded_instrument()")
+    fn = script[start:script.index("\n}\n", start) + 3]
+    recorded = tmp_path / "recorded.json"
+    recorded.write_text(json.dumps({"instrument": "SUITE-1@1", "kit_version": "9"}), encoding="utf-8")
+    blank = tmp_path / "blank.json"
+    blank.write_text(json.dumps({"stages": [], "kit_version": "9"}), encoding="utf-8")
+
+    def read_instrument(path: Path) -> str:
+        proc = subprocess.run(
+            ["bash", "-c", fn + '\nladder_recorded_instrument "$1"', "ladder", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout
+
+    assert read_instrument(recorded) == "SUITE-1@1"
+    assert read_instrument(blank) == ""
+    assert read_instrument(tmp_path / "missing.json") == ""
+
+
 def _row_env(extra=None):
     env = os.environ.copy()
     env.pop("A770B_ABSORB_MAX_S", None)
@@ -579,10 +607,11 @@ def _run_bare_ladder(tmp_path, *, dry_run=False, start_code=0):
 
 
 def test_ladder_stops_a_started_server_when_suite_json_cannot_be_read(tmp_path):
-    """A successful start is stopped on the way out via stop-id, including the suite.json refusal.
+    """A successful start is stopped on the way out via stop-id.
 
-    No tokenizer means the ladder never reaches a bench. The suite file is not JSON,
-    so the ladder exits non-zero before the results file. The fake records start then stop-id.
+    No tokenizer means the ladder never reaches a bench. The --suite file is not JSON, and
+    it is not the row's instrument: with no results file the row is unlabelled. The fake
+    records start then stop-id.
     """
     res, lines = _run_bare_ladder(tmp_path, start_code=0)
     assert res.returncode != 0, res.stdout + res.stderr
@@ -590,7 +619,11 @@ def test_ladder_stops_a_started_server_when_suite_json_cannot_be_read(tmp_path):
     assert "▶ rung 1/6" in res.stdout
     for n in (2, 3, 4, 5, 6):
         assert f"▶ rung {n}/6" not in res.stdout
-    assert "not valid JSON" in res.stderr
+    assert "not valid JSON" not in res.stderr
+    assert "SUITE-1@2" not in res.stdout
+    written = list((tmp_path / "data" / "results").glob("*-ladder-*.json"))
+    assert len(written) == 1
+    assert json.loads(written[0].read_text(encoding="utf-8"))["instrument"] == ""
     assert "docker" not in lines
 
 

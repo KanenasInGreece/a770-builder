@@ -94,9 +94,3 @@ switch). No docker, no systemctl, no network. Keep every edit on one physical li
 
 `pytest -q kit/reference/python/pov/pov_test.py` reports `15 passed` with no failures. Then print the list of
 files you changed.
-
-## Commands you may run
-
-`uv run` and `pytest` are allowed in your own shell tool (the run profile grants both unconditionally): you
-can and should run the Verify command above yourself before you stop, the same way you would run any other
-command.

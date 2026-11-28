@@ -1545,16 +1545,19 @@ if ! printf '%s\n' "$lad_model_out" | grep -q -- '--extra'
 then echo "ok   ladder: a bare GGUF with no extra flags omits --extra rather than passing an empty one run_suite.sh refuses"
 else echo "FAIL ladder: the no-extra bare-GGUF path still passes --extra ''"; printf '%s\n' "$lad_model_out" | grep -- '--extra'; fail=1
 fi
-# the ladder's inline instrument computation: a present kit_version must yield SUITE@V, and an absent one must refuse.
-# The old form, `raise SystemExit(...) if not (...) else None`, parsed as `raise (X if cond else None)` and raised
-# None -> TypeError whenever kit_version WAS present, killing every non-dry-run ladder at the final step.
-if grep -Fq 'INSTRUMENT=$(python3 -c' "$here/harness/ladder.sh" \
-  && grep -Fq 'print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "$here/harness/ladder.sh" \
-  && grep -q '\[ -n "\$INSTRUMENT" \]' "$here/harness/ladder.sh" \
-  && [ "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")' "$here/kit/suite.json")" = "SUITE-1@2" ] \
-  && [ -z "$(printf '{"suite":"X"}' | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("kit_version"); s=d.get("suite") or "SUITE-1"; print("%s@%s" % (s, v) if (isinstance(v,str) and v) else "")')" ]
-then echo "ok   ladder: the instrument line yields SUITE@V for a present kit_version and an empty string for an absent one (the guard then refuses)"
-else echo "FAIL ladder: the inline instrument computation is wrong or its guard is gone"; fail=1
+# The row's instrument is the one the task rung recorded in its results file. The live suite.json
+# is not read. A file that recorded none, or a missing file, leaves the label empty.
+printf '%s\n' '{"instrument":"SUITE-1@1"}' > "$t/inst-recorded.json"
+printf '%s\n' '{"stages":[]}' > "$t/inst-blank.json"
+inst_fn=$(sed -n '/^ladder_recorded_instrument()/,/^}/p' "$here/harness/ladder.sh")
+inst_got=$(bash -c "$inst_fn"$'\n''ladder_recorded_instrument "$1"' _ "$t/inst-recorded.json")
+inst_blank=$(bash -c "$inst_fn"$'\n''ladder_recorded_instrument "$1"' _ "$t/inst-blank.json")
+inst_missing=$(bash -c "$inst_fn"$'\n''ladder_recorded_instrument "$1"' _ "$t/inst-missing.json")
+if grep -Fq 'INSTRUMENT=$(ladder_recorded_instrument "${SUITE_RESULTS_JSON:-}")' "$here/harness/ladder.sh" \
+  && ! grep -q 'kit_version missing from suite.json' "$here/harness/ladder.sh" \
+  && [ "$inst_got" = "SUITE-1@1" ] && [ -z "$inst_blank" ] && [ -z "$inst_missing" ]
+then echo "ok   ladder: the instrument comes from the results file, and a file that recorded none is not labelled"
+else echo "FAIL ladder: the instrument is not taken from the results file"; printf 'got=%s blank=%s missing=%s\n' "$inst_got" "$inst_blank" "$inst_missing"; fail=1
 fi
 
 # ── four surfaces: roles.py names bring, speed, and count; the ladder does not keep a second copy

@@ -628,6 +628,67 @@ def test_merge_keeps_a_recorded_instrument_when_a_later_suite_omits_it():
     assert merged["instrument"] == "SUITE-1@1"
 
 
+def test_merge_keeps_differing_recorded_instruments_on_their_own_stages():
+    """Two recorded versions are not one verdict. Each attempt's stages stay with that attempt."""
+    merged = ql._merge_suite(
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s1-frontend"}],
+            "completed": True,
+            "attempts": 1,
+        },
+        {
+            "instrument": "SUITE-1@2",
+            "stages": [{"id": "s2-backend"}],
+            "completed": True,
+        },
+    )
+    assert merged.get("stages") == []
+    assert "instrument" not in merged
+    kept = merged["kept_attempts"]
+    assert kept[0]["instrument"] == "SUITE-1@1"
+    assert [stage["id"] for stage in kept[0]["stages"]] == ["s1-frontend"]
+    assert kept[1]["instrument"] == "SUITE-1@2"
+    assert [stage["id"] for stage in kept[1]["stages"]] == ["s2-backend"]
+
+
+def test_merge_does_not_count_an_unrecorded_attempt_under_a_recorded_instrument():
+    merged = ql._merge_suite(
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s1-frontend"}],
+            "completed": True,
+            "attempts": 1,
+        },
+        {"stages": [{"id": "s2-backend"}], "completed": True},
+    )
+    assert merged.get("stages") == []
+    assert "instrument" not in merged
+    assert [stage["id"] for stage in merged["kept_attempts"][0]["stages"]] == ["s1-frontend"]
+    assert merged["kept_attempts"][0]["instrument"] == "SUITE-1@1"
+    assert [stage["id"] for stage in merged["kept_attempts"][1]["stages"]] == ["s2-backend"]
+    assert "instrument" not in merged["kept_attempts"][1]
+
+
+def test_merge_joins_stages_that_recorded_the_same_instrument():
+    merged = ql._merge_suite(
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s1-frontend"}],
+            "completed": True,
+            "attempts": 1,
+        },
+        {
+            "instrument": "SUITE-1@1",
+            "stages": [{"id": "s2-backend"}],
+            "completed": True,
+        },
+    )
+    assert merged["instrument"] == "SUITE-1@1"
+    assert [stage["id"] for stage in merged["stages"]] == ["s1-frontend", "s2-backend"]
+    assert "kept_attempts" not in merged
+
+
 def test_fit_report_first_line(kit_env, tmp_path):
     plan = ql.build_plan(_gguf_args(["--fit-only"]))
     job = _job(tmp_path, plan)

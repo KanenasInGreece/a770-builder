@@ -68,9 +68,3 @@ switch). No docker, no systemctl, no network. Keep every edit on one physical li
 
 `node --test kit/reference/javascript/forth/run.test.mjs` exits 0 with `pass 49` and `fail 0`. Then print the
 list of files you changed.
-
-## Commands you may run
-
-`node --test` and `node --check` are allowed in your own shell tool (the run profile grants both
-unconditionally): you can and should run the Verify command above yourself before you stop, the same way you
-would run any other command.
